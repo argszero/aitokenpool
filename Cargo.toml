@@ -1,0 +1,39 @@
+[package]
+name = "aitokenpool"
+version = "0.1.0"
+edition = "2021"
+description = "AI Token 共享池 — 企业 key 池 + 公共共享市场"
+license = "MIT"
+repository = "https://github.com/argszero/aitokenpool"
+rust-version = "1.86"
+
+[dependencies]
+# HTTP 服务器（复用 openlocalrouter 技术栈）
+axum = "0.7"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+hyper = { version = "1.0", features = ["full"] }
+
+# HTTP 客户端（上游转发）
+reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"] }
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+
+# 数据库
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# 工具
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.11", features = ["v4"] }
+log = "0.4"
+env_logger = "0.11"
+thiserror = "2.0"
+anyhow = "1.0"
+argon2 = "0.5"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+clap = { version = "4", features = ["derive"] }
