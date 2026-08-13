@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AITokenPool — AI Token 共享平台</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ======================= 登录页 ======================= -->
+<div id="login-view" class="login-view">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="logo">AT</div>
+      <div>
+        <h1>AITokenPool</h1>
+        <p>AI Token 共享平台 · 企业版 / 公共版</p>
+      </div>
+    </div>
+    <div class="mode-switch" id="login-mode-switch">
+      <button class="mode-btn active" data-mode="market">公共版（共享市场）</button>
+      <button class="mode-btn" data-mode="enterprise">企业版（Admin）</button>
+    </div>
+    <form id="login-form" class="login-form">
+      <label>邮箱 / 账号
+        <input type="email" value="demo@aitokenpool.local" placeholder="you@company.com">
+      </label>
+      <label>密码
+        <input type="password" value="demo1234" placeholder="••••••••">
+      </label>
+      <button type="submit" class="btn btn-primary btn-block">进入平台 <span class="en">(Enter)</span></button>
+    </form>
+    <div class="login-divider"><span>或</span></div>
+    <button class="btn btn-ghost btn-block" id="sso-btn">企业 SSO 单点登录 <span class="en">(SSO)</span></button>
+    <p class="login-foot">还没有账号？<a href="#">注册 <span class="en">Register</span></a> · <a href="#">找回密码</a></p>
+    <p class="login-tip">静态演示原型 · 数据为内嵌 mock，无真实后端</p>
+  </div>
+</div>
+
+<!-- ======================= 应用外壳 ======================= -->
+<div id="app" class="app hidden">
+
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <div class="logo">AT</div>
+      <div class="brand-text">
+        <strong>AITokenPool</strong>
+        <span id="mode-label">公共版 · 共享市场</span>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav"></nav>
+
+    <div class="sidebar-bottom">
+      <button class="btn btn-ghost btn-block" id="toggle-mode-btn">切换 企业版/公共版</button>
+      <button class="btn btn-ghost btn-block" id="logout-btn">退出登录 <span class="en">(Logout)</span></button>
+      <div class="user-chip">
+        <div class="avatar">零</div>
+        <div>
+          <strong>阿零 <span class="en">demo</span></strong>
+          <span>点数余额 <b id="side-balance">0</b></span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+
+    <!-- 仪表盘 Dashboard -->
+    <section class="view" id="view-dashboard">
+      <header class="page-head">
+        <h2>仪表盘 <span class="en">Dashboard</span></h2>
+        <p>总览你的点数、用量与收益</p>
+      </header>
+      <div class="stat-grid" id="dash-stats"></div>
+      <div class="card-grid">
+        <div class="card">
+          <h3>最近交易 <span class="en">Recent transactions</span></h3>
+          <div class="mini-list" id="dash-recent"></div>
+        </div>
+        <div class="card">
+          <h3>我的共享 <span class="en">My sharings</span></h3>
+          <div class="mini-list" id="dash-sharings"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 模型市场 Marketplace -->
+    <section class="view hidden" id="view-marketplace">
+      <header class="page-head">
+        <h2>模型市场 <span class="en">Marketplace</span></h2>
+        <p>浏览 / 搜索各家模型，按点数计价</p>
+      </header>
+      <div class="toolbar">
+        <input id="mk-search" class="input" placeholder="搜索模型名 / 厂商…">
+        <select id="mk-provider" class="input">
+          <option value="">全部厂商</option>
+        </select>
+        <select id="mk-sort" class="input">
+          <option value="default">默认排序</option>
+          <option value="price-asc">输入价 低→高</option>
+          <option value="price-desc">输入价 高→低</option>
+          <option value="ctx-desc">上下文 大→小</option>
+        </select>
+        <span class="toolbar-count" id="mk-count"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th>厂商 Provider</th><th>模型 Model</th><th>输入价 /1M</th><th>输出价 /1M</th><th>上下文</th><th>可用性</th><th></th></tr>
+          </thead>
+          <tbody id="mk-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 共享管理 Sharing -->
+    <section class="view hidden" id="view-sharing">
+      <header class="page-head">
+        <h2>共享管理 <span class="en">Sharing</span></h2>
+        <p>上架闲置 key 赚点数 · 管理共享中的 key</p>
+      </header>
+      <div class="stat-grid" id="share-stats"></div>
+      <div class="card-grid">
+        <div class="card">
+          <h3>上架新 key <span class="en">List a key</span></h3>
+          <form id="share-form" class="form">
+            <div class="form-row">
+              <label>厂商
+                <select id="sf-provider" class="input"></select>
+              </label>
+              <label>模型
+                <select id="sf-model" class="input"></select>
+              </label>
+            </div>
+            <div class="form-row">
+              <label>声明额度（点数）
+                <input id="sf-quota" type="number" value="5000" class="input">
+              </label>
+              <label>单价（点数 / 1M 输出）
+                <input id="sf-price" type="number" value="280" class="input">
+              </label>
+            </div>
+            <label>备注（可选）
+              <input id="sf-note" class="input" placeholder="如：工作日 9:00-18:00 可用">
+            </label>
+            <button type="submit" class="btn btn-primary">上架 <span class="en">(List)</span></button>
+          </form>
+        </div>
+        <div class="card">
+          <h3>我的共享列表 <span class="en">My listings</span></h3>
+          <div class="table-wrap compact">
+            <table class="table">
+              <thead><tr><th>模型</th><th>已用/额度</th><th>单价</th><th>收益</th><th>状态</th><th></th></tr></thead>
+              <tbody id="share-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 钱包 Wallet -->
+    <section class="view hidden" id="view-wallet">
+      <header class="page-head">
+        <h2>钱包 <span class="en">Wallet</span></h2>
+        <p>点数余额 · 充值 / 提现 · 收支明细</p>
+      </header>
+      <div class="card wallet-hero">
+        <div>
+          <h3>点数余额 <span class="en">Points balance</span></h3>
+          <div class="balance-big" id="wallet-balance">0</div>
+          <p>1 USD = 1000 点 <span class="en">(1 USD = 1,000 points)</span></p>
+        </div>
+        <div class="wallet-actions">
+          <button class="btn btn-primary" id="topup-btn">充值 <span class="en">Top up</span></button>
+          <button class="btn btn-ghost" id="withdraw-btn">提现 <span class="en">Withdraw</span></button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>收支明细 <span class="en">Ledger</span></h3>
+        <div class="table-wrap compact">
+          <table class="table">
+            <thead><tr><th>时间</th><th>类型</th><th>对象</th><th>说明</th><th>点数</th></tr></thead>
+            <tbody id="wallet-body"></tbody>
+          </table>
+        </div>
+        <div class="pager" id="wallet-pager"></div>
+      </div>
+    </section>
+
+    <!-- 交易记录 Transactions -->
+    <section class="view hidden" id="view-transactions">
+      <header class="page-head">
+        <h2>交易记录 <span class="en">Transactions</span></h2>
+        <p>消费记录（用谁的 key）与收益记录（谁用了我的 key）</p>
+      </header>
+      <div class="tabs" id="tx-tabs">
+        <button class="tab active" data-tx-tab="all">全部</button>
+        <button class="tab" data-tx-tab="consume">消费</button>
+        <button class="tab" data-tx-tab="earn">收益</button>
+      </div>
+      <div class="card">
+        <div class="table-wrap compact">
+          <table class="table">
+            <thead><tr><th>时间</th><th>类型</th><th>模型 / Key</th><th>Token 用量</th><th>点数</th><th>状态</th></tr></thead>
+            <tbody id="tx-body"></tbody>
+          </table>
+        </div>
+        <div class="pager" id="tx-pager"></div>
+      </div>
+    </section>
+
+    <!-- 设置 Settings -->
+    <section class="view hidden" id="view-settings">
+      <header class="page-head">
+        <h2>设置 <span class="en">Settings</span></h2>
+        <p>账户 · API Key · 通知 · 偏好（原型展示）</p>
+      </header>
+      <div class="card-grid settings-grid">
+        <div class="card">
+          <h3>账户 <span class="en">Account</span></h3>
+          <div class="form">
+            <label>昵称 <input class="input" value="阿零"></label>
+            <label>邮箱 <input class="input" value="demo@aitokenpool.local"></label>
+            <button class="btn btn-primary">保存 <span class="en">(Save)</span></button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>API Key <span class="en">API keys</span></h3>
+          <p class="muted">用于本地工具 / 代码接入平台的密钥。</p>
+          <div class="mini-list" id="api-keys"></div>
+          <button class="btn btn-ghost" id="new-api-key-btn">生成新 Key <span class="en">(Generate)</span></button>
+        </div>
+        <div class="card">
+          <h3>通知 <span class="en">Notifications</span></h3>
+          <div class="form">
+            <label class="check"><input type="checkbox" checked> 点数余额低于阈值时提醒</label>
+            <label class="check"><input type="checkbox" checked> 共享 key 被消费时通知</label>
+            <label class="check"><input type="checkbox"> 每周用量报告邮件</label>
+          </div>
+        </div>
+        <div class="card">
+          <h3>偏好 <span class="en">Preferences</span></h3>
+          <div class="form">
+            <label>界面语言
+              <select class="input"><option>中文（简体）</option><option>English</option></select>
+            </label>
+            <label>默认模型
+              <select class="input"><option>deepseek-v4-flash</option><option>glm-5.2</option></select>
+            </label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 企业管理台 Admin -->
+    <section class="view hidden" id="view-admin">
+      <header class="page-head">
+        <h2>企业管理台 <span class="en">Admin</span></h2>
+        <p>Key 池 · 员工点数 · 用量报表 · 组织设置</p>
+      </header>
+      <div class="tabs" id="admin-tabs">
+        <button class="tab active" data-admin-tab="keys">Key 池</button>
+        <button class="tab" data-admin-tab="employees">员工管理</button>
+        <button class="tab" data-admin-tab="usage">用量报表</button>
+        <button class="tab" data-admin-tab="org">组织设置</button>
+      </div>
+
+      <div class="admin-pane" data-admin-pane="keys">
+        <div class="toolbar">
+          <input id="ak-search" class="input" placeholder="搜索 key / 厂商 / 模型…">
+          <button class="btn btn-primary" id="add-key-btn">添加上游 Key <span class="en">(+ Add key)</span></button>
+        </div>
+        <div class="card">
+          <div class="table-wrap compact">
+            <table class="table">
+              <thead><tr><th>厂商</th><th>模型</th><th>Key</th><th>额度（点数）</th><th>状态</th><th></th></tr></thead>
+              <tbody id="keys-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="admin-pane hidden" data-admin-pane="employees">
+        <div class="stat-grid" id="emp-stats"></div>
+        <div class="card">
+          <div class="table-wrap compact">
+            <table class="table">
+              <thead><tr><th>员工</th><th>部门</th><th>配额 / 已用</th><th>剩余</th><th>状态</th><th></th></tr></thead>
+              <tbody id="emp-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="admin-pane hidden" data-admin-pane="usage">
+        <div class="card-grid">
+          <div class="card">
+            <h3>按模型用量 <span class="en">By model</span></h3>
+            <div class="bar-list" id="usage-model"></div>
+          </div>
+          <div class="card">
+            <h3>按员工用量 <span class="en">By employee</span></h3>
+            <div class="bar-list" id="usage-emp"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="admin-pane hidden" data-admin-pane="org">
+        <div class="card">
+          <h3>组织设置 <span class="en">Organization settings</span></h3>
+          <div class="form">
+            <label>组织名称 <input class="input" value="示例科技 Example Tech"></label>
+            <label>默认员工配额（点数/月）<input class="input" type="number" value="20000"></label>
+            <label class="check"><input type="checkbox" checked> 员工自助申请加额需管理员审批</label>
+            <button class="btn btn-primary">保存设置 <span class="en">(Save)</span></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 员工自助面板 Employee Portal -->
+    <section class="view hidden" id="view-employee">
+      <header class="page-head">
+        <h2>员工自助面板 <span class="en">Employee Portal</span></h2>
+        <p>我的点数 · 可用模型 · 用量明细 · 申请加额</p>
+      </header>
+      <div class="stat-grid" id="emp-portal-stats"></div>
+      <div class="card-grid">
+        <div class="card">
+          <h3>可用模型 <span class="en">Available models</span></h3>
+          <div class="mini-list" id="emp-models"></div>
+        </div>
+        <div class="card">
+          <h3>申请加额 <span class="en">Request quota</span></h3>
+          <div class="form">
+            <label>申请点数 <input id="req-quota" class="input" type="number" value="5000"></label>
+            <label>原因 <input id="req-reason" class="input" placeholder="如：本月训练任务增多"></label>
+            <button class="btn btn-primary" id="req-btn">提交申请 <span class="en">(Submit)</span></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="js/data.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
