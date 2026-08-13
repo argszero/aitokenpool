@@ -229,13 +229,7 @@ select.input option { background: var(--bg-card); }
   font-size: 16px; flex-shrink: 0;
 }
 
-.mode-switch { display: flex; gap: 8px; margin-bottom: 18px; }
-.mode-btn {
-  flex: 1; padding: 9px 8px; border-radius: var(--radius-sm);
-  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
-  cursor: pointer; font-size: 12.5px; text-align: center;
-}
-.mode-btn.active { border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); }
+.mode-switch { display: none; }
 
 .login-form { display: flex; flex-direction: column; gap: 12px; }
 .login-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
@@ -271,6 +265,15 @@ select.input option { background: var(--bg-card); }
   border: none; background: transparent; text-align: left; width: 100%;
 }
 .nav-item .ico { width: 18px; text-align: center; font-size: 15px; }
+.nav-tag {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(78,205,196,.4);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
 .nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .nav-item.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 

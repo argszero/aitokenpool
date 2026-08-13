@@ -15,12 +15,8 @@
       <div class="logo">AT</div>
       <div>
         <h1>AITokenPool</h1>
-        <p>AI Token 共享平台 · 企业版 / 公共版</p>
+        <p>AI Token 共享平台 · 一套产品，两种部署场景</p>
       </div>
-    </div>
-    <div class="mode-switch" id="login-mode-switch">
-      <button class="mode-btn active" data-mode="market">公共版（共享市场）</button>
-      <button class="mode-btn" data-mode="enterprise">企业版（Admin）</button>
     </div>
     <form id="login-form" class="login-form">
       <label>邮箱 / 账号
@@ -34,7 +30,7 @@
     <div class="login-divider"><span>或</span></div>
     <button class="btn btn-ghost btn-block" id="sso-btn">企业 SSO 单点登录 <span class="en">(SSO)</span></button>
     <p class="login-foot">还没有账号？<a href="#">注册 <span class="en">Register</span></a> · <a href="#">找回密码</a></p>
-    <p class="login-tip">静态演示原型 · 数据为内嵌 mock，无真实后端</p>
+    <p class="login-tip">静态演示原型 · 数据为内嵌 mock，无真实后端 · 管理员与普通用户由账号角色决定登录后看到的界面</p>
   </div>
 </div>
 
@@ -46,14 +42,13 @@
       <div class="logo">AT</div>
       <div class="brand-text">
         <strong>AITokenPool</strong>
-        <span id="mode-label">公共版 · 共享市场</span>
+        <span id="mode-label">共享市场 · 角色视图</span>
       </div>
     </div>
 
     <nav class="nav" id="nav"></nav>
 
     <div class="sidebar-bottom">
-      <button class="btn btn-ghost btn-block" id="toggle-mode-btn">切换 企业版/公共版</button>
       <button class="btn btn-ghost btn-block" id="logout-btn">退出登录 <span class="en">(Logout)</span></button>
       <div class="user-chip">
         <div class="avatar">零</div>
@@ -254,15 +249,15 @@
       </div>
     </section>
 
-    <!-- 企业管理台 Admin -->
+    <!-- 管理员角色视图 Admin（同一套产品中的角色权限） -->
     <section class="view hidden" id="view-admin">
       <header class="page-head">
-        <h2>企业管理台 <span class="en">Admin</span></h2>
-        <p>Key 池 · 员工点数 · 用量报表 · 组织设置</p>
+        <h2>管理视图 <span class="en">Admin</span></h2>
+        <p>管理员角色专属：Key 池 · 成员/员工点数 · 用量报表 · 组织设置（普通用户无此视图）</p>
       </header>
       <div class="tabs" id="admin-tabs">
         <button class="tab active" data-admin-tab="keys">Key 池</button>
-        <button class="tab" data-admin-tab="employees">员工管理</button>
+        <button class="tab" data-admin-tab="employees">成员管理</button>
         <button class="tab" data-admin-tab="usage">用量报表</button>
         <button class="tab" data-admin-tab="org">组织设置</button>
       </div>
@@ -287,7 +282,7 @@
         <div class="card">
           <div class="table-wrap compact">
             <table class="table">
-              <thead><tr><th>员工</th><th>部门</th><th>配额 / 已用</th><th>剩余</th><th>状态</th><th></th></tr></thead>
+              <thead><tr><th>成员</th><th>部门</th><th>配额 / 已用</th><th>剩余</th><th>状态</th><th></th></tr></thead>
               <tbody id="emp-body"></tbody>
             </table>
           </div>
@@ -301,7 +296,7 @@
             <div class="bar-list" id="usage-model"></div>
           </div>
           <div class="card">
-            <h3>按员工用量 <span class="en">By employee</span></h3>
+            <h3>按成员用量 <span class="en">By member</span></h3>
             <div class="bar-list" id="usage-emp"></div>
           </div>
         </div>
@@ -312,32 +307,10 @@
           <h3>组织设置 <span class="en">Organization settings</span></h3>
           <div class="form">
             <label>组织名称 <input class="input" value="示例科技 Example Tech"></label>
-            <label>默认员工配额（点数/月）<input class="input" type="number" value="20000"></label>
-            <label class="check"><input type="checkbox" checked> 员工自助申请加额需管理员审批</label>
+            <label>默认成员配额（点数/月）<input class="input" type="number" value="20000"></label>
+            <label class="check"><input type="checkbox" checked> 成员自助申请加额需管理员审批</label>
+            <label class="check"><input type="checkbox"> 关闭外部注册（企业内网部署）</label>
             <button class="btn btn-primary">保存设置 <span class="en">(Save)</span></button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 员工自助面板 Employee Portal -->
-    <section class="view hidden" id="view-employee">
-      <header class="page-head">
-        <h2>员工自助面板 <span class="en">Employee Portal</span></h2>
-        <p>我的点数 · 可用模型 · 用量明细 · 申请加额</p>
-      </header>
-      <div class="stat-grid" id="emp-portal-stats"></div>
-      <div class="card-grid">
-        <div class="card">
-          <h3>可用模型 <span class="en">Available models</span></h3>
-          <div class="mini-list" id="emp-models"></div>
-        </div>
-        <div class="card">
-          <h3>申请加额 <span class="en">Request quota</span></h3>
-          <div class="form">
-            <label>申请点数 <input id="req-quota" class="input" type="number" value="5000"></label>
-            <label>原因 <input id="req-reason" class="input" placeholder="如：本月训练任务增多"></label>
-            <button class="btn btn-primary" id="req-btn">提交申请 <span class="en">(Submit)</span></button>
           </div>
         </div>
       </div>

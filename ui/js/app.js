@@ -11,7 +11,6 @@
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  let mode = "market"; // market | enterprise
   let activeView = "dashboard";
   let txTab = "all", txPage = 1, walletPage = 1;
   const TX_PAGE = 5;
@@ -33,40 +32,30 @@
 
   /* ---------------- 导航 ---------------- */
 
-  const NAV = {
-    market: [
-      { g: "公共版", items: [
-        { id: "dashboard", ico: "📊", label: "仪表盘 Dashboard" },
-        { id: "marketplace", ico: "🛒", label: "模型市场 Marketplace" },
-        { id: "sharing", ico: "🔗", label: "共享管理 Sharing" },
-        { id: "wallet", ico: "👛", label: "钱包 Wallet" },
-        { id: "transactions", ico: "🧾", label: "交易记录 Transactions" },
-      ]},
-      { g: "系统", items: [
-        { id: "settings", ico: "⚙️", label: "设置 Settings" },
-      ]},
-    ],
-    enterprise: [
-      { g: "企业版", items: [
-        { id: "admin", ico: "🛠️", label: "企业管理台 Admin" },
-        { id: "employee", ico: "🧑‍💻", label: "员工自助面板 Portal" },
-      ]},
-      { g: "系统", items: [
-        { id: "settings", ico: "⚙️", label: "设置 Settings" },
-      ]},
-    ],
-  };
+  const NAV = [
+    { g: "主导航", items: [
+      { id: "dashboard", ico: "📊", label: "仪表盘 Dashboard" },
+      { id: "marketplace", ico: "🛒", label: "模型市场 Marketplace" },
+      { id: "sharing", ico: "🔗", label: "共享管理 Sharing" },
+      { id: "wallet", ico: "👛", label: "钱包 Wallet" },
+      { id: "transactions", ico: "🧾", label: "交易记录 Transactions" },
+    ]},
+    { g: "角色视图", items: [
+      { id: "admin", ico: "🛠️", label: "管理视图 Admin", role: "admin" },
+      { id: "settings", ico: "⚙️", label: "设置 Settings" },
+    ]},
+  ];
 
   const VIEW_TITLE = {
     dashboard: "仪表盘 Dashboard", marketplace: "模型市场 Marketplace", sharing: "共享管理 Sharing",
     wallet: "钱包 Wallet", transactions: "交易记录 Transactions", settings: "设置 Settings",
-    admin: "企业管理台 Admin", employee: "员工自助面板 Employee Portal",
+    admin: "管理视图 Admin",
   };
 
   function renderNav() {
     const nav = $("#nav");
     nav.innerHTML = "";
-    NAV[mode].forEach((group) => {
+    NAV.forEach((group) => {
       const g = document.createElement("div");
       g.className = "nav-group";
       g.textContent = group.g;
@@ -76,11 +65,17 @@
         b.className = "nav-item" + (item.id === activeView ? " active" : "");
         b.dataset.view = item.id;
         b.innerHTML = '<span class="ico">' + item.ico + '</span><span class="label">' + esc(item.label) + "</span>";
+        if (item.role) {
+          const tag = document.createElement("span");
+          tag.className = "nav-tag";
+          tag.textContent = "管理员";
+          b.appendChild(tag);
+        }
         b.addEventListener("click", () => switchView(item.id));
         nav.appendChild(b);
       });
     });
-    $("#mode-label").textContent = mode === "market" ? "公共版 · 共享市场" : "企业版 · Admin";
+    $("#mode-label").textContent = "共享市场 · 角色视图";
   }
 
   function switchView(id) {
@@ -102,7 +97,6 @@
     else if (id === "transactions") renderTransactions();
     else if (id === "settings") renderSettings();
     else if (id === "admin") renderAdmin();
-    else if (id === "employee") renderEmployee();
   }
 
   /* --- 仪表盘 --- */
@@ -288,7 +282,7 @@
     ).join("");
   }
 
-  /* --- 企业管理台 --- */
+  /* --- 管理员角色视图 --- */
 
   const KEY_STATUS = {
     ok: { text: "可用", cls: "ok" },
@@ -316,10 +310,10 @@
       const total = D.EMPLOYEES.reduce((a, e) => a + e.quota, 0);
       const used = D.EMPLOYEES.reduce((a, e) => a + e.used, 0);
       $("#emp-stats").innerHTML = [
-        stat("员工数 Members", D.EMPLOYEES.length + " 人", "2 个部门"),
+        stat("成员数 Members", D.EMPLOYEES.length + " 人", "2 个部门"),
         stat("总配额 Quota", D.fmt(total) + " 点", "月"),
         stat("已用 Usage", D.fmt(used) + " 点", Math.round((used / total) * 100) + "% 消耗率"),
-        stat("剩余 Remain", D.fmt(total - used) + " 点", "按员工分配"),
+        stat("剩余 Remain", D.fmt(total - used) + " 点", "按成员分配"),
       ].join("");
       $("#emp-body").innerHTML = D.EMPLOYEES.map((e, i) =>
         "<tr><td><strong>" + esc(e.name) + "</strong></td><td>" + esc(e.dept) + "</td>" +
@@ -342,53 +336,19 @@
       '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
   }
 
-  /* --- 员工自助面板 --- */
-
-  function renderEmployee() {
-    const emp = D.EMPLOYEES[0]; // 当前登录员工视角
-    $("#emp-portal-stats").innerHTML = [
-      stat("我的点数 My points", D.fmt(emp.quota - emp.used), "配额 " + D.fmt(emp.quota) + " 点/月", "accent"),
-      stat("本月已用 Used", D.fmt(emp.used) + " 点", Math.round((emp.used / emp.quota) * 100) + "%"),
-      stat("可用模型 Models", D.MODELS.length + " 个", "全部厂商"),
-      stat("待审批申请", "1 个", "上笔申请 5000 点"),
-    ].join("");
-
-    $("#emp-models").innerHTML = D.MODELS.slice(0, 6).map((m) =>
-      '<div class="mini-item"><div><div class="t">' + esc(m.model) + "</div>" +
-      '<div class="d">' + esc(m.provider) + " · " + D.ctxFmt(m.ctx) + " 上下文</div></div>" +
-      '<div class="r"><span class="pts">' + D.fmt(m.in) + "</span><div class='d'>点/1M 输入</div></div></div>"
-    ).join("") + '<p class="muted" style="margin-top:8px">…共 ' + D.MODELS.length + " 个模型可用</p>";
-  }
-
   /* ---------------- 事件 ---------------- */
 
   function bindEvents() {
-    // 登录
+    // 登录（单一入口，角色由账号决定）
     $("#login-form").addEventListener("submit", (e) => {
       e.preventDefault();
       $("#login-view").classList.add("hidden");
       $("#app").classList.remove("hidden");
-      switchView(mode === "market" ? "dashboard" : "admin");
+      switchView("dashboard");
       toast("欢迎回来，阿零（演示账号）");
     });
 
-    // 登录页模式切换
-    $$("#login-mode-switch .mode-btn").forEach((b) => {
-      b.addEventListener("click", () => {
-        $$("#login-mode-switch .mode-btn").forEach((x) => x.classList.remove("active"));
-        b.classList.add("active");
-        mode = b.dataset.mode;
-      });
-    });
-
     $("#sso-btn").addEventListener("click", () => toast("企业 SSO 为占位入口（静态原型）"));
-
-    // 应用内模式切换
-    $("#toggle-mode-btn").addEventListener("click", () => {
-      mode = mode === "market" ? "enterprise" : "market";
-      switchView(mode === "market" ? "dashboard" : "admin");
-      toast("已切换到" + (mode === "market" ? "公共版 · 共享市场" : "企业版 · Admin"));
-    });
 
     $("#logout-btn").addEventListener("click", () => {
       $("#app").classList.add("hidden");
@@ -474,14 +434,7 @@
       if (!b) return;
       D.EMPLOYEES[Number(b.dataset.empAdd)].quota += 5000;
       renderAdmin();
-      toast("已为员工 +5000 点配额");
-    });
-
-    // 员工申请加额
-    $("#req-btn").addEventListener("click", () => {
-      const n = Number($("#req-quota").value || 0);
-      if (n <= 0) { toast("请填写申请点数"); return; }
-      toast("申请已提交（" + D.fmt(n) + " 点），等待管理员审批");
+      toast("已为成员 +5000 点配额");
     });
   }
 
