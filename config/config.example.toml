@@ -1,0 +1,176 @@
+# AITokenPool 配置文件示例
+#
+# 设计约定（2026-08-13）：
+#   - 本文件是「人手工维护」的配置：providers / plans / 点数规则，需要加注释、经常 review。
+#   - 模型价格大表（几百个模型的输入/输出单价）放在 data/models.json，
+#     由脚本从 OpenRouter/litellm 同步生成，本文件只放「官方价覆盖」。
+#   - 分层理由见 docs/plan-api-matrix.md 与架构讨论。
+
+# ============================================================
+# 1. 点数规则（账本层的锚）
+# ============================================================
+[points]
+# 货币锚：USD | CNY。国内厂商报人民币、国际报美元，统一折算到锚定货币。
+# 建议锚定 USD（国际通用），人民币价按汇率折算入库。
+anchor_currency = "USD"
+
+# 点数粒度：1 个单位锚定货币 = 多少「点」。
+# points_per_unit = 1000 表示 1 USD = 1000 点（即 1 点 = 0.001 USD）。
+# 这样最便宜的 DeepSeek Flash 输出约 180 点/M，最贵的 o1-pro 约 60 万点/M，
+# 粒度够用且不产生小数碎片。
+points_per_unit = 1000
+
+# 显示名与最小单位（仅用于 UI 展示，不参与账本计算）
+display_name = "点数"
+symbol = "P"
+
+# ============================================================
+# 2. 提供商（providers）
+#    一个 provider = 一家模型厂商，可有多套 plan 端点。
+# ============================================================
+
+# —— 协议枚举约定（网关层适配器）——
+#   openai_chat  = OpenAI Chat Completions（POST /chat/completions）
+#   anthropic    = Anthropic Messages（POST /v1/messages）
+#   responses    = OpenAI Responses（POST /responses）— P0 后置
+
+[[providers]]
+id = "deepseek"
+name = "DeepSeek"
+country = "CN"
+# 无 Coding Plan，纯按量付费（充多少用多少）
+has_plan = false
+
+[[providers]]
+id = "zhipu"
+name = "智谱 GLM"
+country = "CN"
+has_plan = true
+
+[[providers]]
+id = "aliyun-bailian"
+name = "阿里云百炼"
+country = "CN"
+has_plan = true
+
+[[providers]]
+id = "bytedance-ark"
+name = "火山方舟（豆包）"
+country = "CN"
+has_plan = true
+
+[[providers]]
+id = "moonshot"
+name = "Kimi（月之暗面）"
+country = "CN"
+has_plan = true
+
+[[providers]]
+id = "minimax"
+name = "MiniMax"
+country = "CN"
+has_plan = true
+
+# ============================================================
+# 3. Plan 端点（plans）
+#    每个 plan = 一个可被路由到的上游端点（协议 + base_url + key 前缀约定）。
+# ============================================================
+
+[[plans]]
+id = "deepseek-paygo"
+provider = "deepseek"
+type = "paygo"                 # paygo | token | coding
+# key 前缀：用于区分 plan 专属 key 与普通按量 key（错配会 401）
+key_prefix = "sk-"
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://api.deepseek.com" },
+  { protocol = "anthropic",   base_url = "https://api.deepseek.com/anthropic" },
+  { protocol = "responses",   base_url = "https://api.deepseek.com" },   # P0 后置
+]
+
+[[plans]]
+id = "zhipu-coding"
+provider = "zhipu"
+type = "coding"
+key_prefix = ""                 # 智谱不强制前缀，用专属 Key
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://open.bigmodel.cn/api/coding/paas/v4" },
+  { protocol = "anthropic",   base_url = "https://open.bigmodel.cn/api/anthropic" },
+]
+
+[[plans]]
+id = "aliyun-token-plan"
+provider = "aliyun-bailian"
+type = "token"
+key_prefix = "sk-sp-"           # 专属前缀，普通 sk- 会 401
+# 注意：仅限交互式编程工具，禁止自动化批量调用（合规约束）
+interactive_only = true
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1" },
+  { protocol = "anthropic",   base_url = "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic" },
+]
+
+[[plans]]
+id = "ark-coding"
+provider = "bytedance-ark"
+type = "coding"
+key_prefix = ""
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://ark.cn-beijing.volces.com/api/coding/v3" },
+  { protocol = "anthropic",   base_url = "https://ark.cn-beijing.volces.com/api/coding" },
+]
+
+[[plans]]
+id = "ark-agent"
+provider = "bytedance-ark"
+type = "token"
+key_prefix = ""
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://ark.cn-beijing.volces.com/api/plan/v3" },
+  { protocol = "anthropic",   base_url = "https://ark.cn-beijing.volces.com/api/plan" },
+]
+
+[[plans]]
+id = "kimi-code"
+provider = "moonshot"
+type = "coding"
+key_prefix = ""                 # 专属 Key，与开放平台 api.moonshot.cn 不通用
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://api.kimi.com/coding/v1" },
+  { protocol = "anthropic",   base_url = "https://api.kimi.com/coding/" },
+]
+
+[[plans]]
+id = "minimax-coding"
+provider = "minimax"
+type = "coding"
+key_prefix = "sk-cp-"           # Coding Plan 专属 Key
+endpoints = [
+  # 国内站（国际站用 api.minimax.io）
+  { protocol = "openai_chat", base_url = "https://api.minimaxi.com/v1" },
+  { protocol = "anthropic",   base_url = "https://api.minimaxi.com/anthropic" },
+]
+
+# ============================================================
+# 4. 官方价覆盖（可选）
+#    覆盖 data/models.json 里聚合源（OpenRouter/litellm）的价格，
+#    以官方价为准。单位：每百万 token，货币按 model 各自 currency。
+# ============================================================
+
+[[price_overrides]]
+provider = "deepseek"
+model = "deepseek-v4-pro"
+currency = "USD"
+input_per_m = 0.435
+output_per_m = 0.87
+cache_hit_input_per_m = 0.003625
+source = "官方定价页 2026-08-13"
+
+[[price_overrides]]
+provider = "zhipu"
+model = "glm-5.2"
+currency = "CNY"
+input_per_m = 8.0
+output_per_m = 28.0
+cache_hit_input_per_m = 2.0
+source = "官方定价页 2026-08-13"
