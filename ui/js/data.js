@@ -96,13 +96,15 @@
       { id: 6, provider: "moonshot", model: "kimi-k3",        key: "sk-****-ab31", quota: 100000, used: 0,      status: "revoked" },
     ],
 
-    // 员工
+    // 员工（dept 可为空 = 未分配部门，如新注册未安排）
     EMPLOYEES: [
       { id: 1, name: "陈默", dept: "研发", quota: 20000, used: 12400 },
       { id: 2, name: "林小满", dept: "研发", quota: 20000, used: 19850 },
       { id: 3, name: "苏航", dept: "产品", quota: 15000, used: 3200 },
       { id: 4, name: "周雨", dept: "市场", quota: 10000, used: 9800 },
       { id: 5, name: "何明", dept: "设计", quota: 8000,  used: 2100 },
+      { id: 6, name: "赵欣", dept: "", quota: 20000, used: 3500 },  // 新注册 · 未分配
+      { id: 7, name: "王磊", dept: "", quota: 15000, used: 0 },     // 新注册 · 未分配
     ],
 
     // 部门（组织管理 — 每月点数分配；已用/成员数由 EMPLOYEES 实时汇总，保持联动）

@@ -473,18 +473,21 @@
     } else if (tab === "employees") {
       const total = D.EMPLOYEES.reduce((a, e) => a + e.quota, 0);
       const used = D.EMPLOYEES.reduce((a, e) => a + e.used, 0);
+      const unassigned = D.EMPLOYEES.filter((e) => !e.dept).length;
       $("#emp-stats").innerHTML = [
-        stat("成员数 Members", D.EMPLOYEES.length + " 人", "2 个部门"),
+        stat("成员数 Members", D.EMPLOYEES.length + " 人", D.DEPARTMENTS.length + " 个部门" + (unassigned ? " · 未分配 " + unassigned + " 人" : "")),
         stat("总配额 Quota", D.fmt(total) + " 点", "月"),
         stat("已用 Usage", D.fmt(used) + " 点", Math.round((used / total) * 100) + "% 消耗率"),
         stat("剩余 Remain", D.fmt(total - used) + " 点", "按成员分配"),
       ].join("");
       $("#emp-body").innerHTML = D.EMPLOYEES.map((e, i) =>
-        "<tr><td><strong>" + esc(e.name) + "</strong></td><td>" + esc(e.dept) + "</td>" +
+        "<tr data-emp-row='" + i + "'><td><strong>" + esc(e.name) + "</strong></td>" +
+        "<td>" + (e.dept ? esc(e.dept) : '<span class="muted">未分配</span>') + "</td>" +
         "<td>" + D.fmt(e.used) + " / " + D.fmt(e.quota) + "</td>" +
         "<td>" + D.fmt(e.quota - e.used) + "</td>" +
         "<td>" + (e.used / e.quota > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>') + "</td>" +
-        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
+        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>改部门</button> " +
+        "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
       ).join("");
     } else if (tab === "usage") {
       const maxM = Math.max(...D.USAGE_MODEL.map((u) => u.pts));
@@ -497,6 +500,46 @@
   }
 
   /* --- 组织管理：部门列表 + 部门 CRUD + 每月点数分配 --- */
+
+  // 成员改部门：行内下拉（选项来自 DEPARTMENTS + "未分配"），确认后更新并联动部门统计
+  function editEmpDept(i) {
+    const emp = D.EMPLOYEES[i];
+    const row = document.querySelector('[data-emp-row="' + i + '"]');
+    if (!emp || !row) return;
+    const cell = row.children[1]; // 部门列
+    const sel = document.createElement("select");
+    sel.className = "input";
+    sel.style.cssText = "padding:4px 8px;font-size:12px;width:auto";
+    sel.innerHTML = '<option value="">未分配</option>' +
+      D.DEPARTMENTS.map((d) => '<option value="' + esc(d.name) + '"' + (emp.dept === d.name ? " selected" : "") + ">" + esc(d.name) + "</option>").join("");
+    const ok = document.createElement("button");
+    ok.className = "btn btn-primary";
+    ok.style.cssText = "padding:4px 10px;font-size:12px";
+    ok.textContent = "确认";
+    const cancel = document.createElement("button");
+    cancel.className = "btn btn-ghost";
+    cancel.style.cssText = "padding:4px 10px;font-size:12px";
+    cancel.textContent = "取消";
+    const wrap = document.createElement("span");
+    wrap.style.cssText = "display:inline-flex;gap:6px;align-items:center";
+    wrap.append(sel, ok, cancel);
+    cell.innerHTML = "";
+    cell.appendChild(wrap);
+    sel.focus();
+    const done = () => {
+      const v = sel.value;
+      if (v !== emp.dept) {
+        emp.dept = v;
+        renderAdmin();
+        toast("已把 " + emp.name + " 调整到 " + (v ? v + " 部门" : "未分配"));
+      } else {
+        renderAdmin();
+      }
+    };
+    ok.addEventListener("click", done);
+    cancel.addEventListener("click", () => renderAdmin());
+    sel.addEventListener("change", () => ok.focus());
+  }
 
   // 部门已用/成员数由 EMPLOYEES 实时汇总，部门改名/删改后自动联动
   function deptMemberCount(name) {
@@ -513,8 +556,9 @@
 
     const totalQuota = D.DEPARTMENTS.reduce((a, d) => a + d.quota, 0);
     const totalUsed = D.DEPARTMENTS.reduce((a, d) => a + deptUsed(d), 0);
+    const unassigned = D.EMPLOYEES.filter((e) => !e.dept).length;
     $("#dept-stats").innerHTML = [
-      stat("部门数 Departments", D.DEPARTMENTS.length + " 个", "全部部门"),
+      stat("部门数 Departments", D.DEPARTMENTS.length + " 个", unassigned ? "未分配 " + unassigned + " 人" : "全部部门"),
       stat("月度总分配 Monthly quota", D.fmt(totalQuota) + " 点", "按月分配"),
       stat("已用 Used", D.fmt(totalUsed) + " 点", totalQuota ? Math.round((totalUsed / totalQuota) * 100) + "% 消耗率" : "—"),
       stat("剩余 Remain", D.fmt(totalQuota - totalUsed) + " 点", "按部门分配"),
@@ -700,6 +744,8 @@
     });
 
     $("#emp-body").addEventListener("click", (e) => {
+      const dd = e.target.closest("[data-emp-dept]");
+      if (dd) { editEmpDept(Number(dd.dataset.empDept)); return; }
       const b = e.target.closest("[data-emp-topup]");
       if (!b) return;
       const emp = D.EMPLOYEES[Number(b.dataset.empTopup)];
