@@ -15,7 +15,6 @@
   let txTab = "all";
 
   // MRT 风格表格状态（页面级变量：切换页面不丢失排序/筛选/分页）
-  const walletTable = { sort: [], filters: {}, page: 1, pageSize: 10 };
   const txTable = { sort: [], filters: {}, page: 1, pageSize: 10 };
 
   /* ---------------- 工具 ---------------- */
@@ -259,26 +258,10 @@
 
   /* --- 钱包 --- */
 
-  const WALLET_COLUMNS = [
-    { key: "time", title: "时间", sort: "string", filter: "text" },
-    { key: "type", title: "类型", sort: "string", filter: "select", options: ["消费", "收益", "充值", "提现"], filterVal: (t) => TX_TYPE[t.type] || t.type,
-      render: (t) => esc(TX_TYPE[t.type] || t.type) },
-    { key: "partner", title: "对象", sort: "string", filter: "text" },
-    { key: "detail", title: "说明", sort: "string", filter: "text" },
-    { key: "pts", title: "点数", sort: "number", filter: "number-range",
-      render: (t) => '<span style="color:' + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ';font-weight:600">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span>" },
-  ];
-
   function renderWallet() {
+    // 钱包只做余额与资金操作；收支明细统一到【交易记录】（见 index.html wallet-hint）
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     $("#wallet-balance").textContent = D.fmt(D.USER.balance);
-    buildDataTable({
-      container: $("#wallet-table"),
-      columns: WALLET_COLUMNS,
-      rows: D.TRANSACTIONS,
-      state: walletTable,
-      onState: renderWallet,
-    });
   }
 
   /* --- 交易记录 --- */
@@ -455,12 +438,71 @@
 
   /* --- 设置 --- */
 
+  // API Key 脱敏展示：atk_live_****xxxx（复制时给完整 id）
+  function maskAtk(id) {
+    if (!id) return "—";
+    if (id.startsWith("atk_live_")) return "atk_live_****" + id.slice(-4);
+    return maskKey(id);
+  }
+
   function renderSettings() {
-    $("#api-keys").innerHTML = D.API_KEYS.map((k) =>
-      '<div class="mini-item"><div><div class="t">' + esc(k.name) + "</div>" +
-      '<div class="d"><code>' + esc(k.id) + "</code> · 创建于 " + esc(k.created) + "</div></div>" +
-      '<div class="r"><span class="d">最近使用 ' + esc(k.last) + "</span></div></div>"
-    ).join("");
+    const q = ($("#ak-search").value || "").toLowerCase();
+    const list = D.API_KEYS.filter((k) => !q || k.name.toLowerCase().includes(q));
+    $("#api-keys").innerHTML = list.length ? list.map((k, i) =>
+      "<tr><td><strong>" + esc(k.name) + "</strong></td>" +
+      "<td><code>" + esc(maskAtk(k.id)) + "</code></td>" +
+      "<td>" + esc(k.created) + "</td>" +
+      "<td>" + esc(k.last) + "</td>" +
+      "<td>" + (k.status === "active" ? '<span class="badge ok">启用</span>' : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
+      "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>复制</button> " +
+      "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>改名</button> " +
+      "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + i + "'>删除</button></td></tr>"
+    ).join("") : '<tr><td colspan="6" class="muted">没有匹配的 key</td></tr>';
+  }
+
+  // 一键复制完整 key；file:// 下 clipboard API 受限 → 降级：临时 textarea 选中 + execCommand("copy")，仍失败则提示 Ctrl+C
+  function copyKey(i) {
+    const k = D.API_KEYS[i];
+    if (!k) return;
+    const okToast = () => toast("已复制「" + k.name + "」完整 key 到剪贴板");
+    const fallback = () => {
+      const ta = document.createElement("textarea");
+      ta.value = k.id;
+      ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) okToast();
+      else toast("已选中完整 key，请按 Ctrl+C / Cmd+C 复制");
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(k.id).then(okToast).catch(fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function renameKey(i) {
+    const k = D.API_KEYS[i];
+    if (!k) return;
+    const input = window.prompt("修改 key 名字：", k.name);
+    if (input == null) return;
+    const name = String(input).trim();
+    if (!name) { toast("名字不能为空（未生效）"); return; }
+    k.name = name;
+    renderSettings();
+    toast("已改名为「" + name + "」");
+  }
+
+  function deleteKey(i) {
+    const k = D.API_KEYS[i];
+    if (!k) return;
+    if (!window.confirm("删除后该 key 立即失效，确认删除「" + k.name + "」？")) return;
+    D.API_KEYS.splice(i, 1);
+    renderSettings();
+    toast("已删除 key「" + k.name + "」");
   }
 
   /* --- 管理员角色视图 --- */
@@ -490,25 +532,164 @@
     } else if (tab === "employees") {
       const total = D.EMPLOYEES.reduce((a, e) => a + e.quota, 0);
       const used = D.EMPLOYEES.reduce((a, e) => a + e.used, 0);
+      const unassigned = D.EMPLOYEES.filter((e) => !e.dept).length;
       $("#emp-stats").innerHTML = [
-        stat("成员数 Members", D.EMPLOYEES.length + " 人", "2 个部门"),
+        stat("成员数 Members", D.EMPLOYEES.length + " 人", D.DEPARTMENTS.length + " 个部门" + (unassigned ? " · 未分配 " + unassigned + " 人" : "")),
         stat("总配额 Quota", D.fmt(total) + " 点", "月"),
         stat("已用 Usage", D.fmt(used) + " 点", Math.round((used / total) * 100) + "% 消耗率"),
         stat("剩余 Remain", D.fmt(total - used) + " 点", "按成员分配"),
       ].join("");
       $("#emp-body").innerHTML = D.EMPLOYEES.map((e, i) =>
-        "<tr><td><strong>" + esc(e.name) + "</strong></td><td>" + esc(e.dept) + "</td>" +
+        "<tr data-emp-row='" + i + "'><td><strong>" + esc(e.name) + "</strong></td>" +
+        "<td>" + (e.dept ? esc(e.dept) : '<span class="muted">未分配</span>') + "</td>" +
         "<td>" + D.fmt(e.used) + " / " + D.fmt(e.quota) + "</td>" +
         "<td>" + D.fmt(e.quota - e.used) + "</td>" +
         "<td>" + (e.used / e.quota > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>') + "</td>" +
-        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-add='" + i + "'>+ 5000 点</button></td></tr>"
+        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>改部门</button> " +
+        "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
       ).join("");
     } else if (tab === "usage") {
       const maxM = Math.max(...D.USAGE_MODEL.map((u) => u.pts));
       const maxE = Math.max(...D.USAGE_EMP.map((u) => u.pts));
       $("#usage-model").innerHTML = D.USAGE_MODEL.map((u) => barRow(u.name, u.pts, maxM, "点")).join("");
       $("#usage-emp").innerHTML = D.USAGE_EMP.map((u) => barRow(u.name, u.pts, maxE, "点")).join("");
+    } else if (tab === "org") {
+      renderOrg();
     }
+  }
+
+  /* --- 组织管理：部门列表 + 部门 CRUD + 每月点数分配 --- */
+
+  // 成员改部门：行内下拉（选项来自 DEPARTMENTS + "未分配"），确认后更新并联动部门统计
+  function editEmpDept(i) {
+    const emp = D.EMPLOYEES[i];
+    const row = document.querySelector('[data-emp-row="' + i + '"]');
+    if (!emp || !row) return;
+    const cell = row.children[1]; // 部门列
+    const sel = document.createElement("select");
+    sel.className = "input";
+    sel.style.cssText = "padding:4px 8px;font-size:12px;width:auto";
+    sel.innerHTML = '<option value="">未分配</option>' +
+      D.DEPARTMENTS.map((d) => '<option value="' + esc(d.name) + '"' + (emp.dept === d.name ? " selected" : "") + ">" + esc(d.name) + "</option>").join("");
+    const ok = document.createElement("button");
+    ok.className = "btn btn-primary";
+    ok.style.cssText = "padding:4px 10px;font-size:12px";
+    ok.textContent = "确认";
+    const cancel = document.createElement("button");
+    cancel.className = "btn btn-ghost";
+    cancel.style.cssText = "padding:4px 10px;font-size:12px";
+    cancel.textContent = "取消";
+    const wrap = document.createElement("span");
+    wrap.style.cssText = "display:inline-flex;gap:6px;align-items:center";
+    wrap.append(sel, ok, cancel);
+    cell.innerHTML = "";
+    cell.appendChild(wrap);
+    sel.focus();
+    const done = () => {
+      const v = sel.value;
+      if (v !== emp.dept) {
+        emp.dept = v;
+        renderAdmin();
+        toast("已把 " + emp.name + " 调整到 " + (v ? v + " 部门" : "未分配"));
+      } else {
+        renderAdmin();
+      }
+    };
+    ok.addEventListener("click", done);
+    cancel.addEventListener("click", () => renderAdmin());
+    sel.addEventListener("change", () => ok.focus());
+  }
+
+  // 部门已用/成员数由 EMPLOYEES 实时汇总，部门改名/删改后自动联动
+  function deptMemberCount(name) {
+    return D.EMPLOYEES.filter((e) => e.dept === name).length;
+  }
+
+  function deptUsed(d) {
+    return D.EMPLOYEES.filter((e) => e.dept === d.name).reduce((a, e) => a + e.used, 0);
+  }
+
+  function renderOrg() {
+    const q = ($("#od-search").value || "").toLowerCase();
+    const list = D.DEPARTMENTS.filter((d) => !q || d.name.toLowerCase().includes(q));
+
+    const totalQuota = D.DEPARTMENTS.reduce((a, d) => a + d.quota, 0);
+    const totalUsed = D.DEPARTMENTS.reduce((a, d) => a + deptUsed(d), 0);
+    const unassigned = D.EMPLOYEES.filter((e) => !e.dept).length;
+    $("#dept-stats").innerHTML = [
+      stat("部门数 Departments", D.DEPARTMENTS.length + " 个", unassigned ? "未分配 " + unassigned + " 人" : "全部部门"),
+      stat("月度总分配 Monthly quota", D.fmt(totalQuota) + " 点", "按月分配"),
+      stat("已用 Used", D.fmt(totalUsed) + " 点", totalQuota ? Math.round((totalUsed / totalQuota) * 100) + "% 消耗率" : "—"),
+      stat("剩余 Remain", D.fmt(totalQuota - totalUsed) + " 点", "按部门分配"),
+    ].join("");
+
+    $("#dept-body").innerHTML = list.length ? list.map((d, i) => {
+      const used = deptUsed(d);
+      const pct = d.quota > 0 ? used / d.quota : 0;
+      const st = pct >= 1 ? '<span class="badge danger">已用尽</span>' : pct > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>';
+      return "<tr><td><strong>" + esc(d.name) + "</strong></td>" +
+        "<td>" + deptMemberCount(d.name) + " 人</td>" +
+        "<td>" + D.fmt(d.quota) + " 点</td>" +
+        "<td>" + D.fmt(used) + " 点</td>" +
+        "<td>" + D.fmt(d.quota - used) + " 点</td>" +
+        "<td>" + st + "</td>" +
+        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-dept-edit='" + i + "'>编辑</button> " +
+        "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-dept-del='" + i + "'>删除</button></td></tr>";
+    }).join("") : '<tr><td colspan="7" class="muted">没有匹配的部门</td></tr>';
+  }
+
+  // 月分配点数必须为正整数
+  function promptPositiveInt(promptText, fallback) {
+    const raw = window.prompt(promptText, fallback);
+    if (raw == null) return null; // 取消
+    const s = String(raw).trim();
+    const n = Number(s);
+    if (!s || !Number.isInteger(n) || n <= 0) { toast("请输入正整数点数（未生效）"); return null; }
+    return n;
+  }
+
+  function addDept() {
+    const name = window.prompt("新部门名称：", "");
+    if (name == null) return;
+    const n = String(name).trim();
+    if (!n) { toast("请输入部门名称（未生效）"); return; }
+    if (D.DEPARTMENTS.some((d) => d.name === n)) { toast("部门「" + n + "」已存在"); return; }
+    const quota = promptPositiveInt("每月点数分配（正整数）：", "10000");
+    if (quota == null) return;
+    D.DEPARTMENTS.push({ id: Date.now(), name: n, quota });
+    renderAdmin();
+    toast("已添加部门「" + n + "」（月分配 " + D.fmt(quota) + " 点）");
+  }
+
+  function editDept(i) {
+    const d = D.DEPARTMENTS[i];
+    if (!d) return;
+    const name = window.prompt("修改部门名称：", d.name);
+    if (name == null) return;
+    const n = String(name).trim();
+    if (!n) { toast("部门名称不能为空（未生效）"); return; }
+    if (n !== d.name && D.DEPARTMENTS.some((x) => x.name === n)) { toast("部门「" + n + "」已存在"); return; }
+    const quota = promptPositiveInt("每月点数分配（正整数）：", String(d.quota));
+    if (quota == null) return;
+    const old = d.name;
+    d.name = n;
+    d.quota = quota;
+    if (n !== old) D.EMPLOYEES.forEach((e) => { if (e.dept === old) e.dept = n; }); // 成员部门联动改名
+    renderAdmin();
+    toast("已更新部门「" + n + "」（月分配 " + D.fmt(quota) + " 点）");
+  }
+
+  function deleteDept(i) {
+    const d = D.DEPARTMENTS[i];
+    if (!d) return;
+    const members = deptMemberCount(d.name);
+    const msg = members > 0
+      ? "该部门有 " + members + " 名成员，删除后这些成员将失去部门归属。确认删除部门「" + d.name + "」？"
+      : "确认删除部门「" + d.name + "」？";
+    if (!window.confirm(msg)) return;
+    D.DEPARTMENTS.splice(i, 1);
+    renderAdmin();
+    toast("已删除部门「" + d.name + "」");
   }
 
   function barRow(name, pts, max, unit) {
@@ -579,19 +760,34 @@
       if (d) deleteSharing(Number(d.dataset.shareDelete));
     });
 
-    // 钱包按钮
-    $("#topup-btn").addEventListener("click", () => toast("充值入口为占位（静态原型）"));
-    $("#withdraw-btn").addEventListener("click", () => toast("提现入口为占位（静态原型）"));
+    // 钱包按钮（充值/提现 disabled + pointer-events:none，点击不生效；文案见 index.html wallet-note）
+    // 钱包页提示 → 跳转交易记录（明细统一入口）
+    $("#wallet-goto-tx").addEventListener("click", () => switchView("transactions"));
 
     // 交易 Tab
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); }));
 
-    // API Key 生成
+    // API Key 生成（带名字；列表展示脱敏、复制给完整 id）
     $("#new-api-key-btn").addEventListener("click", () => {
-      const id = "atk_live_" + Math.random().toString(16).slice(2, 10) + "…" + Math.random().toString(16).slice(2, 6);
-      D.API_KEYS.unshift({ id, name: "新 Key（未命名）", created: "2026-08-13", last: "从未" });
+      const input = window.prompt("新 key 名字（留空则默认「未命名」）：", "未命名");
+      if (input == null) return;
+      const name = String(input).trim() || "未命名";
+      const id = "atk_live_" + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+      D.API_KEYS.unshift({ id, name, created: "2026-08-14", last: "从未", status: "active" });
       renderSettings();
-      toast("已生成新 API Key（演示）");
+      toast("已生成新 API Key「" + name + "」（完整 key 已展示在列表，可复制）");
+    });
+
+    // API Key 搜索 + 行内操作（复制 / 改名 / 删除）
+    $("#ak-search").addEventListener("input", renderSettings);
+
+    $("#api-keys").addEventListener("click", (e) => {
+      const cp = e.target.closest("[data-key-copy]");
+      if (cp) { copyKey(Number(cp.dataset.keyCopy)); return; }
+      const rn = e.target.closest("[data-key-rename]");
+      if (rn) { renameKey(Number(rn.dataset.keyRename)); return; }
+      const dl = e.target.closest("[data-key-del]");
+      if (dl) deleteKey(Number(dl.dataset.keyDel));
     });
 
     // 管理台 Tabs
@@ -610,7 +806,7 @@
 
     $("#ak-search").addEventListener("input", renderAdmin);
 
-    // 管理台事件委托（撤销 key / 员工加额）
+    // 管理台事件委托（撤销 key / 员工充值）
     $("#keys-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-key-revoke]");
       if (!b) return;
@@ -622,11 +818,35 @@
     });
 
     $("#emp-body").addEventListener("click", (e) => {
-      const b = e.target.closest("[data-emp-add]");
+      const dd = e.target.closest("[data-emp-dept]");
+      if (dd) { editEmpDept(Number(dd.dataset.empDept)); return; }
+      const b = e.target.closest("[data-emp-topup]");
       if (!b) return;
-      D.EMPLOYEES[Number(b.dataset.empAdd)].quota += 5000;
+      const emp = D.EMPLOYEES[Number(b.dataset.empTopup)];
+      if (!emp) return;
+      const input = prompt("为 " + emp.name + " 充值点数（正整数，任意金额）：", "5000");
+      if (input == null) return; // 用户取消
+      const raw = String(input).trim();
+      const amt = Number(raw);
+      if (!raw || !Number.isInteger(amt) || amt <= 0) {
+        toast("请输入正整数点数金额（未生效）");
+        return;
+      }
+      emp.quota += amt;
       renderAdmin();
-      toast("已为成员 +5000 点配额");
+      toast("已给 " + emp.name + " 充值 " + D.fmt(amt) + " 点");
+    });
+
+    // 组织管理：部门搜索 / 添加 / 编辑 / 删除（事件委托）
+    $("#od-search").addEventListener("input", renderAdmin);
+
+    $("#add-dept-btn").addEventListener("click", addDept);
+
+    $("#dept-body").addEventListener("click", (e) => {
+      const ed = e.target.closest("[data-dept-edit]");
+      if (ed) { editDept(Number(ed.dataset.deptEdit)); return; }
+      const dl = e.target.closest("[data-dept-del]");
+      if (dl) deleteDept(Number(dl.dataset.deptDel));
     });
   }
 

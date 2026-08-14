@@ -43,7 +43,7 @@
     // 当前用户（公共版）
     USER: { name: "阿零", email: "demo@aitokenpool.local", balance: 12480 },
 
-    // 最近交易 / 收支明细（wallet 与 transactions 共用）
+    // 交易记录（消费 / 收益 / 充值 / 提现）——唯一明细数据源，钱包页与交易记录页共用此表
     TRANSACTIONS: [
       { id: 1, time: "08-13 20:15", type: "consume", partner: "deepseek-v4-flash", detail: "消费 · 用 shared key", tokens: "1.2M", pts: -320, status: "成功" },
       { id: 2, time: "08-13 19:02", type: "earn",    partner: "glm-5.2",           detail: "收益 · 我的 key 被消费", tokens: "860K", pts: +420, status: "入账" },
@@ -78,10 +78,10 @@
       { id: 7, provider: "xai",      model: "grok-4.6",          in: USD(2.0),  out: USD(6.0),   ctx: 500000,  avail: true,  success: 93.7 },
     ],
 
-    // 我的 API Keys（设置页）
+    // 我的 API Keys（设置页；存完整 id，展示时脱敏，复制时给完整值）
     API_KEYS: [
-      { id: "atk_live_9f2c1a…e41b", name: "本地 CLI 工具", created: "2026-08-01", last: "08-13 20:11" },
-      { id: "atk_live_3b88d0…77aa", name: "CI / 自动化", created: "2026-07-22", last: "08-12 15:40" },
+      { id: "atk_live_9f2c1a7b4d22e41b", name: "本地 CLI 工具", created: "2026-08-01", last: "08-13 20:11", status: "active" },
+      { id: "atk_live_3b88d077aa91c357", name: "CI / 自动化", created: "2026-07-22", last: "08-12 15:40", status: "active" },
     ],
 
     // —— 企业版 ——
@@ -96,13 +96,23 @@
       { id: 6, provider: "moonshot", model: "kimi-k3",        key: "sk-****-ab31", quota: 100000, used: 0,      status: "revoked" },
     ],
 
-    // 员工
+    // 员工（dept 可为空 = 未分配部门，如新注册未安排）
     EMPLOYEES: [
       { id: 1, name: "陈默", dept: "研发", quota: 20000, used: 12400 },
       { id: 2, name: "林小满", dept: "研发", quota: 20000, used: 19850 },
       { id: 3, name: "苏航", dept: "产品", quota: 15000, used: 3200 },
       { id: 4, name: "周雨", dept: "市场", quota: 10000, used: 9800 },
       { id: 5, name: "何明", dept: "设计", quota: 8000,  used: 2100 },
+      { id: 6, name: "赵欣", dept: "", quota: 20000, used: 3500 },  // 新注册 · 未分配
+      { id: 7, name: "王磊", dept: "", quota: 15000, used: 0 },     // 新注册 · 未分配
+    ],
+
+    // 部门（组织管理 — 每月点数分配；已用/成员数由 EMPLOYEES 实时汇总，保持联动）
+    DEPARTMENTS: [
+      { id: 1, name: "研发", quota: 80000 },
+      { id: 2, name: "产品", quota: 30000 },
+      { id: 3, name: "市场", quota: 20000 },
+      { id: 4, name: "设计", quota: 15000 },
     ],
 
     // 用量报表

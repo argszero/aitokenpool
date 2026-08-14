@@ -167,7 +167,7 @@
     <section class="view hidden" id="view-wallet">
       <header class="page-head">
         <h2>钱包 <span class="en">Wallet</span></h2>
-        <p>点数余额 · 充值 / 提现 · 收支明细</p>
+        <p>点数余额 · 充值 / 提现（收支明细见【交易记录】）</p>
       </header>
       <div class="card wallet-hero">
         <div>
@@ -176,13 +176,15 @@
           <p>1 USD = 1000 点 <span class="en">(1 USD = 1,000 points)</span></p>
         </div>
         <div class="wallet-actions">
-          <button class="btn btn-primary" id="topup-btn">充值 <span class="en">Top up</span></button>
-          <button class="btn btn-ghost" id="withdraw-btn">提现 <span class="en">Withdraw</span></button>
+          <button class="btn btn-primary" id="topup-btn" disabled>充值 <span class="en">Top up</span></button>
+          <button class="btn btn-ghost" id="withdraw-btn" disabled>提现 <span class="en">Withdraw</span></button>
+          <span class="muted wallet-note">充值 / 提现暂不支持（即将上线）</span>
         </div>
       </div>
       <div class="card">
-        <h3>收支明细 <span class="en">Ledger</span></h3>
-        <div class="table-wrap compact" id="wallet-table"></div>
+        <p class="wallet-hint">收支明细已统一到
+          <button class="btn btn-ghost" id="wallet-goto-tx">交易记录</button>
+          ——涵盖消费（用别人的 key）、收益（别人用我的 key）、充值、提现</p>
       </div>
     </section>
 
@@ -190,7 +192,7 @@
     <section class="view hidden" id="view-transactions">
       <header class="page-head">
         <h2>交易记录 <span class="en">Transactions</span></h2>
-        <p>消费记录（用谁的 key）与收益记录（谁用了我的 key）</p>
+        <p>涵盖消费（用别人的 key）、收益（别人用我的 key）、充值、提现</p>
       </header>
       <div class="tabs" id="tx-tabs">
         <button class="tab active" data-tx-tab="all">全部</button>
@@ -220,7 +222,13 @@
         <div class="card">
           <h3>API Key <span class="en">API keys</span></h3>
           <p class="muted">用于本地工具 / 代码接入平台的密钥。</p>
-          <div class="mini-list" id="api-keys"></div>
+          <input id="ak-search" class="input" placeholder="搜索 key 名字…" style="margin-bottom:10px">
+          <div class="table-wrap compact">
+            <table class="table">
+              <thead><tr><th>名字</th><th>Key</th><th>创建时间</th><th>最近使用</th><th>状态</th><th></th></tr></thead>
+              <tbody id="api-keys"></tbody>
+            </table>
+          </div>
           <button class="btn btn-ghost" id="new-api-key-btn">生成新 Key <span class="en">(Generate)</span></button>
         </div>
         <div class="card">
@@ -249,13 +257,13 @@
     <section class="view hidden" id="view-admin">
       <header class="page-head">
         <h2>管理视图 <span class="en">Admin</span></h2>
-        <p>管理员角色专属：Key 池 · 成员/员工点数 · 用量报表 · 组织设置（普通用户无此视图）</p>
+        <p>管理员角色专属：Key 池 · 成员/员工点数 · 用量报表 · 组织管理（普通用户无此视图）</p>
       </header>
       <div class="tabs" id="admin-tabs">
         <button class="tab active" data-admin-tab="keys">Key 池</button>
         <button class="tab" data-admin-tab="employees">成员管理</button>
         <button class="tab" data-admin-tab="usage">用量报表</button>
-        <button class="tab" data-admin-tab="org">组织设置</button>
+        <button class="tab" data-admin-tab="org">组织管理</button>
       </div>
 
       <div class="admin-pane" data-admin-pane="keys">
@@ -299,6 +307,20 @@
       </div>
 
       <div class="admin-pane hidden" data-admin-pane="org">
+        <div class="stat-grid" id="dept-stats"></div>
+        <div class="toolbar">
+          <input id="od-search" class="input" placeholder="搜索部门…">
+          <button class="btn btn-primary" id="add-dept-btn">添加部门 <span class="en">(+ Add dept)</span></button>
+        </div>
+        <div class="card">
+          <h3>部门列表 <span class="en">Departments</span></h3>
+          <div class="table-wrap compact">
+            <table class="table">
+              <thead><tr><th>部门</th><th>成员数</th><th>月分配（点数）</th><th>已用</th><th>剩余</th><th>状态</th><th></th></tr></thead>
+              <tbody id="dept-body"></tbody>
+            </table>
+          </div>
+        </div>
         <div class="card">
           <h3>组织设置 <span class="en">Organization settings</span></h3>
           <div class="form">
