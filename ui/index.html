@@ -167,7 +167,7 @@
     <section class="view hidden" id="view-wallet">
       <header class="page-head">
         <h2>钱包 <span class="en">Wallet</span></h2>
-        <p>点数余额 · 充值 / 提现 · 收支明细</p>
+        <p>点数余额 · 充值 / 提现（收支明细见【交易记录】）</p>
       </header>
       <div class="card wallet-hero">
         <div>
@@ -181,8 +181,9 @@
         </div>
       </div>
       <div class="card">
-        <h3>收支明细 <span class="en">Ledger</span></h3>
-        <div class="table-wrap compact" id="wallet-table"></div>
+        <p class="wallet-hint">收支明细已统一到
+          <button class="btn btn-ghost" id="wallet-goto-tx">交易记录</button>
+          ——涵盖消费（用别人的 key）、收益（别人用我的 key）、充值、提现</p>
       </div>
     </section>
 
@@ -190,7 +191,7 @@
     <section class="view hidden" id="view-transactions">
       <header class="page-head">
         <h2>交易记录 <span class="en">Transactions</span></h2>
-        <p>消费记录（用谁的 key）与收益记录（谁用了我的 key）</p>
+        <p>涵盖消费（用别人的 key）、收益（别人用我的 key）、充值、提现</p>
       </header>
       <div class="tabs" id="tx-tabs">
         <button class="tab active" data-tx-tab="all">全部</button>

@@ -15,7 +15,6 @@
   let txTab = "all";
 
   // MRT 风格表格状态（页面级变量：切换页面不丢失排序/筛选/分页）
-  const walletTable = { sort: [], filters: {}, page: 1, pageSize: 10 };
   const txTable = { sort: [], filters: {}, page: 1, pageSize: 10 };
 
   /* ---------------- 工具 ---------------- */
@@ -259,26 +258,10 @@
 
   /* --- 钱包 --- */
 
-  const WALLET_COLUMNS = [
-    { key: "time", title: "时间", sort: "string", filter: "text" },
-    { key: "type", title: "类型", sort: "string", filter: "select", options: ["消费", "收益", "充值", "提现"], filterVal: (t) => TX_TYPE[t.type] || t.type,
-      render: (t) => esc(TX_TYPE[t.type] || t.type) },
-    { key: "partner", title: "对象", sort: "string", filter: "text" },
-    { key: "detail", title: "说明", sort: "string", filter: "text" },
-    { key: "pts", title: "点数", sort: "number", filter: "number-range",
-      render: (t) => '<span style="color:' + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ';font-weight:600">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span>" },
-  ];
-
   function renderWallet() {
+    // 钱包只做余额与资金操作；收支明细统一到【交易记录】（见 index.html wallet-hint）
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     $("#wallet-balance").textContent = D.fmt(D.USER.balance);
-    buildDataTable({
-      container: $("#wallet-table"),
-      columns: WALLET_COLUMNS,
-      rows: D.TRANSACTIONS,
-      state: walletTable,
-      onState: renderWallet,
-    });
   }
 
   /* --- 交易记录 --- */
@@ -582,6 +565,8 @@
     // 钱包按钮
     $("#topup-btn").addEventListener("click", () => toast("充值入口为占位（静态原型）"));
     $("#withdraw-btn").addEventListener("click", () => toast("提现入口为占位（静态原型）"));
+    // 钱包页提示 → 跳转交易记录（明细统一入口）
+    $("#wallet-goto-tx").addEventListener("click", () => switchView("transactions"));
 
     // 交易 Tab
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); }));

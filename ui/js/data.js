@@ -43,7 +43,7 @@
     // 当前用户（公共版）
     USER: { name: "阿零", email: "demo@aitokenpool.local", balance: 12480 },
 
-    // 最近交易 / 收支明细（wallet 与 transactions 共用）
+    // 交易记录（消费 / 收益 / 充值 / 提现）——唯一明细数据源，钱包页与交易记录页共用此表
     TRANSACTIONS: [
       { id: 1, time: "08-13 20:15", type: "consume", partner: "deepseek-v4-flash", detail: "消费 · 用 shared key", tokens: "1.2M", pts: -320, status: "成功" },
       { id: 2, time: "08-13 19:02", type: "earn",    partner: "glm-5.2",           detail: "收益 · 我的 key 被消费", tokens: "860K", pts: +420, status: "入账" },

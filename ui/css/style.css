@@ -372,6 +372,7 @@ select.input option { background: var(--bg-card); }
 .wallet-hero { display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; }
 .balance-big { font-size: 42px; font-weight: 800; color: var(--accent-text); line-height: 1.2; }
 .wallet-actions { display: flex; gap: 10px; }
+.wallet-hint { color: var(--text-mute); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .toast {
   position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
