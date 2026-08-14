@@ -12,8 +12,11 @@
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   let activeView = "dashboard";
-  let txTab = "all", txPage = 1, walletPage = 1;
-  const TX_PAGE = 5;
+  let txTab = "all";
+
+  // MRT 风格表格状态（页面级变量：切换页面不丢失排序/筛选/分页）
+  const walletTable = { sort: [], filters: {}, page: 1, pageSize: 10 };
+  const txTable = { sort: [], filters: {}, page: 1, pageSize: 10 };
 
   /* ---------------- 工具 ---------------- */
 
@@ -256,23 +259,26 @@
 
   /* --- 钱包 --- */
 
+  const WALLET_COLUMNS = [
+    { key: "time", title: "时间", sort: "string", filter: "text" },
+    { key: "type", title: "类型", sort: "string", filter: "select", options: ["消费", "收益", "充值", "提现"], filterVal: (t) => TX_TYPE[t.type] || t.type,
+      render: (t) => esc(TX_TYPE[t.type] || t.type) },
+    { key: "partner", title: "对象", sort: "string", filter: "text" },
+    { key: "detail", title: "说明", sort: "string", filter: "text" },
+    { key: "pts", title: "点数", sort: "number", filter: "number-range",
+      render: (t) => '<span style="color:' + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ';font-weight:600">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span>" },
+  ];
+
   function renderWallet() {
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     $("#wallet-balance").textContent = D.fmt(D.USER.balance);
-
-    const list = D.TRANSACTIONS;
-    const pages = Math.max(1, Math.ceil(list.length / TX_PAGE));
-    if (walletPage > pages) walletPage = pages;
-    const rows = list.slice((walletPage - 1) * TX_PAGE, walletPage * TX_PAGE);
-
-    $("#wallet-body").innerHTML = rows.map((t) =>
-      "<tr><td>" + esc(t.time) + "</td><td>" + esc(t.typeName || t.type) + "</td>" +
-      "<td>" + esc(t.partner) + "</td><td>" + esc(t.detail) + "</td>" +
-      "<td style='color:" + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ";font-weight:600'>" +
-      (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</td></tr>"
-    ).join("");
-
-    pager(pages, walletPage, (p) => { walletPage = p; renderWallet(); }, $("#wallet-pager"));
+    buildDataTable({
+      container: $("#wallet-table"),
+      columns: WALLET_COLUMNS,
+      rows: D.TRANSACTIONS,
+      state: walletTable,
+      onState: renderWallet,
+    });
   }
 
   /* --- 交易记录 --- */
@@ -281,37 +287,170 @@
     consume: "消费", earn: "收益", topup: "充值", withdraw: "提现",
   };
 
+  const TX_COLUMNS = [
+    { key: "time", title: "时间", sort: "string", filter: "text" },
+    { key: "type", title: "类型", sort: "string", filter: "select", options: ["消费", "收益", "充值", "提现"], filterVal: (t) => TX_TYPE[t.type] || t.type,
+      render: (t) => t.type === "earn" ? '<span class="badge ok">收益</span>' : t.type === "consume" ? '<span class="badge accent">消费</span>' : '<span class="badge dim">' + esc(TX_TYPE[t.type] || t.type) + "</span>" },
+    { key: "partner", title: "模型 / Key", sort: "string", filter: "text" },
+    { key: "tokens", title: "Token 用量", sort: "string", filter: "text" },
+    { key: "pts", title: "点数", sort: "number", filter: "number-range",
+      render: (t) => '<span style="color:' + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ';font-weight:600">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span>" },
+    { key: "status", title: "状态", sort: "string", filter: "select", options: ["成功", "入账", "处理中"],
+      render: (t) => t.status === "处理中" ? '<span class="badge warn">' + esc(t.status) + "</span>" : esc(t.status) },
+  ];
+
   function renderTransactions() {
     $$("#tx-tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.txTab === txTab));
     let list = D.TRANSACTIONS;
     if (txTab === "consume") list = list.filter((t) => t.type === "consume");
     else if (txTab === "earn") list = list.filter((t) => t.type === "earn");
-
-    const pages = Math.max(1, Math.ceil(list.length / TX_PAGE));
-    if (txPage > pages) txPage = pages;
-    const rows = list.slice((txPage - 1) * TX_PAGE, txPage * TX_PAGE);
-
-    $("#tx-body").innerHTML = rows.map((t) =>
-      "<tr><td>" + esc(t.time) + "</td>" +
-      "<td>" + (t.type === "earn" ? '<span class="badge ok">收益</span>' : t.type === "consume" ? '<span class="badge accent">消费</span>' : '<span class="badge dim">' + esc(TX_TYPE[t.type] || t.type) + "</span>") + "</td>" +
-      "<td>" + esc(t.partner) + "</td><td>" + esc(t.tokens) + "</td>" +
-      "<td style='color:" + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ";font-weight:600'>" + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</td>" +
-      "<td>" + (t.status === "处理中" ? '<span class="badge warn">' + esc(t.status) + "</span>" : esc(t.status)) + "</td></tr>"
-    ).join("");
-
-    pager(pages, txPage, (p) => { txPage = p; renderTransactions(); }, $("#tx-pager"));
+    buildDataTable({
+      container: $("#tx-table"),
+      columns: TX_COLUMNS,
+      rows: list,
+      state: txTable,
+      onState: renderTransactions,
+    });
   }
 
-  function pager(pages, cur, go, container) {
-    if (pages <= 1) { container.innerHTML = ""; return; }
-    let html = "";
-    for (let i = 1; i <= pages; i++) {
-      html += '<button class="' + (i === cur ? "active" : "") + '" data-p="' + i + '">' + i + "</button>";
+  /* --- 通用 MRT 风格数据表格渲染器 ---
+     cfg: { container, columns, rows, state, onState }
+     columns: [{ key, title, sort?: "string"|"number", filter?: "text"|"select"|"number-range", options?, render? }]
+     state:  { sort: [{key,dir}], filters: {key:val}, page, pageSize }（原地更新，跨页保留） */
+  function buildDataTable(cfg) {
+    const { container, columns, rows, state, onState } = cfg;
+
+    // 1) 筛选
+    let data = rows.filter((row) => {
+      for (const key of Object.keys(state.filters)) {
+        const fv = state.filters[key];
+        if (fv == null || fv === "") continue;
+        const col = columns.find((c) => c.key === key);
+        if (!col || !col.filter) continue;
+        const v = col.filterVal ? col.filterVal(row) : row[key];
+        if (col.filter === "select") { if (String(v) !== String(fv)) return false; }
+        else if (col.filter === "number-range") {
+          const parts = String(fv).split(":");
+          const min = parts[0] === "" ? NaN : Number(parts[0]);
+          const max = parts[1] === "" || parts[1] == null ? NaN : Number(parts[1]);
+          if (!isNaN(min) && Number(v) < min) return false;
+          if (!isNaN(max) && Number(v) > max) return false;
+        } else {
+          if (!String(v).toLowerCase().includes(String(fv).toLowerCase())) return false;
+        }
+      }
+      return true;
+    });
+
+    // 2) 排序（多列：Shift 点击叠加）
+    if (state.sort.length) {
+      data = data.slice().sort((a, b) => {
+        for (const sk of state.sort) {
+          const col = columns.find((c) => c.key === sk.key);
+          const av = a[sk.key], bv = b[sk.key];
+          let cmp;
+          if (col && col.sort === "number") cmp = Number(av) - Number(bv);
+          else cmp = String(av).localeCompare(String(bv), "zh-CN");
+          if (cmp !== 0) return sk.dir === "asc" ? cmp : -cmp;
+        }
+        return 0;
+      });
     }
-    html += "<span>" + cur + " / " + pages + "</span>";
+
+    // 3) 分页
+    const pages = Math.max(1, Math.ceil(data.length / state.pageSize));
+    if (state.page > pages) state.page = pages;
+    const pageRows = data.slice((state.page - 1) * state.pageSize, state.page * state.pageSize);
+
+    // 4) 渲染表头（排序按钮）+ 筛选行
+    let html = '<table class="table"><thead><tr>';
+    columns.forEach((col) => {
+      const sk = state.sort.find((s) => s.key === col.key);
+      const arrow = sk ? (sk.dir === "asc" ? " ▲" : " ▼") : "";
+      html += '<th><button type="button" class="th-sort" data-sort-key="' + esc(col.key) + '" title="点击排序 · Shift+点击叠加多列">' +
+        esc(col.title) + arrow + "</button></th>";
+    });
+    html += "</tr><tr>";
+    columns.forEach((col) => {
+      const fv = state.filters[col.key] != null ? String(state.filters[col.key]) : "";
+      if (col.filter === "select") {
+        const opts = (col.options || []).map((o) =>
+          '<option value="' + esc(o) + '"' + (fv === String(o) ? " selected" : "") + ">" + esc(o) + "</option>").join("");
+        html += '<td><select class="th-filter" data-filter-key="' + esc(col.key) + '"><option value="">全部</option>' + opts + "</select></td>";
+      } else if (col.filter === "number-range") {
+        const p = fv ? fv.split(":") : ["", ""];
+        html += '<td class="range-filter"><input class="th-filter" data-filter-key="' + esc(col.key) + '" data-range="min" placeholder="最小" value="' + esc(p[0] || "") + '">' +
+          '<input class="th-filter" data-filter-key="' + esc(col.key) + '" data-range="max" placeholder="最大" value="' + esc(p[1] || "") + '"></td>';
+      } else if (col.filter) {
+        html += '<td><input class="th-filter" data-filter-key="' + esc(col.key) + '" placeholder="筛选…" value="' + esc(fv) + '"></td>';
+      } else {
+        html += "<td></td>";
+      }
+    });
+    html += "</tr></thead><tbody>";
+    if (!pageRows.length) html += '<tr><td colspan="' + columns.length + '" class="muted">没有匹配的记录</td></tr>';
+    pageRows.forEach((row) => {
+      html += "<tr>";
+      columns.forEach((col) => {
+        html += "<td>" + (col.render ? col.render(row) : esc(row[col.key] == null ? "" : row[col.key])) + "</td>";
+      });
+      html += "</tr>";
+    });
+    html += "</tbody></table>";
+
+    // 5) 分页器 + 每页行数
+    if (pages > 1) {
+      html += '<div class="pager">';
+      for (let i = 1; i <= pages; i++) html += '<button type="button" class="' + (i === state.page ? "active" : "") + '" data-p="' + i + '">' + i + "</button>";
+      html += "<span>" + state.page + " / " + pages + " · 共 " + data.length + " 条</span></div>";
+    }
+    html += '<div class="pager-size">每页 <select data-page-size><option value="5">5</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select> 条</div>';
+
     container.innerHTML = html;
-    Array.from(container.querySelectorAll("button[data-p]")).forEach((b) =>
-      b.addEventListener("click", () => go(Number(b.dataset.p))));
+
+    // 6) 事件绑定
+    container.querySelectorAll("[data-sort-key]").forEach((b) => {
+      b.addEventListener("click", (e) => {
+        const key = b.dataset.sortKey;
+        const ex = state.sort.find((s) => s.key === key);
+        if (ex) {
+          if (ex.dir === "asc") ex.dir = "desc";
+          else state.sort = state.sort.filter((s) => s.key !== key);
+        } else {
+          if (!e.shiftKey) state.sort = [];
+          state.sort.push({ key, dir: "asc" });
+        }
+        state.page = 1;
+        onState();
+      });
+    });
+    container.querySelectorAll(".th-filter").forEach((el) => {
+      el.addEventListener("input", () => {
+        const key = el.dataset.filterKey;
+        const range = el.dataset.range;
+        if (range) {
+          const other = container.querySelector('[data-filter-key="' + key + '"][data-range="' + (range === "min" ? "max" : "min") + '"]');
+          const min = range === "min" ? el.value : (other ? other.value : "");
+          const max = range === "max" ? el.value : (other ? other.value : "");
+          state.filters[key] = min + ":" + max;
+        } else {
+          state.filters[key] = el.value;
+        }
+        state.page = 1;
+        const focusSel = range ? '[data-filter-key="' + key + '"][data-range="' + range + '"]' : '[data-filter-key="' + key + '"]';
+        onState();
+        const n = container.querySelector(focusSel);
+        if (n) n.focus();
+      });
+    });
+    container.querySelectorAll("[data-p]").forEach((b) => {
+      b.addEventListener("click", () => { state.page = Number(b.dataset.p); onState(); });
+    });
+    const ps = container.querySelector("[data-page-size]");
+    if (ps) {
+      ps.value = state.pageSize;
+      ps.addEventListener("change", () => { state.pageSize = Number(ps.value); state.page = 1; onState(); });
+    }
   }
 
   /* --- 设置 --- */
@@ -445,7 +584,7 @@
     $("#withdraw-btn").addEventListener("click", () => toast("提现入口为占位（静态原型）"));
 
     // 交易 Tab
-    $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txPage = 1; renderTransactions(); }));
+    $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); }));
 
     // API Key 生成
     $("#new-api-key-btn").addEventListener("click", () => {

@@ -197,6 +197,50 @@ select.input option { background: var(--bg-card); }
 .pager button.active { border-color: var(--accent); color: var(--accent-text); }
 .pager span { color: var(--text-mute); font-size: 12px; }
 
+/* MRT 风格表格：表头排序 + 列筛选 + 每页行数 */
+.th-sort {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  white-space: nowrap;
+}
+.th-sort:hover { color: var(--accent-text); }
+.th-filter {
+  width: 100%;
+  min-width: 72px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 12px;
+  outline: none;
+}
+.th-filter:focus { border-color: var(--accent); }
+.range-filter { display: flex; gap: 4px; }
+.range-filter .th-filter { min-width: 0; width: 100%; }
+.pager-size {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--text-mute);
+  font-size: 12px;
+}
+.pager-size select {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
 .form { display: flex; flex-direction: column; gap: 12px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
