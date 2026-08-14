@@ -1,5 +1,6 @@
 # AITokenPool — Product User Stories
 
+> **v1.3（2026-08-14）· Platform Operator role defined（运营者 = 宿主本人）.** The operator is the **deployer/owner (宿主本人)** with exactly two duties: **① view platform running overview** (status / users / shared keys / transactions / point flow) and **② top up points for a specific user** (permanent points, with transaction record). Content moderation / violation handling / market regulation are **explicitly excluded** — kept minimal. Adds US-运营1 / US-运营2 (replaces the "规划中 Planned" placeholder).
 > **v1.2（2026-08-14）· Points model finalized（纯分享经济）.** Every registered user receives **10 gift points** valid for **1 week**（新人体验券）; points earned from sharing are **permanent**; future top-up points are **permanent**. Consumption deducts **expiring (gift) points first**. Adds US-22/23/24 and edge case E-13 (gift-point expiry).
 > v1.1（2026-08-14）· Restructured. The document is now organized by **deployment scenario first, then user type** (场景 → 用户类型 → story): `## 公共场景 Public` / `## 企业场景 Enterprise`, each listing its user types with Goals / Pain points / User stories / Key flows. Content from v1.0 is reused, with ownership re-assigned to scenes.
 > v1.0（2026-08-14）· Initial version (flat role layout).
@@ -41,7 +42,7 @@ Centralized (方案 A): **the platform hosts keys and executes calls** — the p
 
 ## 2. 公共场景 Public Scenario（公共场景）
 
-> **Scene description（场景说明）**: The public edition is deployed on the **public internet** — anyone can register, share idle keys, and consume models with points. **Everyone has sharing motivation** (monetize idle subscription quota), so the sharing marketplace is the core of this scene. Registration is open; roles are determined by the account (the platform operator is planned, not yet implemented). The feature set is identical to the enterprise edition; only *who shares* differs. **Points model (v1.2): the public edition currently has no top-up channel — new users start with the 10-point gift, and long-term points come from sharing (permanent).**
+> **Scene description（场景说明）**: The public edition is deployed on the **public internet** — anyone can register, share idle keys, and consume models with points. **Everyone has sharing motivation** (monetize idle subscription quota), so the sharing marketplace is the core of this scene. Registration is open; roles are determined by the account (the platform operator = 宿主本人, §2.4, with a minimal two-duty role). The feature set is identical to the enterprise edition; only *who shares* differs. **Points model (v1.2): the public edition currently has no top-up channel — new users start with the 10-point gift, and long-term points come from sharing (permanent).**
 
 ### 2.1 用户类型 A — 访客 / 新用户 Visitor / New User（未注册，浏览了解）
 
@@ -163,23 +164,45 @@ flowchart LR
 4. Other users consume → sharer earns points, `earn` transaction + notification (US-11).
 5. Sharer monitors earnings; pauses/resumes/re-lists/deletes at will (US-10).
 
-### 2.4 用户类型 D — 平台运营者 / 管理员 Platform Operator / Admin（规划中 Planned）
+### 2.4 用户类型 D — 平台运营者 Platform Operator（宿主本人 / 部署者）
 
-#### Goals（目标，规划中）
+> **身份（Identity）**: 平台运营者 = **宿主本人**（deployer / owner of this deployment）。该角色已定义，**目前没有其他特殊操作**（不做内容审核、不做违规处理、不做市场调节等，规划中也无需加入，保持最小）。
 
-- Moderate the public marketplace, handle violations/abuse, monitor market health (success rates, availability), and maintain trust.
+#### Goals（目标）
 
-#### Pain points（痛点，规划中）
+1. **查看平台运行情况** — view platform health: online status, user count, shared key count, transaction volume, point flow（运行状态 / 数据概览）。
+2. **给指定用户充值点数** — directly add points to a specific user's balance (e.g. customer-service compensation, event grants)。
 
-- Abusive sharers (fake keys, over-declared quota), unreliable listings hurting consumer trust, and no operational console today.
+> **明确排除（Explicitly excluded）**: content moderation、violation handling、market regulation — 均不属于运营者职责，现在与规划中都无需加入。
 
-#### User Stories（用户故事，规划中）
+#### Pain points（痛点）
 
-> **规划中（Planned）**: the operator role is not yet defined in the current prototype (`ui/` has no operator view). Stories will be added in a later iteration; the centralization architecture (platform-hosted keys) already gives the operator the technical levers (revoke, suspend, audit) needed to enforce moderation.
+- Cannot see platform health at a glance; no way to directly grant points to a user for compensation / events.
 
-#### Key Flow（关键流程，规划中）
+#### User Stories（用户故事）
 
-- TBD — will be defined when the operator console is scoped.
+- **US-运营1** As the platform operator, I want to view the platform running overview, so that I can understand platform health.
+  - AC: Operator view shows key run metrics — online status, user count, shared key count, transaction volume, point flow（用户 / 共享 / 交易 / 点数）。
+- **US-运营2** As the platform operator, I want to top up points for a specific user, so that I can handle compensation / event grants.
+  - AC: Locate the user by username / email; enter the point amount; on confirmation the user's balance increases with **permanent points**; a transaction record is created.
+
+#### Key Flow（关键流程）— 运营者登录 → 查看概览 / 定位用户 → 充值点数
+
+```mermaid
+flowchart LR
+  A[Operator login] --> B[View running overview]
+  B --> C{Need to grant points?}
+  C -->|no| D[Monitor / exit]
+  C -->|yes| E[Locate user by name / email]
+  E --> F[Enter point amount]
+  F --> G[Confirm - permanent points added]
+  G --> H[Transaction recorded]
+```
+
+1. The operator（宿主本人）logs in and opens the operator view (US-运营1).
+2. Checks the running overview — online status, users, shared keys, transactions, point flow.
+3. If compensation / event grant is needed, locates the user by username / email (US-运营2).
+4. Enters the point amount and confirms → the user's balance increases with **permanent points**, and a transaction record is created.
 
 ---
 
