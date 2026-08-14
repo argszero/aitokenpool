@@ -484,7 +484,7 @@
         "<td>" + D.fmt(e.used) + " / " + D.fmt(e.quota) + "</td>" +
         "<td>" + D.fmt(e.quota - e.used) + "</td>" +
         "<td>" + (e.used / e.quota > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>') + "</td>" +
-        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-add='" + i + "'>+ 5000 点</button></td></tr>"
+        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
       ).join("");
     } else if (tab === "usage") {
       const maxM = Math.max(...D.USAGE_MODEL.map((u) => u.pts));
@@ -593,7 +593,7 @@
 
     $("#ak-search").addEventListener("input", renderAdmin);
 
-    // 管理台事件委托（撤销 key / 员工加额）
+    // 管理台事件委托（撤销 key / 员工充值）
     $("#keys-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-key-revoke]");
       if (!b) return;
@@ -605,11 +605,21 @@
     });
 
     $("#emp-body").addEventListener("click", (e) => {
-      const b = e.target.closest("[data-emp-add]");
+      const b = e.target.closest("[data-emp-topup]");
       if (!b) return;
-      D.EMPLOYEES[Number(b.dataset.empAdd)].quota += 5000;
+      const emp = D.EMPLOYEES[Number(b.dataset.empTopup)];
+      if (!emp) return;
+      const input = prompt("为 " + emp.name + " 充值点数（正整数，任意金额）：", "5000");
+      if (input == null) return; // 用户取消
+      const raw = String(input).trim();
+      const amt = Number(raw);
+      if (!raw || !Number.isInteger(amt) || amt <= 0) {
+        toast("请输入正整数点数金额（未生效）");
+        return;
+      }
+      emp.quota += amt;
       renderAdmin();
-      toast("已为成员 +5000 点配额");
+      toast("已给 " + emp.name + " 充值 " + D.fmt(amt) + " 点");
     });
   }
 
