@@ -348,8 +348,6 @@
       toast("欢迎回来，阿零（演示账号）");
     });
 
-    $("#sso-btn").addEventListener("click", () => toast("企业 SSO 为占位入口（静态原型）"));
-
     $("#logout-btn").addEventListener("click", () => {
       $("#app").classList.add("hidden");
       $("#login-view").classList.remove("hidden");
