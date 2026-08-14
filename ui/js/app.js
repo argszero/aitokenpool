@@ -562,9 +562,7 @@
       if (d) deleteSharing(Number(d.dataset.shareDelete));
     });
 
-    // 钱包按钮
-    $("#topup-btn").addEventListener("click", () => toast("充值入口为占位（静态原型）"));
-    $("#withdraw-btn").addEventListener("click", () => toast("提现入口为占位（静态原型）"));
+    // 钱包按钮（充值/提现 disabled + pointer-events:none，点击不生效；文案见 index.html wallet-note）
     // 钱包页提示 → 跳转交易记录（明细统一入口）
     $("#wallet-goto-tx").addEventListener("click", () => switchView("transactions"));
 
