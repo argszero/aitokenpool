@@ -1,6 +1,7 @@
 # AITokenPool — Product User Stories
 
-> **v1.1（2026-08-14）· Restructured.** The document is now organized by **deployment scenario first, then user type** (场景 → 用户类型 → story): `## 公共场景 Public` / `## 企业场景 Enterprise`, each listing its user types with Goals / Pain points / User stories / Key flows. Content from v1.0 is reused, with ownership re-assigned to scenes.
+> **v1.2（2026-08-14）· Points model finalized（纯分享经济）.** Every registered user receives **10 gift points** valid for **1 week**（新人体验券）; points earned from sharing are **permanent**; future top-up points are **permanent**. Consumption deducts **expiring (gift) points first**. Adds US-22/23/24 and edge case E-13 (gift-point expiry).
+> v1.1（2026-08-14）· Restructured. The document is now organized by **deployment scenario first, then user type** (场景 → 用户类型 → story): `## 公共场景 Public` / `## 企业场景 Enterprise`, each listing its user types with Goals / Pain points / User stories / Key flows. Content from v1.0 is reused, with ownership re-assigned to scenes.
 > v1.0（2026-08-14）· Initial version (flat role layout).
 > Core product-design document. UI/backend implementations follow this document. Aligned with [docs/architecture.md](./architecture.md) and the UI prototype in [`ui/`](../ui/).
 
@@ -10,7 +11,7 @@
 
 **One product, two deployment scenarios** (not two feature sets):
 
-- **Public edition（公共版）** — deployed on the public internet. Anyone can register, share idle API keys to earn points, and spend points to consume models shared by others.
+- **Public edition（公共版）** — deployed on the public internet. Anyone can register, share idle API keys to earn points, and spend points to consume models shared by others. New registrations receive **10 gift points** (valid for 1 week).
 - **Enterprise edition（企业版）** — deployed on an internal network. The administrator (IT) puts purchased keys into the key pool and allocates monthly point quotas to members.
 
 The feature set is **identical**; the difference is *who is motivated to share* (everyone in public; only the admin in enterprise). **Roles are permission differences, not product differences** — the admin additionally sees the Admin view (key pool / members / usage reports / organization), regular users do not.
@@ -20,6 +21,10 @@ The feature set is **identical**; the difference is *who is motivated to share* 
 | Term | Definition |
 |---|---|
 | **Point (点)** | The platform's unit of value. **1 USD = 1,000 points.** |
+| **Gift points（赠送点数）** | **10 points** granted to every new registered user（新人体验券）; **valid for 1 week** from the moment of grant — unused gift points expire / 清零 automatically. |
+| **Earned points（收益点数）** | Points earned from sharing keys; **permanent** — no expiry. |
+| **Top-up points（充值点数）** | Points obtained from future top-ups; **permanent**（充值功能当前暂不支持，但规则先定）. |
+| **Deduction order（扣减顺序）** | Consumption deducts **expiring (gift) points first**, then permanent points — expiring points are never wasted and permanent points are never lost to an expiry race. |
 | **Key pool** | Upstream model API keys hosted by the platform (encrypted at rest). Enterprise: uploaded by admin. Public: uploaded by sharers. |
 | **Listing (上架)** | A sharer lists an idle key with a declared quota. **The unit price is NOT set by the sharer** — the platform prices it automatically from the model price table (reference price = model output price, points / 1M tokens). |
 | **Consumption (消费)** | A user spends points to call a model through the platform (chat / API). |
@@ -36,7 +41,7 @@ Centralized (方案 A): **the platform hosts keys and executes calls** — the p
 
 ## 2. 公共场景 Public Scenario（公共场景）
 
-> **Scene description（场景说明）**: The public edition is deployed on the **public internet** — anyone can register, share idle keys, and consume models with points. **Everyone has sharing motivation** (monetize idle subscription quota), so the sharing marketplace is the core of this scene. Registration is open; roles are determined by the account (the platform operator is planned, not yet implemented). The feature set is identical to the enterprise edition; only *who shares* differs.
+> **Scene description（场景说明）**: The public edition is deployed on the **public internet** — anyone can register, share idle keys, and consume models with points. **Everyone has sharing motivation** (monetize idle subscription quota), so the sharing marketplace is the core of this scene. Registration is open; roles are determined by the account (the platform operator is planned, not yet implemented). The feature set is identical to the enterprise edition; only *who shares* differs. **Points model (v1.2): the public edition currently has no top-up channel — new users start with the 10-point gift, and long-term points come from sharing (permanent).**
 
 ### 2.1 用户类型 A — 访客 / 新用户 Visitor / New User（未注册，浏览了解）
 
@@ -56,7 +61,7 @@ Centralized (方案 A): **the platform hosts keys and executes calls** — the p
 - **US-2** As a visitor, I want to see a clear explanation of the points mechanism (1 USD = 1,000 points), so that I can decide whether to join.
   - AC: Points explanation visible from the landing/login page; conversion rate stated explicitly.
 - **US-3** As a new user, I want to register/login with an email, so that I can start using the platform.
-  - AC: Single login entry (no public/enterprise choice at login); registration creates an account with zero points; role (admin vs. user) is determined by the account.
+  - AC: Single login entry (no public/enterprise choice at login); registration creates an account with **10 gift points valid for 1 week**; role (admin vs. user) is determined by the account.
 
 #### Key Flow（关键流程）— browse → understand → register
 
@@ -65,11 +70,11 @@ flowchart LR
   A[Land on platform] --> B[Browse marketplace without login]
   B --> C[Learn points mechanism]
   C --> D[Register / login]
-  D --> E[Account created with 0 points]
+  D --> E[Account created + 10 gift points valid 1 week]
 ```
 
 1. Visitor lands on the login page and browses models/pricing first (US-1, US-2).
-2. Registers with email → account with 0 points (US-3); continues into the Regular User flow (J-1).
+2. Registers with email → account with 10 gift points (US-3, US-22); continues into the Regular User flow (J-1).
 
 ### 2.2 用户类型 B — 普通用户（消费者）Regular User / Consumer（注册，用点数消费模型）
 
@@ -84,33 +89,37 @@ flowchart LR
 #### User Stories（用户故事）
 
 - **US-4** As a regular user, I want to top up points, so that I can consume models.
-  - AC: Wallet shows current balance; top-up flow (placeholder per current prototype: 充值/提现 temporarily unsupported, "即将上线") reflects into balance and a "topup" transaction record.
+  - AC: Wallet shows current balance and point sources (gift / earned / top-up); top-up flow is a placeholder (per current prototype: 充值/提现 temporarily unsupported, "即将上线") — the public edition has no top-up channel yet; new users start with the 10-point gift (US-22).
 - **US-5** As a regular user, I want to search/filter/sort the marketplace, so that I can quickly find the model I need.
   - AC: Search by model/provider; filter by provider; sort by input price asc/desc and by context size desc; availability shown.
 - **US-6** As a regular user, I want to consume a model with points (chat/API), so that I can use the model without owning an upstream key.
   - AC: Selecting an available model opens chat/API entry; consumption deducts points per metered tokens × model price; a "consume" transaction is recorded; insufficient balance blocks the request with a clear message.
 - **US-7** As a regular user, I want to view my transactions, so that I can reconcile my spend and earnings.
   - AC: Transactions page is the single source of truth for consume/earn/topup/withdraw; tabs (all/consume/earn) + MRT-style table with column sort, column filter, pagination; wallet page links to it.
+- **US-22** As a new registered user, I want to receive 10 gift points, so that I can experience model consumption right away.
+  - AC: Registration immediately grants 10 points（新人体验券）; wallet shows the source "gift (赠送)"; unused gift points expire automatically after 1 week.
+- **US-23** As a regular user, I want to see the source and validity of my points, so that I can plan my usage.
+  - AC: Wallet/transactions distinguish **gift / earned / top-up** point sources and their validity (e.g. "赠送 10 · 剩 5 天", "收益 320 · 永久"); consumption deducts expiring (gift) points first.
 
 #### Key Flow（关键流程）— J-1: register → first consumption
 
 ```mermaid
 flowchart LR
   A[Visitor browses marketplace] --> B[Registers / logs in]
-  B --> C[Wallet: top up points]
+  B --> C[Gets 10 gift points valid 1 week]
   C --> D[Marketplace: search / filter / sort]
   D --> E[Pick model - availability ok]
   E --> F[Consume: chat or API]
-  F --> G[Points deducted, consume tx recorded]
+  F --> G[Points deducted - gift first, consume tx recorded]
   G --> H[View balance + transactions]
 ```
 
 1. Visitor lands on the login page, browses models and pricing first (US-1, US-2).
-2. Registers with email → account with 0 points (US-3).
-3. Tops up in Wallet → balance updated, `topup` transaction (US-4).
+2. Registers with email → account receives 10 gift points valid for 1 week (US-3, US-22).
+3. No top-up channel in the public edition yet (US-4 placeholder); starts with gift points.
 4. Searches/filters/sorts the marketplace (US-5).
 5. Picks an available model and consumes via chat/API (US-6).
-6. Points deducted per metered tokens; checks Transactions for the record (US-7).
+6. Points deducted per metered tokens — gift points first; checks Transactions for the record (US-7, US-23).
 
 ### 2.3 用户类型 C — 分享者 Sharer（普通用户的行为角色：上架闲置 key 赚点数）
 
@@ -132,6 +141,8 @@ flowchart LR
   - AC: Pause = stop taking requests, resumable; delete = permanent removal from platform, irreversible, requires confirmation; relist reactivates a paused/off listing.
 - **US-11** As a sharer, I want to know when my key is consumed, so that I can see earnings accumulating.
   - AC: Each consumption creates an "earn" transaction (partner model, tokens, +points); notification toggle in Settings ("共享 key 被消费时通知").
+- **US-24** As a sharer, I want my earned points to stay valid permanently, so that I can build long-term value from sharing.
+  - AC: Earned points (收益点数) never expire; wallet shows them as "收益点数 · 永久"; they are deducted only after all expiring (gift) points are consumed.
 
 #### Key Flow（关键流程）— J-2: upload key → first earning
 
@@ -292,6 +303,7 @@ flowchart LR
 | E-10 | **Single heavy user draining budget**（单个重度用户耗尽预算） | 【企业】 | Usage reports (by member) surface it; admin can top up/adjust or change department allocation; low-balance alerts help the member self-regulate. |
 | E-11 | **Availability flapping**（可用性抖动） | 【公共】 | Marketplace shows `busy` availability for models with no ready key; retry/choose-another guidance; no silent failure. |
 | E-12 | **Duplicate / conflicting listings of the same key**（同一 key 重复/冲突上架） | 【公共】 | Platform detects the same upstream key listed twice and warns the sharer; prevents double counting of the same quota. |
+| E-13 | **Gift points expired**（赠送点数过期） | 【公共】 | Unused gift points expire 1 week after grant — balance decreases automatically at expiry (清零). Expiry is visible in advance (e.g. "剩 X 天"). Consumption always deducts **expiring (gift) points first**, then permanent points, so gift points are used before they expire and permanent points are never lost. |
 
 ---
 
@@ -301,6 +313,7 @@ flowchart LR
 |---|---|---|
 | Pages / navigation | `ui/index.html` (Dashboard / Marketplace / Sharing / Wallet / Transactions / Settings + Admin role view) | Every story maps to a concrete page; Admin view is role-gated, others shared. |
 | Points & pricing | `ui/js/data.js` (1 USD = 1,000 pts; model price table; reference price = output price points/1M) | US-2, US-8 use the same rules; no sharer-set pricing. |
+| Points validity & deduction order | `docs/user-stories.md` v1.2 (gift 10 pts / 1 week; earned & top-up permanent; deduct gift first) | US-22, US-23, US-24, E-13 consistent; UI mock (`feat/points-model-ui`) shows gift source + remaining days. |
 | Key masking & security | `ui/js/data.js`, `ui/README.md` (masked keys, encrypted hosting, delete confirmation) | US-8, US-9, US-21, E-05 consistent. |
 | Enterprise semantics | `ui/js/data.js` (key pool statuses, departments, members unassigned) | US-12…US-16, E-03, E-06 consistent. |
 | Centralized architecture | `docs/architecture.md` (platform hosts keys, metering engine, ledger) | The whole doc assumes centralized execution; consumption/earnings flow through the platform ledger. |
