@@ -39,6 +39,13 @@
     return same ? same.out : 300;
   }
 
+  // key 脱敏展示：仅显示前 3 后 4（如 sk-****1234）
+  function maskKey(key) {
+    if (!key) return "—";
+    if (key.length <= 8) return key.slice(0, 3) + "****" + key.slice(-4);
+    return key.slice(0, 3) + "****" + key.slice(-4);
+  }
+
   function showPriceHint(model) {
     const el = $("#sf-price-view");
     if (!el) return;
@@ -217,13 +224,25 @@
 
     $("#share-body").innerHTML = D.SHARINGS.map((s, i) =>
       "<tr><td><strong>" + esc(s.model) + "</strong></td>" +
+      "<td class='mono'>" + esc(maskKey(s.key)) + "</td>" +
       "<td>" + D.fmt(s.used) + " / " + D.fmt(s.quota) + "</td>" +
       "<td>" + D.fmt(s.price) + " 点/1M</td>" +
       "<td>+" + D.fmt(s.earned) + " 点</td>" +
       "<td>" + badge(s.status, SHARE_STATUS) + "</td>" +
       "<td><button class='btn btn-ghost' data-share-toggle='" + i + "' style='padding:4px 10px;font-size:12px'>" +
-      (s.status === "on" ? "暂停" : s.status === "paused" ? "恢复" : "重新上架") + "</button></td></tr>"
+      (s.status === "on" ? "暂停" : s.status === "paused" ? "恢复" : "重新上架") + "</button> " +
+      "<button class='btn btn-danger' data-share-delete='" + i + "' style='padding:4px 10px;font-size:12px'>删除</button></td></tr>"
     ).join("");
+  }
+
+  function deleteSharing(i) {
+    const s = D.SHARINGS[i];
+    if (!s) return;
+    if (!window.confirm("确认彻底下架 " + s.model + " 的 key？删除后不再共享，不可恢复。")) return;
+    D.SHARINGS.splice(i, 1);
+    renderSharing();
+    if (activeView === "dashboard") renderDashboard();
+    toast("已删除 " + s.model + " 的 key（彻底下架）");
   }
 
   function toggleSharing(i) {
@@ -386,26 +405,30 @@
       $("#mk-provider").dataset.init = "1";
     }
 
-    // 共享上架表单（单价由平台按模型定价自动计算，分享者只填声明额度）
+    // 共享上架表单（须填 API Key；单价由平台按模型定价自动计算）
     $("#share-form").addEventListener("submit", (e) => {
       e.preventDefault();
       const model = $("#sf-model").value;
       const quota = Number($("#sf-quota").value || 0);
+      const key = $("#sf-key").value.trim();
+      if (!key) { toast("请填写 API Key（上架 key 必须提供真实密钥）"); return; }
       if (!model || quota <= 0) { toast("请选择模型并填写有效额度"); return; }
       const price = autoPrice(model);
-      D.SHARINGS.unshift({ id: Date.now(), model, quota, used: 0, price, earned: 0, status: "on" });
+      D.SHARINGS.unshift({ id: Date.now(), model, quota, used: 0, price, earned: 0, status: "on", key });
       renderSharing();
       if (activeView === "dashboard") renderDashboard();
-      toast("已上架 " + model + "（额度 " + D.fmt(quota) + " 点，单价 " + D.fmt(price) + " 点/1M 自动）");
+      toast("已上架 " + model + "（key 已加密托管，单价 " + D.fmt(price) + " 点/1M 自动）");
       e.target.reset();
       const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
       $("#sf-quota").value = 5000;
     });
 
-    // 共享列表操作（事件委托）
+    // 共享列表操作（事件委托：暂停/恢复/重新上架 + 删除）
     $("#share-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-share-toggle]");
-      if (b) toggleSharing(Number(b.dataset.shareToggle));
+      if (b) { toggleSharing(Number(b.dataset.shareToggle)); return; }
+      const d = e.target.closest("[data-share-delete]");
+      if (d) deleteSharing(Number(d.dataset.shareDelete));
     });
 
     // 钱包按钮

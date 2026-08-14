@@ -63,6 +63,12 @@ body {
 }
 .btn-primary:hover { background: #63ded6; }
 .btn-ghost { background: transparent; }
+.btn-danger {
+  background: transparent;
+  border-color: transparent;
+  color: var(--danger);
+}
+.btn-danger:hover { background: rgba(229, 102, 106, 0.12); border-color: var(--danger); }
 .btn-block { width: 100%; }
 
 .input, select.input {
@@ -89,6 +95,13 @@ body {
   background: var(--bg-soft);
   color: var(--text-dim);
   font-size: 13px;
+}
+
+/* 表单辅助说明 */
+.form-hint {
+  color: var(--text-mute);
+  font-size: 12px;
+  line-height: 1.5;
 }
 select.input option { background: var(--bg-card); }
 

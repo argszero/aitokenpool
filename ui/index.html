@@ -127,6 +127,10 @@
                 <select id="sf-model" class="input"></select>
               </label>
             </div>
+            <label>API Key
+              <input id="sf-key" type="password" class="input" placeholder="sk-xxx">
+              <span class="form-hint">key 由平台加密托管，仅用于代理调用，不会展示给其他用户</span>
+            </label>
             <div class="form-row">
               <label>声明额度（点数）
                 <input id="sf-quota" type="number" value="5000" class="input">
@@ -145,7 +149,7 @@
           <h3>我的共享列表 <span class="en">My listings</span></h3>
           <div class="table-wrap compact">
             <table class="table">
-              <thead><tr><th>模型</th><th>已用/额度</th><th>单价</th><th>收益</th><th>状态</th><th></th></tr></thead>
+              <thead><tr><th>模型</th><th>Key</th><th>已用/额度</th><th>单价</th><th>收益</th><th>状态</th><th></th></tr></thead>
               <tbody id="share-body"></tbody>
             </table>
           </div>
