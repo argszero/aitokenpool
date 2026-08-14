@@ -76,6 +76,10 @@
           <h3>我的共享 <span class="en">My sharings</span></h3>
           <div class="mini-list" id="dash-sharings"></div>
         </div>
+        <div class="card">
+          <h3>点数来源 <span class="en">Point sources</span></h3>
+          <div class="mini-list" id="dash-point-sources"></div>
+        </div>
       </div>
     </section>
 
@@ -101,7 +105,7 @@
       <div class="table-wrap">
         <table class="table">
           <thead>
-            <tr><th>厂商 Provider</th><th>模型 Model</th><th>输入价 /1M</th><th>输出价 /1M</th><th>上下文</th><th>可用性</th><th></th></tr>
+            <tr><th>厂商 Provider</th><th>模型 Model</th><th>输入价 /1M</th><th>输出价 /1M</th><th>上下文</th><th>可用性</th><th>操作 <span class="en">Use</span></th></tr>
           </thead>
           <tbody id="mk-body"></tbody>
         </table>
@@ -270,6 +274,7 @@
         <button class="tab" data-admin-tab="employees">成员管理</button>
         <button class="tab" data-admin-tab="usage">用量报表</button>
         <button class="tab" data-admin-tab="org">组织管理</button>
+        <button class="tab" data-admin-tab="ops">平台运营 <span class="en">Operator</span></button>
       </div>
 
       <div class="admin-pane" data-admin-pane="keys">
@@ -338,9 +343,42 @@
           </div>
         </div>
       </div>
+
+      <div class="admin-pane hidden" data-admin-pane="ops">
+        <div class="stat-grid" id="ops-stats"></div>
+        <div class="card">
+          <h3>用户充值 <span class="en">Top up a user</span></h3>
+          <p class="muted">运营者 = 宿主本人（职责最小化：仅运行概览 + 充值）。按用户名 / 邮箱定位用户 → 输入点数金额 → 确认后余额增加<strong>永久有效点数</strong>并产生一条交易记录。</p>
+          <div class="toolbar">
+            <input id="ops-search" class="input" placeholder="搜索用户名 / 邮箱…">
+          </div>
+          <div class="table-wrap compact">
+            <table class="table">
+              <thead><tr><th>用户</th><th>邮箱</th><th>余额（点数）</th><th></th></tr></thead>
+              <tbody id="ops-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>
 
   </main>
+</div>
+
+<!-- 消费模拟（聊天 Mock · US-6：市场页「使用 / 消费」→ 模拟调用扣小数点数） -->
+<div id="chat-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="chat-title">使用模型</h3>
+      <button type="button" class="btn btn-ghost" id="chat-close">✕</button>
+    </div>
+    <p class="muted" id="chat-meta"></p>
+    <div class="chat-log" id="chat-log"></div>
+    <div class="chat-input-row">
+      <input id="chat-input" class="input" placeholder="输入内容，回车发送（模拟调用）…" autocomplete="off">
+      <button type="button" class="btn btn-primary" id="chat-send">发送 <span class="en">(Send)</span></button>
+    </div>
+  </div>
 </div>
 
 <div id="toast" class="toast hidden"></div>

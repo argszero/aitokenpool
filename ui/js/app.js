@@ -156,6 +156,7 @@
       '<div class="d">已用 ' + D.fmt(s.used) + " / " + D.fmt(s.quota) + " 点 · 单价 " + D.fmt(s.price) + " 点/1M</div></div>" +
       '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>累计收益</div></div></div>"
     ).join("") + (on.length ? "" : '<p class="muted">还没有上架的 key</p>');
+    renderPointSources();
   }
 
   function stat(label, value, sub, cls) {
@@ -183,8 +184,10 @@
       "<tr><td>" + esc(m.provider) + "</td><td><strong>" + esc(m.model) + "</strong></td>" +
       "<td>" + D.fmt(m.in) + " 点</td><td>" + D.fmt(m.out) + " 点</td>" +
       "<td>" + D.ctxFmt(m.ctx) + "</td>" +
-      "<td>" + (m.avail ? '<span class="badge ok">可用</span>' : '<span class="badge warn">繁忙</span>') + "</td>" +
-      "<td><span class='muted'>成功率 " + m.success + "%</span></td></tr>"
+      "<td>" + (m.avail ? '<span class="badge ok">可用</span>' : '<span class="badge warn">繁忙</span>') +
+      (m.multi ? ' <span class="badge ok" title="该模型配置多个上游 key，单个 key 不可用时自动故障转移（架构 v0.2 路由策略）">多 key · 自动故障转移</span>' : "") + "</td>" +
+      "<td><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">使用 / 消费</button>" +
+      "<div class='muted' style='margin-top:4px;font-size:12px'>成功率 " + m.success + "%</div></td></tr>"
     ).join("") : '<tr><td colspan="7" class="muted">没有匹配的模型</td></tr>';
   }
 
@@ -256,21 +259,32 @@
     if (activeView === "dashboard") renderDashboard();
   }
 
+  /* --- 点数来源（G2：钱包 / 仪表盘统一展示来源与有效期，赠送当日有效 / 收益充值永久） --- */
+
+  function pointSourceItem(s) {
+    const cls = s.validity === "永久有效" ? "ok" : "warn";
+    return '<div class="mini-item"><div><div class="t">' + esc(s.label) +
+      ' <span class="badge ' + cls + '">' + esc(s.validity) + "</span></div>" +
+      '<div class="d">' + esc(s.note) + "</div></div>" +
+      '<div class="r"><span class="pts">' + (s.pts > 0 ? "+" : "") + D.fmt(s.pts) + "</span></div></div>";
+  }
+
+  function renderPointSources() {
+    const html = D.POINT_SOURCES.map(pointSourceItem).join("");
+    const walletEl = $("#points-sources");
+    if (walletEl) walletEl.innerHTML = html;
+    const dashEl = $("#dash-point-sources");
+    if (dashEl) dashEl.innerHTML = html;
+  }
+
   /* --- 钱包 --- */
 
   function renderWallet() {
     // 钱包只做余额与资金操作；收支明细统一到【交易记录】（见 index.html wallet-hint）
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     $("#wallet-balance").textContent = D.fmt(D.USER.balance);
-    // 点数来源 / 有效期（v1.4：每日赠送 1 点当日有效、收益/充值永久）
-    const src = $("#points-sources");
-    if (src) {
-      src.innerHTML = D.POINT_SOURCES.map((s) =>
-        '<div class="mini-item"><div><div class="t">' + esc(s.label) + "</div>" +
-        '<div class="d">' + esc(s.note) + "</div></div>" +
-        '<div class="r"><span class="pts">' + (s.pts > 0 ? "+" : "") + D.fmt(s.pts) + "</span></div></div>"
-      ).join("");
-    }
+    // 点数来源 / 有效期（G2：赠送当日有效剩 N 天 · 收益/充值永久；消费先扣赠送）
+    renderPointSources();
   }
 
   /* --- 交易记录 --- */
@@ -564,6 +578,8 @@
       $("#usage-emp").innerHTML = D.USAGE_EMP.map((u) => barRow(u.name, u.pts, maxE, "点")).join("");
     } else if (tab === "org") {
       renderOrg();
+    } else if (tab === "ops") {
+      renderOperator();
     }
   }
 
@@ -707,6 +723,90 @@
       '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
   }
 
+  /* --- 平台运营者视图（US-运营1 / US-运营2：运营者 = 宿主本人，职责仅两项） --- */
+
+  function renderOperator() {
+    const q = ($("#ops-search").value || "").toLowerCase();
+    const list = D.OPERATOR_USERS.filter((u) => !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
+    const txs = D.TRANSACTIONS;
+    const flowIn = txs.filter((t) => t.pts > 0).reduce((a, t) => a + t.pts, 0);
+    const flowOut = txs.filter((t) => t.pts < 0).reduce((a, t) => a + Math.abs(t.pts), 0);
+    const onKeys = D.SHARINGS.filter((s) => s.status === "on").length;
+
+    $("#ops-stats").innerHTML = [
+      stat("运行状态 Status", '<span class="badge ok">在线</span>', "平台服务正常"),
+      stat("用户数 Users", D.OPERATOR_USERS.length + " 人", "注册用户"),
+      stat("共享 key 数 Keys", onKeys + " 个", D.SHARINGS.length + " 个历史上架"),
+      stat("交易量 Trades", txs.length + " 笔", "累计全部类型"),
+      stat("点数流入 In", "+" + D.fmt(flowIn) + " 点", "收益 / 充值 / 赠送"),
+      stat("点数流出 Out", "-" + D.fmt(flowOut) + " 点", "消费 / 提现"),
+    ].join("");
+
+    $("#ops-body").innerHTML = list.length ? list.map((u) =>
+      "<tr><td><strong>" + esc(u.name) + "</strong></td>" +
+      "<td>" + esc(u.email) + "</td>" +
+      "<td>" + D.fmt(u.balance) + " 点</td>" +
+      "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>充值点数</button></td></tr>"
+    ).join("") : '<tr><td colspan="4" class="muted">没有匹配的用户</td></tr>';
+  }
+
+  /* --- 消费模拟（US-6：市场页「使用 / 消费」→ 聊天 Mock，按模型参考价扣小数点数） --- */
+
+  let chatModel = null;
+
+  function nowTime() {
+    const n = new Date();
+    const p = (x) => String(x).padStart(2, "0");
+    return p(n.getMonth() + 1) + "-" + p(n.getDate()) + " " + p(n.getHours()) + ":" + p(n.getMinutes());
+  }
+
+  function openChat(id) {
+    const m = D.MARKET.find((x) => x.id === id);
+    if (!m) return;
+    if (!m.avail) { toast("该模型当前繁忙，无法使用"); return; }
+    chatModel = m;
+    $("#chat-title").textContent = "使用 " + m.model;
+    $("#chat-meta").textContent = "参考价：输入 " + D.fmt(m.in) + " 点 / 输出 " + D.fmt(m.out) + " 点（每 1M tokens）· 余额 " + D.fmt(D.USER.balance) + " 点" +
+      (m.multi ? " · 多 key 自动故障转移" : "");
+    $("#chat-log").innerHTML = '<p class="muted chat-tip">输入内容并发送，模拟一次模型调用（按参考价扣除小数点数，保留 2 位）</p>';
+    $("#chat-input").value = "";
+    $("#chat-modal").classList.remove("hidden");
+    $("#chat-input").focus();
+  }
+
+  function closeChat() {
+    $("#chat-modal").classList.add("hidden");
+    chatModel = null;
+  }
+
+  function sendChat() {
+    const m = chatModel;
+    if (!m) return;
+    const text = $("#chat-input").value.trim();
+    if (!text) { toast("请输入消息内容"); return; }
+    // 模拟一次调用：0.19M tokens，按输出参考价计费（v1.6：消费点数可为小数，保留 2 位）
+    const tokens = 0.19;
+    const cost = Math.round(tokens * m.out * 100) / 100;
+    if (D.USER.balance < cost) {
+      toast("点数余额不足：本次约需 " + D.fmt(cost) + " 点（当前 " + D.fmt(D.USER.balance) + " 点）");
+      return;
+    }
+    D.USER.balance = Math.round((D.USER.balance - cost) * 100) / 100;
+    D.TRANSACTIONS.unshift({
+      id: Date.now(), time: nowTime(), type: "consume", partner: m.model,
+      detail: "消费 · 聊天模拟（shared key）", tokens: "0.19M", pts: -cost, status: "成功",
+    });
+    const log = $("#chat-log");
+    if (log.querySelector(".chat-tip")) log.innerHTML = "";
+    log.innerHTML +=
+      '<div class="chat-msg user"><div class="bubble">' + esc(text) + "</div></div>" +
+      '<div class="chat-msg bot"><div class="bubble">（模拟回复）已收到你的请求。本次调用消耗约 0.19M tokens。</div></div>';
+    $("#side-balance").textContent = D.fmt(D.USER.balance);
+    $("#chat-meta").textContent = "已扣 " + D.fmt(cost) + " 点（模拟 0.19M tokens）· 余额 " + D.fmt(D.USER.balance) + " 点";
+    $("#chat-input").value = "";
+    toast("已扣 " + D.fmt(cost) + " 点（模拟 0.19M tokens）");
+  }
+
   /* ---------------- 事件 ---------------- */
 
   function bindEvents() {
@@ -733,6 +833,40 @@
       $("#mk-provider").innerHTML = '<option value="">全部厂商</option>' + D.PROVIDERS.map((p) => '<option value="' + p + '">' + p + "</option>").join("");
       $("#mk-provider").dataset.init = "1";
     }
+
+    // 市场页：使用 / 消费（G4：聊天 Mock 扣小数点数并产生 consume 交易）
+    $("#mk-body").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-use-model]");
+      if (!b) return;
+      openChat(Number(b.dataset.useModel));
+    });
+    $("#chat-send").addEventListener("click", sendChat);
+    $("#chat-close").addEventListener("click", closeChat);
+    $("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); });
+    $("#chat-modal").addEventListener("click", (e) => { if (e.target === $("#chat-modal")) closeChat(); });
+
+    // 平台运营者（G1 / US-运营2）：搜索定位用户 + 充值（永久有效点数，产生交易记录）
+    $("#ops-search").addEventListener("input", renderAdmin);
+    $("#ops-body").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-ops-topup]");
+      if (!b) return;
+      const u = D.OPERATOR_USERS.find((x) => x.id === Number(b.dataset.opsTopup));
+      if (!u) return;
+      const input = window.prompt("为「" + u.name + "」充值点数（永久有效，可为小数）：", "100");
+      if (input == null) return;
+      const raw = String(input).trim();
+      const amt = Math.round(Number(raw) * 100) / 100;
+      if (!raw || isNaN(amt) || amt <= 0) { toast("请输入大于 0 的点数金额（未生效）"); return; }
+      u.balance = Math.round((u.balance + amt) * 100) / 100;
+      if (u.email === D.USER.email) D.USER.balance = u.balance;
+      D.TRANSACTIONS.unshift({
+        id: Date.now(), time: nowTime(), type: "topup", partner: "运营者",
+        detail: "充值 · 运营者发放（永久有效）", tokens: "—", pts: amt, status: "成功",
+      });
+      renderAdmin();
+      $("#side-balance").textContent = D.fmt(D.USER.balance);
+      toast("已给「" + u.name + "」充值 " + D.fmt(amt) + " 点（永久有效）");
+    });
 
     // 共享上架表单（默认收起；点添加展开，提交成功或取消后收起）
     const shareFormCard = () => $("#share-form-card");

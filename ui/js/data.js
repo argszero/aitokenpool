@@ -46,10 +46,11 @@
     USER: { name: "阿零", email: "demo@aitokenpool.local", balance: 12471 },
 
     // 点数来源（v1.4 点数机制：每日赠送 1 点 / 当日有效 / 连续 10 天；分享收益与充值点数永久有效）
+    // G2：钱包 / 仪表盘按来源分组展示有效期——赠送「当日有效 · 剩 N 天」、收益 / 充值「永久有效」；消费先扣赠送
     POINT_SOURCES: [
-      { kind: "gift",  label: "赠送点数", pts: 1,     note: "今日赠送 +1 · 有效期至今日 · 连续第 7 天 / 共 10 天" },
-      { kind: "earn",  label: "收益点数", pts: 12470, note: "分享 key 赚取 · 永久有效" },
-      { kind: "topup", label: "充值点数", pts: 0,     note: "永久有效 · 充值暂未开放" },
+      { kind: "gift",  label: "赠送点数", pts: 1,     validity: "当日有效", note: "今日赠送 +1 · 有效期至今日 · 连续第 7 天 / 共 10 天（剩 3 天）" },
+      { kind: "earn",  label: "收益点数", pts: 12470, validity: "永久有效", note: "分享 key 赚取 · 永久有效" },
+      { kind: "topup", label: "充值点数", pts: 0,     validity: "永久有效", note: "永久有效 · 充值暂未开放" },
     ],
 
     // 交易记录（消费 / 收益 / 充值 / 提现 / 赠送）——唯一明细数据源，钱包页与交易记录页共用此表
@@ -77,21 +78,31 @@
       { id: 4, model: "minimax-m3", quota: 20000, used: 20000, price: 9, earned: 432, status: "off", key: "sk-mx-77d2a1c9e356" },
     ],
 
-    // 市场在售 key（公共版浏览）
+    // 市场在售 key（公共版浏览；multi=true 表示该模型配置多个上游 key → 自动故障转移，架构 v0.2 路由策略 G5）
     MARKET: [
-      { id: 1, provider: "deepseek", model: "deepseek-v4-flash", in: USD(0.14), out: USD(0.28), ctx: 1048576, avail: true,  success: 99.2 },
-      { id: 2, provider: "zhipu",    model: "glm-5.2",           in: CNY(8.0),  out: CNY(28.0),  ctx: 1048576, avail: true,  success: 98.6 },
-      { id: 3, provider: "openai",   model: "gpt-5.5-pro",       in: USD(30.0), out: USD(180.0), ctx: 1050000, avail: true,  success: 97.1 },
-      { id: 4, provider: "anthropic",model: "claude-opus-4.7",    in: USD(5.0),  out: USD(25.0),  ctx: 1000000, avail: false, success: 95.4 },
-      { id: 5, provider: "google",   model: "gemini-3.1-pro",    in: USD(2.0),  out: USD(12.0),  ctx: 1048576, avail: true,  success: 98.9 },
-      { id: 6, provider: "moonshot", model: "kimi-k3",           in: CNY(20.0), out: CNY(100.0), ctx: 1048576, avail: true,  success: 96.8 },
-      { id: 7, provider: "xai",      model: "grok-4.6",          in: USD(2.0),  out: USD(6.0),   ctx: 500000,  avail: true,  success: 93.7 },
+      { id: 1, provider: "deepseek", model: "deepseek-v4-flash", in: USD(0.14), out: USD(0.28), ctx: 1048576, avail: true,  success: 99.2, multi: true },
+      { id: 2, provider: "zhipu",    model: "glm-5.2",           in: CNY(8.0),  out: CNY(28.0),  ctx: 1048576, avail: true,  success: 98.6, multi: true },
+      { id: 3, provider: "openai",   model: "gpt-5.5-pro",       in: USD(30.0), out: USD(180.0), ctx: 1050000, avail: true,  success: 97.1, multi: true },
+      { id: 4, provider: "anthropic",model: "claude-opus-4.7",    in: USD(5.0),  out: USD(25.0),  ctx: 1000000, avail: false, success: 95.4, multi: false },
+      { id: 5, provider: "google",   model: "gemini-3.1-pro",    in: USD(2.0),  out: USD(12.0),  ctx: 1048576, avail: true,  success: 98.9, multi: false },
+      { id: 6, provider: "moonshot", model: "kimi-k3",           in: CNY(20.0), out: CNY(100.0), ctx: 1048576, avail: true,  success: 96.8, multi: false },
+      { id: 7, provider: "xai",      model: "grok-4.6",          in: USD(2.0),  out: USD(6.0),   ctx: 500000,  avail: true,  success: 93.7, multi: false },
     ],
 
     // 我的 API Keys（设置页；存完整 id，展示时脱敏，复制时给完整值）
     API_KEYS: [
       { id: "atk_live_9f2c1a7b4d22e41b", name: "本地 CLI 工具", created: "2026-08-01", last: "08-13 20:11", status: "active" },
       { id: "atk_live_3b88d077aa91c357", name: "CI / 自动化", created: "2026-07-22", last: "08-12 15:40", status: "active" },
+    ],
+
+    // 平台运营者视图（US-运营1 / US-运营2）：公共场景注册用户列表（mock）
+    // 运营者 = 宿主本人，职责仅两项：查看运行概览 + 给指定用户充值（永久有效点数，产生交易记录）
+    // 注意：id=1 即当前演示账号「阿零」，运营者对其充值时同步更新 D.USER.balance
+    OPERATOR_USERS: [
+      { id: 1, name: "阿零",   email: "demo@aitokenpool.local", balance: 12471 },
+      { id: 2, name: "陈默",   email: "chenmo@example.com",     balance: 320 },
+      { id: 3, name: "林小满", email: "linxm@example.com",      balance: 860 },
+      { id: 4, name: "苏航",   email: "suhang@example.com",     balance: 45.5 },
     ],
 
     // —— 企业版 ——

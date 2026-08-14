@@ -376,6 +376,47 @@ select.input option { background: var(--bg-card); }
 .wallet-note { font-size: 12px; }
 .wallet-hint { color: var(--text-mute); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
+/* ---------- 消费模拟（聊天 Mock · US-6） ---------- */
+
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(14, 17, 22, .72);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000; padding: 24px;
+}
+.modal {
+  width: 100%; max-width: 560px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 12px;
+  max-height: 80vh;
+}
+.modal-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.modal-head h3 { font-size: 16px; margin: 0; }
+.chat-log {
+  flex: 1; overflow-y: auto;
+  background: var(--bg-soft); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px; display: flex; flex-direction: column; gap: 8px;
+  min-height: 180px; max-height: 40vh;
+}
+.chat-tip { font-size: 12px; }
+.chat-msg { display: flex; }
+.chat-msg.user { justify-content: flex-end; }
+.chat-msg.bot { justify-content: flex-start; }
+.chat-msg .bubble {
+  max-width: 82%;
+  padding: 8px 12px; border-radius: 12px; font-size: 13px;
+  border: 1px solid var(--border); background: var(--bg-card);
+  color: var(--text); white-space: pre-wrap; word-break: break-word;
+}
+.chat-msg.user .bubble { background: var(--accent-soft); border-color: rgba(78,205,196,.4); color: var(--accent-text); }
+.chat-input-row { display: flex; gap: 10px; align-items: center; }
+.chat-input-row .input { flex: 1; }
+
 .toast {
   position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
   background: var(--bg-card); border: 1px solid var(--accent);
