@@ -78,10 +78,10 @@
       { id: 7, provider: "xai",      model: "grok-4.6",          in: USD(2.0),  out: USD(6.0),   ctx: 500000,  avail: true,  success: 93.7 },
     ],
 
-    // 我的 API Keys（设置页）
+    // 我的 API Keys（设置页；存完整 id，展示时脱敏，复制时给完整值）
     API_KEYS: [
-      { id: "atk_live_9f2c1a…e41b", name: "本地 CLI 工具", created: "2026-08-01", last: "08-13 20:11" },
-      { id: "atk_live_3b88d0…77aa", name: "CI / 自动化", created: "2026-07-22", last: "08-12 15:40" },
+      { id: "atk_live_9f2c1a7b4d22e41b", name: "本地 CLI 工具", created: "2026-08-01", last: "08-13 20:11", status: "active" },
+      { id: "atk_live_3b88d077aa91c357", name: "CI / 自动化", created: "2026-07-22", last: "08-12 15:40", status: "active" },
     ],
 
     // —— 企业版 ——

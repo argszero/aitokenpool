@@ -438,12 +438,71 @@
 
   /* --- 设置 --- */
 
+  // API Key 脱敏展示：atk_live_****xxxx（复制时给完整 id）
+  function maskAtk(id) {
+    if (!id) return "—";
+    if (id.startsWith("atk_live_")) return "atk_live_****" + id.slice(-4);
+    return maskKey(id);
+  }
+
   function renderSettings() {
-    $("#api-keys").innerHTML = D.API_KEYS.map((k) =>
-      '<div class="mini-item"><div><div class="t">' + esc(k.name) + "</div>" +
-      '<div class="d"><code>' + esc(k.id) + "</code> · 创建于 " + esc(k.created) + "</div></div>" +
-      '<div class="r"><span class="d">最近使用 ' + esc(k.last) + "</span></div></div>"
-    ).join("");
+    const q = ($("#ak-search").value || "").toLowerCase();
+    const list = D.API_KEYS.filter((k) => !q || k.name.toLowerCase().includes(q));
+    $("#api-keys").innerHTML = list.length ? list.map((k, i) =>
+      "<tr><td><strong>" + esc(k.name) + "</strong></td>" +
+      "<td><code>" + esc(maskAtk(k.id)) + "</code></td>" +
+      "<td>" + esc(k.created) + "</td>" +
+      "<td>" + esc(k.last) + "</td>" +
+      "<td>" + (k.status === "active" ? '<span class="badge ok">启用</span>' : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
+      "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>复制</button> " +
+      "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>改名</button> " +
+      "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + i + "'>删除</button></td></tr>"
+    ).join("") : '<tr><td colspan="6" class="muted">没有匹配的 key</td></tr>';
+  }
+
+  // 一键复制完整 key；file:// 下 clipboard API 受限 → 降级：临时 textarea 选中 + execCommand("copy")，仍失败则提示 Ctrl+C
+  function copyKey(i) {
+    const k = D.API_KEYS[i];
+    if (!k) return;
+    const okToast = () => toast("已复制「" + k.name + "」完整 key 到剪贴板");
+    const fallback = () => {
+      const ta = document.createElement("textarea");
+      ta.value = k.id;
+      ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) okToast();
+      else toast("已选中完整 key，请按 Ctrl+C / Cmd+C 复制");
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(k.id).then(okToast).catch(fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function renameKey(i) {
+    const k = D.API_KEYS[i];
+    if (!k) return;
+    const input = window.prompt("修改 key 名字：", k.name);
+    if (input == null) return;
+    const name = String(input).trim();
+    if (!name) { toast("名字不能为空（未生效）"); return; }
+    k.name = name;
+    renderSettings();
+    toast("已改名为「" + name + "」");
+  }
+
+  function deleteKey(i) {
+    const k = D.API_KEYS[i];
+    if (!k) return;
+    if (!window.confirm("删除后该 key 立即失效，确认删除「" + k.name + "」？")) return;
+    D.API_KEYS.splice(i, 1);
+    renderSettings();
+    toast("已删除 key「" + k.name + "」");
   }
 
   /* --- 管理员角色视图 --- */
@@ -708,12 +767,27 @@
     // 交易 Tab
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); }));
 
-    // API Key 生成
+    // API Key 生成（带名字；列表展示脱敏、复制给完整 id）
     $("#new-api-key-btn").addEventListener("click", () => {
-      const id = "atk_live_" + Math.random().toString(16).slice(2, 10) + "…" + Math.random().toString(16).slice(2, 6);
-      D.API_KEYS.unshift({ id, name: "新 Key（未命名）", created: "2026-08-13", last: "从未" });
+      const input = window.prompt("新 key 名字（留空则默认「未命名」）：", "未命名");
+      if (input == null) return;
+      const name = String(input).trim() || "未命名";
+      const id = "atk_live_" + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+      D.API_KEYS.unshift({ id, name, created: "2026-08-14", last: "从未", status: "active" });
       renderSettings();
-      toast("已生成新 API Key（演示）");
+      toast("已生成新 API Key「" + name + "」（完整 key 已展示在列表，可复制）");
+    });
+
+    // API Key 搜索 + 行内操作（复制 / 改名 / 删除）
+    $("#ak-search").addEventListener("input", renderSettings);
+
+    $("#api-keys").addEventListener("click", (e) => {
+      const cp = e.target.closest("[data-key-copy]");
+      if (cp) { copyKey(Number(cp.dataset.keyCopy)); return; }
+      const rn = e.target.closest("[data-key-rename]");
+      if (rn) { renameKey(Number(rn.dataset.keyRename)); return; }
+      const dl = e.target.closest("[data-key-del]");
+      if (dl) deleteKey(Number(dl.dataset.keyDel));
     });
 
     // 管理台 Tabs

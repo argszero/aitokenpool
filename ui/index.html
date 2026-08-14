@@ -222,7 +222,13 @@
         <div class="card">
           <h3>API Key <span class="en">API keys</span></h3>
           <p class="muted">用于本地工具 / 代码接入平台的密钥。</p>
-          <div class="mini-list" id="api-keys"></div>
+          <input id="ak-search" class="input" placeholder="搜索 key 名字…" style="margin-bottom:10px">
+          <div class="table-wrap compact">
+            <table class="table">
+              <thead><tr><th>名字</th><th>Key</th><th>创建时间</th><th>最近使用</th><th>状态</th><th></th></tr></thead>
+              <tbody id="api-keys"></tbody>
+            </table>
+          </div>
           <button class="btn btn-ghost" id="new-api-key-btn">生成新 Key <span class="en">(Generate)</span></button>
         </div>
         <div class="card">
