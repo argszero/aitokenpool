@@ -138,7 +138,7 @@
     const recent = txs.slice(0, 5);
 
     $("#dash-stats").innerHTML = [
-      stat("点数余额 Points", D.fmt(D.USER.balance), "1 USD = 1000 点", "accent"),
+      stat("点数余额 Points", D.fmt(D.USER.balance), "1 点 ≈ 1 元", "accent"),
       stat("本月用量 Usage", D.fmt(monthUse) + " 点", "共 " + txs.filter((t) => t.type === "consume").length + " 笔消费"),
       stat("共享收益 Earnings", "+" + D.fmt(monthEarn) + " 点", D.SHARINGS.filter((s) => s.status === "on").length + " 个 key 上架中"),
       stat("交易笔数 Trades", txs.length + " 笔", "含充值 / 提现 / 消费 / 收益 / 赠送"),

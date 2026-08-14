@@ -1,13 +1,14 @@
 /* ============================================================
    AITokenPool UI Prototype — 内嵌 mock 数据
-   点数规则：1 USD = 1000 点；CNY 按 ~7.2 CNY/USD 折算（示例）
+   点数规则：1 点 ≈ 1 元人民币（CNY）；USD 模型按 ~7.2 汇率折算（示例）
    ============================================================ */
 
 (function () {
   "use strict";
 
-  const USD = (usd) => Math.round(usd * 1000);
-  const CNY = (cny) => Math.round((cny / 7.2) * 1000);
+  // CNY 模型：1 元 = 1 点；USD 模型：按 ~7.2 汇率折算为人民币点数
+  const USD = (usd) => Math.round(usd * 7.2);
+  const CNY = (cny) => Math.round(cny);
 
   // 模型价格（来自 data/models.example.json，折算为点数 / 1M tokens）
   const MODELS = [
@@ -30,7 +31,8 @@
   MODELS[2].availability = "available"; // glm
   MODELS[4].availability = "busy";      // claude 演示"繁忙"
 
-  const fmt = (n) => n.toLocaleString("zh-CN");
+  // 金额/余额格式化：整数原样（千分位）；小数保留 2 位（v1.6 CNY 锚定，消费点数可为小数）
+  const fmt = (n) => Number.isInteger(n) ? n.toLocaleString("zh-CN") : n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const ctxFmt = (n) => (n >= 1000000 ? (n / 1000000).toFixed(1) + "M" : fmt(n));
 
   window.ATDATA = {
@@ -53,7 +55,7 @@
     // 交易记录（消费 / 收益 / 充值 / 提现 / 赠送）——唯一明细数据源，钱包页与交易记录页共用此表
     TRANSACTIONS: [
       { id: 13, time: "08-14 09:00", type: "gift",    partner: "—",                 detail: "赠送 · 每日赠送 第 7 天 / 共 10 天（有效期至今日）", tokens: "—",  pts: +1,   status: "入账" },
-      { id: 1, time: "08-13 20:15", type: "consume", partner: "deepseek-v4-flash", detail: "消费 · 用 shared key", tokens: "1.2M", pts: -320, status: "成功" },
+      { id: 1, time: "08-13 20:15", type: "consume", partner: "deepseek-v4-flash", detail: "消费 · 用 shared key", tokens: "0.19M", pts: -0.37, status: "成功" },
       { id: 2, time: "08-13 19:02", type: "earn",    partner: "glm-5.2",           detail: "收益 · 我的 key 被消费", tokens: "860K", pts: +420, status: "入账" },
       { id: 3, time: "08-13 17:44", type: "consume", partner: "gpt-5.5-pro",       detail: "消费 · 用 shared key", tokens: "45K",  pts: -860, status: "成功" },
       { id: 4, time: "08-13 15:10", type: "earn",    partner: "kimi-k3",           detail: "收益 · 我的 key 被消费", tokens: "1.5M", pts: +980, status: "入账" },
@@ -69,10 +71,10 @@
 
     // 我的共享（price = 按模型定价自动计算的输出单价 点数/1M；key 仅脱敏展示）
     SHARINGS: [
-      { id: 1, model: "glm-5.2", quota: 100000, used: 32800, price: 3889, earned: 1790, status: "on", key: "sk-zhipu-9f2c41ab7d22" },
-      { id: 2, model: "deepseek-v4-flash", quota: 80000, used: 51200, price: 280, earned: 1240, status: "on", key: "sk-ds-3b88d077aa91" },
-      { id: 3, model: "kimi-k3", quota: 50000, used: 800, price: 13889, earned: 60, status: "paused", key: "sk-ms-c31f2e8b4405" },
-      { id: 4, model: "minimax-m3", quota: 20000, used: 20000, price: 1200, earned: 480, status: "off", key: "sk-mx-77d2a1c9e356" },
+      { id: 1, model: "glm-5.2", quota: 100000, used: 32800, price: 28, earned: 1790, status: "on", key: "sk-zhipu-9f2c41ab7d22" },
+      { id: 2, model: "deepseek-v4-flash", quota: 80000, used: 51200, price: 2, earned: 1240, status: "on", key: "sk-ds-3b88d077aa91" },
+      { id: 3, model: "kimi-k3", quota: 50000, used: 800, price: 100, earned: 60, status: "paused", key: "sk-ms-c31f2e8b4405" },
+      { id: 4, model: "minimax-m3", quota: 20000, used: 20000, price: 9, earned: 480, status: "off", key: "sk-mx-77d2a1c9e356" },
     ],
 
     // 市场在售 key（公共版浏览）
