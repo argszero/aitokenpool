@@ -262,7 +262,7 @@
     // 钱包只做余额与资金操作；收支明细统一到【交易记录】（见 index.html wallet-hint）
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     $("#wallet-balance").textContent = D.fmt(D.USER.balance);
-    // 点数来源 / 有效期（v1.2：赠送 1 周有效、收益/充值永久）
+    // 点数来源 / 有效期（v1.4：每日赠送 1 点当日有效、收益/充值永久）
     const src = $("#points-sources");
     if (src) {
       src.innerHTML = D.POINT_SOURCES.map((s) =>

@@ -41,18 +41,18 @@
     PROVIDERS: [...new Set(MODELS.map((m) => m.provider))],
 
     // 当前用户（公共版）
-    USER: { name: "阿零", email: "demo@aitokenpool.local", balance: 12480 },
+    USER: { name: "阿零", email: "demo@aitokenpool.local", balance: 12471 },
 
-    // 点数来源（v1.2 点数机制：注册赠送 10 点 / 1 周有效；分享收益与充值点数永久有效）
+    // 点数来源（v1.4 点数机制：每日赠送 1 点 / 当日有效 / 连续 10 天；分享收益与充值点数永久有效）
     POINT_SOURCES: [
-      { kind: "gift",  label: "赠送点数", pts: 10,    note: "新人体验券 · 剩 5 天（08-19 过期）" },
+      { kind: "gift",  label: "赠送点数", pts: 1,     note: "今日赠送 +1 · 有效期至今日 · 连续第 7 天 / 共 10 天" },
       { kind: "earn",  label: "收益点数", pts: 12470, note: "分享 key 赚取 · 永久有效" },
       { kind: "topup", label: "充值点数", pts: 0,     note: "永久有效 · 充值暂未开放" },
     ],
 
     // 交易记录（消费 / 收益 / 充值 / 提现 / 赠送）——唯一明细数据源，钱包页与交易记录页共用此表
     TRANSACTIONS: [
-      { id: 13, time: "08-14 09:00", type: "gift",    partner: "—",                 detail: "赠送 · 新人体验券（注册赠送）", tokens: "—",  pts: +10,  status: "入账" },
+      { id: 13, time: "08-14 09:00", type: "gift",    partner: "—",                 detail: "赠送 · 每日赠送 第 7 天 / 共 10 天（有效期至今日）", tokens: "—",  pts: +1,   status: "入账" },
       { id: 1, time: "08-13 20:15", type: "consume", partner: "deepseek-v4-flash", detail: "消费 · 用 shared key", tokens: "1.2M", pts: -320, status: "成功" },
       { id: 2, time: "08-13 19:02", type: "earn",    partner: "glm-5.2",           detail: "收益 · 我的 key 被消费", tokens: "860K", pts: +420, status: "入账" },
       { id: 3, time: "08-13 17:44", type: "consume", partner: "gpt-5.5-pro",       detail: "消费 · 用 shared key", tokens: "45K",  pts: -860, status: "成功" },
