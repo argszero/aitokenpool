@@ -405,6 +405,14 @@
       $("#mk-provider").dataset.init = "1";
     }
 
+    // 共享上架表单（默认收起；点添加展开，提交成功或取消后收起）
+    const shareFormCard = () => $("#share-form-card");
+    const showShareForm = () => { shareFormCard().hidden = false; $("#sf-key").focus(); };
+    const hideShareForm = () => { shareFormCard().hidden = true; };
+
+    $("#share-add-btn").addEventListener("click", showShareForm);
+    $("#sf-cancel").addEventListener("click", hideShareForm);
+
     // 共享上架表单（须填 API Key；单价由平台按模型定价自动计算）
     $("#share-form").addEventListener("submit", (e) => {
       e.preventDefault();
@@ -421,6 +429,7 @@
       e.target.reset();
       const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
       $("#sf-quota").value = 5000;
+      hideShareForm();
     });
 
     // 共享列表操作（事件委托：暂停/恢复/重新上架 + 删除）

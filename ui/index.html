@@ -115,8 +115,11 @@
         <p>上架闲置 key 赚点数 · 管理共享中的 key</p>
       </header>
       <div class="stat-grid" id="share-stats"></div>
+      <div class="toolbar">
+        <button type="button" class="btn btn-primary" id="share-add-btn">＋ 添加 / 上架新 key <span class="en">(List a key)</span></button>
+      </div>
       <div class="card-grid">
-        <div class="card">
+        <div class="card" id="share-form-card" hidden>
           <h3>上架新 key <span class="en">List a key</span></h3>
           <form id="share-form" class="form">
             <div class="form-row">
@@ -142,7 +145,10 @@
             <label>备注（可选）
               <input id="sf-note" class="input" placeholder="如：工作日 9:00-18:00 可用">
             </label>
-            <button type="submit" class="btn btn-primary">上架 <span class="en">(List)</span></button>
+            <div class="form-row">
+              <button type="submit" class="btn btn-primary">上架 <span class="en">(List)</span></button>
+              <button type="button" class="btn btn-ghost" id="sf-cancel">取消 <span class="en">(Cancel)</span></button>
+            </div>
           </form>
         </div>
         <div class="card">
