@@ -56,25 +56,25 @@
     TRANSACTIONS: [
       { id: 13, time: "08-14 09:00", type: "gift",    partner: "—",                 detail: "赠送 · 每日赠送 第 7 天 / 共 10 天（有效期至今日）", tokens: "—",  pts: +1,   status: "入账" },
       { id: 1, time: "08-13 20:15", type: "consume", partner: "deepseek-v4-flash", detail: "消费 · 用 shared key", tokens: "0.19M", pts: -0.37, status: "成功" },
-      { id: 2, time: "08-13 19:02", type: "earn",    partner: "glm-5.2",           detail: "收益 · 我的 key 被消费", tokens: "860K", pts: +420, status: "入账" },
+      { id: 2, time: "08-13 19:02", type: "earn",    partner: "glm-5.2",           detail: "收益 · 我的 key 被消费（已扣 10% 平台分成）", tokens: "860K", pts: +378, status: "入账" },
       { id: 3, time: "08-13 17:44", type: "consume", partner: "gpt-5.5-pro",       detail: "消费 · 用 shared key", tokens: "45K",  pts: -860, status: "成功" },
-      { id: 4, time: "08-13 15:10", type: "earn",    partner: "kimi-k3",           detail: "收益 · 我的 key 被消费", tokens: "1.5M", pts: +980, status: "入账" },
+      { id: 4, time: "08-13 15:10", type: "earn",    partner: "kimi-k3",           detail: "收益 · 我的 key 被消费（已扣 10% 平台分成）", tokens: "1.5M", pts: +882, status: "入账" },
       { id: 5, time: "08-13 11:36", type: "topup",   partner: "—",                 detail: "充值", tokens: "—",       pts: +5000, status: "成功" },
       { id: 6, time: "08-12 21:08", type: "consume", partner: "gemini-3.1-pro",    detail: "消费 · 用 shared key", tokens: "2.1M", pts: -310, status: "成功" },
-      { id: 7, time: "08-12 14:22", type: "earn",    partner: "deepseek-v4-flash", detail: "收益 · 我的 key 被消费", tokens: "3.0M", pts: +210, status: "入账" },
+      { id: 7, time: "08-12 14:22", type: "earn",    partner: "deepseek-v4-flash", detail: "收益 · 我的 key 被消费（已扣 10% 平台分成）", tokens: "3.0M", pts: +189, status: "入账" },
       { id: 8, time: "08-12 09:41", type: "consume", partner: "claude-opus-4.7",   detail: "消费 · 用 shared key", tokens: "22K",  pts: -640, status: "成功" },
       { id: 9, time: "08-11 18:30", type: "withdraw", partner: "—",                detail: "提现（占位）", tokens: "—",       pts: -2000, status: "处理中" },
-      { id: 10, time: "08-11 10:12", type: "earn",   partner: "glm-5.2",           detail: "收益 · 我的 key 被消费", tokens: "700K", pts: +390, status: "入账" },
+      { id: 10, time: "08-11 10:12", type: "earn",   partner: "glm-5.2",           detail: "收益 · 我的 key 被消费（已扣 10% 平台分成）", tokens: "700K", pts: +351, status: "入账" },
       { id: 11, time: "08-10 16:05", type: "consume", partner: "doubao-seed-2.1-pro", detail: "消费 · 用 shared key", tokens: "540K", pts: -260, status: "成功" },
-      { id: 12, time: "08-10 08:50", type: "earn",   partner: "minimax-m3",        detail: "收益 · 我的 key 被消费", tokens: "2.4M", pts: +180, status: "入账" },
+      { id: 12, time: "08-10 08:50", type: "earn",   partner: "minimax-m3",        detail: "收益 · 我的 key 被消费（已扣 10% 平台分成）", tokens: "2.4M", pts: +162, status: "入账" },
     ],
 
-    // 我的共享（price = 按模型定价自动计算的输出单价 点数/1M；key 仅脱敏展示）
+    // 我的共享（price = 按模型定价自动计算的输出单价 点数/1M；earned 为已扣 10% 平台分成后的累计收益；key 仅脱敏展示）
     SHARINGS: [
-      { id: 1, model: "glm-5.2", quota: 100000, used: 32800, price: 28, earned: 1790, status: "on", key: "sk-zhipu-9f2c41ab7d22" },
-      { id: 2, model: "deepseek-v4-flash", quota: 80000, used: 51200, price: 2, earned: 1240, status: "on", key: "sk-ds-3b88d077aa91" },
-      { id: 3, model: "kimi-k3", quota: 50000, used: 800, price: 100, earned: 60, status: "paused", key: "sk-ms-c31f2e8b4405" },
-      { id: 4, model: "minimax-m3", quota: 20000, used: 20000, price: 9, earned: 480, status: "off", key: "sk-mx-77d2a1c9e356" },
+      { id: 1, model: "glm-5.2", quota: 100000, used: 32800, price: 28, earned: 1611, status: "on", key: "sk-zhipu-9f2c41ab7d22" },
+      { id: 2, model: "deepseek-v4-flash", quota: 80000, used: 51200, price: 2, earned: 1116, status: "on", key: "sk-ds-3b88d077aa91" },
+      { id: 3, model: "kimi-k3", quota: 50000, used: 800, price: 100, earned: 54, status: "paused", key: "sk-ms-c31f2e8b4405" },
+      { id: 4, model: "minimax-m3", quota: 20000, used: 20000, price: 9, earned: 432, status: "off", key: "sk-mx-77d2a1c9e356" },
     ],
 
     // 市场在售 key（公共版浏览）
