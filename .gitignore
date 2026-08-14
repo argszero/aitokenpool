@@ -1,2 +1,5 @@
 /target
 .emrg/
+
+# macOS
+.DS_Store
