@@ -59,12 +59,12 @@
       { id: 12, time: "08-10 08:50", type: "earn",   partner: "minimax-m3",        detail: "收益 · 我的 key 被消费", tokens: "2.4M", pts: +180, status: "入账" },
     ],
 
-    // 我的共享
+    // 我的共享（price = 按模型定价自动计算的输出单价 点数/1M）
     SHARINGS: [
-      { id: 1, model: "glm-5.2", quota: 100000, used: 32800, price: 420, earned: 1790, status: "on" },
+      { id: 1, model: "glm-5.2", quota: 100000, used: 32800, price: 3889, earned: 1790, status: "on" },
       { id: 2, model: "deepseek-v4-flash", quota: 80000, used: 51200, price: 280, earned: 1240, status: "on" },
-      { id: 3, model: "kimi-k3", quota: 50000, used: 800, price: 380, earned: 60, status: "paused" },
-      { id: 4, model: "minimax-m3", quota: 20000, used: 20000, price: 160, earned: 480, status: "off" },
+      { id: 3, model: "kimi-k3", quota: 50000, used: 800, price: 13889, earned: 60, status: "paused" },
+      { id: 4, model: "minimax-m3", quota: 20000, used: 20000, price: 1200, earned: 480, status: "off" },
     ],
 
     // 市场在售 key（公共版浏览）

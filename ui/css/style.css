@@ -77,6 +77,19 @@ body {
   transition: border-color .15s;
 }
 .input:focus { border-color: var(--accent); }
+
+/* 自动参考单价（只读展示，由平台按模型定价计算） */
+.price-view {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 9px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  color: var(--text-dim);
+  font-size: 13px;
+}
 select.input option { background: var(--bg-card); }
 
 .card {

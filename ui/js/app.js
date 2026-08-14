@@ -30,6 +30,27 @@
       esc(labels[status] ? labels[status].text : status) + "</span>";
   }
 
+  // 自动单价：单价是模型×厂商的客观属性，由平台按模型定价自动计算（输出 1M tokens 折算点数）
+  function autoPrice(model) {
+    const m = D.MODELS.find((x) => x.model === model);
+    if (m && typeof m.out === "number") return m.out;
+    // 兜底：取同厂商相近模型的输出价；仍无则用固定默认价
+    const same = m ? D.MODELS.find((x) => x.provider === m.provider && typeof x.out === "number") : null;
+    return same ? same.out : 300;
+  }
+
+  function showPriceHint(model) {
+    const el = $("#sf-price-view");
+    if (!el) return;
+    const m = D.MODELS.find((x) => x.model === model);
+    if (!model) { el.textContent = "选择模型后自动计算"; return; }
+    if (m && typeof m.out === "number") {
+      el.textContent = D.fmt(m.out) + " 点 / 1M 输出（自动）";
+    } else {
+      el.textContent = "按默认价：" + D.fmt(autoPrice(model)) + " 点 / 1M 输出（自动）";
+    }
+  }
+
   /* ---------------- 导航 ---------------- */
 
   const NAV = [
@@ -186,8 +207,10 @@
         const p = selP.value;
         selM.innerHTML = '<option value="">选择模型</option>' + D.MODELS.filter((m) => !p || m.provider === p)
           .map((m) => '<option value="' + m.model + '">' + m.model + "</option>").join("");
+        showPriceHint(selM.value);
       };
       selP.addEventListener("change", fillModels);
+      selM.addEventListener("change", () => showPriceHint(selM.value));
       selP.dataset.init = "1";
       fillModels();
     }
@@ -363,20 +386,20 @@
       $("#mk-provider").dataset.init = "1";
     }
 
-    // 共享上架表单
+    // 共享上架表单（单价由平台按模型定价自动计算，分享者只填声明额度）
     $("#share-form").addEventListener("submit", (e) => {
       e.preventDefault();
       const model = $("#sf-model").value;
       const quota = Number($("#sf-quota").value || 0);
-      const price = Number($("#sf-price").value || 0);
       if (!model || quota <= 0) { toast("请选择模型并填写有效额度"); return; }
+      const price = autoPrice(model);
       D.SHARINGS.unshift({ id: Date.now(), model, quota, used: 0, price, earned: 0, status: "on" });
       renderSharing();
       if (activeView === "dashboard") renderDashboard();
-      toast("已上架 " + model + "（额度 " + D.fmt(quota) + " 点）");
+      toast("已上架 " + model + "（额度 " + D.fmt(quota) + " 点，单价 " + D.fmt(price) + " 点/1M 自动）");
       e.target.reset();
       const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
-      $("#sf-quota").value = 5000; $("#sf-price").value = 280;
+      $("#sf-quota").value = 5000;
     });
 
     // 共享列表操作（事件委托）
