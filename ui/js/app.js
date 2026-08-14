@@ -141,7 +141,7 @@
       stat("点数余额 Points", D.fmt(D.USER.balance), "1 USD = 1000 点", "accent"),
       stat("本月用量 Usage", D.fmt(monthUse) + " 点", "共 " + txs.filter((t) => t.type === "consume").length + " 笔消费"),
       stat("共享收益 Earnings", "+" + D.fmt(monthEarn) + " 点", D.SHARINGS.filter((s) => s.status === "on").length + " 个 key 上架中"),
-      stat("交易笔数 Trades", txs.length + " 笔", "含充值 / 提现 / 消费 / 收益"),
+      stat("交易笔数 Trades", txs.length + " 笔", "含充值 / 提现 / 消费 / 收益 / 赠送"),
     ].join("");
 
     $("#dash-recent").innerHTML = recent.map((t) =>
@@ -262,18 +262,27 @@
     // 钱包只做余额与资金操作；收支明细统一到【交易记录】（见 index.html wallet-hint）
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     $("#wallet-balance").textContent = D.fmt(D.USER.balance);
+    // 点数来源 / 有效期（v1.2：赠送 1 周有效、收益/充值永久）
+    const src = $("#points-sources");
+    if (src) {
+      src.innerHTML = D.POINT_SOURCES.map((s) =>
+        '<div class="mini-item"><div><div class="t">' + esc(s.label) + "</div>" +
+        '<div class="d">' + esc(s.note) + "</div></div>" +
+        '<div class="r"><span class="pts">' + (s.pts > 0 ? "+" : "") + D.fmt(s.pts) + "</span></div></div>"
+      ).join("");
+    }
   }
 
   /* --- 交易记录 --- */
 
   const TX_TYPE = {
-    consume: "消费", earn: "收益", topup: "充值", withdraw: "提现",
+    consume: "消费", earn: "收益", topup: "充值", withdraw: "提现", gift: "赠送",
   };
 
   const TX_COLUMNS = [
     { key: "time", title: "时间", sort: "string", filter: "text" },
-    { key: "type", title: "类型", sort: "string", filter: "select", options: ["消费", "收益", "充值", "提现"], filterVal: (t) => TX_TYPE[t.type] || t.type,
-      render: (t) => t.type === "earn" ? '<span class="badge ok">收益</span>' : t.type === "consume" ? '<span class="badge accent">消费</span>' : '<span class="badge dim">' + esc(TX_TYPE[t.type] || t.type) + "</span>" },
+    { key: "type", title: "类型", sort: "string", filter: "select", options: ["消费", "收益", "充值", "提现", "赠送"], filterVal: (t) => TX_TYPE[t.type] || t.type,
+      render: (t) => t.type === "earn" ? '<span class="badge ok">收益</span>' : t.type === "consume" ? '<span class="badge accent">消费</span>' : t.type === "gift" ? '<span class="badge ok">赠送</span>' : '<span class="badge dim">' + esc(TX_TYPE[t.type] || t.type) + "</span>" },
     { key: "partner", title: "模型 / Key", sort: "string", filter: "text" },
     { key: "tokens", title: "Token 用量", sort: "string", filter: "text" },
     { key: "pts", title: "点数", sort: "number", filter: "number-range",
