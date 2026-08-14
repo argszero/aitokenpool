@@ -491,7 +491,102 @@
       const maxE = Math.max(...D.USAGE_EMP.map((u) => u.pts));
       $("#usage-model").innerHTML = D.USAGE_MODEL.map((u) => barRow(u.name, u.pts, maxM, "点")).join("");
       $("#usage-emp").innerHTML = D.USAGE_EMP.map((u) => barRow(u.name, u.pts, maxE, "点")).join("");
+    } else if (tab === "org") {
+      renderOrg();
     }
+  }
+
+  /* --- 组织管理：部门列表 + 部门 CRUD + 每月点数分配 --- */
+
+  // 部门已用/成员数由 EMPLOYEES 实时汇总，部门改名/删改后自动联动
+  function deptMemberCount(name) {
+    return D.EMPLOYEES.filter((e) => e.dept === name).length;
+  }
+
+  function deptUsed(d) {
+    return D.EMPLOYEES.filter((e) => e.dept === d.name).reduce((a, e) => a + e.used, 0);
+  }
+
+  function renderOrg() {
+    const q = ($("#od-search").value || "").toLowerCase();
+    const list = D.DEPARTMENTS.filter((d) => !q || d.name.toLowerCase().includes(q));
+
+    const totalQuota = D.DEPARTMENTS.reduce((a, d) => a + d.quota, 0);
+    const totalUsed = D.DEPARTMENTS.reduce((a, d) => a + deptUsed(d), 0);
+    $("#dept-stats").innerHTML = [
+      stat("部门数 Departments", D.DEPARTMENTS.length + " 个", "全部部门"),
+      stat("月度总分配 Monthly quota", D.fmt(totalQuota) + " 点", "按月分配"),
+      stat("已用 Used", D.fmt(totalUsed) + " 点", totalQuota ? Math.round((totalUsed / totalQuota) * 100) + "% 消耗率" : "—"),
+      stat("剩余 Remain", D.fmt(totalQuota - totalUsed) + " 点", "按部门分配"),
+    ].join("");
+
+    $("#dept-body").innerHTML = list.length ? list.map((d, i) => {
+      const used = deptUsed(d);
+      const pct = d.quota > 0 ? used / d.quota : 0;
+      const st = pct >= 1 ? '<span class="badge danger">已用尽</span>' : pct > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>';
+      return "<tr><td><strong>" + esc(d.name) + "</strong></td>" +
+        "<td>" + deptMemberCount(d.name) + " 人</td>" +
+        "<td>" + D.fmt(d.quota) + " 点</td>" +
+        "<td>" + D.fmt(used) + " 点</td>" +
+        "<td>" + D.fmt(d.quota - used) + " 点</td>" +
+        "<td>" + st + "</td>" +
+        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-dept-edit='" + i + "'>编辑</button> " +
+        "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-dept-del='" + i + "'>删除</button></td></tr>";
+    }).join("") : '<tr><td colspan="7" class="muted">没有匹配的部门</td></tr>';
+  }
+
+  // 月分配点数必须为正整数
+  function promptPositiveInt(promptText, fallback) {
+    const raw = window.prompt(promptText, fallback);
+    if (raw == null) return null; // 取消
+    const s = String(raw).trim();
+    const n = Number(s);
+    if (!s || !Number.isInteger(n) || n <= 0) { toast("请输入正整数点数（未生效）"); return null; }
+    return n;
+  }
+
+  function addDept() {
+    const name = window.prompt("新部门名称：", "");
+    if (name == null) return;
+    const n = String(name).trim();
+    if (!n) { toast("请输入部门名称（未生效）"); return; }
+    if (D.DEPARTMENTS.some((d) => d.name === n)) { toast("部门「" + n + "」已存在"); return; }
+    const quota = promptPositiveInt("每月点数分配（正整数）：", "10000");
+    if (quota == null) return;
+    D.DEPARTMENTS.push({ id: Date.now(), name: n, quota });
+    renderAdmin();
+    toast("已添加部门「" + n + "」（月分配 " + D.fmt(quota) + " 点）");
+  }
+
+  function editDept(i) {
+    const d = D.DEPARTMENTS[i];
+    if (!d) return;
+    const name = window.prompt("修改部门名称：", d.name);
+    if (name == null) return;
+    const n = String(name).trim();
+    if (!n) { toast("部门名称不能为空（未生效）"); return; }
+    if (n !== d.name && D.DEPARTMENTS.some((x) => x.name === n)) { toast("部门「" + n + "」已存在"); return; }
+    const quota = promptPositiveInt("每月点数分配（正整数）：", String(d.quota));
+    if (quota == null) return;
+    const old = d.name;
+    d.name = n;
+    d.quota = quota;
+    if (n !== old) D.EMPLOYEES.forEach((e) => { if (e.dept === old) e.dept = n; }); // 成员部门联动改名
+    renderAdmin();
+    toast("已更新部门「" + n + "」（月分配 " + D.fmt(quota) + " 点）");
+  }
+
+  function deleteDept(i) {
+    const d = D.DEPARTMENTS[i];
+    if (!d) return;
+    const members = deptMemberCount(d.name);
+    const msg = members > 0
+      ? "该部门有 " + members + " 名成员，删除后这些成员将失去部门归属。确认删除部门「" + d.name + "」？"
+      : "确认删除部门「" + d.name + "」？";
+    if (!window.confirm(msg)) return;
+    D.DEPARTMENTS.splice(i, 1);
+    renderAdmin();
+    toast("已删除部门「" + d.name + "」");
   }
 
   function barRow(name, pts, max, unit) {
@@ -620,6 +715,18 @@
       emp.quota += amt;
       renderAdmin();
       toast("已给 " + emp.name + " 充值 " + D.fmt(amt) + " 点");
+    });
+
+    // 组织管理：部门搜索 / 添加 / 编辑 / 删除（事件委托）
+    $("#od-search").addEventListener("input", renderAdmin);
+
+    $("#add-dept-btn").addEventListener("click", addDept);
+
+    $("#dept-body").addEventListener("click", (e) => {
+      const ed = e.target.closest("[data-dept-edit]");
+      if (ed) { editDept(Number(ed.dataset.deptEdit)); return; }
+      const dl = e.target.closest("[data-dept-del]");
+      if (dl) deleteDept(Number(dl.dataset.deptDel));
     });
   }
 

@@ -105,6 +105,14 @@
       { id: 5, name: "何明", dept: "设计", quota: 8000,  used: 2100 },
     ],
 
+    // 部门（组织管理 — 每月点数分配；已用/成员数由 EMPLOYEES 实时汇总，保持联动）
+    DEPARTMENTS: [
+      { id: 1, name: "研发", quota: 80000 },
+      { id: 2, name: "产品", quota: 30000 },
+      { id: 3, name: "市场", quota: 20000 },
+      { id: 4, name: "设计", quota: 15000 },
+    ],
+
     // 用量报表
     USAGE_MODEL: [
       { name: "gpt-5.5-pro", pts: 18600 },

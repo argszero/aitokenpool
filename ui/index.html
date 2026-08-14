@@ -251,13 +251,13 @@
     <section class="view hidden" id="view-admin">
       <header class="page-head">
         <h2>管理视图 <span class="en">Admin</span></h2>
-        <p>管理员角色专属：Key 池 · 成员/员工点数 · 用量报表 · 组织设置（普通用户无此视图）</p>
+        <p>管理员角色专属：Key 池 · 成员/员工点数 · 用量报表 · 组织管理（普通用户无此视图）</p>
       </header>
       <div class="tabs" id="admin-tabs">
         <button class="tab active" data-admin-tab="keys">Key 池</button>
         <button class="tab" data-admin-tab="employees">成员管理</button>
         <button class="tab" data-admin-tab="usage">用量报表</button>
-        <button class="tab" data-admin-tab="org">组织设置</button>
+        <button class="tab" data-admin-tab="org">组织管理</button>
       </div>
 
       <div class="admin-pane" data-admin-pane="keys">
@@ -301,6 +301,20 @@
       </div>
 
       <div class="admin-pane hidden" data-admin-pane="org">
+        <div class="stat-grid" id="dept-stats"></div>
+        <div class="toolbar">
+          <input id="od-search" class="input" placeholder="搜索部门…">
+          <button class="btn btn-primary" id="add-dept-btn">添加部门 <span class="en">(+ Add dept)</span></button>
+        </div>
+        <div class="card">
+          <h3>部门列表 <span class="en">Departments</span></h3>
+          <div class="table-wrap compact">
+            <table class="table">
+              <thead><tr><th>部门</th><th>成员数</th><th>月分配（点数）</th><th>已用</th><th>剩余</th><th>状态</th><th></th></tr></thead>
+              <tbody id="dept-body"></tbody>
+            </table>
+          </div>
+        </div>
         <div class="card">
           <h3>组织设置 <span class="en">Organization settings</span></h3>
           <div class="form">
