@@ -50,7 +50,12 @@
     POINT_SOURCES: [
       { kind: "gift",  label: "赠送点数", pts: 1,     validity: "当日有效", note: "今日赠送 +1 · 有效期至今日 · 连续第 7 天 / 共 10 天（剩 3 天）" },
       { kind: "earn",  label: "收益点数", pts: 12470, validity: "永久有效", note: "分享 key 赚取 · 永久有效" },
-      { kind: "topup", label: "充值点数", pts: 0,     validity: "永久有效", note: "永久有效 · 充值暂未开放" },
+      { kind: "topup", label: "充值点数", pts: 0,     validity: "永久有效", note: "永久有效 · 演示充值可用（US-4）" },
+    ],
+
+    // 加额申请（US-20：企业成员申请 → 管理员批准 / 驳回；mock 内嵌数据）
+    RAISE_REQUESTS: [
+      { id: 1, user: "苏航", email: "suhang@example.com", amount: 5000, reason: "本月开发任务增加，配额已用尽", status: "pending", time: "08-15 09:00" },
     ],
 
     // 交易记录（消费 / 收益 / 充值 / 提现 / 赠送）——唯一明细数据源，钱包页与交易记录页共用此表

@@ -194,9 +194,10 @@
           <p>1 点 ≈ 1 元 <span class="en">(1 point ≈ 1 CNY)</span> · 消费点数可为小数</p>
         </div>
         <div class="wallet-actions">
-          <button class="btn btn-primary" id="topup-btn" disabled>充值 <span class="en">Top up</span></button>
+          <button class="btn btn-primary" id="topup-btn">充值 <span class="en">Top up</span></button>
+          <button class="btn btn-ghost" id="raise-btn">申请加额 <span class="en">Request more</span></button>
           <button class="btn btn-ghost" id="withdraw-btn" disabled>提现 <span class="en">Withdraw</span></button>
-          <span class="muted wallet-note">充值 / 提现暂不支持（即将上线）</span>
+          <span class="muted wallet-note">充值（演示流程，真实支付后续接入） · 提现暂不支持</span>
         </div>
       </div>
       <div class="card">
@@ -315,6 +316,10 @@
             </table>
           </div>
         </div>
+        <div class="card">
+          <h3>加额申请 <span class="en">Raise requests</span> <span class="muted" style="font-weight:400;font-size:12px">（US-20：成员申请 → 管理员批准 / 驳回）</span></h3>
+          <div id="raise-requests"></div>
+        </div>
       </div>
 
       <div class="admin-pane hidden" data-admin-pane="usage">
@@ -350,7 +355,7 @@
           <div class="form">
             <label>组织名称 <input class="input" value="示例科技 Example Tech"></label>
             <label>默认成员配额（点数/月）<input class="input" type="number" value="20000"></label>
-            <label class="check"><input type="checkbox" checked> 成员自助申请加额需管理员审批</label>
+            <label class="check"><input type="checkbox" id="org-approval-toggle" checked> 成员自助申请加额需管理员审批</label>
             <label class="check"><input type="checkbox"> 关闭外部注册（企业内网部署）</label>
             <button class="btn btn-primary">保存设置 <span class="en">(Save)</span></button>
           </div>
@@ -395,6 +400,56 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
+
+<!-- 充值模拟（US-4：钱包页充值入口 → 输入点数 → 余额增加 + topup 交易记录，永久有效点数） -->
+<div id="topup-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>充值点数 <span class="en">Top up</span></h3>
+      <button type="button" class="btn btn-ghost" data-modal-close="topup-modal">✕</button>
+    </div>
+    <p class="muted">演示流程：真实支付通道后续接入。充值获得<strong>永久有效点数</strong>（1 点 ≈ 1 元）。</p>
+    <div class="form">
+      <label>选择金额（点数）
+        <div class="topup-presets">
+          <button type="button" class="btn btn-ghost" data-topup-amt="100">100</button>
+          <button type="button" class="btn btn-ghost" data-topup-amt="500">500</button>
+          <button type="button" class="btn btn-ghost" data-topup-amt="1000">1000</button>
+        </div>
+      </label>
+      <label>或自定义金额
+        <input id="topup-custom" type="number" min="1" step="0.01" class="input" placeholder="如 300 或 25.5">
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-primary" id="topup-confirm">确认充值 <span class="en">(Confirm)</span></button>
+      <button type="button" class="btn btn-ghost" data-modal-close="topup-modal">取消 <span class="en">(Cancel)</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- 成员申请加额（US-20：余额低时申请更多点数 → 等待管理员审批） -->
+<div id="raise-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>申请加额 <span class="en">Request more points</span></h3>
+      <button type="button" class="btn btn-ghost" data-modal-close="raise-modal">✕</button>
+    </div>
+    <p class="muted">余额低时可申请更多点数，提交后等待管理员审批（US-20）。</p>
+    <div class="form">
+      <label>申请点数
+        <input id="raise-amount" type="number" min="1" step="1" class="input" placeholder="如 5000">
+      </label>
+      <label>申请原因
+        <input id="raise-reason" class="input" placeholder="如：本月配额已用完，需要继续开发">
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-primary" id="raise-confirm">提交申请 <span class="en">(Submit)</span></button>
+      <button type="button" class="btn btn-ghost" data-modal-close="raise-modal">取消 <span class="en">(Cancel)</span></button>
+    </div>
+  </div>
+</div>
 
 <script src="js/data.js"></script>
 <script src="js/app.js"></script>

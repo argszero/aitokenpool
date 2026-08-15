@@ -407,6 +407,12 @@ select.input option { background: var(--bg-card); }
 }
 .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .modal-head h3 { font-size: 16px; margin: 0; }
+
+/* 模态框操作行 / 充值预设（US-4） */
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+.topup-presets { display: flex; gap: 8px; margin-top: 6px; }
+.topup-presets .btn { min-width: 72px; }
+.topup-presets .btn.active { background: var(--accent-soft); border-color: rgba(78,205,196,.5); color: var(--accent-text); }
 .chat-log {
   flex: 1; overflow-y: auto;
   background: var(--bg-soft); border: 1px solid var(--border);
