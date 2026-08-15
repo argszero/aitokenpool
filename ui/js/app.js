@@ -13,6 +13,7 @@
 
   let activeView = "dashboard";
   let txTab = "all";
+  let isGuest = false; // 游客模式（US-1：未登录可浏览市场）
 
   // MRT 风格表格状态（页面级变量：切换页面不丢失排序/筛选/分页）
   const txTable = { sort: [], filters: {}, page: 1, pageSize: 10 };
@@ -82,10 +83,18 @@
     admin: "管理视图 Admin",
   };
 
+  // 游客可见的页面（US-1：仅市场；其余需登录）
+  const GUEST_VIEWS = ["marketplace"];
+
   function renderNav() {
     const nav = $("#nav");
     nav.innerHTML = "";
-    NAV.forEach((group) => {
+    const groups = isGuest
+      ? [{ g: "游客浏览", items: [
+          { id: "marketplace", ico: "🛒", label: "模型市场 Marketplace" },
+        ]}]
+      : NAV;
+    groups.forEach((group) => {
       const g = document.createElement("div");
       g.className = "nav-group";
       g.textContent = group.g;
@@ -105,10 +114,15 @@
         nav.appendChild(b);
       });
     });
-    $("#mode-label").textContent = "共享市场 · 角色视图";
+    $("#mode-label").textContent = isGuest ? "游客模式 · 仅浏览市场" : "共享市场 · 角色视图";
   }
 
   function switchView(id) {
+    // 游客限制（US-1）：非市场页面 → 提示需登录
+    if (isGuest && !GUEST_VIEWS.includes(id)) {
+      toast("请先登录后再访问「" + (VIEW_TITLE[id] || id) + "」");
+      return;
+    }
     activeView = id;
     $$(".view").forEach((v) => v.classList.add("hidden"));
     $("#view-" + id).classList.remove("hidden");
@@ -807,12 +821,37 @@
     toast("已扣 " + D.fmt(cost) + " 点（模拟 0.19M tokens）");
   }
 
+  /* ---------------- 游客模式（US-1：未登录浏览市场） ---------------- */
+
+  function enterGuest() {
+    isGuest = true;
+    activeView = "marketplace";
+    $("#login-view").classList.add("hidden");
+    $("#app").classList.remove("hidden");
+    document.querySelector(".user-chip").classList.add("hidden");
+    renderNav();
+    switchView("marketplace");
+    toast("游客模式：可浏览模型市场，使用 / 消费需登录");
+  }
+
+  function exitGuest() {
+    isGuest = false;
+    $("#app").classList.add("hidden");
+    document.querySelector(".user-chip").classList.remove("hidden");
+    $("#login-view").classList.remove("hidden");
+  }
+
   /* ---------------- 事件 ---------------- */
 
   function bindEvents() {
+    // 游客浏览（US-1：登录页入口 → 免登录进入市场）
+    $("#guest-browse-btn").addEventListener("click", enterGuest);
+
     // 登录（单一入口，角色由账号决定）
     $("#login-form").addEventListener("submit", (e) => {
       e.preventDefault();
+      isGuest = false;
+      document.querySelector(".user-chip").classList.remove("hidden");
       $("#login-view").classList.add("hidden");
       $("#app").classList.remove("hidden");
       switchView("dashboard");
@@ -820,8 +859,7 @@
     });
 
     $("#logout-btn").addEventListener("click", () => {
-      $("#app").classList.add("hidden");
-      $("#login-view").classList.remove("hidden");
+      exitGuest();
       toast("已退出（静态演示）");
     });
 
@@ -834,10 +872,11 @@
       $("#mk-provider").dataset.init = "1";
     }
 
-    // 市场页：使用 / 消费（G4：聊天 Mock 扣小数点数并产生 consume 交易）
+    // 市场页：使用 / 消费（G4：聊天 Mock 扣小数点数并产生 consume 交易；游客需先登录 US-1）
     $("#mk-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-use-model]");
       if (!b) return;
+      if (isGuest) { toast("请先登录后再使用 / 消费模型"); return; }
       openChat(Number(b.dataset.useModel));
     });
     $("#chat-send").addEventListener("click", sendChat);
