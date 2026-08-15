@@ -301,6 +301,132 @@
     renderPointSources();
   }
 
+  /* --- 充值模拟（US-4：钱包充值入口 → 模拟支付 → 余额增加 + topup 交易，永久有效点数） --- */
+
+  function openTopup() {
+    $("#topup-custom").value = "";
+    $$("#topup-modal .topup-presets .btn").forEach((b) => b.classList.remove("active"));
+    $("#topup-modal").classList.remove("hidden");
+    $("#topup-custom").focus();
+  }
+
+  function closeTopup() {
+    $("#topup-modal").classList.add("hidden");
+  }
+
+  function confirmTopup() {
+    const preset = document.querySelector("#topup-modal .topup-presets .btn.active");
+    const customRaw = $("#topup-custom").value;
+    let amt;
+    if (preset && !customRaw) amt = Number(preset.dataset.topupAmt);
+    else {
+      const raw = String(customRaw).trim();
+      amt = Math.round(Number(raw) * 100) / 100;
+      if (!raw || isNaN(amt) || amt <= 0) { toast("请输入大于 0 的充值点数（未生效）"); return; }
+    }
+    D.USER.balance = Math.round((D.USER.balance + amt) * 100) / 100;
+    const top = D.POINT_SOURCES.find((s) => s.kind === "topup");
+    if (top) top.pts = Math.round((top.pts + amt) * 100) / 100;
+    D.TRANSACTIONS.unshift({
+      id: Date.now(), time: nowTime(), type: "topup", partner: "—",
+      detail: "充值 · 模拟支付（永久有效 · 演示，真实支付后续接入）", tokens: "—", pts: +amt, status: "成功",
+    });
+    $("#side-balance").textContent = D.fmt(D.USER.balance);
+    renderWallet();
+    closeTopup();
+    toast("充值成功 +" + D.fmt(amt) + " 点（永久有效 · 演示）");
+  }
+
+  /* --- 成员申请加额（US-20：余额低时申请更多点数 → 管理员审批开关联动） --- */
+
+  function openRaise() {
+    $("#raise-amount").value = "";
+    $("#raise-reason").value = "";
+    $("#raise-modal").classList.remove("hidden");
+    $("#raise-amount").focus();
+  }
+
+  function closeRaise() {
+    $("#raise-modal").classList.add("hidden");
+  }
+
+  function confirmRaise() {
+    const rawAmt = String($("#raise-amount").value).trim();
+    const reason = String($("#raise-reason").value).trim();
+    const amt = Number(rawAmt);
+    if (!rawAmt || !Number.isInteger(amt) || amt <= 0) { toast("请输入正整数申请点数（未生效）"); return; }
+    if (!reason) { toast("请填写申请原因（未生效）"); return; }
+    // 与组织设置「成员自助申请加额需管理员审批」开关联动
+    const needApproval = $("#org-approval-toggle") && $("#org-approval-toggle").checked;
+    if (needApproval) {
+      D.RAISE_REQUESTS.unshift({
+        id: Date.now(), user: D.USER.name, email: D.USER.email, amount: amt, reason, status: "pending", time: nowTime(),
+      });
+      closeRaise();
+      toast("已提交申请 +" + D.fmt(amt) + " 点，等待管理员审批");
+    } else {
+      D.USER.balance = Math.round((D.USER.balance + amt) * 100) / 100;
+      D.TRANSACTIONS.unshift({
+        id: Date.now(), time: nowTime(), type: "topup", partner: "管理员",
+        detail: "加额 · 申请直接生效（审批开关已关闭）", tokens: "—", pts: +amt, status: "成功",
+      });
+      $("#side-balance").textContent = D.fmt(D.USER.balance);
+      renderWallet();
+      closeRaise();
+      toast("审批开关已关闭，申请直接生效 +" + D.fmt(amt) + " 点");
+    }
+  }
+
+  /* --- 管理员：加额申请审批（US-20） --- */
+
+  const RAISE_STATUS = {
+    pending: { text: "待审批", cls: "warn" },
+    approved: { text: "已批准", cls: "ok" },
+    rejected: { text: "已驳回", cls: "dim" },
+  };
+
+  function renderRaiseRequests() {
+    const el = $("#raise-requests");
+    if (!el) return;
+    el.innerHTML = D.RAISE_REQUESTS.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th>申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
+      D.RAISE_REQUESTS.map((r, i) =>
+        "<tr><td><strong>" + esc(r.user) + "</strong><div class='muted' style='font-size:11px'>" + esc(r.email) + "</div></td>" +
+        "<td>+" + D.fmt(r.amount) + " 点</td>" +
+        "<td>" + esc(r.reason) + "</td>" +
+        "<td>" + badge(r.status, RAISE_STATUS) + "</td>" +
+        "<td>" + (r.status === "pending"
+          ? "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-raise-approve='" + i + "'>批准</button> " +
+            "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>驳回</button>"
+          : '<span class="muted" style="font-size:12px">' + esc(r.time) + "</span>") + "</td></tr>"
+      ).join("") + "</tbody></table></div>"
+      : '<p class="muted">暂无加额申请</p>';
+  }
+
+  function approveRaise(i) {
+    const r = D.RAISE_REQUESTS[i];
+    if (!r || r.status !== "pending") return;
+    r.status = "approved";
+    // 批准 → 成员余额 + 申请点数（演示：若为当前登录用户则同步 D.USER.balance）
+    if (r.email === D.USER.email) {
+      D.USER.balance = Math.round((D.USER.balance + r.amount) * 100) / 100;
+      D.TRANSACTIONS.unshift({
+        id: Date.now(), time: nowTime(), type: "topup", partner: "管理员",
+        detail: "加额 · 管理员批准申请（" + r.reason + "）", tokens: "—", pts: +r.amount, status: "成功",
+      });
+      $("#side-balance").textContent = D.fmt(D.USER.balance);
+    }
+    renderRaiseRequests();
+    toast("已批准「" + r.user + "」申请 +" + D.fmt(r.amount) + " 点");
+  }
+
+  function rejectRaise(i) {
+    const r = D.RAISE_REQUESTS[i];
+    if (!r || r.status !== "pending") return;
+    r.status = "rejected";
+    renderRaiseRequests();
+    toast("已驳回「" + r.user + "」的加额申请");
+  }
+
   /* --- 交易记录 --- */
 
   const TX_TYPE = {
@@ -585,6 +711,7 @@
         "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>改部门</button> " +
         "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
       ).join("");
+      renderRaiseRequests();
     } else if (tab === "usage") {
       const maxM = Math.max(...D.USAGE_MODEL.map((u) => u.pts));
       const maxE = Math.max(...D.USAGE_EMP.map((u) => u.pts));
@@ -942,7 +1069,28 @@
       if (d) deleteSharing(Number(d.dataset.shareDelete));
     });
 
-    // 钱包按钮（充值/提现 disabled + pointer-events:none，点击不生效；文案见 index.html wallet-note）
+    // 钱包按钮（充值：US-4 模拟流程；申请加额：US-20；提现仍 disabled）
+    $("#topup-btn").addEventListener("click", openTopup);
+    $("#raise-btn").addEventListener("click", openRaise);
+    $("#topup-confirm").addEventListener("click", confirmTopup);
+    $("#raise-confirm").addEventListener("click", confirmRaise);
+    $$("#topup-modal .topup-presets .btn").forEach((b) =>
+      b.addEventListener("click", () => {
+        $$("#topup-modal .topup-presets .btn").forEach((x) => x.classList.remove("active"));
+        b.classList.add("active");
+        $("#topup-custom").value = "";
+      })
+    );
+    $$("[data-modal-close]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const id = b.dataset.modalClose;
+        const m = document.getElementById(id);
+        if (m) m.classList.add("hidden");
+      })
+    );
+    ["topup-modal", "raise-modal"].forEach((id) => {
+      document.getElementById(id).addEventListener("click", (e) => { if (e.target === document.getElementById(id)) document.getElementById(id).classList.add("hidden"); });
+    });
     // 钱包页提示 → 跳转交易记录（明细统一入口）
     $("#wallet-goto-tx").addEventListener("click", () => switchView("transactions"));
 
@@ -1017,6 +1165,14 @@
       emp.quota += amt;
       renderAdmin();
       toast("已给 " + emp.name + " 充值 " + D.fmt(amt) + " 点");
+    });
+
+    // 加额申请审批（US-20：批准 → 成员余额+申请点数；驳回 → 仅更新状态）
+    $("#raise-requests").addEventListener("click", (e) => {
+      const ap = e.target.closest("[data-raise-approve]");
+      if (ap) { approveRaise(Number(ap.dataset.raiseApprove)); return; }
+      const rj = e.target.closest("[data-raise-reject]");
+      if (rj) rejectRaise(Number(rj.dataset.raiseReject));
     });
 
     // 组织管理：部门搜索 / 添加 / 编辑 / 删除（事件委托）
