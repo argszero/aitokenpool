@@ -1594,6 +1594,19 @@
     renderView("dashboard");
     $("#side-balance").textContent = D.fmt(D.USER.balance);
 
+    // 主题（rant 18:06:09 B）：localStorage 记忆，首次加载尊重 prefers-color-scheme
+    const savedTheme = (() => { try { return localStorage.getItem("atp-theme"); } catch (e) { return null; } })();
+    const initialTheme = savedTheme === "light" || savedTheme === "dark"
+      ? savedTheme
+      : (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    document.documentElement.dataset.theme = initialTheme;
+    $("#theme-toggle").addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem("atp-theme", next); } catch (e) { /* 隐私模式忽略 */ }
+      toast("已切换为" + (next === "light" ? "亮色" : "深色") + "主题", "info");
+    });
+
     // 全局快捷键（rant 16:57:17 D）：/ 聚焦市场搜索；数字 1-7 切换侧边栏视图；Esc 关闭行内新建 key
     document.addEventListener("keydown", (e) => {
       const t = e.target;
