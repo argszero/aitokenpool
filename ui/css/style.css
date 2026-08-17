@@ -111,8 +111,12 @@ select.input option { background: var(--bg-card); }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px;
+  transition: border-color .18s ease, box-shadow .18s ease;
 }
 .card h3 { font-size: 15px; margin-bottom: 14px; color: var(--text); }
+
+/* 卡片 hover 微交互（rant 15:50:05 A.3：阴影/边框轻提升） */
+.card:hover { border-color: #3a4a63; box-shadow: 0 12px 30px rgba(0,0,0,.38); }
 
 .card-grid {
   display: grid;
@@ -161,15 +165,25 @@ select.input option { background: var(--bg-card); }
   white-space: nowrap;
 }
 .table td { padding: 10px 12px; border-bottom: 1px solid rgba(42,51,66,.5); white-space: nowrap; }
+/* 斑马纹（rant 15:50:05 A.3：行 hover 高亮保留，hover 覆盖斑马纹） */
+.table tbody tr:nth-child(even) { background: rgba(255,255,255,.018); }
 .table tbody tr:hover { background: var(--bg-hover); }
 
 .badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 2px 10px;
   border-radius: 999px;
   font-size: 12px;
   border: 1px solid var(--border);
   color: var(--text-dim);
+}
+/* 语义色点（rant 15:50:05 A.5：状态徽章配色统一、一眼可辨） */
+.badge::before {
+  content: "";
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor; opacity: .85; flex-shrink: 0;
 }
 .badge.ok { color: var(--ok); border-color: rgba(62,207,142,.4); background: rgba(62,207,142,.08); }
 .badge.warn { color: var(--warn); border-color: rgba(229,180,91,.4); background: rgba(229,180,91,.08); }
@@ -291,6 +305,21 @@ select.input option { background: var(--bg-card); }
 }
 .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #7ee8b8); border-radius: 999px; }
 
+/* 空状态（rant 15:50:05 A.4：图标 + 文案 + 可选行动按钮） */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 8px; padding: 40px 16px; text-align: center;
+  color: var(--text-dim);
+}
+.empty-state .es-ico { width: 40px; height: 40px; color: var(--text-mute); opacity: .75; }
+.empty-state p { font-size: 13px; }
+.empty-state p.muted { font-size: 12px; }
+.empty-state .btn { margin-top: 8px; }
+.empty-state.compact { padding: 16px 8px; }
+.empty-state.compact .es-ico { width: 26px; height: 26px; }
+.empty-cell { padding: 0 !important; }
+.empty-cell .empty-state { padding: 36px 16px; }
+
 /* ---------- 登录页 ---------- */
 
 .login-view {
@@ -357,7 +386,8 @@ select.input option { background: var(--bg-card); }
   color: var(--text-dim); cursor: pointer; font-size: 13.5px;
   border: none; background: transparent; text-align: left; width: 100%;
 }
-.nav-item .ico { width: 18px; text-align: center; font-size: 15px; }
+.nav-item .ico { width: 18px; text-align: center; font-size: 15px; display: inline-flex; align-items: center; justify-content: center; }
+.nav-item .ico svg { width: 18px; height: 18px; display: block; }
 .nav-tag {
   margin-left: auto;
   font-size: 10px;
