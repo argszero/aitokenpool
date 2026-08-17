@@ -337,6 +337,10 @@ select.input option { background: var(--bg-card); }
 .table tbody tr:nth-child(even) { background: var(--table-stripe); }
 .table tbody tr:hover { background: var(--bg-hover); }
 
+/* 表格键盘导航（rant 20:46:57 F：↑/↓ 行高亮 .row-active，accent 左侧竖条 + 柔光底） */
+.table tbody tr.row-active { background: var(--accent-soft); }
+.table tbody tr.row-active td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
 /* 表格密度切换（rant 20:46:57 C：紧凑档行 padding 减小、字号 13px，全站 .table 统一生效） */
 .density-compact .table th { padding: 4px 8px; font-size: 11px; }
 .density-compact .table td { padding: 4px 8px; font-size: 12px; }

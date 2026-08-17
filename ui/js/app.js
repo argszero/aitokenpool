@@ -1042,6 +1042,57 @@
     toast("已导出 " + list.length + " 条交易记录", "success");
   }
 
+  /* --- 数据表格键盘导航（rant 20:46:57 F：↑/↓ 行高亮 .row-active，Enter 触发主操作，Esc 清除） --- */
+  const KBD_TABLE_IDS = ["mk-body", "share-body", "api-keys", "emp-body", "dept-body", "ops-body", "tx-table"];
+  let kbd = { c: null, i: -1 }; // 当前激活的表格容器 + 高亮行下标
+
+  function kbdRows(c) {
+    if (!c) return [];
+    const trs = c.tagName === "TBODY" ? c.querySelectorAll("tr") : c.querySelectorAll("tbody tr");
+    return [].filter.call(trs, (tr) => tr && !(tr.classList && tr.classList.contains("mk-detail")));
+  }
+  function kbdClear() {
+    if (kbd.c) kbdRows(kbd.c).forEach((tr) => tr.classList.remove("row-active"));
+    kbd = { c: null, i: -1 };
+  }
+  function kbdSet(c, idx) {
+    if (kbd.c && kbd.c !== c) kbdRows(kbd.c).forEach((tr) => tr.classList.remove("row-active"));
+    const rows = kbdRows(c);
+    if (!rows.length) { kbd = { c: null, i: -1 }; return; }
+    idx = Math.max(0, Math.min(idx, rows.length - 1));
+    if (kbd.c === c && kbd.i >= 0 && kbd.i < rows.length && kbd.i !== idx) rows[kbd.i].classList.remove("row-active");
+    rows[idx].classList.add("row-active");
+    kbd = { c: c, i: idx };
+    if (rows[idx].scrollIntoView) rows[idx].scrollIntoView({ block: "nearest" });
+  }
+  function kbdMove(dir, c) {
+    const cont = c || kbd.c;
+    const rows = kbdRows(cont);
+    if (!rows.length) return;
+    let idx = kbd.c === cont ? kbd.i : -1;
+    if (idx < 0) idx = dir > 0 ? -1 : rows.length; // 未激活时 ↓ 从首行、↑ 从末行开始
+    kbdSet(cont, Math.max(0, Math.min(idx + dir, rows.length - 1)));
+  }
+  function kbdEnter() {
+    const rows = kbdRows(kbd.c);
+    if (!rows.length || kbd.i < 0) return;
+    const tr = rows[kbd.i];
+    if (!tr) return;
+    // 主操作 = 行内第一个可用的操作按钮（排除行展开 +/-，含 .btn 但非 row-expand）
+    const btn = tr.querySelector ? tr.querySelector("button.btn:not(.row-expand)") : null;
+    if (btn && !btn.disabled) btn.click();
+  }
+  function kbdContainerFrom(t) {
+    // 从事件目标向上找表格容器（tbody 本身或包 table 的 #tx-table），找不到沿用上次激活的表格
+    if (t && t.closest) {
+      const tb = t.closest("tbody");
+      if (tb && KBD_TABLE_IDS.indexOf(tb.id) >= 0) return tb;
+      const tbl = t.closest("table");
+      if (tbl && tbl.parentNode && tbl.parentNode.id === "tx-table") return tbl.parentNode;
+    }
+    return kbd.c;
+  }
+
   /* --- 通用 MRT 风格数据表格渲染器 ---
      cfg: { container, columns, rows, state, onState }
      columns: [{ key, title, sort?: "string"|"number", filter?: "text"|"select"|"number-range", options?, render? }]
@@ -1887,6 +1938,17 @@
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); }));
     $("#tx-export-btn").addEventListener("click", exportTxCsv); // 导出 CSV（rant 20:46:57 E）
 
+    // 表格键盘导航（rant 20:46:57 F）：点击行 → 激活高亮，之后 ↑/↓/Enter/Esc 可用
+    KBD_TABLE_IDS.forEach((id) => {
+      const c = document.getElementById(id);
+      if (!c) return;
+      c.addEventListener("click", (e) => {
+        const tr = e.target.closest ? e.target.closest("tr") : null;
+        if (!tr || (tr.classList && tr.classList.contains("mk-detail"))) return;
+        kbdSet(c, kbdRows(c).indexOf(tr));
+      });
+    });
+
     // API Key 生成（行内编辑；列表展示脱敏、复制给完整 id）
     $("#new-api-key-btn").addEventListener("click", openNewKeyInline);
     $("#ak-new-ok").addEventListener("click", commitNewKey);
@@ -2030,6 +2092,16 @@
       if (e.key === "Escape" && helpOpen) { toggleHelp(false); return; }
       if (e.key === "Escape" && !$("#ak-new-inline").hidden) { closeNewKeyInline(); return; }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      // 表格键盘导航（rant 20:46:57 F）：↑/↓ 行高亮，Enter 主操作，Esc 清除（无高亮时 Esc 落到后续逻辑）
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        const c = kbdContainerFrom(t);
+        if (!c) return;
+        e.preventDefault();
+        kbdMove(e.key === "ArrowDown" ? 1 : -1, c);
+        return;
+      }
+      if (e.key === "Enter") { kbdEnter(); return; }
+      if (e.key === "Escape" && kbd.c) { kbdClear(); return; }
       if (e.key === "?") { toggleHelp(); return; }
       if (e.key === "/") {
         e.preventDefault();
