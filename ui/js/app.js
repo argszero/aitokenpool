@@ -20,12 +20,31 @@
 
   /* ---------------- 工具 ---------------- */
 
-  function toast(msg) {
+  // toast 分级（rant 15:50:05 B.8：成功/错误/信息不同样式；默认 info）
+  function toast(msg, type) {
     const el = $("#toast");
     el.textContent = msg;
+    el.className = "toast" + (type ? " " + type : "");
     el.classList.remove("hidden");
     clearTimeout(toast._t);
-    toast._t = setTimeout(() => el.classList.add("hidden"), 2400);
+    toast._t = setTimeout(() => el.classList.add("hidden"), 2600);
+  }
+
+  // 按钮 loading 态（rant 15:50:05 B.8：提交中转圈，模拟反馈后恢复）
+  const SPINNER = '<span class="spin" aria-hidden="true"></span>';
+  function withLoading(btn, fn, ms) {
+    if (!btn || btn.dataset.loading) return;
+    const orig = btn.innerHTML;
+    btn.dataset.loading = "1";
+    btn.disabled = true;
+    btn.innerHTML = SPINNER + " 处理中…";
+    setTimeout(() => {
+      try { fn(); } finally {
+        btn.dataset.loading = "";
+        btn.disabled = false;
+        btn.innerHTML = orig;
+      }
+    }, ms || 320);
   }
 
   function badge(status, labels) {
@@ -154,7 +173,7 @@
   function switchView(id) {
     // 游客限制（US-1）：非市场页面 → 提示需登录
     if (isGuest && !GUEST_VIEWS.includes(id)) {
-      toast("请先登录后再访问「" + (VIEW_TITLE[id] || id) + "」");
+      toast("请先登录后再访问「" + (VIEW_TITLE[id] || id) + "」", "error");
       return;
     }
     activeView = id;
@@ -330,14 +349,14 @@
     D.SHARINGS.splice(i, 1);
     renderSharing();
     if (activeView === "dashboard") renderDashboard();
-    toast("已删除 " + s.model + " 的 key（彻底下架）");
+    toast("已删除 " + s.model + " 的 key（彻底下架）", "success");
   }
 
   function toggleSharing(i) {
     const s = D.SHARINGS[i];
-    if (s.status === "on") { s.status = "paused"; toast("已暂停 " + s.model + " 的共享"); }
-    else if (s.status === "paused") { s.status = "on"; toast("已恢复 " + s.model + " 的共享"); }
-    else { s.status = "on"; s.quota = 50000; s.used = 0; toast("已重新上架 " + s.model); }
+    if (s.status === "on") { s.status = "paused"; toast("已暂停 " + s.model + " 的共享", "success"); }
+    else if (s.status === "paused") { s.status = "on"; toast("已恢复 " + s.model + " 的共享", "success"); }
+    else { s.status = "on"; s.quota = 50000; s.used = 0; toast("已重新上架 " + s.model, "success"); }
     renderSharing();
     if (activeView === "dashboard") renderDashboard();
   }
@@ -407,7 +426,7 @@
     else {
       const raw = String(customRaw).trim();
       amt = Math.round(Number(raw) * 100) / 100;
-      if (!raw || isNaN(amt) || amt <= 0) { toast("请输入大于 0 的充值点数（未生效）"); return; }
+      if (!raw || isNaN(amt) || amt <= 0) { toast("请输入大于 0 的充值点数（未生效）", "error"); return; }
     }
     D.USER.balance = Math.round((D.USER.balance + amt) * 100) / 100;
     D.TRANSACTIONS.unshift({
@@ -417,7 +436,7 @@
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     renderWallet();
     closeTopup();
-    toast("充值成功 +" + D.fmt(amt) + " 点（永久有效 · 演示）");
+    toast("充值成功 +" + D.fmt(amt) + " 点（永久有效 · 演示）", "success");
   }
 
   /* --- 成员申请加额（US-20：余额低时申请更多点数 → 管理员审批开关联动） --- */
@@ -438,14 +457,14 @@
     const rawAmt = String($("#raise-amount").value).trim();
     const reason = String($("#raise-reason").value).trim();
     const amt = Number(rawAmt);
-    if (!rawAmt || !Number.isInteger(amt) || amt <= 0) { toast("请输入正整数申请点数（未生效）"); return; }
-    if (!reason) { toast("请填写申请原因（未生效）"); return; }
+    if (!rawAmt || !Number.isInteger(amt) || amt <= 0) { toast("请输入正整数申请点数（未生效）", "error"); return; }
+    if (!reason) { toast("请填写申请原因（未生效）", "error"); return; }
     // 加额申请默认需管理员审批（原「需审批」开关随组织设置表单移除，见 rant 10:59:23）
     D.RAISE_REQUESTS.unshift({
       id: Date.now(), user: D.USER.name, email: D.USER.email, amount: amt, reason, status: "pending", time: nowTime(),
     });
     closeRaise();
-    toast("已提交申请 +" + D.fmt(amt) + " 点，等待管理员审批");
+    toast("已提交申请 +" + D.fmt(amt) + " 点，等待管理员审批", "success");
   }
 
   /* --- 管理员：加额申请审批（US-20） --- */
@@ -487,7 +506,7 @@
       $("#side-balance").textContent = D.fmt(D.USER.balance);
     }
     renderRaiseRequests();
-    toast("已批准「" + r.user + "」申请 +" + D.fmt(r.amount) + " 点");
+    toast("已批准「" + r.user + "」申请 +" + D.fmt(r.amount) + " 点", "success");
   }
 
   function rejectRaise(i) {
@@ -495,7 +514,7 @@
     if (!r || r.status !== "pending") return;
     r.status = "rejected";
     renderRaiseRequests();
-    toast("已驳回「" + r.user + "」的加额申请");
+    toast("已驳回「" + r.user + "」的加额申请", "success");
   }
 
   /* --- 交易记录 --- */
@@ -696,10 +715,19 @@
   }
 
   // 一键复制完整 key；file:// 下 clipboard API 受限 → 降级：临时 textarea 选中 + execCommand("copy")，仍失败则提示 Ctrl+C
+  // 复制反馈（rant 15:50:05 B.10：复制后按钮短暂变「已复制」态）
   function copyKey(i) {
     const k = D.API_KEYS[i];
     if (!k) return;
-    const okToast = () => toast("已复制「" + k.name + "」完整 key 到剪贴板");
+    const btn = document.querySelector('[data-key-copy="' + i + '"]');
+    const flash = (ok) => {
+      if (!btn) return;
+      const orig = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = ok ? "已复制 ✓" : "请 Ctrl+C";
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 1200);
+    };
+    const okToast = () => { toast("已复制「" + k.name + "」完整 key 到剪贴板", "success"); flash(true); };
     const fallback = () => {
       const ta = document.createElement("textarea");
       ta.value = k.id;
@@ -710,7 +738,7 @@
       try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
       document.body.removeChild(ta);
       if (ok) okToast();
-      else toast("已选中完整 key，请按 Ctrl+C / Cmd+C 复制");
+      else { toast("已选中完整 key，请按 Ctrl+C / Cmd+C 复制"); flash(false); }
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(k.id).then(okToast).catch(fallback);
@@ -727,7 +755,7 @@
     const id = "atk_live_" + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
     D.API_KEYS.unshift({ id, name, created: "2026-08-14", last: "从未", status: "active" });
     renderSettings();
-    toast("已生成新 API Key「" + name + "」（完整 key 已展示在列表，可复制）");
+    toast("已生成新 API Key「" + name + "」（完整 key 已展示在列表，可复制）", "success");
   }
 
   function renameKey(i) {
@@ -736,10 +764,10 @@
     const input = window.prompt("修改 key 名字：", k.name);
     if (input == null) return;
     const name = String(input).trim();
-    if (!name) { toast("名字不能为空（未生效）"); return; }
+    if (!name) { toast("名字不能为空（未生效）", "error"); return; }
     k.name = name;
     renderSettings();
-    toast("已改名为「" + name + "」");
+    toast("已改名为「" + name + "」", "success");
   }
 
   function deleteKey(i) {
@@ -748,7 +776,7 @@
     if (!window.confirm("删除后该 key 立即失效，确认删除「" + k.name + "」？")) return;
     D.API_KEYS.splice(i, 1);
     renderSettings();
-    toast("已删除 key「" + k.name + "」");
+    toast("已删除 key「" + k.name + "」", "success");
   }
 
   /* --- 管理员角色视图 --- */
@@ -821,7 +849,7 @@
       if (v !== emp.dept) {
         emp.dept = v;
         renderAdmin();
-        toast("已把 " + emp.name + " 调整到 " + (v ? v + " 部门" : "未分配"));
+        toast("已把 " + emp.name + " 调整到 " + (v ? v + " 部门" : "未分配"), "success");
       } else {
         renderAdmin();
       }
@@ -890,21 +918,21 @@
     const name = String($("#dept-form-name").value).trim();
     const rawQ = String($("#dept-form-quota").value).trim();
     const quota = Number(rawQ);
-    if (!name) { toast("请输入部门名称（未生效）"); return; }
-    if (!rawQ || !Number.isInteger(quota) || quota <= 0) { toast("请输入正整数月分配点数（未生效）"); return; }
+    if (!name) { toast("请输入部门名称（未生效）", "error"); return; }
+    if (!rawQ || !Number.isInteger(quota) || quota <= 0) { toast("请输入正整数月分配点数（未生效）", "error"); return; }
     if (deptEditIndex == null) {
-      if (D.DEPARTMENTS.some((d) => d.name === name)) { toast("部门「" + name + "」已存在"); return; }
+      if (D.DEPARTMENTS.some((d) => d.name === name)) { toast("部门「" + name + "」已存在", "error"); return; }
       D.DEPARTMENTS.push({ id: Date.now(), name, quota });
-      toast("已添加部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）");
+      toast("已添加部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）", "success");
     } else {
       const d = D.DEPARTMENTS[deptEditIndex];
       if (!d) return;
-      if (name !== d.name && D.DEPARTMENTS.some((x) => x.name === name)) { toast("部门「" + name + "」已存在"); return; }
+      if (name !== d.name && D.DEPARTMENTS.some((x) => x.name === name)) { toast("部门「" + name + "」已存在", "error"); return; }
       const old = d.name;
       d.name = name;
       d.quota = quota;
       if (name !== old) D.EMPLOYEES.forEach((e) => { if (e.dept === old) e.dept = name; }); // 成员部门联动改名
-      toast("已更新部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）");
+      toast("已更新部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）", "success");
     }
     renderAdmin();
     $("#dept-form-card").hidden = true;
@@ -920,7 +948,7 @@
     if (!window.confirm(msg)) return;
     D.DEPARTMENTS.splice(i, 1);
     renderAdmin();
-    toast("已删除部门「" + d.name + "」");
+    toast("已删除部门「" + d.name + "」", "success");
   }
 
   function barRow(name, pts, max, unit) {
@@ -969,7 +997,7 @@
   function openChat(id) {
     const m = D.MARKET.find((x) => x.id === id);
     if (!m) return;
-    if (!m.avail) { toast("该模型当前繁忙，无法使用"); return; }
+    if (!m.avail) { toast("该模型当前繁忙，无法使用", "error"); return; }
     chatModel = m;
     $("#chat-title").textContent = "使用 " + m.model;
     $("#chat-meta").textContent = "参考价：输入 " + D.fmt(m.in) + " 点 / 输出 " + D.fmt(m.out) + " 点（每 1M tokens）· 余额 " + D.fmt(D.USER.balance) + " 点" +
@@ -989,12 +1017,12 @@
     const m = chatModel;
     if (!m) return;
     const text = $("#chat-input").value.trim();
-    if (!text) { toast("请输入消息内容"); return; }
+    if (!text) { toast("请输入消息内容", "error"); return; }
     // 模拟一次调用：0.19M tokens，按输出参考价计费（v1.6：消费点数可为小数，保留 2 位）
     const tokens = 0.19;
     const cost = Math.round(tokens * m.out * 100) / 100;
     if (D.USER.balance < cost) {
-      toast("点数余额不足：本次约需 " + D.fmt(cost) + " 点（当前 " + D.fmt(D.USER.balance) + " 点）");
+      toast("点数余额不足：本次约需 " + D.fmt(cost) + " 点（当前 " + D.fmt(D.USER.balance) + " 点）", "error");
       return;
     }
     D.USER.balance = Math.round((D.USER.balance - cost) * 100) / 100;
@@ -1010,7 +1038,7 @@
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     $("#chat-meta").textContent = "已扣 " + D.fmt(cost) + " 点（模拟 0.19M tokens）· 余额 " + D.fmt(D.USER.balance) + " 点";
     $("#chat-input").value = "";
-    toast("已扣 " + D.fmt(cost) + " 点（模拟 0.19M tokens）");
+    toast("已扣 " + D.fmt(cost) + " 点（模拟 0.19M tokens）", "success");
   }
 
   /* ---------------- 游客模式（US-1：未登录浏览市场） ---------------- */
@@ -1023,7 +1051,7 @@
     document.querySelector(".user-chip").classList.add("hidden");
     renderNav();
     switchView("marketplace");
-    toast("游客模式：可浏览模型市场，使用 / 消费需登录");
+    toast("游客模式：可浏览模型市场，使用 / 消费需登录", "info");
   }
 
   function exitGuest() {
@@ -1047,12 +1075,12 @@
       $("#login-view").classList.add("hidden");
       $("#app").classList.remove("hidden");
       switchView("dashboard");
-      toast("欢迎回来，阿零（演示账号）");
+      toast("欢迎回来，阿零（演示账号）", "info");
     });
 
     $("#logout-btn").addEventListener("click", () => {
       exitGuest();
-      toast("已退出（静态演示）");
+      toast("已退出（静态演示）", "info");
     });
 
     // 市场筛选
@@ -1068,7 +1096,7 @@
     $("#mk-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-use-model]");
       if (b) {
-        if (isGuest) { toast("请先登录后再使用 / 消费模型"); return; }
+        if (isGuest) { toast("请先登录后再使用 / 消费模型", "error"); return; }
         openChat(Number(b.dataset.useModel));
         return;
       }
@@ -1096,7 +1124,7 @@
       if (input == null) return;
       const raw = String(input).trim();
       const amt = Math.round(Number(raw) * 100) / 100;
-      if (!raw || isNaN(amt) || amt <= 0) { toast("请输入大于 0 的点数金额（未生效）"); return; }
+      if (!raw || isNaN(amt) || amt <= 0) { toast("请输入大于 0 的点数金额（未生效）", "error"); return; }
       u.balance = Math.round((u.balance + amt) * 100) / 100;
       if (u.email === D.USER.email) D.USER.balance = u.balance;
       D.TRANSACTIONS.unshift({
@@ -1105,7 +1133,7 @@
       });
       renderAdmin();
       $("#side-balance").textContent = D.fmt(D.USER.balance);
-      toast("已给「" + u.name + "」充值 " + D.fmt(amt) + " 点（永久有效）");
+      toast("已给「" + u.name + "」充值 " + D.fmt(amt) + " 点（永久有效）", "success");
     });
 
     // 共享上架表单（默认收起；点添加展开，提交成功或取消后收起）
@@ -1127,30 +1155,34 @@
     // 共享上架表单（选 厂商 → Plan → 模型；单价由平台按模型定价自动计算）
     $("#share-form").addEventListener("submit", (e) => {
       e.preventDefault();
-      const model = $("#sf-model").value;
-      const planId = $("#sf-plan").value;
-      const plan = D.PLANS.find((pl) => pl.id === planId);
-      const quota = Number($("#sf-quota").value || 0);
-      const key = $("#sf-key").value.trim();
-      const note = $("#sf-note").value.trim();
-      if (!key) { toast("请填写 API Key（上架 key 必须提供真实密钥）"); return; }
-      if (!plan || !model || quota <= 0) { toast("请选择厂商 / Plan / 模型并填写有效额度"); return; }
-      // 可用时间段：星期多选 + 起止时间；不选任何星期 = null（全天不限）
-      const days = $$("#sf-days .chip input:not(#sf-days-all input)")
-        .filter((cb) => cb.checked).map((cb) => Number(cb.value)).sort((a, b) => a - b);
-      const start = $("#sf-start").value;
-      const end = $("#sf-end").value;
-      const available = days.length ? { days, start: start || "", end: end || "" } : null;
-      const price = autoPrice(model);
-      D.SHARINGS.unshift({ id: Date.now(), provider: plan.provider, plan: plan.name, model, quota, used: 0, price, earned: 0, status: "on", key, note, available });
-      renderSharing();
-      if (activeView === "dashboard") renderDashboard();
-      const label = (D.PROVIDER_LABELS[plan.provider] || plan.provider) + " · " + plan.name;
-      toast("已上架「" + label + " · " + model + "」（key 已加密托管，单价 " + D.fmt(price) + " 点/1M 自动）");
-      e.target.reset();
-      const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
-      $("#sf-quota").value = 5000;
-      hideShareForm();
+      const submitBtn = e.target.querySelector('button[type="submit"]');
+      const done = () => {
+        const model = $("#sf-model").value;
+        const planId = $("#sf-plan").value;
+        const plan = D.PLANS.find((pl) => pl.id === planId);
+        const quota = Number($("#sf-quota").value || 0);
+        const key = $("#sf-key").value.trim();
+        const note = $("#sf-note").value.trim();
+        if (!key) { toast("请填写 API Key（上架 key 必须提供真实密钥）", "error"); return; }
+        if (!plan || !model || quota <= 0) { toast("请选择厂商 / Plan / 模型并填写有效额度", "error"); return; }
+        // 可用时间段：星期多选 + 起止时间；不选任何星期 = null（全天不限）
+        const days = $$("#sf-days .chip input:not(#sf-days-all input)")
+          .filter((cb) => cb.checked).map((cb) => Number(cb.value)).sort((a, b) => a - b);
+        const start = $("#sf-start").value;
+        const end = $("#sf-end").value;
+        const available = days.length ? { days, start: start || "", end: end || "" } : null;
+        const price = autoPrice(model);
+        D.SHARINGS.unshift({ id: Date.now(), provider: plan.provider, plan: plan.name, model, quota, used: 0, price, earned: 0, status: "on", key, note, available });
+        renderSharing();
+        if (activeView === "dashboard") renderDashboard();
+        const label = (D.PROVIDER_LABELS[plan.provider] || plan.provider) + " · " + plan.name;
+        toast("已上架「" + label + " · " + model + "」（key 已加密托管，单价 " + D.fmt(price) + " 点/1M 自动）", "success");
+        e.target.reset();
+        const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
+        $("#sf-quota").value = 5000;
+        hideShareForm();
+      };
+      withLoading(submitBtn, done);
     });
 
     // 共享列表操作（事件委托：暂停/恢复/重新上架 + 删除 + 空状态上架）
@@ -1165,10 +1197,19 @@
     // 钱包按钮（充值：US-4 行内卡片；申请加额：US-20 行内卡片；提现仍 disabled）
     $("#topup-btn").addEventListener("click", openTopup);
     $("#raise-btn").addEventListener("click", openRaise);
-    $("#topup-confirm").addEventListener("click", confirmTopup);
-    $("#raise-confirm").addEventListener("click", confirmRaise);
+    $("#topup-confirm").addEventListener("click", (e) => withLoading(e.currentTarget, confirmTopup));
+    $("#raise-confirm").addEventListener("click", (e) => withLoading(e.currentTarget, confirmRaise));
     $("#topup-cancel").addEventListener("click", closeTopup);
     $("#raise-cancel").addEventListener("click", closeRaise);
+    // 键盘可达（rant 15:50:05 B.9）：Enter 提交、Esc 关闭行内编辑
+    $("#topup-custom").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#topup-confirm").click(); });
+    $("#raise-amount").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#raise-confirm").click(); });
+    $("#raise-reason").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#raise-confirm").click(); });
+    ["topup-card", "raise-card"].forEach((id) => {
+      document.getElementById(id).addEventListener("keydown", (e) => {
+        if (e.key === "Escape") { document.getElementById(id).hidden = true; }
+      });
+    });
     $$("#topup-card .topup-presets .btn").forEach((b) =>
       b.addEventListener("click", () => {
         $$("#topup-card .topup-presets .btn").forEach((x) => x.classList.remove("active"));
@@ -1217,12 +1258,12 @@
       const raw = String(input).trim();
       const amt = Number(raw);
       if (!raw || !Number.isInteger(amt) || amt <= 0) {
-        toast("请输入正整数点数金额（未生效）");
+        toast("请输入正整数点数金额（未生效）", "error");
         return;
       }
       emp.quota += amt;
       renderAdmin();
-      toast("已给 " + emp.name + " 充值 " + D.fmt(amt) + " 点");
+      toast("已给 " + emp.name + " 充值 " + D.fmt(amt) + " 点", "success");
     });
 
     // 加额申请审批（US-20：批准 → 成员余额+申请点数；驳回 → 仅更新状态）
@@ -1237,8 +1278,12 @@
     $("#od-search").addEventListener("input", renderAdmin);
 
     $("#add-dept-btn").addEventListener("click", () => openDeptForm(null));
-    $("#dept-confirm").addEventListener("click", confirmDept);
+    $("#dept-confirm").addEventListener("click", (e) => withLoading(e.currentTarget, confirmDept));
     $("#dept-cancel").addEventListener("click", () => { $("#dept-form-card").hidden = true; });
+    // 键盘可达（B.9）：部门表单 Enter 提交、Esc 收起
+    $("#dept-form-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#dept-confirm").click(); } });
+    $("#dept-form-quota").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#dept-confirm").click(); } });
+    $("#dept-form-card").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#dept-form-card").hidden = true; } });
 
     $("#dept-body").addEventListener("click", (e) => {
       const ed = e.target.closest("[data-dept-edit]");
