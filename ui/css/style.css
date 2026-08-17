@@ -798,6 +798,43 @@ mark {
   .help-panel { right: 12px; left: 12px; width: auto; top: 68px; }
 }
 
+/* 首次引导 tour（rant 20:46:57 A：非 modal 浮层 + 目标 accent 高亮环；reduced-motion 静止） */
+#tour-overlay {
+  position: fixed; inset: 0; z-index: 940;
+  background: rgba(14, 17, 22, .45); cursor: pointer;
+}
+#tour-ring {
+  position: fixed; z-index: 941; pointer-events: none;
+  border: 2px solid var(--accent); border-radius: 8px;
+  box-shadow: 0 0 0 4px var(--accent-soft), 0 0 24px rgba(78,205,196,.35);
+  animation: tour-pulse 1.2s ease-in-out infinite;
+}
+@keyframes tour-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px var(--accent-soft), 0 0 24px rgba(78,205,196,.35); }
+  50% { box-shadow: 0 0 0 8px var(--accent-soft), 0 0 32px rgba(78,205,196,.5); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #tour-ring { animation: none; }
+}
+#tour-pop {
+  position: fixed; z-index: 942; width: 300px; max-width: calc(100vw - 24px);
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--card-shadow);
+  padding: 16px;
+}
+.tour-skip {
+  position: absolute; top: 10px; right: 12px;
+  border: none; background: none; color: var(--text-mute);
+  font-size: 12px; cursor: pointer;
+}
+.tour-skip:hover { color: var(--text); }
+.tour-title { font-size: 15px; font-weight: 700; padding-right: 48px; }
+.tour-desc { color: var(--text-dim); font-size: 13px; line-height: 1.55; margin-top: 6px; }
+.tour-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; }
+.tour-progress { color: var(--text-mute); font-size: 12px; }
+.tour-nav { display: flex; gap: 8px; }
+.tour-replay { margin-top: 10px; }
+
 /* 按钮 loading 转圈（rant 15:50:05 B.8：提交中反馈） */
 .spin {
   display: inline-block;
