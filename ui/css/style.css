@@ -119,6 +119,8 @@ body {
 .btn-danger:hover { background: rgba(229, 102, 106, 0.12); border-color: var(--danger); }
 .btn-block { width: 100%; }
 .btn:disabled { opacity: .5; cursor: not-allowed; pointer-events: none; }
+/* 按钮按压反馈（rant 18:06:09 E：:active 轻微下压；disabled 不触发） */
+.btn:active:not(:disabled) { transform: scale(0.98); }
 
 /* 行内二次确认（rant 16:57:17 A：按钮变「确认删除？」红色态，3 秒无操作还原） */
 .btn.confirming {
@@ -234,6 +236,13 @@ select.input option { background: var(--bg-card); }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 18px;
+  transition: transform .15s ease, border-color .18s ease, box-shadow .18s ease;
+}
+/* 统计卡 hover 微抬升（rant 18:06:09 E） */
+.stat:hover {
+  transform: translateY(-2px);
+  border-color: var(--card-hover-border);
+  box-shadow: var(--card-shadow);
 }
 .stat .label { color: var(--text-mute); font-size: 12px; }
 .stat .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
@@ -712,4 +721,23 @@ mark {
   .pager-size { display: none; }
   .empty-cell { display: block; text-align: center; }
   .empty-cell .empty-state { padding: 8px 0; }
+}
+
+/* 数字/点数变化轻微跳动（rant 18:06:09 E：充值/消费后余额跳动；配合 JS bump() 重放） */
+@keyframes numJump {
+  0%   { transform: translateY(0); }
+  40%  { transform: translateY(-3px) scale(1.02); }
+  100% { transform: translateY(0); }
+}
+#side-balance { display: inline-block; }
+.bump { animation: numJump .35s ease; }
+
+/* 系统偏好（rant 18:06:09 E）：prefers-reduced-motion 下禁用过渡/动画，保留全部功能 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
