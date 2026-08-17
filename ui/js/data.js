@@ -22,6 +22,7 @@
     { provider: "moonshot", model: "kimi-k3",          in: CNY(20.0),  out: CNY(100.0), ctx: 1048576, max: null,   tag: "长文" },
     { provider: "bytedance-ark", model: "doubao-seed-2.1-pro", in: CNY(6.0), out: CNY(30.0), ctx: 262144, max: null, tag: "通用" },
     { provider: "minimax",  model: "minimax-m3",       in: USD(0.3),   out: USD(1.2),   ctx: 1048576, max: null,   tag: "轻量" },
+    { provider: "aliyun-bailian", model: "qwen3-max",  in: CNY(4.0),   out: CNY(16.0),  ctx: 262144,  max: null,   tag: "通用" },
   ];
 
   // 可用性（市场展示用）
@@ -41,6 +42,34 @@
     MODELS,
 
     PROVIDERS: [...new Set(MODELS.map((m) => m.provider))],
+
+    // Plan 清单（内置国内已知 Plan，源自 docs/plan-api-matrix.md 与 config/config.example.toml）
+    // type: api=按量计价 key | coding=编码订阅 | token=统一计量订阅（Credits）
+    // 每个厂商至少含一个 type=api 的「API（按量）」plan；models 按 provider 关联 MODELS
+    PLANS: [
+      { id: "aliyun-api",    provider: "aliyun-bailian", name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "按量计价" },
+      { id: "aliyun-token",  provider: "aliyun-bailian", name: "Token Plan",      type: "token",  keyPrefix: "sk-sp-",  note: "Credits 统一计量，专属 key sk-sp-，多工具通用" },
+      { id: "zhipu-api",     provider: "zhipu",          name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "open.bigmodel.cn 按量" },
+      { id: "zhipu-coding",  provider: "zhipu",          name: "GLM Coding Plan", type: "coding", keyPrefix: "sk-",    note: "专属端点 /api/coding/paas/v4、/api/anthropic" },
+      { id: "ark-api",       provider: "bytedance-ark",  name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "按量计价" },
+      { id: "ark-coding",    provider: "bytedance-ark",  name: "Coding Plan",     type: "coding", keyPrefix: "sk-",    note: "/api/coding/v3、/api/coding" },
+      { id: "ark-agent",     provider: "bytedance-ark",  name: "Agent Plan",      type: "token",  keyPrefix: "sk-",    note: "/api/plan/v3、/api/plan" },
+      { id: "kimi-api",      provider: "moonshot",       name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "api.kimi.com 按量" },
+      { id: "kimi-code",     provider: "moonshot",       name: "Kimi Code 会员",  type: "coding", keyPrefix: "sk-",    note: "api.kimi.com/coding/v1、/coding" },
+      { id: "minimax-api",   provider: "minimax",        name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "按量计价" },
+      { id: "minimax-coding",provider: "minimax",        name: "Coding Plan",     type: "coding", keyPrefix: "sk-cp-", note: "专属 key sk-cp-，/anthropic、/v1" },
+      { id: "deepseek-api",  provider: "deepseek",       name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "无订阅 plan，仅按量；OpenAI/Anthropic/Responses 端点" },
+    ],
+
+    // 厂商显示名（上架表单 / 共享列表）
+    PROVIDER_LABELS: {
+      "aliyun-bailian": "阿里云百炼",
+      zhipu: "智谱",
+      "bytedance-ark": "火山方舟",
+      moonshot: "Kimi 月之暗面",
+      minimax: "MiniMax",
+      deepseek: "DeepSeek",
+    },
 
     // 当前用户（公共版）
     USER: { name: "阿零", email: "demo@aitokenpool.local", balance: 12471 },
@@ -68,11 +97,12 @@
     ],
 
     // 我的共享（price = 按模型定价自动计算的输出单价 点数/1M；earned = 累计收益；key 仅脱敏展示）
+    // provider + plan：上架时选择「厂商 → Plan → 模型」，列表展示「厂商 · Plan」
     SHARINGS: [
-      { id: 1, model: "glm-5.2", quota: 100000, used: 32800, price: 28, earned: 1611, status: "on", key: "sk-zhipu-9f2c41ab7d22" },
-      { id: 2, model: "deepseek-v4-flash", quota: 80000, used: 51200, price: 2, earned: 1116, status: "on", key: "sk-ds-3b88d077aa91" },
-      { id: 3, model: "kimi-k3", quota: 50000, used: 800, price: 100, earned: 54, status: "paused", key: "sk-ms-c31f2e8b4405" },
-      { id: 4, model: "minimax-m3", quota: 20000, used: 20000, price: 9, earned: 432, status: "off", key: "sk-mx-77d2a1c9e356" },
+      { id: 1, provider: "zhipu", plan: "GLM Coding Plan", model: "glm-5.2", quota: 100000, used: 32800, price: 28, earned: 1611, status: "on", key: "sk-zhipu-9f2c41ab7d22" },
+      { id: 2, provider: "deepseek", plan: "API（按量）", model: "deepseek-v4-flash", quota: 80000, used: 51200, price: 2, earned: 1116, status: "on", key: "sk-ds-3b88d077aa91" },
+      { id: 3, provider: "moonshot", plan: "Kimi Code 会员", model: "kimi-k3", quota: 50000, used: 800, price: 100, earned: 54, status: "paused", key: "sk-ms-c31f2e8b4405" },
+      { id: 4, provider: "minimax", plan: "Coding Plan", model: "minimax-m3", quota: 20000, used: 20000, price: 9, earned: 432, status: "off", key: "sk-mx-77d2a1c9e356" },
     ],
 
     // 市场在售 key（公共版浏览；multi=true 表示该模型配置多个上游 key → 自动故障转移，架构 v0.2 路由策略 G5）

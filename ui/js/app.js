@@ -61,6 +61,17 @@
     }
   }
 
+  // Plan 提示：按量/订阅 + key 前缀 + 专属端点说明（来自 PLANS）
+  function showPlanHint(planId) {
+    const el = $("#sf-plan-hint");
+    if (!el) return;
+    const pl = D.PLANS.find((x) => x.id === planId);
+    if (!pl) { el.textContent = ""; return; }
+    el.textContent = (pl.type === "api" ? "按量计价的 key" : "订阅 Plan") +
+      (pl.keyPrefix ? " · 建议 key 前缀 " + pl.keyPrefix : "") +
+      (pl.note ? " · " + pl.note : "");
+  }
+
   /* ---------------- 导航 ---------------- */
 
   const NAV = [
@@ -160,7 +171,7 @@
     const on = D.SHARINGS.filter((s) => s.status === "on");
     $("#dash-sharings").innerHTML = on.map((s) =>
       '<div class="mini-item"><div><div class="t">' + esc(s.model) + "</div>" +
-      '<div class="d">已用 ' + D.fmt(s.used) + " / " + D.fmt(s.quota) + " 点 · 单价 " + D.fmt(s.price) + " 点/1M</div></div>" +
+      '<div class="d">' + esc(s.plan || "API") + " · 已用 " + D.fmt(s.used) + " / " + D.fmt(s.quota) + " 点 · 单价 " + D.fmt(s.price) + " 点/1M</div></div>" +
       '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>累计收益</div></div></div>"
     ).join("") + (on.length ? "" : '<p class="muted">还没有上架的 key</p>');
     renderMonthChanges();
@@ -217,25 +228,38 @@
       stat("已用量 Used", D.fmt(totalUsed) + " 点", D.SHARINGS.reduce((a, s) => a + s.quota, 0) + " 点总额度"),
     ].join("");
 
-    // 表单下拉
+    // 表单下拉（厂商 → Plan → 模型 三级联动；Plan 中「API」= 按量计价的 key）
     const selP = $("#sf-provider");
     if (!selP.dataset.init) {
-      selP.innerHTML = '<option value="">选择厂商</option>' + D.PROVIDERS.map((p) => '<option value="' + p + '">' + p + "</option>").join("");
+      const planProviders = [...new Set(D.PLANS.map((pl) => pl.provider))];
+      selP.innerHTML = '<option value="">选择厂商</option>' + planProviders
+        .map((p) => '<option value="' + p + '">' + (D.PROVIDER_LABELS[p] || p) + "</option>").join("");
+      const selPlan = $("#sf-plan");
       const selM = $("#sf-model");
       const fillModels = () => {
-        const p = selP.value;
+        const plan = D.PLANS.find((pl) => pl.id === selPlan.value);
+        const p = plan ? plan.provider : selP.value;
         selM.innerHTML = '<option value="">选择模型</option>' + D.MODELS.filter((m) => !p || m.provider === p)
           .map((m) => '<option value="' + m.model + '">' + m.model + "</option>").join("");
         showPriceHint(selM.value);
       };
-      selP.addEventListener("change", fillModels);
+      const fillPlans = () => {
+        const p = selP.value;
+        selPlan.innerHTML = '<option value="">选择 Plan</option>' + D.PLANS.filter((pl) => pl.provider === p)
+          .map((pl) => '<option value="' + pl.id + '">' + esc(pl.name) + "</option>").join("");
+        showPlanHint("");
+        fillModels();
+      };
+      selP.addEventListener("change", fillPlans);
+      selPlan.addEventListener("change", () => { showPlanHint(selPlan.value); fillModels(); });
       selM.addEventListener("change", () => showPriceHint(selM.value));
       selP.dataset.init = "1";
-      fillModels();
+      fillPlans();
     }
 
     $("#share-body").innerHTML = D.SHARINGS.map((s, i) =>
-      "<tr><td><strong>" + esc(s.model) + "</strong></td>" +
+      "<tr><td><strong>" + esc(D.PROVIDER_LABELS[s.provider] || s.provider) + " · " + esc(s.plan || "API") +
+      "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + "</div></td>" +
       "<td class='mono'>" + esc(maskKey(s.key)) + "</td>" +
       "<td>" + D.fmt(s.used) + " / " + D.fmt(s.quota) + "</td>" +
       "<td>" + D.fmt(s.price) + " 点/1M</td>" +
@@ -1048,19 +1072,22 @@
     $("#share-add-btn").addEventListener("click", showShareForm);
     $("#sf-cancel").addEventListener("click", hideShareForm);
 
-    // 共享上架表单（须填 API Key；单价由平台按模型定价自动计算）
+    // 共享上架表单（选 厂商 → Plan → 模型；单价由平台按模型定价自动计算）
     $("#share-form").addEventListener("submit", (e) => {
       e.preventDefault();
       const model = $("#sf-model").value;
+      const planId = $("#sf-plan").value;
+      const plan = D.PLANS.find((pl) => pl.id === planId);
       const quota = Number($("#sf-quota").value || 0);
       const key = $("#sf-key").value.trim();
       if (!key) { toast("请填写 API Key（上架 key 必须提供真实密钥）"); return; }
-      if (!model || quota <= 0) { toast("请选择模型并填写有效额度"); return; }
+      if (!plan || !model || quota <= 0) { toast("请选择厂商 / Plan / 模型并填写有效额度"); return; }
       const price = autoPrice(model);
-      D.SHARINGS.unshift({ id: Date.now(), model, quota, used: 0, price, earned: 0, status: "on", key });
+      D.SHARINGS.unshift({ id: Date.now(), provider: plan.provider, plan: plan.name, model, quota, used: 0, price, earned: 0, status: "on", key });
       renderSharing();
       if (activeView === "dashboard") renderDashboard();
-      toast("已上架 " + model + "（key 已加密托管，单价 " + D.fmt(price) + " 点/1M 自动）");
+      const label = (D.PROVIDER_LABELS[plan.provider] || plan.provider) + " · " + plan.name;
+      toast("已上架「" + label + " · " + model + "」（key 已加密托管，单价 " + D.fmt(price) + " 点/1M 自动）");
       e.target.reset();
       const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
       $("#sf-quota").value = 5000;
