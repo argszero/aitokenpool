@@ -822,11 +822,26 @@
       render: (t) => t.status === "处理中" ? '<span class="badge warn">' + esc(t.status) + "</span>" : esc(t.status) },
   ];
 
+  // 交易汇总条（rant 20:39:30 B：随 tab + 列筛选联动 — 总收入/总支出/净变化，+绿 −红，紧凑 inline 条）
+  function renderTxSummary(list) {
+    let income = 0, expense = 0;
+    list.forEach((t) => { if (t.pts > 0) income += t.pts; else expense += -t.pts; });
+    const net = income - expense;
+    const cls = (n) => (n > 0 ? "ok" : n < 0 ? "danger" : "");
+    const fmt = (n) => (n > 0 ? "+" : n < 0 ? "-" : "") + D.fmt(Math.abs(n));
+    $("#tx-summary").innerHTML =
+      '<div class="ts-item"><span class="ts-label">总收入</span><span class="ts-value num ' + cls(income) + '">' + fmt(income) + "</span></div>" +
+      '<div class="ts-item"><span class="ts-label">总支出</span><span class="ts-value num ' + cls(-expense) + '">' + fmt(-expense) + "</span></div>" +
+      '<div class="ts-item"><span class="ts-label">净变化</span><span class="ts-value num ' + cls(net) + '">' + fmt(net) + "</span></div>";
+  }
+
   function renderTransactions() {
     $$("#tx-tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.txTab === txTab));
     let list = D.TRANSACTIONS;
     if (txTab === "consume") list = list.filter((t) => t.type === "consume");
     else if (txTab === "earn") list = list.filter((t) => t.type === "earn");
+    // 交易汇总条：与 tab + 列筛选联动，与表格可见行一致（rant 20:39:30 B）
+    renderTxSummary(filterRows(list, TX_COLUMNS, txTable.filters));
     buildDataTable({
       container: $("#tx-table"),
       columns: TX_COLUMNS,
@@ -840,13 +855,12 @@
      cfg: { container, columns, rows, state, onState }
      columns: [{ key, title, sort?: "string"|"number", filter?: "text"|"select"|"number-range", options?, render? }]
      state:  { sort: [{key,dir}], filters: {key:val}, page, pageSize }（原地更新，跨页保留） */
-  function buildDataTable(cfg) {
-    const { container, columns, rows, state, onState } = cfg;
 
-    // 1) 筛选
-    let data = rows.filter((row) => {
-      for (const key of Object.keys(state.filters)) {
-        const fv = state.filters[key];
+  // 按列筛选条件过滤行（buildDataTable 与交易汇总条共用，保证汇总与表格可见行一致）
+  function filterRows(rows, columns, filters) {
+    return rows.filter((row) => {
+      for (const key of Object.keys(filters)) {
+        const fv = filters[key];
         if (fv == null || fv === "") continue;
         const col = columns.find((c) => c.key === key);
         if (!col || !col.filter) continue;
@@ -864,6 +878,13 @@
       }
       return true;
     });
+  }
+
+  function buildDataTable(cfg) {
+    const { container, columns, rows, state, onState } = cfg;
+
+    // 1) 筛选
+    let data = filterRows(rows, columns, state.filters);
 
     // 2) 排序（多列：Shift 点击叠加）
     if (state.sort.length) {
