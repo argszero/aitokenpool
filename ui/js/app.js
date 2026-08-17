@@ -307,8 +307,8 @@
     $("#mk-count").textContent = list.length + " 个在售 key";
     $("#mk-body").innerHTML = list.length ? list.map((m) =>
       "<tr><td>" + esc(m.provider) + "</td><td><strong>" + esc(m.model) + "</strong></td>" +
-      "<td>" + D.fmt(m.in) + " 点</td><td>" + D.fmt(m.out) + " 点</td>" +
-      "<td>" + D.ctxFmt(m.ctx) + "</td>" +
+      '<td class="num">' + D.fmt(m.in) + " 点</td>" + '<td class="num">' + D.fmt(m.out) + " 点</td>" +
+      '<td class="num">' + D.ctxFmt(m.ctx) + "</td>" +
       "<td>" + (m.avail ? '<span class="badge ok">可用</span>' : '<span class="badge warn">繁忙</span>') +
       (m.multi ? ' <span class="badge ok" title="该模型配置多个上游 key，单个 key 不可用时自动故障转移（架构 v0.2 路由策略）">多 key · 自动故障转移</span>' : "") + "</td>" +
       "<td><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">使用 / 消费</button>" +
@@ -396,9 +396,9 @@
       "<tr><td><strong>" + esc(D.PROVIDER_LABELS[s.provider] || s.provider) + " · " + esc(s.plan || "API") +
       "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + " · " + esc(fmtAvailable(s)) + "</div></td>" +
       "<td class='mono'>" + esc(maskKey(s.key)) + "</td>" +
-      "<td>" + D.fmt(s.used) + " / " + D.fmt(s.quota) + "</td>" +
-      "<td>" + D.fmt(s.price) + " 点/1M</td>" +
-      "<td>+" + D.fmt(s.earned) + " 点</td>" +
+      "<td class='num'>" + D.fmt(s.used) + " / " + D.fmt(s.quota) + "</td>" +
+      '<td class="num">' + D.fmt(s.price) + " 点/1M</td>" +
+      '<td class="num">+' + D.fmt(s.earned) + " 点</td>" +
       "<td>" + timeCell(s.time) + "</td>" +
       "<td>" + badge(s.status, SHARE_STATUS) + "</td>" +
       "<td><button class='btn btn-ghost' data-share-toggle='" + i + "' style='padding:4px 10px;font-size:12px'>" +
@@ -543,10 +543,10 @@
   function renderRaiseRequests() {
     const el = $("#raise-requests");
     if (!el) return;
-    el.innerHTML = D.RAISE_REQUESTS.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th>申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
+    el.innerHTML = D.RAISE_REQUESTS.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
       D.RAISE_REQUESTS.map((r, i) =>
         "<tr><td><strong>" + esc(r.user) + "</strong><div class='muted' style='font-size:11px'>" + esc(r.email) + "</div></td>" +
-        "<td>+" + D.fmt(r.amount) + " 点</td>" +
+        "<td class='num'>+" + D.fmt(r.amount) + " 点</td>" +
         "<td>" + esc(r.reason) + "</td>" +
         "<td>" + badge(r.status, RAISE_STATUS) + "</td>" +
         "<td>" + (r.status === "pending"
@@ -593,8 +593,8 @@
     { key: "type", title: "类型", sort: "string", filter: "select", options: ["消费", "收益", "充值", "提现", "赠送"], filterVal: (t) => TX_TYPE[t.type] || t.type,
       render: (t) => t.type === "earn" ? '<span class="badge ok">收益</span>' : t.type === "consume" ? '<span class="badge accent">消费</span>' : t.type === "gift" ? '<span class="badge ok">赠送</span>' : '<span class="badge dim">' + esc(TX_TYPE[t.type] || t.type) + "</span>" },
     { key: "partner", title: "模型 / Key", sort: "string", filter: "text" },
-    { key: "tokens", title: "Token 用量", sort: "string", filter: "text" },
-    { key: "pts", title: "点数", sort: "number", filter: "number-range",
+    { key: "tokens", title: "Token 用量", sort: "string", filter: "text", align: "num" },
+    { key: "pts", title: "点数", sort: "number", filter: "number-range", align: "num",
       render: (t) => '<span style="color:' + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ';font-weight:600">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span>" },
     { key: "status", title: "状态", sort: "string", filter: "select", options: ["成功", "入账", "处理中"],
       render: (t) => t.status === "处理中" ? '<span class="badge warn">' + esc(t.status) + "</span>" : esc(t.status) },
@@ -668,7 +668,7 @@
     columns.forEach((col) => {
       const sk = state.sort.find((s) => s.key === col.key);
       const arrow = sk ? (sk.dir === "asc" ? " ▲" : " ▼") : "";
-      html += '<th><button type="button" class="th-sort" data-sort-key="' + esc(col.key) + '" title="点击排序 · Shift+点击叠加多列">' +
+      html += '<th' + (col.align === "num" ? ' class="num"' : "") + '><button type="button" class="th-sort" data-sort-key="' + esc(col.key) + '" title="点击排序 · Shift+点击叠加多列">' +
         esc(col.title) + arrow + "</button></th>";
     });
     html += "</tr><tr>";
@@ -693,7 +693,7 @@
     pageRows.forEach((row) => {
       html += "<tr>";
       columns.forEach((col) => {
-        html += "<td>" + (col.render ? col.render(row) : esc(row[col.key] == null ? "" : row[col.key])) + "</td>";
+        html += "<td" + (col.align === "num" ? ' class="num"' : "") + ">" + (col.render ? col.render(row) : esc(row[col.key] == null ? "" : row[col.key])) + "</td>";
       });
       html += "</tr>";
     });
@@ -878,8 +878,8 @@
       $("#emp-body").innerHTML = D.EMPLOYEES.map((e, i) =>
         "<tr data-emp-row='" + i + "'><td><strong>" + esc(e.name) + "</strong></td>" +
         "<td>" + (e.dept ? esc(e.dept) : '<span class="muted">未分配</span>') + "</td>" +
-        "<td>" + D.fmt(e.used) + " / " + D.fmt(e.quota) + "</td>" +
-        "<td>" + D.fmt(e.quota - e.used) + "</td>" +
+        '<td class="num">' + D.fmt(e.used) + " / " + D.fmt(e.quota) + "</td>" +
+        '<td class="num">' + D.fmt(e.quota - e.used) + "</td>" +
         "<td>" + (e.used / e.quota > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>') + "</td>" +
         "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>改部门</button> " +
         "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
@@ -967,10 +967,10 @@
       const pct = d.quota > 0 ? used / d.quota : 0;
       const st = pct >= 1 ? '<span class="badge danger">已用尽</span>' : pct > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>';
       return "<tr><td><strong>" + esc(d.name) + "</strong></td>" +
-        "<td>" + deptMemberCount(d.name) + " 人</td>" +
-        "<td>" + D.fmt(d.quota) + " 点</td>" +
-        "<td>" + D.fmt(used) + " 点</td>" +
-        "<td>" + D.fmt(d.quota - used) + " 点</td>" +
+        '<td class="num">' + deptMemberCount(d.name) + " 人</td>" +
+        '<td class="num">' + D.fmt(d.quota) + " 点</td>" +
+        '<td class="num">' + D.fmt(used) + " 点</td>" +
+        '<td class="num">' + D.fmt(d.quota - used) + " 点</td>" +
         "<td>" + st + "</td>" +
         "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-dept-edit='" + i + "'>编辑</button> " +
         "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-dept-del='" + i + "'>删除</button></td></tr>";
@@ -1054,7 +1054,7 @@
     $("#ops-body").innerHTML = list.length ? list.map((u) =>
       "<tr><td><strong>" + esc(u.name) + "</strong></td>" +
       "<td>" + esc(u.email) + "</td>" +
-      "<td>" + D.fmt(u.balance) + " 点</td>" +
+      '<td class="num">' + D.fmt(u.balance) + " 点</td>" +
       "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>充值点数</button></td></tr>"
     ).join("") : emptyRow(4, "没有匹配的用户", "试试其他用户名 / 邮箱");
   }
