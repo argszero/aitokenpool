@@ -149,7 +149,6 @@
     const txs = D.TRANSACTIONS;
     const monthUse = txs.filter((t) => t.type === "consume").reduce((a, t) => a + Math.abs(t.pts), 0);
     const monthEarn = txs.filter((t) => t.type === "earn").reduce((a, t) => a + t.pts, 0);
-    const recent = txs.slice(0, 5);
 
     $("#dash-stats").innerHTML = [
       stat("点数余额 Points", D.fmt(D.USER.balance), "", "accent"),
@@ -157,12 +156,6 @@
       stat("共享收益 Earnings", "+" + D.fmt(monthEarn) + " 点", D.SHARINGS.filter((s) => s.status === "on").length + " 个 key 上架中"),
       stat("交易笔数 Trades", txs.length + " 笔", "含充值 / 提现 / 消费 / 收益 / 赠送"),
     ].join("");
-
-    $("#dash-recent").innerHTML = recent.map((t) =>
-      '<div class="mini-item"><div><div class="t">' + esc(t.detail) + "</div>" +
-      '<div class="d">' + esc(t.time) + " · " + esc(t.partner) + "</div></div>" +
-      '<div class="r"><span class="pts">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span></div></div>"
-    ).join("") + (recent.length ? "" : '<p class="muted">暂无交易</p>');
 
     const on = D.SHARINGS.filter((s) => s.status === "on");
     $("#dash-sharings").innerHTML = on.map((s) =>
