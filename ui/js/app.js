@@ -413,25 +413,12 @@
     const amt = Number(rawAmt);
     if (!rawAmt || !Number.isInteger(amt) || amt <= 0) { toast("请输入正整数申请点数（未生效）"); return; }
     if (!reason) { toast("请填写申请原因（未生效）"); return; }
-    // 与组织设置「成员自助申请加额需管理员审批」开关联动
-    const needApproval = $("#org-approval-toggle") && $("#org-approval-toggle").checked;
-    if (needApproval) {
-      D.RAISE_REQUESTS.unshift({
-        id: Date.now(), user: D.USER.name, email: D.USER.email, amount: amt, reason, status: "pending", time: nowTime(),
-      });
-      closeRaise();
-      toast("已提交申请 +" + D.fmt(amt) + " 点，等待管理员审批");
-    } else {
-      D.USER.balance = Math.round((D.USER.balance + amt) * 100) / 100;
-      D.TRANSACTIONS.unshift({
-        id: Date.now(), time: nowTime(), type: "topup", partner: "管理员",
-        detail: "加额 · 申请直接生效（审批开关已关闭）", tokens: "—", pts: +amt, status: "成功",
-      });
-      $("#side-balance").textContent = D.fmt(D.USER.balance);
-      renderWallet();
-      closeRaise();
-      toast("审批开关已关闭，申请直接生效 +" + D.fmt(amt) + " 点");
-    }
+    // 加额申请默认需管理员审批（原「需审批」开关随组织设置表单移除，见 rant 10:59:23）
+    D.RAISE_REQUESTS.unshift({
+      id: Date.now(), user: D.USER.name, email: D.USER.email, amount: amt, reason, status: "pending", time: nowTime(),
+    });
+    closeRaise();
+    toast("已提交申请 +" + D.fmt(amt) + " 点，等待管理员审批");
   }
 
   /* --- 管理员：加额申请审批（US-20） --- */
