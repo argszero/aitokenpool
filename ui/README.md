@@ -123,6 +123,12 @@ ui/
 - **行内编辑校验**：`inlineForm` 的 `opts.validate` 失败走 `setFieldError`（红边框+行内文案），与 E 项表单校验一致，不使用 toast 承载错误；
 - 子文本（邮箱/模型等）统一 `font-size:12px`；单价措辞统一「点/1M」。
 
+## 数据可视化约定（v1.18，rant 2026-08-17T18:06:09 A 仪表盘图表）
+
+- **零外部依赖**：手写 SVG（`sparkline(values, opts)`），`--accent` / `--ok` / `--danger` 等现有 CSS 变量着色；每点带 `<title>`（hover 显示日期 + 数值）；
+- **使用**：`lastDayLabels(n)` 生成近 n 天 MM-DD 标签；`dailySeries(days, filter)` 按天聚合交易点数；仪表盘「本月点数变化」画近 7 日净变化折线（渐变填充），「我的共享」画收益累计趋势（`--ok` 色，无数据保留空状态）；
+- 样式 `.sparkline`（宽 100% / 高 38px）。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）

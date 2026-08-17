@@ -322,6 +322,15 @@
       '<div class="d">' + esc(s.plan || "API") + " · 已用 " + D.fmt(s.used) + " / " + D.fmt(s.quota) + " 点 · 单价 " + D.fmt(s.price) + " 点/1M</div></div>" +
       '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>累计收益</div></div></div>"
     ).join("") + (on.length ? "" : '<div class="empty-state compact">' + EMPTY_ICON + '<p>还没有上架的 key</p><p class="muted">去「共享管理」把闲置 key 放进池子</p></div>');
+    // 共享收益累计趋势 sparkline（rant 18:06:09 A；无上架 key 时保留空状态，不画图）
+    if (on.length) {
+      const days = lastDayLabels(7);
+      const earn = dailySeries(days, (t) => t.type === "earn");
+      let cum = 0;
+      const cumSeries = earn.map((v) => { cum = Math.round((cum + v) * 100) / 100; return cum; });
+      $("#dash-sharings").insertAdjacentHTML("afterbegin",
+        sparkline(cumSeries, { labels: days, fmt: (v) => "+" + D.fmt(v), stroke: "var(--ok)" }));
+    }
     renderMonthChanges();
   }
 
@@ -487,6 +496,65 @@
       '<div class="r"><span class="pts' + neg + '">' + sign + D.fmt(pts) + "</span></div></div>";
   }
 
+  /* --- 数据可视化（rant 18:06:09 A：纯 SVG 迷你折线图，零外部依赖） --- */
+
+  let _sparkId = 0;
+
+  // 生成 SVG sparkline：values 数值数组 → 折线 + 渐变填充，每点带 <title>（hover 显示当天数值）
+  // opts: { labels: 与 values 等长的日期标签, fmt: 数值格式化, stroke, w, h }
+  function sparkline(values, opts) {
+    opts = opts || {};
+    const w = opts.w || 120, h = opts.h || 34, pad = 2;
+    const vals = values.length ? values : [0, 0];
+    const max = Math.max.apply(null, vals.concat([0.0001]));
+    const min = Math.min.apply(null, vals.concat([0]));
+    const span = (max - min) || 1;
+    const pts = vals.map((v, i) => {
+      const x = vals.length <= 1 ? w / 2 : pad + (i * (w - pad * 2)) / (vals.length - 1);
+      const y = h - pad - ((v - min) / span) * (h - pad * 2);
+      return [x, y];
+    });
+    const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+    const last = pts[pts.length - 1], first = pts[0];
+    const area = line + " L" + last[0].toFixed(1) + " " + h + " L" + first[0].toFixed(1) + " " + h + " Z";
+    const stroke = opts.stroke || "var(--accent)";
+    const gid = "spark-grad-" + (++_sparkId);
+    const fmt = opts.fmt || ((v) => v);
+    const titles = pts.map((p, i) =>
+      "<title>" + esc((opts.labels && opts.labels[i] ? opts.labels[i] + " " : "") + fmt(vals[i])) + "</title>").join("");
+    return '<svg class="sparkline" viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none" aria-hidden="true">' +
+      "<defs><linearGradient id=\"" + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="' + stroke + '" stop-opacity="0.35"/>' +
+      '<stop offset="100%" stop-color="' + stroke + '" stop-opacity="0"/>' +
+      "</linearGradient></defs>" + titles +
+      '<path d="' + area + '" fill="url(#' + gid + ')"/>' +
+      '<path d="' + line + '" fill="none" stroke="' + stroke + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>' +
+      "</svg>";
+  }
+
+  // 最近 n 天的日期标签（MM-DD），今天在前
+  function lastDayLabels(n) {
+    const p = (x) => String(x).padStart(2, "0");
+    const out = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      out.push(p(d.getMonth() + 1) + "-" + p(d.getDate()));
+    }
+    return out;
+  }
+
+  // 按天聚合交易点数（filter 可选：只统计某类型），返回与 days 等长的序列
+  function dailySeries(days, filter) {
+    const map = {};
+    D.TRANSACTIONS.forEach((t) => {
+      if (filter && !filter(t)) return;
+      const day = String(t.time || "").slice(0, 5);
+      map[day] = (map[day] || 0) + t.pts;
+    });
+    return days.map((d) => Math.round((map[d] || 0) * 100) / 100);
+  }
+
   function renderMonthChanges() {
     const sums = {};
     D.TRANSACTIONS.forEach((t) => { sums[t.type] = (sums[t.type] || 0) + t.pts; });
@@ -499,7 +567,12 @@
     const walletEl = $("#month-changes");
     if (walletEl) walletEl.innerHTML = html;
     const dashEl = $("#dash-month-changes");
-    if (dashEl) dashEl.innerHTML = html;
+    if (dashEl) {
+      // 迷你折线图（rant 18:06:09 A：按天聚合净变化，hover 显示当天数值）
+      const days = lastDayLabels(7);
+      const net = dailySeries(days);
+      dashEl.innerHTML = sparkline(net, { labels: days, fmt: (v) => (v > 0 ? "+" : "") + D.fmt(v) }) + html;
+    }
   }
 
   /* --- 钱包 --- */
