@@ -111,6 +111,11 @@ ui/
 - **组件**：`setFieldError(input, msg)` 给输入框加 `.input-error`（红边框）并在其后插入 `.field-error`（红字小号行内文案），输入事件自动清除；`clearFieldError(input)` 手动清除；打开表单时重置；
 - **覆盖**：充值自定义金额、申请加额（点数/原因）、部门表单（名称/配额/重名）、共享上架表单（API Key/厂商·Plan·模型·额度）；提交校验失败聚焦首个错误字段，不依赖 toast。
 
+## 过渡动画约定（v1.17，rant 2026-08-17T16:57:17 F 视图过渡）
+
+- **视图切换**：`.view:not(.hidden)` 播放 `viewIn`（opacity 0→1 + translateY(6px)→0，150ms ease-out）；每次从隐藏变为可见自动重放；
+- **表格更新**：`.table tbody` 播放 `tbodyIn`（opacity 0→1，150ms）；整表重建（buildDataTable / 加额申请列表）新 tbody 节点自动播放；静态 tbody（market/sharing/api-keys/emp/dept/ops）在 innerHTML 更新后用 `pulseTbody(el)` 重启动画（style.animation=none → 强制 reflow → 还原）。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）

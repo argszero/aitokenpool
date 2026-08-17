@@ -73,6 +73,14 @@
     if (err) err.textContent = "";
   }
 
+  // 重新触发 tbody fade-in（rant 16:57:17 F：innerHTML 更新后重放动画，避免生硬闪烁）
+  function pulseTbody(el) {
+    if (!el) return;
+    el.style.animation = "none";
+    void el.offsetWidth; // 强制 reflow 以重启动画
+    el.style.animation = "";
+  }
+
   /* --- 行内二次确认 / 行内编辑（rant 16:57:17 A：清除原生确认/输入弹窗） --- */
 
   // 行内二次确认：首次点击按钮变「确认删除？」红色态，3 秒无操作或 Esc 还原，再次点击执行
@@ -347,6 +355,7 @@
       "<div class='muted' style='margin-top:4px;font-size:12px'>成功率 " + m.success + "%</div></td></tr>"
     ).join("") : emptyRow(7, "没有匹配的模型", "试试调整搜索或筛选条件",
       '<button type="button" class="btn btn-ghost" data-mk-clear-filters>清除筛选</button>');
+    pulseTbody($("#mk-body"));
   }
 
   /* --- 可用时间段（rant 10:54:48：结构化字段，备注只作纯备注） --- */
@@ -438,6 +447,7 @@
       "<button class='btn btn-danger' data-share-delete='" + i + "' style='padding:4px 10px;font-size:12px'>删除</button></td></tr>"
     ).join("") : emptyRow(8, "还没有上架的 key", "把闲置 key 放进池子，开始赚点数",
       '<button type="button" class="btn btn-primary" data-share-add>上架新 key</button>');
+    pulseTbody($("#share-body"));
   }
 
   function deleteSharing(i) {
@@ -820,6 +830,7 @@
       "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + i + "'>删除</button></td></tr>"
     ).join("") : emptyRow(6, "还没有 API Key", "生成一个 key，用于本地工具 / 代码接入平台",
       '<button type="button" class="btn btn-ghost" data-new-key>生成新 Key</button>');
+    pulseTbody($("#api-keys"));
   }
 
   // 一键复制完整 key；file:// 下 clipboard API 受限 → 降级：临时 textarea 选中 + execCommand("copy")，仍失败则提示 Ctrl+C
@@ -927,6 +938,7 @@
         "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>改部门</button> " +
         "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
       ).join("");
+      pulseTbody($("#emp-body"));
       renderRaiseRequests();
     } else if (tab === "usage") {
       const maxM = Math.max(...D.USAGE_MODEL.map((u) => u.pts));
@@ -1019,6 +1031,7 @@
         "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-dept-del='" + i + "'>删除</button></td></tr>";
     }).join("") : emptyRow(7, "没有匹配的部门", "试试调整搜索关键词",
       '<button type="button" class="btn btn-ghost" data-dept-clear-search>清除搜索</button>');
+    pulseTbody($("#dept-body"));
   }
 
   /* --- 部门添加/编辑：行内展开表单（UI 原则：少用弹窗，优先行内交互；继承 rant 10:59:47 的可靠响应） --- */
@@ -1106,6 +1119,7 @@
       '<td class="num">' + D.fmt(u.balance) + " 点</td>" +
       "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>充值点数</button></td></tr>"
     ).join("") : emptyRow(4, "没有匹配的用户", "试试其他用户名 / 邮箱");
+    pulseTbody($("#ops-body"));
   }
 
   // 运营者给用户充值：行内编辑（替代原生输入弹窗，Enter 确认 / Esc 取消）

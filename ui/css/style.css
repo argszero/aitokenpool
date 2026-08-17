@@ -39,6 +39,19 @@ body {
 }
 
 .hidden { display: none !important; }
+
+/* 视图切换过渡（rant 16:57:17 F：fade + 轻微上移 ~150ms，替代生硬切换） */
+@keyframes viewIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.view:not(.hidden) { animation: viewIn 0.15s ease-out; }
+/* 数据表格行更新无闪烁（rant 16:57:17 F：tbody fade-in） */
+@keyframes tbodyIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.table tbody { animation: tbodyIn 0.15s ease-out; }
 .muted { color: var(--text-mute); }
 .en { color: var(--text-mute); font-size: 12px; font-weight: 400; }
 
