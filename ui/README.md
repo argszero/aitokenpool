@@ -134,6 +134,11 @@ ui/
 - **双主题**：`:root`（深色默认）与 `:root[data-theme="light"]` 重定义全套颜色变量；**禁止硬编码颜色**——表格行边框/斑马纹、卡片 hover 阴影、确认态、spinner、遮罩均用语义变量（`--table-row-border` / `--table-stripe` / `--card-hover-border` / `--card-shadow` / `--danger-soft` / `--danger-text` / `--spin-track` / `--overlay`）；
 - **切换**：侧边栏 `#theme-toggle`（日/月 SVG 图标按主题显隐）→ 设 `document.documentElement.dataset.theme`，`localStorage["atp-theme"]` 记忆；首次加载无记忆时尊重 `prefers-color-scheme`。
 
+## 移动端表格卡片化约定（v1.18，rant 2026-08-17T18:06:09 C）
+
+- **@media (max-width: 560px)**：`.table thead` 隐藏，行 → 卡片（border + radius + 间距），`td` 变 `label: value` 两栏（`td::before { content: attr(data-label) }`），操作按钮整行宽换行；
+- **所有表格 td 必须带 `data-label`**（市场/共享/交易/设置 API Key/成员/部门/运营者/加额申请）；`buildDataTable` 动态列自动用 `col.title` 作 label。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）

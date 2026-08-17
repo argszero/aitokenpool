@@ -641,4 +641,44 @@ select.input option { background: var(--bg-card); }
   .stat-grid { grid-template-columns: 1fr 1fr; }
   .card-grid { grid-template-columns: 1fr; }
   .api-key-card { margin-top: 12px; }
+  /* 移动端表格卡片化（rant 18:06:09 C：隐藏表头，行 → label:value 卡片，不再横滚） */
+  .table { display: block; }
+  .table thead { display: none; }
+  .table tbody { display: block; }
+  .table tbody tr {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 4px 12px;
+    margin-bottom: 10px;
+    background: var(--bg-card);
+  }
+  .table tbody tr:nth-child(even) { background: var(--bg-card); }
+  .table tbody tr:hover { background: var(--bg-hover); }
+  .table tbody td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--table-row-border);
+    text-align: right;
+    white-space: normal;
+  }
+  .table tbody tr > td:last-child { border-bottom: none; }
+  .table tbody td::before {
+    content: attr(data-label);
+    color: var(--text-mute);
+    font-size: 12px;
+    font-weight: 500;
+    flex-shrink: 0;
+    text-align: left;
+  }
+  .table tbody td[data-label=""]::before { display: none; }
+  /* 操作按钮整行宽 */
+  .table tbody td:last-child { flex-wrap: wrap; }
+  .table tbody td .btn { flex: 1 1 45%; }
+  .pager-size { display: none; }
+  .empty-cell { display: block; text-align: center; }
+  .empty-cell .empty-state { padding: 8px 0; }
 }
