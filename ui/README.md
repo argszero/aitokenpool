@@ -81,6 +81,11 @@ ui/
 - **复制反馈**：API Key 复制后按钮短暂变「已复制 ✓」（1.2s 恢复）；降级路径显示「请 Ctrl+C」；
 - **键盘可达**：行内表单 Enter 提交、Esc 关闭行内卡片、打开时自动聚焦焦点。
 
+## 行内组件约定（v1.17，rant 2026-08-17T16:57:17 A 清除原生弹窗）
+
+- **禁用原生弹窗**：`grep ui/` 不得出现原生 confirm/prompt 调用；确认走 `confirmInline(btn, onConfirm, text)`（按钮变「确认删除？」红色态 `.confirming`，3 秒无操作或 Esc 还原，再次点击执行），输入走 `inlineForm(cell, opts)`（行内展开 input + 确认/取消，Enter 确认 / Esc 取消，`opts.validate` 返回错误文案时 toast + 重新聚焦）；
+- 已覆盖：key 删除、共享下架、部门删除（confirmInline）；API Key 新建/改名、运营者充值、成员充值（inlineForm）；新建 key 行内输入框在 `#ak-new-inline`（Enter/Esc 绑定）。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）

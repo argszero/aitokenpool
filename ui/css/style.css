@@ -72,6 +72,17 @@ body {
 .btn-block { width: 100%; }
 .btn:disabled { opacity: .5; cursor: not-allowed; pointer-events: none; }
 
+/* 行内二次确认（rant 16:57:17 A：按钮变「确认删除？」红色态，3 秒无操作还原） */
+.btn.confirming {
+  background: rgba(229, 102, 106, 0.15);
+  border-color: var(--danger);
+  color: #ff9d9f;
+  font-weight: 700;
+}
+/* 行内编辑容器（输入框 + 确认/取消，Enter 确认 / Esc 取消） */
+.inline-edit { display: inline-flex; gap: 6px; align-items: center; vertical-align: middle; }
+.inline-edit .input { width: auto; }
+
 .input, select.input {
   width: 100%;
   background: var(--bg-soft);

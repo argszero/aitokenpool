@@ -291,6 +291,12 @@
           </table>
         </div>
         <button class="btn btn-ghost" id="new-api-key-btn">生成新 Key <span class="en">(Generate)</span></button>
+        <!-- 行内新建 key（rant 16:57:17 A：替代原生输入弹窗，Enter 确认 / Esc 取消） -->
+        <span class="inline-edit" id="ak-new-inline" hidden>
+          <input id="ak-new-name" class="input" placeholder="key 名字（留空默认「未命名」）" style="max-width:260px;padding:6px 10px">
+          <button type="button" class="btn btn-primary" id="ak-new-ok">确认 <span class="en">(OK)</span></button>
+          <button type="button" class="btn btn-ghost" id="ak-new-cancel">取消 <span class="en">(Cancel)</span></button>
+        </span>
       </div>
       <div class="card-grid settings-grid">
         <div class="card">
