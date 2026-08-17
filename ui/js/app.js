@@ -135,7 +135,8 @@
     const finish = () => {
       const val = String(input.value).trim();
       const err = opts.validate ? opts.validate(val) : null;
-      if (err) { toast(err, "error"); input.focus(); return; }
+      if (err) { setFieldError(input, err); return; }
+      clearFieldError(input);
       opts.onSubmit(val);
     };
     ok.addEventListener("click", finish);
@@ -598,7 +599,7 @@
     if (!el) return;
     el.innerHTML = D.RAISE_REQUESTS.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
       D.RAISE_REQUESTS.map((r, i) =>
-        "<tr><td><strong>" + esc(r.user) + "</strong><div class='muted' style='font-size:11px'>" + esc(r.email) + "</div></td>" +
+        "<tr><td><strong>" + esc(r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
         "<td class='num'>+" + D.fmt(r.amount) + " 点</td>" +
         "<td>" + esc(r.reason) + "</td>" +
         "<td>" + badge(r.status, RAISE_STATUS) + "</td>" +
@@ -899,7 +900,7 @@
       value: k.name,
       placeholder: "key 名字",
       width: "160px",
-      validate: (v) => v ? null : "名字不能为空（未生效）",
+      validate: (v) => v ? null : "名字不能为空",
       onSubmit: (name) => { k.name = name; renderSettings(); toast("已改名为「" + name + "」", "success"); },
       onCancel: () => renderSettings(),
     });
@@ -1134,7 +1135,7 @@
       width: "120px",
       validate: (raw) => {
         const amt = Math.round(Number(raw) * 100) / 100;
-        return (!raw || isNaN(amt) || amt <= 0) ? "请输入大于 0 的点数金额（未生效）" : null;
+        return (!raw || isNaN(amt) || amt <= 0) ? "请输入大于 0 的点数金额" : null;
       },
       onSubmit: (raw) => {
         const amt = Math.round(Number(raw) * 100) / 100;
@@ -1375,7 +1376,7 @@
         renderSharing();
         if (activeView === "dashboard") renderDashboard();
         const label = (D.PROVIDER_LABELS[plan.provider] || plan.provider) + " · " + plan.name;
-        toast("已上架「" + label + " · " + model + "」（key 已加密托管，单价 " + D.fmt(price) + " 点/1M 自动）", "success");
+        toast("已上架「" + label + " · " + model + "」（key 已加密托管，单价 " + D.fmt(price) + " 点/1M（自动））", "success");
         e.target.reset();
         const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
         $("#sf-quota").value = 5000;
@@ -1469,7 +1470,7 @@
         width: "120px",
         validate: (raw) => {
           const amt = Number(raw);
-          return (!raw || !Number.isInteger(amt) || amt <= 0) ? "请输入正整数点数金额（未生效）" : null;
+          return (!raw || !Number.isInteger(amt) || amt <= 0) ? "请输入正整数点数金额" : null;
         },
         onSubmit: (raw) => {
           const amt = Number(raw);
