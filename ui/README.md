@@ -129,6 +129,11 @@ ui/
 - **使用**：`lastDayLabels(n)` 生成近 n 天 MM-DD 标签；`dailySeries(days, filter)` 按天聚合交易点数；仪表盘「本月点数变化」画近 7 日净变化折线（渐变填充），「我的共享」画收益累计趋势（`--ok` 色，无数据保留空状态）；
 - 样式 `.sparkline`（宽 100% / 高 38px）。
 
+## 主题约定（v1.18，rant 2026-08-17T18:06:09 B 亮色主题）
+
+- **双主题**：`:root`（深色默认）与 `:root[data-theme="light"]` 重定义全套颜色变量；**禁止硬编码颜色**——表格行边框/斑马纹、卡片 hover 阴影、确认态、spinner、遮罩均用语义变量（`--table-row-border` / `--table-stripe` / `--card-hover-border` / `--card-shadow` / `--danger-soft` / `--danger-text` / `--spin-track` / `--overlay`）；
+- **切换**：侧边栏 `#theme-toggle`（日/月 SVG 图标按主题显隐）→ 设 `document.documentElement.dataset.theme`，`localStorage["atp-theme"]` 记忆；首次加载无记忆时尊重 `prefers-color-scheme`。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
