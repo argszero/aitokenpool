@@ -767,6 +767,21 @@ mark {
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes toast-out { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(8px); } }
 
+/* 可交互 toast 内嵌按钮（rant 20:46:57 B：复制 key 后「配置接入端点 →」） */
+.toast-action {
+  margin-left: 8px; padding: 3px 10px;
+  border: 1px solid var(--accent); border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent-text);
+  font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.toast-action:hover { background: var(--accent); color: #062021; }
+/* 端点卡片高亮闪烁（rant 20:46:57 B：跳转后引导用户注意） */
+.ep-flash { animation: ep-flash 0.8s ease-in-out 2; }
+@keyframes ep-flash {
+  0%, 100% { box-shadow: none; border-color: var(--border); }
+  50% { box-shadow: 0 0 0 3px var(--accent-soft), 0 0 20px rgba(78,205,196,.4); border-color: var(--accent); }
+}
+
 /* 快捷键帮助面板（rant 20:39:30 E：行内卡片非 modal，右上角浮层，无遮罩） */
 .help-panel {
   position: fixed; top: 76px; right: 24px; width: 264px;

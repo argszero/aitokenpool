@@ -23,14 +23,23 @@
   /* ---------------- 工具 ---------------- */
 
   // toast 队列堆叠（rant 20:39:30 D：最多同时 3 条，纵向堆叠，独立淡入淡出；分级样式保留 success/error/info）
+  // 可交互 toast（rant 20:46:57 B：opts.action = { label, onClick } → 内嵌按钮 + 更长展示时长）
   const TOAST_MAX = 3;
-  const TOAST_MS = 2600;   // 展示时长
+  const TOAST_MS = 2600;      // 展示时长
+  const TOAST_ACTION_MS = 6000; // 可交互 toast 展示时长（给用户留点击时间）
   const TOAST_OUT_MS = 200; // 淡出时长
-  function toast(msg, type) {
+  function toast(msg, type, opts) {
     const wrap = $("#toast-wrap");
     const el = document.createElement("div");
     el.className = "toast" + (type ? " " + type : "");
-    el.textContent = msg;
+    const action = opts && opts.action;
+    if (action) {
+      el.innerHTML = esc(msg) + ' <button type="button" class="toast-action">' + esc(action.label) + "</button>";
+      const btn = el.querySelector(".toast-action");
+      if (btn) btn.addEventListener("click", () => action.onClick && action.onClick());
+    } else {
+      el.textContent = msg;
+    }
     wrap.appendChild(el);
     // 超过上限：移除最旧的一条（不等待淡出，立即腾位）
     while (wrap.children.length > TOAST_MAX) {
@@ -41,7 +50,19 @@
     setTimeout(() => {
       el.classList.add("out");
       setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, TOAST_OUT_MS);
-    }, TOAST_MS);
+    }, action ? TOAST_ACTION_MS : TOAST_MS);
+  }
+
+  // 复制 API Key 后引导（rant 20:46:57 B：跳到设置页接入端点卡片并高亮闪烁）
+  function gotoEndpointCard() {
+    switchView("settings");
+    const card = $("#endpoint-card");
+    if (!card) return;
+    card.classList.remove("ep-flash");
+    void card.offsetWidth; // 重启动画
+    card.classList.add("ep-flash");
+    setTimeout(() => card.classList.remove("ep-flash"), 1600);
+    if (card.scrollIntoView) card.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   // 快捷键帮助面板（rant 20:39:30 E：行内卡片非 modal；? / Shift+/ 开合，Esc 或再按 ? 关闭）
@@ -1147,7 +1168,7 @@
       btn.innerHTML = ok ? "已复制 ✓" : "请 Ctrl+C";
       setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 1200);
     };
-    const okToast = () => { toast("已复制「" + k.name + "」完整 key 到剪贴板", "success"); flash(true); };
+    const okToast = () => { toast("已复制「" + k.name + "」完整 key 到剪贴板", "success", { action: { label: "配置接入端点 →", onClick: gotoEndpointCard } }); flash(true); };
     const fallback = () => {
       const ta = document.createElement("textarea");
       ta.value = k.id;
