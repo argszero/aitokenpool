@@ -433,6 +433,28 @@
   </div>
 </div>
 
+<!-- 部门添加/编辑（组织管理：表单弹层替代 window.prompt，确保点击可靠响应） -->
+<div id="dept-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="dept-modal-title">添加部门 <span class="en">Add department</span></h3>
+      <button type="button" class="btn btn-ghost" data-modal-close="dept-modal">✕</button>
+    </div>
+    <div class="form">
+      <label>部门名称
+        <input id="dept-modal-name" class="input" placeholder="如：研发">
+      </label>
+      <label>每月点数分配（正整数）
+        <input id="dept-modal-quota" type="number" min="1" step="1" class="input" placeholder="如：20000">
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-primary" id="dept-confirm">确认 <span class="en">(Confirm)</span></button>
+      <button type="button" class="btn btn-ghost" data-modal-close="dept-modal">取消 <span class="en">(Cancel)</span></button>
+    </div>
+  </div>
+</div>
+
 <script src="js/data.js"></script>
 <script src="js/app.js"></script>
 </body>

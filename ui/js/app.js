@@ -830,45 +830,44 @@
     }).join("") : '<tr><td colspan="7" class="muted">没有匹配的部门</td></tr>';
   }
 
-  // 月分配点数必须为正整数
-  function promptPositiveInt(promptText, fallback) {
-    const raw = window.prompt(promptText, fallback);
-    if (raw == null) return null; // 取消
-    const s = String(raw).trim();
-    const n = Number(s);
-    if (!s || !Number.isInteger(n) || n <= 0) { toast("请输入正整数点数（未生效）"); return null; }
-    return n;
+  /* --- 部门添加/编辑：表单弹层 modal（rant 10:59:47：替代 window.prompt，确保点击可靠响应） --- */
+
+  let deptEditIndex = null; // null = 添加，数字 = 编辑的部门索引
+
+  function openDeptModal(i) {
+    deptEditIndex = (i == null ? null : i);
+    const d = (i == null ? null : D.DEPARTMENTS[i]);
+    $("#dept-modal-title").innerHTML = d
+      ? "编辑部门 <span class='en'>Edit department</span>"
+      : "添加部门 <span class='en'>Add department</span>";
+    $("#dept-modal-name").value = d ? d.name : "";
+    $("#dept-modal-quota").value = d ? String(d.quota) : "";
+    $("#dept-modal").classList.remove("hidden");
+    $("#dept-modal-name").focus();
   }
 
-  function addDept() {
-    const name = window.prompt("新部门名称：", "");
-    if (name == null) return;
-    const n = String(name).trim();
-    if (!n) { toast("请输入部门名称（未生效）"); return; }
-    if (D.DEPARTMENTS.some((d) => d.name === n)) { toast("部门「" + n + "」已存在"); return; }
-    const quota = promptPositiveInt("每月点数分配（正整数）：", "10000");
-    if (quota == null) return;
-    D.DEPARTMENTS.push({ id: Date.now(), name: n, quota });
+  function confirmDept() {
+    const name = String($("#dept-modal-name").value).trim();
+    const rawQ = String($("#dept-modal-quota").value).trim();
+    const quota = Number(rawQ);
+    if (!name) { toast("请输入部门名称（未生效）"); return; }
+    if (!rawQ || !Number.isInteger(quota) || quota <= 0) { toast("请输入正整数月分配点数（未生效）"); return; }
+    if (deptEditIndex == null) {
+      if (D.DEPARTMENTS.some((d) => d.name === name)) { toast("部门「" + name + "」已存在"); return; }
+      D.DEPARTMENTS.push({ id: Date.now(), name, quota });
+      toast("已添加部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）");
+    } else {
+      const d = D.DEPARTMENTS[deptEditIndex];
+      if (!d) return;
+      if (name !== d.name && D.DEPARTMENTS.some((x) => x.name === name)) { toast("部门「" + name + "」已存在"); return; }
+      const old = d.name;
+      d.name = name;
+      d.quota = quota;
+      if (name !== old) D.EMPLOYEES.forEach((e) => { if (e.dept === old) e.dept = name; }); // 成员部门联动改名
+      toast("已更新部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）");
+    }
     renderAdmin();
-    toast("已添加部门「" + n + "」（月分配 " + D.fmt(quota) + " 点）");
-  }
-
-  function editDept(i) {
-    const d = D.DEPARTMENTS[i];
-    if (!d) return;
-    const name = window.prompt("修改部门名称：", d.name);
-    if (name == null) return;
-    const n = String(name).trim();
-    if (!n) { toast("部门名称不能为空（未生效）"); return; }
-    if (n !== d.name && D.DEPARTMENTS.some((x) => x.name === n)) { toast("部门「" + n + "」已存在"); return; }
-    const quota = promptPositiveInt("每月点数分配（正整数）：", String(d.quota));
-    if (quota == null) return;
-    const old = d.name;
-    d.name = n;
-    d.quota = quota;
-    if (n !== old) D.EMPLOYEES.forEach((e) => { if (e.dept === old) e.dept = n; }); // 成员部门联动改名
-    renderAdmin();
-    toast("已更新部门「" + n + "」（月分配 " + D.fmt(quota) + " 点）");
+    $("#dept-modal").classList.add("hidden");
   }
 
   function deleteDept(i) {
@@ -1132,7 +1131,7 @@
         if (m) m.classList.add("hidden");
       })
     );
-    ["topup-modal", "raise-modal"].forEach((id) => {
+    ["topup-modal", "raise-modal", "dept-modal"].forEach((id) => {
       document.getElementById(id).addEventListener("click", (e) => { if (e.target === document.getElementById(id)) document.getElementById(id).classList.add("hidden"); });
     });
     // 钱包页提示 → 跳转交易记录（明细统一入口）
@@ -1199,14 +1198,15 @@
       if (rj) rejectRaise(Number(rj.dataset.raiseReject));
     });
 
-    // 组织管理：部门搜索 / 添加 / 编辑 / 删除（事件委托）
+    // 组织管理：部门搜索 / 添加 / 编辑 / 删除（事件委托；添加/编辑用表单弹层 modal）
     $("#od-search").addEventListener("input", renderAdmin);
 
-    $("#add-dept-btn").addEventListener("click", addDept);
+    $("#add-dept-btn").addEventListener("click", () => openDeptModal(null));
+    $("#dept-confirm").addEventListener("click", confirmDept);
 
     $("#dept-body").addEventListener("click", (e) => {
       const ed = e.target.closest("[data-dept-edit]");
-      if (ed) { editDept(Number(ed.dataset.deptEdit)); return; }
+      if (ed) { openDeptModal(Number(ed.dataset.deptEdit)); return; }
       const dl = e.target.closest("[data-dept-del]");
       if (dl) deleteDept(Number(dl.dataset.deptDel));
     });
