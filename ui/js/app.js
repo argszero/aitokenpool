@@ -830,25 +830,25 @@
     }).join("") : '<tr><td colspan="7" class="muted">没有匹配的部门</td></tr>';
   }
 
-  /* --- 部门添加/编辑：表单弹层 modal（rant 10:59:47：替代 window.prompt，确保点击可靠响应） --- */
+  /* --- 部门添加/编辑：行内展开表单（UI 原则：少用弹窗，优先行内交互；继承 rant 10:59:47 的可靠响应） --- */
 
   let deptEditIndex = null; // null = 添加，数字 = 编辑的部门索引
 
-  function openDeptModal(i) {
+  function openDeptForm(i) {
     deptEditIndex = (i == null ? null : i);
     const d = (i == null ? null : D.DEPARTMENTS[i]);
-    $("#dept-modal-title").innerHTML = d
+    $("#dept-form-title").innerHTML = d
       ? "编辑部门 <span class='en'>Edit department</span>"
       : "添加部门 <span class='en'>Add department</span>";
-    $("#dept-modal-name").value = d ? d.name : "";
-    $("#dept-modal-quota").value = d ? String(d.quota) : "";
-    $("#dept-modal").classList.remove("hidden");
-    $("#dept-modal-name").focus();
+    $("#dept-form-name").value = d ? d.name : "";
+    $("#dept-form-quota").value = d ? String(d.quota) : "";
+    $("#dept-form-card").hidden = false;
+    $("#dept-form-name").focus();
   }
 
   function confirmDept() {
-    const name = String($("#dept-modal-name").value).trim();
-    const rawQ = String($("#dept-modal-quota").value).trim();
+    const name = String($("#dept-form-name").value).trim();
+    const rawQ = String($("#dept-form-quota").value).trim();
     const quota = Number(rawQ);
     if (!name) { toast("请输入部门名称（未生效）"); return; }
     if (!rawQ || !Number.isInteger(quota) || quota <= 0) { toast("请输入正整数月分配点数（未生效）"); return; }
@@ -867,7 +867,7 @@
       toast("已更新部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）");
     }
     renderAdmin();
-    $("#dept-modal").classList.add("hidden");
+    $("#dept-form-card").hidden = true;
   }
 
   function deleteDept(i) {
@@ -1131,7 +1131,7 @@
         if (m) m.classList.add("hidden");
       })
     );
-    ["topup-modal", "raise-modal", "dept-modal"].forEach((id) => {
+    ["topup-modal", "raise-modal"].forEach((id) => {
       document.getElementById(id).addEventListener("click", (e) => { if (e.target === document.getElementById(id)) document.getElementById(id).classList.add("hidden"); });
     });
     // 钱包页提示 → 跳转交易记录（明细统一入口）
@@ -1198,15 +1198,16 @@
       if (rj) rejectRaise(Number(rj.dataset.raiseReject));
     });
 
-    // 组织管理：部门搜索 / 添加 / 编辑 / 删除（事件委托；添加/编辑用表单弹层 modal）
+    // 组织管理：部门搜索 / 添加 / 编辑 / 删除（事件委托；添加/编辑用行内展开表单）
     $("#od-search").addEventListener("input", renderAdmin);
 
-    $("#add-dept-btn").addEventListener("click", () => openDeptModal(null));
+    $("#add-dept-btn").addEventListener("click", () => openDeptForm(null));
     $("#dept-confirm").addEventListener("click", confirmDept);
+    $("#dept-cancel").addEventListener("click", () => { $("#dept-form-card").hidden = true; });
 
     $("#dept-body").addEventListener("click", (e) => {
       const ed = e.target.closest("[data-dept-edit]");
-      if (ed) { openDeptModal(Number(ed.dataset.deptEdit)); return; }
+      if (ed) { openDeptForm(Number(ed.dataset.deptEdit)); return; }
       const dl = e.target.closest("[data-dept-del]");
       if (dl) deleteDept(Number(dl.dataset.deptDel));
     });
