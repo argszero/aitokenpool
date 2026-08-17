@@ -18,20 +18,23 @@
         <p>AI Token 共享平台 · 一套产品，两种部署场景</p>
       </div>
     </div>
-    <form id="login-form" class="login-form">
+    <form id="login-form" class="login-form" novalidate>
       <label>邮箱 / 账号
-        <input type="email" value="demo@aitokenpool.local" placeholder="you@company.com">
+        <input type="email" id="login-email" value="demo@aitokenpool.local" placeholder="you@company.com">
       </label>
       <label>密码
-        <input type="password" value="demo1234" placeholder="••••••••">
+        <input type="password" id="login-pass" value="demo1234" placeholder="••••••••">
       </label>
+      <div class="login-remember">
+        <label class="checkbox-line"><input type="checkbox" id="login-remember"> <span>记住我</span></label>
+        <span class="demo-hint">演示账号：demo@aitokenpool.local / demo1234</span>
+      </div>
       <button type="submit" class="btn btn-primary btn-block">进入平台 <span class="en">(Enter)</span></button>
     </form>
     <div class="login-divider"><span>或</span></div>
     <button type="button" class="btn btn-ghost btn-block" id="guest-browse-btn">先逛逛市场 <span class="en">(Guest browse)</span></button>
     <p class="login-foot">还没有账号？<a href="#">注册 <span class="en">Register</span></a> · <a href="#">找回密码</a></p>
-    <p class="login-tip">静态演示原型 · 数据为内嵌 mock，无真实后端 · 管理员与普通用户由账号角色决定登录后看到的界面</p>
-  </div>
+    <p class="login-tip">静态演示原型 · 数据为内嵌 mock，无真实后端 · 管理员与普通用户由账号角色决定登录后看到的界面</p>  </div>
 </div>
 
 <!-- ======================= 应用外壳 ======================= -->

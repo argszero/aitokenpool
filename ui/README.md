@@ -212,6 +212,13 @@ ui/
 - 事件在 `#mk-body` 现有 click 委托里扩展 `[data-mk-expand]` 分支（先于 `[data-use-model]` 判断）；
 - 移动端卡片模式：详情 td 无 `data-label`（`td::before` 空）→ 整行仅展示详情内容，`mk-detail-grid` `auto-fit` 自适应列数。
 
+## 登录页约定（v1.19，rant 2026-08-17T20:39:30 G）
+
+- **视觉 polish**：`.login-card .logo` 加大（52px，渐变微光 `box-shadow: 0 0 0 1px rgba(78,205,196,.35), 0 0 18px rgba(78,205,196,.35)`）；`.login-brand h1` 22px；`.login-form .input:focus` 加 `0 0 0 3px var(--accent-soft)` 聚焦光晕（深/亮主题通用）；
+- **行内校验**：空邮箱 →「请输入邮箱 / 账号」、空密码 →「请输入密码」（复用 `setFieldError`/`field-error` 组件：红边框 + 行内文案 + 聚焦首个错误 + 输入自动清除）；表单 `novalidate` 自管校验；输入框带 id（`#login-email` / `#login-pass`）；
+- **记住我**：`#login-remember` checkbox → localStorage `atp-remember`（登录提交时存，DOMContentLoaded 时还原）；`demo-hint` 小字显示演示账号；
+- 冒烟测试注意：stub 中 `setFieldError` 依赖 `input.parentNode.querySelector(".field-error")` —— stub 的 parentNode 需实现该查询；`insertAdjacentElement` 记录插入元素供断言。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）

@@ -1517,9 +1517,19 @@
     // 游客浏览（US-1：登录页入口 → 免登录进入市场）
     $("#guest-browse-btn").addEventListener("click", enterGuest);
 
-    // 登录（单一入口，角色由账号决定）
+    // 登录（单一入口，角色由账号决定；rant 20:39:30 G：空邮箱/密码行内错误 + 记住我）
     $("#login-form").addEventListener("submit", (e) => {
       e.preventDefault();
+      const email = $("#login-email").value.trim();
+      const pass = $("#login-pass").value;
+      let firstErr = null;
+      if (!email) { setFieldError($("#login-email"), "请输入邮箱 / 账号"); firstErr = firstErr || $("#login-email"); }
+      else clearFieldError($("#login-email"));
+      if (!pass) { setFieldError($("#login-pass"), "请输入密码"); firstErr = firstErr || $("#login-pass"); }
+      else clearFieldError($("#login-pass"));
+      if (firstErr) { firstErr.focus(); return; }
+      // 记住我（原型：仅记忆演示账号偏好，localStorage）
+      try { localStorage.setItem("atp-remember", $("#login-remember").checked ? "1" : "0"); } catch (err) { /* 隐私模式忽略 */ }
       isGuest = false;
       document.querySelector(".user-chip").classList.remove("hidden");
       $("#login-view").classList.add("hidden");
@@ -1793,6 +1803,8 @@
       ? savedTheme
       : (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
     document.documentElement.dataset.theme = initialTheme;
+    // 记住我（rant 20:39:30 G）：还原上次勾选状态
+    try { $("#login-remember").checked = localStorage.getItem("atp-remember") === "1"; } catch (e) { /* 隐私模式忽略 */ }
     $("#theme-toggle").addEventListener("click", () => {
       const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
       document.documentElement.dataset.theme = next;
