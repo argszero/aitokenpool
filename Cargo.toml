@@ -1,6 +1,6 @@
 [package]
 name = "aitokenpool"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "AI Token 共享池 — 企业 key 池 + 公共共享市场"
 license = "MIT"
@@ -11,8 +11,8 @@ rust-version = "1.86"
 # HTTP 服务器（复用 openlocalrouter 技术栈）
 axum = "0.7"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "fs"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 hyper = { version = "1.0", features = ["full"] }
 
 # HTTP 客户端（上游转发）
@@ -21,6 +21,7 @@ reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"] }
 # 序列化
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
+toml = "0.8"
 
 # 数据库
 rusqlite = { version = "0.31", features = ["bundled"] }
