@@ -291,6 +291,26 @@
         <h2>设置 <span class="en">Settings</span></h2>
         <p>账户 · API Key · 通知 · 偏好（原型展示）</p>
       </header>
+      <div class="card" id="endpoint-card">
+        <h3>接入方式 <span class="en">API Endpoints</span></h3>
+        <p class="muted">生成了 API Key 后，把下面端点填进 Cursor / Cline / Roo Code / Claude Code 等工具的 Base URL。</p>
+        <div class="endpoint-row">
+          <span class="ep-tag">OpenAI 兼容</span>
+          <code class="ep-url" data-endpoint="https://gateway.aitokenpool.local/v1">https://gateway.aitokenpool.local/v1</code>
+          <button type="button" class="btn btn-ghost ep-copy" data-ep-copy="0">复制</button>
+          <span class="ep-desc">Chat Completions · Cursor / Cline / Roo Code / OpenCode / OpenAI SDK</span>
+        </div>
+        <div class="endpoint-row">
+          <span class="ep-tag">Anthropic 兼容</span>
+          <code class="ep-url" data-endpoint="https://gateway.aitokenpool.local/anthropic">https://gateway.aitokenpool.local/anthropic</code>
+          <button type="button" class="btn btn-ghost ep-copy" data-ep-copy="1">复制</button>
+          <span class="ep-desc">Messages API · Claude Code / Goose / OpenClaw</span>
+        </div>
+        <p class="ep-note">部署后替换为你的网关域名（原型占位说明）</p>
+        <div class="ep-steps">
+          <span>① 在下方生成 API Key</span><span>② 工具 Base URL 填上面对应端点</span><span>③ API Key 填刚生成的 key</span>
+        </div>
+      </div>
       <div class="card api-key-card">
         <h3>API Key <span class="en">API keys</span></h3>
         <p class="muted">用于本地工具 / 代码接入平台的密钥。独占整行，避免表格字段挤压。</p>

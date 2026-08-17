@@ -1109,6 +1109,45 @@
     }
   }
 
+  /* --- 接入端点（rant 2026-08-17T20:44:18：设置页展示 OpenAI/Anthropic 兼容 base URL） --- */
+  // 原型静态常量：真实值来自部署配置（后端实现时接入 config 的 server.base_url 之类）
+  const API_ENDPOINTS = [
+    { tag: "OpenAI 兼容", url: "https://gateway.aitokenpool.local/v1", desc: "Chat Completions · Cursor / Cline / Roo Code / OpenCode / OpenAI SDK" },
+    { tag: "Anthropic 兼容", url: "https://gateway.aitokenpool.local/anthropic", desc: "Messages API · Claude Code / Goose / OpenClaw" },
+  ];
+
+  // 复制端点 URL（复用 copyKey 的降级逻辑：clipboard API → execCommand → 提示 Ctrl+C）
+  function copyEndpoint(i) {
+    const ep = API_ENDPOINTS[i];
+    if (!ep) return;
+    const btn = document.querySelector('[data-ep-copy="' + i + '"]');
+    const flash = (ok) => {
+      if (!btn) return;
+      const orig = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = ok ? "已复制 ✓" : "请 Ctrl+C";
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 1200);
+    };
+    const okToast = () => { toast("已复制「" + ep.tag + "」端点地址", "success"); flash(true); };
+    const fallback = () => {
+      const ta = document.createElement("textarea");
+      ta.value = ep.url;
+      ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) okToast();
+      else { toast("已选中端点地址，请按 Ctrl+C / Cmd+C 复制"); flash(false); }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(ep.url).then(okToast).catch(fallback);
+    } else {
+      fallback();
+    }
+  }
+
   // 生成新 API Key（行内编辑，替代原生输入弹窗，Enter 确认 / Esc 取消）
   function openNewKeyInline() {
     const wrap = $("#ak-new-inline");
@@ -1702,6 +1741,10 @@
 
     // API Key 搜索 + 行内操作（复制 / 改名 / 删除[行内二次确认]）
     wireSearch($("#ak-search"), renderSettings);
+
+    // 接入端点复制（rant 2026-08-17T20:44:18）
+    document.querySelectorAll("[data-ep-copy]").forEach((b) =>
+      b.addEventListener("click", () => copyEndpoint(Number(b.dataset.epCopy))));
 
     $("#api-keys").addEventListener("click", (e) => {
       const cp = e.target.closest("[data-key-copy]");
