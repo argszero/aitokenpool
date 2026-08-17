@@ -32,6 +32,8 @@
   --shadow: 0 8px 24px rgba(0,0,0,.35);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* select 自定义下拉箭头（rant 20:39:30 C：内联 SVG data-URI，深色主题浅色箭头） */
+  --select-arrow: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='12'%20height='12'%20viewBox='0%200%2012%2012'%20fill='none'%3E%3Cpath%20d='M2%204l4%204%204-4'%20stroke='%23aab6c8'%20stroke-width='1.6'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 /* 亮色主题（rant 18:06:09 B：CSS 变量重构，侧边栏切换 + localStorage 记忆 + prefers-color-scheme） */
@@ -59,6 +61,8 @@
   --spin-track: rgba(0,0,0,.25);
   --overlay: rgba(20,26,36,.5);
   --shadow: 0 8px 24px rgba(40,55,80,.12);
+  /* select 自定义下拉箭头（亮色主题深色箭头） */
+  --select-arrow: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='12'%20height='12'%20viewBox='0%200%2012%2012'%20fill='none'%3E%3Cpath%20d='M2%204l4%204%204-4'%20stroke='%2355627a'%20stroke-width='1.6'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -162,6 +166,28 @@ select.input:focus-visible { outline: none; }
   transition: border-color .15s;
 }
 .input:focus { border-color: var(--accent); }
+
+/* 原生 select 美化（rant 20:39:30 C：自定义下拉箭头，appearance:none 隐藏原生箭头；hover/focus 边框同 input） */
+select.input,
+select.th-filter,
+select[data-page-size] {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: var(--select-arrow);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 12px;
+  padding-right: 30px;
+  cursor: pointer;
+}
+select.input:hover,
+select.th-filter:hover,
+select[data-page-size]:hover { border-color: var(--accent); }
+select.input:focus,
+select.th-filter:focus,
+select[data-page-size]:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+select.input:disabled,
+select.th-filter:disabled { opacity: .55; cursor: not-allowed; }
 
 /* 自动参考单价（只读展示，由平台按模型定价计算） */
 .price-view {
@@ -376,11 +402,12 @@ mark {
 .th-filter {
   width: 100%;
   min-width: 72px;
-  background: var(--bg-soft);
+  background-color: var(--bg-soft);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: var(--radius-sm);
   padding: 5px 8px;
+  padding-right: 24px;
   font-size: 12px;
   outline: none;
 }
@@ -397,14 +424,16 @@ mark {
   font-size: 12px;
 }
 .pager-size select {
-  background: var(--bg-card);
+  background-color: var(--bg-card);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: var(--radius-sm);
   padding: 3px 6px;
+  padding-right: 22px;
   font-size: 12px;
+  background-position: right 6px center;
+  background-size: 10px 10px;
 }
-
 .form { display: flex; flex-direction: column; gap: 12px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
