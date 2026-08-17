@@ -1017,6 +1017,31 @@
     });
   }
 
+  // 交易记录导出 CSV（rant 20:46:57 E：Blob + a[download]，UTF-8 BOM，文件名 aitokenpool-transactions-YYYYMMDD.csv；导出当前筛选可见行）
+  function exportTxCsv() {
+    let list = D.TRANSACTIONS;
+    if (txTab === "consume") list = list.filter((t) => t.type === "consume");
+    else if (txTab === "earn") list = list.filter((t) => t.type === "earn");
+    list = filterRows(list, TX_COLUMNS, txTable.filters); // 与表格可见行一致（含列筛选）
+    if (!list.length) { toast("没有可导出的交易记录", "info"); return; }
+    const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const headers = ["时间", "类型", "模型 / Key", "Token 用量", "点数", "状态"];
+    const lines = list.map((t) => [t.time, TX_TYPE[t.type] || t.type, t.partner, t.tokens, t.pts, t.status].map(cell).join(","));
+    const csv = "\uFEFF" + [headers.join(","), ...lines].join("\r\n"); // UTF-8 BOM，Excel 中文不乱码
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const d = new Date();
+    const p = (x) => String(x).padStart(2, "0");
+    a.href = url;
+    a.download = "aitokenpool-transactions-" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast("已导出 " + list.length + " 条交易记录", "success");
+  }
+
   /* --- 通用 MRT 风格数据表格渲染器 ---
      cfg: { container, columns, rows, state, onState }
      columns: [{ key, title, sort?: "string"|"number", filter?: "text"|"select"|"number-range", options?, render? }]
@@ -1860,6 +1885,7 @@
 
     // 交易 Tab
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); }));
+    $("#tx-export-btn").addEventListener("click", exportTxCsv); // 导出 CSV（rant 20:46:57 E）
 
     // API Key 生成（行内编辑；列表展示脱敏、复制给完整 id）
     $("#new-api-key-btn").addEventListener("click", openNewKeyInline);

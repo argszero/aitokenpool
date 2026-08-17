@@ -257,6 +257,14 @@ ui/
 - 交互：`#mk-recent` click 委托——`[data-recent-model]` → 游客 toast「请先登录」/ 否则 `openChat(id)`（复用市场「使用 / 消费」主操作）；`[data-mk-recent-clear]` → `saveRecentIds([])` + `renderRecent()`（行隐藏）；
 - 样式：`.recent-row`（flex 换行，label 次要色）+ `.recent-row .chip:hover` accent 高亮（复用 `.chip` 基础药丸）；冒烟测试注意 stub 需给 chip 元素 `closest("[data-recent-model]")` 返回自身。
 
+## 交易记录导出 CSV 约定（v1.20，rant 2026-08-17T20:46:57 E）
+
+- 入口：交易页 tab 下右对齐 **`#tx-export-btn`「导出 CSV」**（`.toolbar` justify-end + `btn-ghost`），`bindEvents` 绑 `exportTxCsv`；
+- 数据范围：**当前筛选可见行** = tab（全部/消费/收益）→ `filterRows(list, TX_COLUMNS, txTable.filters)`（与表格、汇总条同一数据源）；无数据 → toast info 不导出；
+- 格式：**UTF-8 BOM**（`"\uFEFF"` 前缀）+ `\r\n` 换行 + 表头 `时间,类型,模型 / Key,Token 用量,点数,状态`；类型用 `TX_TYPE` 中文映射；点数正负号原值；字段含 `,`/`"`/换行按 RFC4180 双引号转义（`cell()` 助手）；
+- 下载：`Blob(type="text/csv;charset=utf-8")` → `URL.createObjectURL` → 临时 `<a download>` click → `remove()` → `setTimeout 1s` revoke；文件名 **`aitokenpool-transactions-YYYYMMDD.csv`**（`new Date()` 本地日期）；
+- 冒烟测试注意：stub 需给 `document.createElement("a")` 返回带 `click()`/`remove()` 的元素并捕获 `href`/`download`，`URL.createObjectURL` 捕获 Blob（`arrayBuffer()` 首 3 字节 EF BB BF 验证 BOM——`blob.text()` 会按规范剥掉 BOM）；列筛选联动可注入 `#tx-table` 的 `querySelectorAll(".th-filter")`/`querySelector('[data-filter-key=…]')` 假输入并 fire `input`。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
