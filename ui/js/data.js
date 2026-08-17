@@ -45,13 +45,6 @@
     // 当前用户（公共版）
     USER: { name: "阿零", email: "demo@aitokenpool.local", balance: 12471 },
 
-    // 点数来源（v1.8：面向用户只展示构成，机制细节进 docs）
-    POINT_SOURCES: [
-      { kind: "gift",  label: "赠送点数", pts: 1 },
-      { kind: "earn",  label: "收益点数", pts: 12470 },
-      { kind: "topup", label: "充值点数", pts: 0 },
-    ],
-
     // 加额申请（US-20：企业成员申请 → 管理员批准 / 驳回；mock 内嵌数据）
     RAISE_REQUESTS: [
       { id: 1, user: "苏航", email: "suhang@example.com", amount: 5000, reason: "本月开发任务增加，配额已用尽", status: "pending", time: "08-15 09:00" },
