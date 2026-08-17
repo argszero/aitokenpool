@@ -219,6 +219,14 @@ ui/
 - **记住我**：`#login-remember` checkbox → localStorage `atp-remember`（登录提交时存，DOMContentLoaded 时还原）；`demo-hint` 小字显示演示账号；
 - 冒烟测试注意：stub 中 `setFieldError` 依赖 `input.parentNode.querySelector(".field-error")` —— stub 的 parentNode 需实现该查询；`insertAdjacentElement` 记录插入元素供断言。
 
+## 接入端点卡片约定（v1.19，rant 2026-08-17T20:44:18）
+
+- 设置页 **`#endpoint-card`「接入方式 / API 端点」** 卡片，位于 API Key 卡片**上方**（先看端点再生成 key）；
+- 每端点一行 `.endpoint-row`：`.ep-tag` 协议标签（OpenAI 兼容 / Anthropic 兼容，accent 药丸）→ `.ep-url`（`--mono` 等宽、`user-select:all` 整段选中、可横向滚动）→ `.ep-copy` 复制按钮 → `.ep-desc` 说明小字（支持的工具列表）；
+- **URL 数据**：`API_ENDPOINTS` 静态常量（`ui/js/app.js`，注释标明真实值来自部署配置 `config.server.base_url` 之类）；卡片内 `.ep-note`「部署后替换为你的网关域名」（原型占位）；`.ep-steps` 使用步骤 ①②③（生成 key → 填 Base URL → 填 key）；
+- **复制**：`copyEndpoint(i)` 复用 copyKey 的降级链（clipboard API → textarea+execCommand → 提示 Ctrl+C）与「已复制 ✓」flash（1.2s 恢复）；事件绑定 `document.querySelectorAll("[data-ep-copy]")`（bindEvents）；
+- 窄屏（≤560px）：`.endpoint-row` 纵向堆叠，`.ep-url` `word-break:break-all` 自动换行。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
