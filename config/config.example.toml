@@ -151,6 +151,55 @@ endpoints = [
   { protocol = "anthropic",   base_url = "https://api.minimaxi.com/anthropic" },
 ]
 
+# —— 按量付费（paygo）Plan：每家厂商至少一个「API（按量）」项（上架表单 Plan 下拉）——
+#    deepseek-paygo 见上；以下补齐 智谱 / 阿里云百炼 / 火山方舟 / Kimi / MiniMax
+
+[[plans]]
+id = "zhipu-paygo"
+provider = "zhipu"
+type = "paygo"
+key_prefix = "sk-"              # 普通按量 Key
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://open.bigmodel.cn/api/paas/v4" },
+  { protocol = "anthropic",   base_url = "https://open.bigmodel.cn/api/anthropic" },
+]
+
+[[plans]]
+id = "aliyun-bailian-paygo"
+provider = "aliyun-bailian"
+type = "paygo"
+key_prefix = "sk-"              # 普通按量 Key
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+]
+
+[[plans]]
+id = "ark-paygo"
+provider = "bytedance-ark"
+type = "paygo"
+key_prefix = "sk-"              # 普通按量 Key
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://ark.cn-beijing.volces.com/api/v3" },
+]
+
+[[plans]]
+id = "moonshot-paygo"
+provider = "moonshot"
+type = "paygo"
+key_prefix = "sk-"              # 普通按量 Key
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://api.moonshot.cn/v1" },
+]
+
+[[plans]]
+id = "minimax-paygo"
+provider = "minimax"
+type = "paygo"
+key_prefix = "sk-"              # 普通按量 Key
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://api.minimaxi.com/v1" },
+]
+
 # ============================================================
 # 4. 官方价覆盖（可选）
 #    覆盖 data/models.json 里聚合源（OpenRouter/litellm）的价格，
