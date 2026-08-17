@@ -17,7 +17,11 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 
 ## 状态
 
-🚧 项目初始化中（2026-08-13）
+- ✅ **P0-A（v0.2.0，2026-08-17）**：后端骨架 + 配置加载（`config/config.example.toml`）+ SQLite 数据层（幂等迁移 + demo 种子）+ 认证（argon2 + Bearer API Key）+ API Key 端点。`cargo run` 后：
+  - `GET /healthz` → `{"status":"ok","version":"0.2.0"}`
+  - `POST /api/auth/login`（demo@aitokenpool.local / demo1234）→ `{api_key}`
+  - `POST|GET /api/api-keys`（Bearer 认证，key 脱敏 `atk_live_****xxxx`）
+- 🚧 P0 后续（网关路由 / 用量追踪）进行中；UI 原型 v1.20（`ui/` 静态页 + mock 数据）。
 
 ## License
 
