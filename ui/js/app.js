@@ -14,6 +14,7 @@
   let activeView = "dashboard";
   let txTab = "all";
   let isGuest = false; // 游客模式（US-1：未登录可浏览市场）
+  let pendingHashView = null; // URL hash 路由（rant 20:39:30 A）：刷新后登录时恢复上次视图
 
   // MRT 风格表格状态（页面级变量：切换页面不丢失排序/筛选/分页）
   const txTable = { sort: [], filters: {}, page: 1, pageSize: 10 };
@@ -300,6 +301,34 @@
   // 游客可见的页面（US-1：仅市场；其余需登录）
   const GUEST_VIEWS = ["marketplace"];
 
+  const VALID_VIEWS = Object.keys(VIEW_TITLE);
+
+  /* --- URL hash 路由（rant 20:39:30 A：刷新/前进后退保持视图；非法 hash 回仪表盘） --- */
+
+  // 从 location.hash 解析视图 id：空 hash → null（不动作）；非法 hash → "dashboard"
+  function viewFromHash() {
+    const h = (window.location && window.location.hash) || "";
+    if (!h || h === "#") return null;
+    const m = h.match(/^#\/([\w-]+)/);
+    const id = m ? m[1] : null;
+    return VALID_VIEWS.includes(id) ? id : "dashboard";
+  }
+
+  // 当前 hash 是否为合法视图 hash（非法 hash 回退仪表盘时避免重写 URL、污染历史）
+  function hashIsValid() {
+    const h = (window.location && window.location.hash) || "";
+    const m = h.match(/^#\/([\w-]+)/);
+    return !!m && VALID_VIEWS.includes(m[1]);
+  }
+
+  // 视图切换后同步 URL（pushState 不触发 hashchange，避免回环；已相同则跳过不重复入栈）
+  function syncHash(id) {
+    if (!window.history || !window.history.pushState) return;
+    const h = "#/" + id;
+    if ((window.location && window.location.hash) === h) return;
+    try { window.history.pushState(null, "", h); } catch (e) { /* file:// 下个别浏览器限制，忽略 */ }
+  }
+
   function renderNav() {
     const nav = $("#nav");
     nav.innerHTML = "";
@@ -334,7 +363,7 @@
     $("#mode-label").textContent = isGuest ? "游客模式 · 仅浏览市场" : "共享市场 · 角色视图";
   }
 
-  function switchView(id) {
+  function switchView(id, opts) {
     // 游客限制（US-1）：非市场页面 → 提示需登录
     if (isGuest && !GUEST_VIEWS.includes(id)) {
       toast("请先登录后再访问「" + (VIEW_TITLE[id] || id) + "」", "error");
@@ -348,6 +377,8 @@
     $("#main").scrollTop = 0;
     // 动态文档标题（rant 18:06:09 F：视图切换跟随「视图 · AITokenPool」，未知视图回默认）
     document.title = VIEW_TITLE[id] ? VIEW_TITLE[id] + " · AITokenPool" : "AITokenPool";
+    // URL hash 路由（rant 20:39:30 A：视图切换同步 #/视图；非法 hash 回退时不清 URL，避免污染历史）
+    if (!opts || opts.sync !== false) syncHash(id);
   }
 
   /* ---------------- 视图渲染 ---------------- */
@@ -1391,6 +1422,7 @@
 
   function enterGuest() {
     isGuest = true;
+    pendingHashView = null;
     activeView = "marketplace";
     $("#login-view").classList.add("hidden");
     $("#app").classList.remove("hidden");
@@ -1420,7 +1452,9 @@
       document.querySelector(".user-chip").classList.remove("hidden");
       $("#login-view").classList.add("hidden");
       $("#app").classList.remove("hidden");
-      switchView("dashboard");
+      // URL hash 路由：登录后恢复刷新前的视图（无 hash 则仪表盘）
+      switchView(pendingHashView || "dashboard");
+      pendingHashView = null;
       toast("欢迎回来，阿零（演示账号）", "info");
     });
 
@@ -1661,6 +1695,13 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     document.title = "AITokenPool"; // 默认标题（rant 18:06:09 F：无视图时回「AITokenPool」）
+    // URL hash 路由（rant 20:39:30 A）：加载时记录 hash 视图（登录后恢复）；前进/后退触发 hashchange
+    pendingHashView = viewFromHash();
+    window.addEventListener("hashchange", () => {
+      const id = viewFromHash();
+      // 非法 hash → 回仪表盘但不重写 URL（避免 pushState 新增历史条目、后退需两次）
+      if (id && id !== activeView) switchView(id, { sync: hashIsValid() });
+    });
     renderNav();
     bindEvents();
     renderView("dashboard");

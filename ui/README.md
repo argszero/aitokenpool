@@ -164,6 +164,17 @@ ui/
 - **视图切换滚动复位**：`switchView` 内 `$("#main").scrollTop = 0`（`.main` 为 `overflow-y:auto` 滚动容器，渲染后复位）；新增视图切换入口都必须经过 `switchView` 以保证复位；
 - **复制反馈**：`copyKey` 的 `flash(ok)`——复制成功按钮短暂变「已复制 ✓」（禁用 + 1.2s 恢复），降级路径「请 Ctrl+C」（v1.16 起，DOM 冒烟验证）。
 
+## URL hash 路由约定（v1.19，rant 2026-08-17T20:39:30 A）
+
+视图与地址栏 hash 联动，支持**收藏 / 分享 / 刷新恢复**（纯前端，零依赖，`pushState` 实现，不产生真实页面跳转）：
+
+- **hash 格式**：`#/<view-id>`（view id 为 `VIEW_TITLE` 的键：`dashboard` / `marketplace` / `sharing` / `wallet` / `transactions` / `settings` / `admin`）；
+- **视图切换同步 URL**：`switchView(id)` 末尾调用 `syncHash(id)` → `history.pushState(null, "", "#/"+id)`；当前 hash 已相同则跳过（不重复入栈）；pushState **不触发 hashchange**，天然避免回环；
+- **前进 / 后退跟随**：DOMContentLoaded 注册 `window` 的 `hashchange` → `viewFromHash()` → 与 `activeView` 不同则 `switchView(id)`（浏览器前进/后退时 URL 先变、事件后发）；
+- **非法 hash 回仪表盘**：`viewFromHash()` 对 `#/xxx`（非 7 视图）返回 `"dashboard"`；hashchange 处理器以 `{ sync: hashIsValid() }` 调用 `switchView`——**不重写 URL**（避免 pushState 污染历史、用户后退需要两次）；`#` / 空 hash → `null` 不动作；
+- **刷新恢复**：DOMContentLoaded 先 `pendingHashView = viewFromHash()`；登录成功恢复 `pendingHashView || "dashboard"`（游客浏览 / 未登录态不冲突）；
+- **游客拦截**：游客访问受限 hash（如 `#/settings`）→ `switchView` 内 `GUEST_VIEWS` 拦截（toast 提示），视图与 URL 均保持原状、不入栈新条目。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
