@@ -399,11 +399,12 @@
       "<td>" + D.fmt(s.used) + " / " + D.fmt(s.quota) + "</td>" +
       "<td>" + D.fmt(s.price) + " 点/1M</td>" +
       "<td>+" + D.fmt(s.earned) + " 点</td>" +
+      "<td>" + timeCell(s.time) + "</td>" +
       "<td>" + badge(s.status, SHARE_STATUS) + "</td>" +
       "<td><button class='btn btn-ghost' data-share-toggle='" + i + "' style='padding:4px 10px;font-size:12px'>" +
       (s.status === "on" ? "暂停" : s.status === "paused" ? "恢复" : "重新上架") + "</button> " +
       "<button class='btn btn-danger' data-share-delete='" + i + "' style='padding:4px 10px;font-size:12px'>删除</button></td></tr>"
-    ).join("") : emptyRow(7, "还没有上架的 key", "把闲置 key 放进池子，开始赚点数",
+    ).join("") : emptyRow(8, "还没有上架的 key", "把闲置 key 放进池子，开始赚点数",
       '<button type="button" class="btn btn-primary" data-share-add>上架新 key</button>');
   }
 
@@ -551,7 +552,7 @@
         "<td>" + (r.status === "pending"
           ? "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-raise-approve='" + i + "'>批准</button> " +
             "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>驳回</button>"
-          : '<span class="muted" style="font-size:12px">' + esc(r.time) + "</span>") + "</td></tr>"
+          : '<span class="muted" style="font-size:12px">' + timeCell(r.time) + "</span>") + "</td></tr>"
       ).join("") + "</tbody></table></div>"
       : emptyState("暂无加额申请", "成员提交的加额申请会显示在这里，批准后自动加点数");
   }
@@ -588,7 +589,7 @@
   };
 
   const TX_COLUMNS = [
-    { key: "time", title: "时间", sort: "string", filter: "text" },
+    { key: "time", title: "时间", sort: "string", filter: "text", render: (t) => timeCell(t.time) },
     { key: "type", title: "类型", sort: "string", filter: "select", options: ["消费", "收益", "充值", "提现", "赠送"], filterVal: (t) => TX_TYPE[t.type] || t.type,
       render: (t) => t.type === "earn" ? '<span class="badge ok">收益</span>' : t.type === "consume" ? '<span class="badge accent">消费</span>' : t.type === "gift" ? '<span class="badge ok">赠送</span>' : '<span class="badge dim">' + esc(TX_TYPE[t.type] || t.type) + "</span>" },
     { key: "partner", title: "模型 / Key", sort: "string", filter: "text" },
@@ -769,7 +770,7 @@
       "<tr><td><strong>" + esc(k.name) + "</strong></td>" +
       "<td><code>" + esc(maskAtk(k.id)) + "</code></td>" +
       "<td>" + esc(k.created) + "</td>" +
-      "<td>" + esc(k.last) + "</td>" +
+      "<td>" + timeCell(k.last) + "</td>" +
       "<td>" + (k.status === "active" ? '<span class="badge ok">启用</span>' : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
       "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>复制</button> " +
       "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>改名</button> " +
@@ -1096,6 +1097,39 @@
     const n = new Date();
     const p = (x) => String(x).padStart(2, "0");
     return p(n.getMonth() + 1) + "-" + p(n.getDate()) + " " + p(n.getHours()) + ":" + p(n.getMinutes());
+  }
+
+  // 相对时间（rant 16:57:17 B）：刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD
+  // 支持 "MM-DD HH:mm"（默认今年）与 "YYYY-MM-DD[ HH:mm]" 两种格式；非标准格式原样返回
+  function timeAgo(s) {
+    if (!s) return "";
+    const p2 = (x) => String(x).padStart(2, "0");
+    const full = String(s);
+    const m = full.match(/^(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/) || full.match(/^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}))?$/);
+    if (!m) return full;
+    const isFull = m[1].length === 4; // "YYYY-MM-DD" vs "MM-DD HH:mm"（分组语义不同）
+    const MM = isFull ? +m[2] : +m[1];
+    const DD = isFull ? +m[3] : +m[2];
+    const HH = isFull ? +(m[4] || 0) : +m[3];
+    const mm = isFull ? +(m[5] || 0) : +m[4];
+    const now = new Date();
+    const y = isFull ? +m[1] : now.getFullYear();
+    const d = new Date(y, MM - 1, DD, HH, mm);
+    if (isNaN(d.getTime())) return full;
+    const min = Math.floor((now - d) / 60000);
+    if (min < 1) return "刚刚";
+    if (min < 60) return min + " 分钟前";
+    if (min < 60 * 24) return Math.floor(min / 60) + " 小时前";
+    const dayDiff = Math.floor(
+      (new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(y, MM - 1, DD)) / 86400000);
+    if (dayDiff === 1) return "昨天";
+    return p2(MM) + "-" + p2(DD); // MM-DD
+  }
+
+  // 时间单元格：相对时间展示 + title 悬停显示完整绝对时间
+  function timeCell(s) {
+    if (!s) return "";
+    return '<span class="timeago" title="' + esc(String(s)) + '">' + esc(timeAgo(s)) + "</span>";
   }
 
   function openChat(id) {

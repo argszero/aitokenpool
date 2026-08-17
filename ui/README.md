@@ -86,6 +86,11 @@ ui/
 - **禁用原生弹窗**：`grep ui/` 不得出现原生 confirm/prompt 调用；确认走 `confirmInline(btn, onConfirm, text)`（按钮变「确认删除？」红色态 `.confirming`，3 秒无操作或 Esc 还原，再次点击执行），输入走 `inlineForm(cell, opts)`（行内展开 input + 确认/取消，Enter 确认 / Esc 取消，`opts.validate` 返回错误文案时 toast + 重新聚焦）；
 - 已覆盖：key 删除、共享下架、部门删除（confirmInline）；API Key 新建/改名、运营者充值、成员充值（inlineForm）；新建 key 行内输入框在 `#ak-new-inline`（Enter/Esc 绑定）。
 
+## 时间显示约定（v1.17，rant 2026-08-17T16:57:17 B 相对时间）
+
+- **相对时间**：`timeAgo(s)` 支持 `MM-DD HH:mm`（默认今年）与 `YYYY-MM-DD[ HH:mm]`，输出 `刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD`，非标准格式原样返回；`timeCell(s)` 输出带 `title`（完整绝对时间）的 `.timeago` 单元格，hover 显示；
+- **统一使用**：交易列表（时间列）、加额申请列表、共享列表（上架时间列）、API Key 最近使用时间；数据新增 / 生成时间用 `nowTime()`（`MM-DD HH:mm`）写入即可自动相对化。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
