@@ -21,14 +21,26 @@
 
   /* ---------------- 工具 ---------------- */
 
-  // toast 分级（rant 15:50:05 B.8：成功/错误/信息不同样式；默认 info）
+  // toast 队列堆叠（rant 20:39:30 D：最多同时 3 条，纵向堆叠，独立淡入淡出；分级样式保留 success/error/info）
+  const TOAST_MAX = 3;
+  const TOAST_MS = 2600;   // 展示时长
+  const TOAST_OUT_MS = 200; // 淡出时长
   function toast(msg, type) {
-    const el = $("#toast");
-    el.textContent = msg;
+    const wrap = $("#toast-wrap");
+    const el = document.createElement("div");
     el.className = "toast" + (type ? " " + type : "");
-    el.classList.remove("hidden");
-    clearTimeout(toast._t);
-    toast._t = setTimeout(() => el.classList.add("hidden"), 2600);
+    el.textContent = msg;
+    wrap.appendChild(el);
+    // 超过上限：移除最旧的一条（不等待淡出，立即腾位）
+    while (wrap.children.length > TOAST_MAX) {
+      const old = wrap.children[0];
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+    }
+    // 独立生命周期：到时淡出 → 移除（各条互不影响）
+    setTimeout(() => {
+      el.classList.add("out");
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, TOAST_OUT_MS);
+    }, TOAST_MS);
   }
 
   // 按钮 loading 态（rant 15:50:05 B.8：提交中转圈，模拟反馈后恢复）
