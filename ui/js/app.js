@@ -81,6 +81,14 @@
     el.style.animation = "";
   }
 
+  // 数字/点数变化轻微跳动（rant 18:06:09 E：充值/消费后余额跳动；prefers-reduced-motion 下由 CSS 禁用动画，功能不受影响）
+  function bump(el) {
+    if (!el) return;
+    el.classList.remove("bump");
+    void el.offsetWidth; // 强制 reflow 以重放动画
+    el.classList.add("bump");
+  }
+
   /* --- 搜索增强（rant 18:06:09 D：防抖 + <mark> 关键词高亮 + 清空 × 按钮） --- */
 
   // 用户输入作为正则关键词时先转义，避免误当正则语法（如 "C++"、"("）
@@ -672,6 +680,8 @@
     });
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     renderWallet();
+    bump($("#side-balance")); // 余额跳动（rant 18:06:09 E）
+    bump($("#wallet-balance"));
     closeTopup();
     toast("充值成功 +" + D.fmt(amt) + " 点（永久有效 · 演示）", "success");
   }
@@ -747,6 +757,7 @@
         detail: "加额 · 管理员批准申请（" + r.reason + "）", tokens: "—", pts: +r.amount, status: "成功",
       });
       $("#side-balance").textContent = D.fmt(D.USER.balance);
+      bump($("#side-balance")); // 批准加额 → 余额跳动（rant 18:06:09 E）
     }
     renderRaiseRequests();
     toast("已批准「" + r.user + "」申请 +" + D.fmt(r.amount) + " 点", "success");
@@ -1268,13 +1279,15 @@
       onSubmit: (raw) => {
         const amt = Math.round(Number(raw) * 100) / 100;
         u.balance = Math.round((u.balance + amt) * 100) / 100;
-        if (u.email === D.USER.email) D.USER.balance = u.balance;
+        const isMe = u.email === D.USER.email;
+        if (isMe) D.USER.balance = u.balance;
         D.TRANSACTIONS.unshift({
           id: Date.now(), time: nowTime(), type: "topup", partner: "运营者",
           detail: "充值 · 运营者发放（永久有效）", tokens: "—", pts: amt, status: "成功",
         });
         renderAdmin();
         $("#side-balance").textContent = D.fmt(D.USER.balance);
+        if (isMe) bump($("#side-balance")); // 给自己充值 → 余额跳动（rant 18:06:09 E）
         toast("已给「" + u.name + "」充值 " + D.fmt(amt) + " 点（永久有效）", "success");
       },
       onCancel: () => renderAdmin(),
@@ -1366,6 +1379,7 @@
       '<div class="chat-msg user"><div class="bubble">' + esc(text) + "</div></div>" +
       '<div class="chat-msg bot"><div class="bubble">（模拟回复）已收到你的请求。本次调用消耗约 0.19M tokens。</div></div>';
     $("#side-balance").textContent = D.fmt(D.USER.balance);
+    bump($("#side-balance")); // 消费扣款 → 余额跳动（rant 18:06:09 E）
     $("#chat-meta").textContent = "已扣 " + D.fmt(cost) + " 点（模拟 0.19M tokens）· 余额 " + D.fmt(D.USER.balance) + " 点";
     $("#chat-input").value = "";
     toast("已扣 " + D.fmt(cost) + " 点（模拟 0.19M tokens）", "success");

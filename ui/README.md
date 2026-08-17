@@ -146,6 +146,13 @@ ui/
 - **程序化清空用 `resetSearch(input)`**（值 + × 按钮态同步，不触发渲染；调用方随后自行重绘）——空状态「清除搜索 / 清除筛选」按钮已统一走此路径；
 - `mark` 样式：`--accent-soft` 底 + `--accent-text` 字，双主题对比度达标。
 
+## 动效与系统偏好约定（v1.18，rant 2026-08-17T18:06:09 E）
+
+- **按压反馈**：`.btn:active:not(:disabled) { transform: scale(0.98) }`（配合 `.btn` 既有 `transition: all .15s`）；disabled 按钮不触发；
+- **统计卡 hover**：`.stat:hover` `translateY(-2px)` + 边框/阴影提升（与 `.card:hover` 语言一致，过渡 0.15–0.18s）；
+- **数字跳动**：`bump(el)` 助手（remove `.bump` → reflow → add，重放 `@keyframes numJump`：`translateY(-3px) scale(1.02)`，0.35s）；**接入 4 处余额变化点**——钱包充值（`#side-balance` + `#wallet-balance`）、聊天消费扣款、加额批准、运营者给自己充值（`isMe` 判断）；`#side-balance` 为 inline 元素需 `display:inline-block` 才可 transform；
+- **系统偏好**：`@media (prefers-reduced-motion: reduce)` 全局压 `animation-duration`/`transition-duration` 到 0.01ms、`animation-iteration-count: 1`、`scroll-behavior: auto`——**禁用过渡/动画但保留全部功能**；新增加动画时不得绕过此规则。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
