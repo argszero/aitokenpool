@@ -47,6 +47,71 @@
     }, ms || 320);
   }
 
+  /* --- 行内二次确认 / 行内编辑（rant 16:57:17 A：清除原生确认/输入弹窗） --- */
+
+  // 行内二次确认：首次点击按钮变「确认删除？」红色态，3 秒无操作或 Esc 还原，再次点击执行
+  function confirmInline(btn, onConfirm, confirmText) {
+    if (!btn) return;
+    if (btn.dataset.confirm === "1") {
+      clearTimeout(btn._confirmT);
+      delete btn.dataset.confirm;
+      btn.classList.remove("confirming");
+      onConfirm();
+      return;
+    }
+    btn.dataset.confirm = "1";
+    const orig = btn.innerHTML;
+    btn.innerHTML = confirmText || "确认删除？";
+    btn.classList.add("confirming");
+    btn._confirmT = setTimeout(() => revert(), 3000);
+    const revert = () => {
+      clearTimeout(btn._confirmT);
+      if (btn.dataset.confirm === "1") delete btn.dataset.confirm;
+      btn.classList.remove("confirming");
+      btn.innerHTML = orig;
+    };
+    document.addEventListener("keydown", function esc(e) {
+      if (e.key === "Escape") { revert(); document.removeEventListener("keydown", esc); }
+    });
+  }
+
+  // 行内编辑表单：把容器替换为 input + 确认/取消，Enter 确认 / Esc 取消
+  // opts: { value, placeholder, type, width, validate(val)->err|null, onSubmit(val), onCancel }
+  function inlineForm(cell, opts) {
+    const wrap = document.createElement("span");
+    wrap.className = "inline-edit";
+    wrap.style.cssText = "display:inline-flex;gap:6px;align-items:center";
+    const input = document.createElement("input");
+    input.type = opts.type || "text";
+    input.className = "input";
+    input.value = opts.value || "";
+    input.placeholder = opts.placeholder || "";
+    input.style.cssText = "padding:4px 8px;font-size:12px;width:" + (opts.width || "140px");
+    const ok = document.createElement("button");
+    ok.type = "button"; ok.className = "btn btn-primary"; ok.textContent = "确认";
+    ok.style.cssText = "padding:4px 10px;font-size:12px";
+    const cancel = document.createElement("button");
+    cancel.type = "button"; cancel.className = "btn btn-ghost"; cancel.textContent = "取消";
+    cancel.style.cssText = "padding:4px 10px;font-size:12px";
+    wrap.append(input, ok, cancel);
+    cell.innerHTML = "";
+    cell.appendChild(wrap);
+    input.focus();
+    if (input.select) input.select();
+    const finish = () => {
+      const val = String(input.value).trim();
+      const err = opts.validate ? opts.validate(val) : null;
+      if (err) { toast(err, "error"); input.focus(); return; }
+      opts.onSubmit(val);
+    };
+    ok.addEventListener("click", finish);
+    cancel.addEventListener("click", opts.onCancel);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") finish();
+      else if (e.key === "Escape") opts.onCancel();
+    });
+  }
+
   function badge(status, labels) {
     return '<span class="badge ' + (labels[status] ? labels[status].cls : "dim") + '">' +
       esc(labels[status] ? labels[status].text : status) + "</span>";
@@ -345,7 +410,6 @@
   function deleteSharing(i) {
     const s = D.SHARINGS[i];
     if (!s) return;
-    if (!window.confirm("确认彻底下架 " + s.model + " 的 key？删除后不再共享，不可恢复。")) return;
     D.SHARINGS.splice(i, 1);
     renderSharing();
     if (activeView === "dashboard") renderDashboard();
@@ -747,33 +811,48 @@
     }
   }
 
-  // 生成新 API Key（带名字；列表展示脱敏、复制给完整 id）
-  function generateApiKey() {
-    const input = window.prompt("新 key 名字（留空则默认「未命名」）：", "未命名");
-    if (input == null) return;
-    const name = String(input).trim() || "未命名";
+  // 生成新 API Key（行内编辑，替代原生输入弹窗，Enter 确认 / Esc 取消）
+  function openNewKeyInline() {
+    const wrap = $("#ak-new-inline");
+    wrap.hidden = false;
+    $("#ak-new-name").value = "";
+    $("#ak-new-name").focus();
+  }
+
+  function closeNewKeyInline() {
+    $("#ak-new-inline").hidden = true;
+  }
+
+  function commitNewKey() {
+    const raw = String($("#ak-new-name").value).trim();
+    const name = raw || "未命名";
     const id = "atk_live_" + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
     D.API_KEYS.unshift({ id, name, created: "2026-08-14", last: "从未", status: "active" });
     renderSettings();
+    closeNewKeyInline();
     toast("已生成新 API Key「" + name + "」（完整 key 已展示在列表，可复制）", "success");
   }
 
+  // API Key 改名：行内编辑（替代原生输入弹窗）
   function renameKey(i) {
     const k = D.API_KEYS[i];
     if (!k) return;
-    const input = window.prompt("修改 key 名字：", k.name);
-    if (input == null) return;
-    const name = String(input).trim();
-    if (!name) { toast("名字不能为空（未生效）", "error"); return; }
-    k.name = name;
-    renderSettings();
-    toast("已改名为「" + name + "」", "success");
+    const row = document.querySelector('#api-keys tr:nth-child(' + (i + 1) + ')');
+    const cell = row ? row.children[0] : null;
+    if (!cell) return;
+    inlineForm(cell, {
+      value: k.name,
+      placeholder: "key 名字",
+      width: "160px",
+      validate: (v) => v ? null : "名字不能为空（未生效）",
+      onSubmit: (name) => { k.name = name; renderSettings(); toast("已改名为「" + name + "」", "success"); },
+      onCancel: () => renderSettings(),
+    });
   }
 
   function deleteKey(i) {
     const k = D.API_KEYS[i];
     if (!k) return;
-    if (!window.confirm("删除后该 key 立即失效，确认删除「" + k.name + "」？")) return;
     D.API_KEYS.splice(i, 1);
     renderSettings();
     toast("已删除 key「" + k.name + "」", "success");
@@ -941,11 +1020,6 @@
   function deleteDept(i) {
     const d = D.DEPARTMENTS[i];
     if (!d) return;
-    const members = deptMemberCount(d.name);
-    const msg = members > 0
-      ? "该部门有 " + members + " 名成员，删除后这些成员将失去部门归属。确认删除部门「" + d.name + "」？"
-      : "确认删除部门「" + d.name + "」？";
-    if (!window.confirm(msg)) return;
     D.DEPARTMENTS.splice(i, 1);
     renderAdmin();
     toast("已删除部门「" + d.name + "」", "success");
@@ -982,6 +1056,36 @@
       "<td>" + D.fmt(u.balance) + " 点</td>" +
       "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>充值点数</button></td></tr>"
     ).join("") : emptyRow(4, "没有匹配的用户", "试试其他用户名 / 邮箱");
+  }
+
+  // 运营者给用户充值：行内编辑（替代原生输入弹窗，Enter 确认 / Esc 取消）
+  function inlineOpsTopup(u, btn) {
+    const row = btn.closest("tr");
+    if (!row) return;
+    const cell = row.children[3];
+    inlineForm(cell, {
+      value: "100",
+      placeholder: "点数（可为小数）",
+      type: "number",
+      width: "120px",
+      validate: (raw) => {
+        const amt = Math.round(Number(raw) * 100) / 100;
+        return (!raw || isNaN(amt) || amt <= 0) ? "请输入大于 0 的点数金额（未生效）" : null;
+      },
+      onSubmit: (raw) => {
+        const amt = Math.round(Number(raw) * 100) / 100;
+        u.balance = Math.round((u.balance + amt) * 100) / 100;
+        if (u.email === D.USER.email) D.USER.balance = u.balance;
+        D.TRANSACTIONS.unshift({
+          id: Date.now(), time: nowTime(), type: "topup", partner: "运营者",
+          detail: "充值 · 运营者发放（永久有效）", tokens: "—", pts: amt, status: "成功",
+        });
+        renderAdmin();
+        $("#side-balance").textContent = D.fmt(D.USER.balance);
+        toast("已给「" + u.name + "」充值 " + D.fmt(amt) + " 点（永久有效）", "success");
+      },
+      onCancel: () => renderAdmin(),
+    });
   }
 
   /* --- 消费模拟（US-6：市场页「使用 / 消费」→ 聊天 Mock，按模型参考价扣小数点数） --- */
@@ -1113,27 +1217,14 @@
     $("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); });
     $("#chat-modal").addEventListener("click", (e) => { if (e.target === $("#chat-modal")) closeChat(); });
 
-    // 平台运营者（G1 / US-运营2）：搜索定位用户 + 充值（永久有效点数，产生交易记录）
+    // 平台运营者（G1 / US-运营2）：搜索定位用户 + 充值（行内编辑，永久有效点数，产生交易记录）
     $("#ops-search").addEventListener("input", renderAdmin);
     $("#ops-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-ops-topup]");
       if (!b) return;
       const u = D.OPERATOR_USERS.find((x) => x.id === Number(b.dataset.opsTopup));
       if (!u) return;
-      const input = window.prompt("为「" + u.name + "」充值点数（永久有效，可为小数）：", "100");
-      if (input == null) return;
-      const raw = String(input).trim();
-      const amt = Math.round(Number(raw) * 100) / 100;
-      if (!raw || isNaN(amt) || amt <= 0) { toast("请输入大于 0 的点数金额（未生效）", "error"); return; }
-      u.balance = Math.round((u.balance + amt) * 100) / 100;
-      if (u.email === D.USER.email) D.USER.balance = u.balance;
-      D.TRANSACTIONS.unshift({
-        id: Date.now(), time: nowTime(), type: "topup", partner: "运营者",
-        detail: "充值 · 运营者发放（永久有效）", tokens: "—", pts: amt, status: "成功",
-      });
-      renderAdmin();
-      $("#side-balance").textContent = D.fmt(D.USER.balance);
-      toast("已给「" + u.name + "」充值 " + D.fmt(amt) + " 点（永久有效）", "success");
+      inlineOpsTopup(u, b);
     });
 
     // 共享上架表单（默认收起；点添加展开，提交成功或取消后收起）
@@ -1185,12 +1276,12 @@
       withLoading(submitBtn, done);
     });
 
-    // 共享列表操作（事件委托：暂停/恢复/重新上架 + 删除 + 空状态上架）
+    // 共享列表操作（事件委托：暂停/恢复/重新上架 + 删除[行内二次确认] + 空状态上架）
     $("#share-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-share-toggle]");
       if (b) { toggleSharing(Number(b.dataset.shareToggle)); return; }
       const d = e.target.closest("[data-share-delete]");
-      if (d) { deleteSharing(Number(d.dataset.shareDelete)); return; }
+      if (d) { confirmInline(d, () => deleteSharing(Number(d.dataset.shareDelete)), "确认彻底下架？"); return; }
       if (e.target.closest("[data-share-add]")) showShareForm();
     });
 
@@ -1223,10 +1314,16 @@
     // 交易 Tab
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); }));
 
-    // API Key 生成（带名字；列表展示脱敏、复制给完整 id）
-    $("#new-api-key-btn").addEventListener("click", generateApiKey);
+    // API Key 生成（行内编辑；列表展示脱敏、复制给完整 id）
+    $("#new-api-key-btn").addEventListener("click", openNewKeyInline);
+    $("#ak-new-ok").addEventListener("click", commitNewKey);
+    $("#ak-new-cancel").addEventListener("click", closeNewKeyInline);
+    $("#ak-new-name").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") commitNewKey();
+      else if (e.key === "Escape") closeNewKeyInline();
+    });
 
-    // API Key 搜索 + 行内操作（复制 / 改名 / 删除）
+    // API Key 搜索 + 行内操作（复制 / 改名 / 删除[行内二次确认]）
     $("#ak-search").addEventListener("input", renderSettings);
 
     $("#api-keys").addEventListener("click", (e) => {
@@ -1235,8 +1332,8 @@
       const rn = e.target.closest("[data-key-rename]");
       if (rn) { renameKey(Number(rn.dataset.keyRename)); return; }
       const dl = e.target.closest("[data-key-del]");
-      if (dl) { deleteKey(Number(dl.dataset.keyDel)); return; }
-      if (e.target.closest("[data-new-key]")) generateApiKey();
+      if (dl) { confirmInline(dl, () => deleteKey(Number(dl.dataset.keyDel)), "确认删除？"); return; }
+      if (e.target.closest("[data-new-key]")) openNewKeyInline();
     });
 
     // 管理台 Tabs
@@ -1246,6 +1343,7 @@
       renderAdmin();
     }));
 
+    // 成员充值（管理台）：行内编辑（替代原生输入弹窗，Enter 确认 / Esc 取消）
     $("#emp-body").addEventListener("click", (e) => {
       const dd = e.target.closest("[data-emp-dept]");
       if (dd) { editEmpDept(Number(dd.dataset.empDept)); return; }
@@ -1253,17 +1351,26 @@
       if (!b) return;
       const emp = D.EMPLOYEES[Number(b.dataset.empTopup)];
       if (!emp) return;
-      const input = prompt("为 " + emp.name + " 充值点数（正整数，任意金额）：", "5000");
-      if (input == null) return; // 用户取消
-      const raw = String(input).trim();
-      const amt = Number(raw);
-      if (!raw || !Number.isInteger(amt) || amt <= 0) {
-        toast("请输入正整数点数金额（未生效）", "error");
-        return;
-      }
-      emp.quota += amt;
-      renderAdmin();
-      toast("已给 " + emp.name + " 充值 " + D.fmt(amt) + " 点", "success");
+      const row = b.closest("tr");
+      if (!row) return;
+      const cell = row.children[5];
+      inlineForm(cell, {
+        value: "5000",
+        placeholder: "点数（正整数）",
+        type: "number",
+        width: "120px",
+        validate: (raw) => {
+          const amt = Number(raw);
+          return (!raw || !Number.isInteger(amt) || amt <= 0) ? "请输入正整数点数金额（未生效）" : null;
+        },
+        onSubmit: (raw) => {
+          const amt = Number(raw);
+          emp.quota += amt;
+          renderAdmin();
+          toast("已给 " + emp.name + " 充值 " + D.fmt(amt) + " 点", "success");
+        },
+        onCancel: () => renderAdmin(),
+      });
     });
 
     // 加额申请审批（US-20：批准 → 成员余额+申请点数；驳回 → 仅更新状态）
@@ -1289,7 +1396,7 @@
       const ed = e.target.closest("[data-dept-edit]");
       if (ed) { openDeptForm(Number(ed.dataset.deptEdit)); return; }
       const dl = e.target.closest("[data-dept-del]");
-      if (dl) { deleteDept(Number(dl.dataset.deptDel)); return; }
+      if (dl) { confirmInline(dl, () => deleteDept(Number(dl.dataset.deptDel)), "确认删除部门？"); return; }
       if (e.target.closest("[data-dept-clear-search]")) {
         $("#od-search").value = "";
         renderAdmin();
