@@ -548,12 +548,37 @@ mark {
   min-height: 100vh;
   display: flex; align-items: center; justify-content: center;
   padding: 24px;
+  position: relative; overflow: hidden;
   background:
     radial-gradient(600px 300px at 20% 0%, rgba(78,205,196,.08), transparent 60%),
     radial-gradient(600px 400px at 90% 100%, rgba(78,205,196,.06), transparent 60%),
     var(--bg);
 }
+/* 品牌氛围（rant 20:46:57 G：渐变网格 + 微光浮动；reduced-motion 下静止由全局规则覆盖） */
+.login-view::before {
+  content: ""; position: absolute; inset: 0;
+  background:
+    linear-gradient(rgba(78,205,196,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(78,205,196,.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 85% 75% at 50% 42%, #000 25%, transparent 72%);
+  mask-image: radial-gradient(ellipse 85% 75% at 50% 42%, #000 25%, transparent 72%);
+  pointer-events: none;
+}
+.login-view::after {
+  content: ""; position: absolute;
+  width: 440px; height: 440px; border-radius: 50%;
+  top: -140px; right: -110px;
+  background: radial-gradient(circle, rgba(78,205,196,.16), transparent 65%);
+  animation: login-float 10s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+@keyframes login-float {
+  from { transform: translate(0, 0) scale(1); }
+  to   { transform: translate(-48px, 36px) scale(1.12); }
+}
 .login-card {
+  position: relative; z-index: 1; /* 浮在网格/微光伪元素之上 */
   width: 100%; max-width: 400px;
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -571,6 +596,13 @@ mark {
   color: #062021; font-weight: 800;
   display: flex; align-items: center; justify-content: center;
   font-size: 16px; flex-shrink: 0;
+  position: relative;
+  box-shadow: 0 0 0 1.5px rgba(78,205,196,.45), 0 0 14px rgba(78,205,196,.35);
+}
+/* 渐变描边质感（rant 20:46:57 G：顶部内高光 + 底部内阴影） */
+.logo::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.30), inset 0 -1px 0 rgba(0,0,0,.14);
 }
 /* 登录页 logo 加大 + 微光（rant 20:39:30 G） */
 .login-card .logo {
