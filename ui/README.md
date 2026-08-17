@@ -97,6 +97,15 @@ ui/
 - 数据表格渲染器 `buildDataTable` 支持列配置 `align: "num"`（交易表 tokens / pts 已启用）；
 - 金额一律 `D.fmt()`（整数千分位；小数保留 2 位），禁止裸数字拼接。
 
+## 键盘可达性约定（v1.17，rant 2026-08-17T16:57:17 D 无障碍）
+
+- **焦点环**：全局 `:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }`；输入类控件（`.input` / `.th-filter`）已有边框高亮，`outline: none` 不叠加；
+- **全局快捷键**（`document` keydown，输入框内不触发、Cmd/Ctrl/Alt 组合不劫持）：
+  - `/` → 聚焦市场搜索 `#mk-search`；
+  - 数字 **1-7** → 切换侧边栏视图（`NAV_ORDER` 顺序：仪表盘/市场/共享/钱包/交易/管理/设置；游客模式由 `switchView` 拦截提示登录）；
+  - Esc → 关闭行内新建 Key（`#ak-new-inline`）；
+- **导航提示**：nav-item 补 `title`（"快捷键 N · 名称"）+ 右侧 `.nav-key` 键位角标（管理视图带「管理员」tag 时省略角标）。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
