@@ -47,6 +47,32 @@
     }, ms || 320);
   }
 
+  /* --- 行内校验错误（rant 16:57:17 E：红边框 + 字段下方行内错误文案，修正后自动清除） --- */
+
+  // 在输入框下方显示行内错误文案，并给输入框加红边框；输入修正时自动清除
+  function setFieldError(input, msg) {
+    if (!input) return;
+    input.classList.add("input-error");
+    let err = input.parentNode.querySelector(".field-error");
+    if (!err) {
+      err = document.createElement("span");
+      err.className = "field-error";
+      input.insertAdjacentElement("afterend", err);
+    }
+    err.textContent = msg;
+    if (!input.dataset.errBound) {
+      input.dataset.errBound = "1";
+      input.addEventListener("input", () => clearFieldError(input), { once: false });
+    }
+  }
+
+  function clearFieldError(input) {
+    if (!input) return;
+    input.classList.remove("input-error");
+    const err = input.parentNode.querySelector(".field-error");
+    if (err) err.textContent = "";
+  }
+
   /* --- 行内二次确认 / 行内编辑（rant 16:57:17 A：清除原生确认/输入弹窗） --- */
 
   // 行内二次确认：首次点击按钮变「确认删除？」红色态，3 秒无操作或 Esc 还原，再次点击执行
@@ -482,6 +508,7 @@
     $$("#topup-card .topup-presets .btn").forEach((b) => b.classList.remove("active"));
     $("#topup-card").hidden = false;
     $("#raise-card").hidden = true; // 互斥：开充值收起加额
+    clearFieldError($("#topup-custom"));
     $("#topup-custom").focus();
   }
 
@@ -497,8 +524,12 @@
     else {
       const raw = String(customRaw).trim();
       amt = Math.round(Number(raw) * 100) / 100;
-      if (!raw || isNaN(amt) || amt <= 0) { toast("请输入大于 0 的充值点数（未生效）", "error"); return; }
+      if (!raw || isNaN(amt) || amt <= 0) {
+        setFieldError($("#topup-custom"), "请输入大于 0 的充值点数");
+        return;
+      }
     }
+    clearFieldError($("#topup-custom"));
     D.USER.balance = Math.round((D.USER.balance + amt) * 100) / 100;
     D.TRANSACTIONS.unshift({
       id: Date.now(), time: nowTime(), type: "topup", partner: "—",
@@ -515,6 +546,8 @@
   function openRaise() {
     $("#raise-amount").value = "";
     $("#raise-reason").value = "";
+    clearFieldError($("#raise-amount"));
+    clearFieldError($("#raise-reason"));
     $("#raise-card").hidden = false;
     $("#topup-card").hidden = true; // 互斥：开加额收起充值
     $("#raise-amount").focus();
@@ -528,8 +561,12 @@
     const rawAmt = String($("#raise-amount").value).trim();
     const reason = String($("#raise-reason").value).trim();
     const amt = Number(rawAmt);
-    if (!rawAmt || !Number.isInteger(amt) || amt <= 0) { toast("请输入正整数申请点数（未生效）", "error"); return; }
-    if (!reason) { toast("请填写申请原因（未生效）", "error"); return; }
+    let firstErr = null;
+    if (!rawAmt || !Number.isInteger(amt) || amt <= 0) { setFieldError($("#raise-amount"), "请输入正整数申请点数"); firstErr = firstErr || $("#raise-amount"); }
+    else clearFieldError($("#raise-amount"));
+    if (!reason) { setFieldError($("#raise-reason"), "请填写申请原因"); firstErr = firstErr || $("#raise-reason"); }
+    else clearFieldError($("#raise-reason"));
+    if (firstErr) { firstErr.focus(); return; }
     // 加额申请默认需管理员审批（原「需审批」开关随组织设置表单移除，见 rant 10:59:23）
     D.RAISE_REQUESTS.unshift({
       id: Date.now(), user: D.USER.name, email: D.USER.email, amount: amt, reason, status: "pending", time: nowTime(),
@@ -996,6 +1033,8 @@
       : "添加部门 <span class='en'>Add department</span>";
     $("#dept-form-name").value = d ? d.name : "";
     $("#dept-form-quota").value = d ? String(d.quota) : "";
+    clearFieldError($("#dept-form-name"));
+    clearFieldError($("#dept-form-quota"));
     $("#dept-form-card").hidden = false;
     $("#dept-form-name").focus();
   }
@@ -1004,16 +1043,20 @@
     const name = String($("#dept-form-name").value).trim();
     const rawQ = String($("#dept-form-quota").value).trim();
     const quota = Number(rawQ);
-    if (!name) { toast("请输入部门名称（未生效）", "error"); return; }
-    if (!rawQ || !Number.isInteger(quota) || quota <= 0) { toast("请输入正整数月分配点数（未生效）", "error"); return; }
+    let firstErr = null;
+    if (!name) { setFieldError($("#dept-form-name"), "请输入部门名称"); firstErr = firstErr || $("#dept-form-name"); }
+    else clearFieldError($("#dept-form-name"));
+    if (!rawQ || !Number.isInteger(quota) || quota <= 0) { setFieldError($("#dept-form-quota"), "请输入正整数月分配点数"); firstErr = firstErr || $("#dept-form-quota"); }
+    else clearFieldError($("#dept-form-quota"));
+    if (firstErr) { firstErr.focus(); return; }
     if (deptEditIndex == null) {
-      if (D.DEPARTMENTS.some((d) => d.name === name)) { toast("部门「" + name + "」已存在", "error"); return; }
+      if (D.DEPARTMENTS.some((d) => d.name === name)) { setFieldError($("#dept-form-name"), "部门「" + name + "」已存在"); $("#dept-form-name").focus(); return; }
       D.DEPARTMENTS.push({ id: Date.now(), name, quota });
       toast("已添加部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）", "success");
     } else {
       const d = D.DEPARTMENTS[deptEditIndex];
       if (!d) return;
-      if (name !== d.name && D.DEPARTMENTS.some((x) => x.name === name)) { toast("部门「" + name + "」已存在", "error"); return; }
+      if (name !== d.name && D.DEPARTMENTS.some((x) => x.name === name)) { setFieldError($("#dept-form-name"), "部门「" + name + "」已存在"); $("#dept-form-name").focus(); return; }
       const old = d.name;
       d.name = name;
       d.quota = quota;
@@ -1269,7 +1312,12 @@
 
     // 共享上架表单（默认收起；点添加展开，提交成功或取消后收起）
     const shareFormCard = () => $("#share-form-card");
-    const showShareForm = () => { shareFormCard().hidden = false; $("#sf-key").focus(); };
+    const showShareForm = () => {
+      clearFieldError($("#sf-key"));
+      clearFieldError($("#sf-quota"));
+      shareFormCard().hidden = false;
+      $("#sf-key").focus();
+    };
     const hideShareForm = () => { shareFormCard().hidden = true; };
 
     $("#share-add-btn").addEventListener("click", showShareForm);
@@ -1294,8 +1342,14 @@
         const quota = Number($("#sf-quota").value || 0);
         const key = $("#sf-key").value.trim();
         const note = $("#sf-note").value.trim();
-        if (!key) { toast("请填写 API Key（上架 key 必须提供真实密钥）", "error"); return; }
-        if (!plan || !model || quota <= 0) { toast("请选择厂商 / Plan / 模型并填写有效额度", "error"); return; }
+        let firstErr = null;
+        if (!key) { setFieldError($("#sf-key"), "请填写 API Key（上架 key 必须提供真实密钥）"); firstErr = firstErr || $("#sf-key"); }
+        else clearFieldError($("#sf-key"));
+        if (!plan || !model || quota <= 0) {
+          setFieldError($("#sf-quota"), "请选择厂商 / Plan / 模型并填写有效额度");
+          firstErr = firstErr || $("#sf-quota");
+        } else clearFieldError($("#sf-quota"));
+        if (firstErr) { firstErr.focus(); return; }
         // 可用时间段：星期多选 + 起止时间；不选任何星期 = null（全天不限）
         const days = $$("#sf-days .chip input:not(#sf-days-all input)")
           .filter((cb) => cb.checked).map((cb) => Number(cb.value)).sort((a, b) => a - b);

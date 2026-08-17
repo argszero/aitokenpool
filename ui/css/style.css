@@ -129,6 +129,18 @@ select.input:focus-visible { outline: none; }
   font-size: 12px;
   line-height: 1.5;
 }
+/* 行内校验错误（rant 16:57:17 E：红边框 + 字段下方红字小号文案，输入修正后自动清除） */
+.input.input-error { border-color: var(--danger); }
+.input.input-error:focus { border-color: var(--danger); }
+.field-error {
+  display: block;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 2px;
+}
+select.input.input-error { border-color: var(--danger); }
+select.input.input-error:focus { border-color: var(--danger); }
 select.input option { background: var(--bg-card); }
 
 .card {
