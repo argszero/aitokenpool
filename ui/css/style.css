@@ -122,6 +122,15 @@ select.input option { background: var(--bg-card); }
 }
 .settings-grid { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 
+/* API Key 独占整行全宽（rant 11:01:02：不与账户/通知/偏好挤在窄列） */
+.api-key-card {
+  width: 100%;
+  margin-top: 16px;
+}
+.api-key-card .table-wrap { overflow-x: auto; }
+.api-key-card .table th,
+.api-key-card .table td { white-space: nowrap; }
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -459,4 +468,5 @@ select.input option { background: var(--bg-card); }
 @media (max-width: 560px) {
   .stat-grid { grid-template-columns: 1fr 1fr; }
   .card-grid { grid-template-columns: 1fr; }
+  .api-key-card { margin-top: 12px; }
 }

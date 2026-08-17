@@ -242,6 +242,18 @@
         <h2>设置 <span class="en">Settings</span></h2>
         <p>账户 · API Key · 通知 · 偏好（原型展示）</p>
       </header>
+      <div class="card api-key-card">
+        <h3>API Key <span class="en">API keys</span></h3>
+        <p class="muted">用于本地工具 / 代码接入平台的密钥。独占整行，避免表格字段挤压。</p>
+        <input id="ak-search" class="input" placeholder="搜索 key 名字…" style="margin-bottom:10px">
+        <div class="table-wrap compact">
+          <table class="table">
+            <thead><tr><th>名字</th><th>Key</th><th>创建时间</th><th>最近使用</th><th>状态</th><th></th></tr></thead>
+            <tbody id="api-keys"></tbody>
+          </table>
+        </div>
+        <button class="btn btn-ghost" id="new-api-key-btn">生成新 Key <span class="en">(Generate)</span></button>
+      </div>
       <div class="card-grid settings-grid">
         <div class="card">
           <h3>账户 <span class="en">Account</span></h3>
@@ -250,18 +262,6 @@
             <label>邮箱 <input class="input" value="demo@aitokenpool.local"></label>
             <button class="btn btn-primary">保存 <span class="en">(Save)</span></button>
           </div>
-        </div>
-        <div class="card">
-          <h3>API Key <span class="en">API keys</span></h3>
-          <p class="muted">用于本地工具 / 代码接入平台的密钥。</p>
-          <input id="ak-search" class="input" placeholder="搜索 key 名字…" style="margin-bottom:10px">
-          <div class="table-wrap compact">
-            <table class="table">
-              <thead><tr><th>名字</th><th>Key</th><th>创建时间</th><th>最近使用</th><th>状态</th><th></th></tr></thead>
-              <tbody id="api-keys"></tbody>
-            </table>
-          </div>
-          <button class="btn btn-ghost" id="new-api-key-btn">生成新 Key <span class="en">(Generate)</span></button>
         </div>
         <div class="card">
           <h3>通知 <span class="en">Notifications</span></h3>
