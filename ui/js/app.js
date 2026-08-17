@@ -727,29 +727,11 @@
 
   /* --- 管理员角色视图 --- */
 
-  const KEY_STATUS = {
-    ok: { text: "可用", cls: "ok" },
-    limit: { text: "达限额", cls: "warn" },
-    exhausted: { text: "已用尽", cls: "danger" },
-    revoked: { text: "已撤销", cls: "dim" },
-  };
-
   function renderAdmin() {
     const tab = $("#admin-tabs .tab.active").dataset.adminTab;
     $$(".admin-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.adminPane !== tab));
 
-    if (tab === "keys") {
-      const q = ($("#ak-search").value || "").toLowerCase();
-      const rows = D.KEYS.filter((k) => !q || k.model.includes(q) || k.provider.includes(q) || k.key.includes(q));
-      $("#keys-body").innerHTML = rows.map((k) =>
-        "<tr><td>" + esc(k.provider) + "</td><td><strong>" + esc(k.model) + "</strong></td>" +
-        "<td><code>" + esc(k.key) + "</code></td>" +
-        "<td>" + D.fmt(k.used) + " / " + D.fmt(k.quota) + "</td>" +
-        "<td>" + badge(k.status, KEY_STATUS) + "</td>" +
-        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-revoke='" + k.id + "'>" +
-        (k.status === "revoked" ? "恢复" : "撤销") + "</button></td></tr>"
-      ).join("");
-    } else if (tab === "employees") {
+    if (tab === "employees") {
       const total = D.EMPLOYEES.reduce((a, e) => a + e.quota, 0);
       const used = D.EMPLOYEES.reduce((a, e) => a + e.used, 0);
       const unassigned = D.EMPLOYEES.filter((e) => !e.dept).length;
@@ -1201,26 +1183,6 @@
       b.classList.add("active");
       renderAdmin();
     }));
-
-    $("#add-key-btn").addEventListener("click", () => {
-      const m = D.MODELS[Math.floor(Math.random() * D.MODELS.length)];
-      D.KEYS.unshift({ id: Date.now(), provider: m.provider, model: m.model, key: "sk-****-new1", quota: 100000, used: 0, status: "ok" });
-      renderAdmin();
-      toast("已添加上游 Key（演示：" + m.model + "）");
-    });
-
-    $("#ak-search").addEventListener("input", renderAdmin);
-
-    // 管理台事件委托（撤销 key / 员工充值）
-    $("#keys-body").addEventListener("click", (e) => {
-      const b = e.target.closest("[data-key-revoke]");
-      if (!b) return;
-      const k = D.KEYS.find((x) => x.id === Number(b.dataset.keyRevoke));
-      if (!k) return;
-      k.status = k.status === "revoked" ? "ok" : "revoked";
-      renderAdmin();
-      toast(k.status === "revoked" ? "已撤销 " + k.model + " 的 key" : "已恢复 " + k.model + " 的 key");
-    });
 
     $("#emp-body").addEventListener("click", (e) => {
       const dd = e.target.closest("[data-emp-dept]");
