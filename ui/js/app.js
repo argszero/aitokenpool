@@ -356,12 +356,12 @@
 
     $("#mk-count").textContent = list.length + " 个在售 key";
     $("#mk-body").innerHTML = list.length ? list.map((m) =>
-      "<tr><td>" + esc(m.provider) + "</td><td><strong>" + esc(m.model) + "</strong></td>" +
-      '<td class="num">' + D.fmt(m.in) + " 点</td>" + '<td class="num">' + D.fmt(m.out) + " 点</td>" +
-      '<td class="num">' + D.ctxFmt(m.ctx) + "</td>" +
-      "<td>" + (m.avail ? '<span class="badge ok">可用</span>' : '<span class="badge warn">繁忙</span>') +
+      "<tr><td data-label='厂商'>" + esc(m.provider) + "</td><td data-label='模型'><strong>" + esc(m.model) + "</strong></td>" +
+      '<td class="num" data-label="输入价 /1M">' + D.fmt(m.in) + " 点</td>" + '<td class="num" data-label="输出价 /1M">' + D.fmt(m.out) + " 点</td>" +
+      '<td class="num" data-label="上下文">' + D.ctxFmt(m.ctx) + "</td>" +
+      "<td data-label='可用性'>" + (m.avail ? '<span class="badge ok">可用</span>' : '<span class="badge warn">繁忙</span>') +
       (m.multi ? ' <span class="badge ok" title="该模型配置多个上游 key，单个 key 不可用时自动故障转移（架构 v0.2 路由策略）">多 key · 自动故障转移</span>' : "") + "</td>" +
-      "<td><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">使用 / 消费</button>" +
+      "<td data-label='操作'><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">使用 / 消费</button>" +
       "<div class='muted' style='margin-top:4px;font-size:12px'>成功率 " + m.success + "%</div></td></tr>"
     ).join("") : emptyRow(7, "没有匹配的模型", "试试调整搜索或筛选条件",
       '<button type="button" class="btn btn-ghost" data-mk-clear-filters>清除筛选</button>');
@@ -444,15 +444,15 @@
     }
 
     $("#share-body").innerHTML = D.SHARINGS.length ? D.SHARINGS.map((s, i) =>
-      "<tr><td><strong>" + esc(D.PROVIDER_LABELS[s.provider] || s.provider) + " · " + esc(s.plan || "API") +
+      "<tr><td data-label='厂商 · Plan / 模型'><strong>" + esc(D.PROVIDER_LABELS[s.provider] || s.provider) + " · " + esc(s.plan || "API") +
       "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + " · " + esc(fmtAvailable(s)) + "</div></td>" +
-      "<td class='mono'>" + esc(maskKey(s.key)) + "</td>" +
-      "<td class='num'>" + D.fmt(s.used) + " / " + D.fmt(s.quota) + "</td>" +
-      '<td class="num">' + D.fmt(s.price) + " 点/1M</td>" +
-      '<td class="num">+' + D.fmt(s.earned) + " 点</td>" +
-      "<td>" + timeCell(s.time) + "</td>" +
-      "<td>" + badge(s.status, SHARE_STATUS) + "</td>" +
-      "<td><button class='btn btn-ghost' data-share-toggle='" + i + "' style='padding:4px 10px;font-size:12px'>" +
+      "<td data-label='Key' class='mono'>" + esc(maskKey(s.key)) + "</td>" +
+      "<td data-label='已用/额度' class='num'>" + D.fmt(s.used) + " / " + D.fmt(s.quota) + "</td>" +
+      '<td class="num" data-label="单价">' + D.fmt(s.price) + " 点/1M</td>" +
+      '<td class="num" data-label="收益">+' + D.fmt(s.earned) + " 点</td>" +
+      "<td data-label='上架时间'>" + timeCell(s.time) + "</td>" +
+      "<td data-label='状态'>" + badge(s.status, SHARE_STATUS) + "</td>" +
+      "<td data-label='操作'><button class='btn btn-ghost' data-share-toggle='" + i + "' style='padding:4px 10px;font-size:12px'>" +
       (s.status === "on" ? "暂停" : s.status === "paused" ? "恢复" : "重新上架") + "</button> " +
       "<button class='btn btn-danger' data-share-delete='" + i + "' style='padding:4px 10px;font-size:12px'>删除</button></td></tr>"
     ).join("") : emptyRow(8, "还没有上架的 key", "把闲置 key 放进池子，开始赚点数",
@@ -672,11 +672,11 @@
     if (!el) return;
     el.innerHTML = D.RAISE_REQUESTS.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
       D.RAISE_REQUESTS.map((r, i) =>
-        "<tr><td><strong>" + esc(r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
-        "<td class='num'>+" + D.fmt(r.amount) + " 点</td>" +
-        "<td>" + esc(r.reason) + "</td>" +
-        "<td>" + badge(r.status, RAISE_STATUS) + "</td>" +
-        "<td>" + (r.status === "pending"
+        "<tr><td data-label='成员'><strong>" + esc(r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
+        '<td class="num" data-label="申请点数">+' + D.fmt(r.amount) + " 点</td>" +
+        "<td data-label='原因'>" + esc(r.reason) + "</td>" +
+        "<td data-label='状态'>" + badge(r.status, RAISE_STATUS) + "</td>" +
+        "<td data-label='操作'>" + (r.status === "pending"
           ? "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-raise-approve='" + i + "'>批准</button> " +
             "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>驳回</button>"
           : '<span class="muted" style="font-size:12px">' + timeCell(r.time) + "</span>") + "</td></tr>"
@@ -820,7 +820,8 @@
     pageRows.forEach((row) => {
       html += "<tr>";
       columns.forEach((col) => {
-        html += "<td" + (col.align === "num" ? ' class="num"' : "") + ">" + (col.render ? col.render(row) : esc(row[col.key] == null ? "" : row[col.key])) + "</td>";
+        html += "<td" + (col.align === "num" ? ' class="num"' : "") + ' data-label="' + esc(col.title) + '">' +
+          (col.render ? col.render(row) : esc(row[col.key] == null ? "" : row[col.key])) + "</td>";
       });
       html += "</tr>";
     });
@@ -894,12 +895,12 @@
     const q = ($("#ak-search").value || "").toLowerCase();
     const list = D.API_KEYS.filter((k) => !q || k.name.toLowerCase().includes(q));
     $("#api-keys").innerHTML = list.length ? list.map((k, i) =>
-      "<tr><td><strong>" + esc(k.name) + "</strong></td>" +
-      "<td><code>" + esc(maskAtk(k.id)) + "</code></td>" +
-      "<td>" + esc(k.created) + "</td>" +
-      "<td>" + timeCell(k.last) + "</td>" +
-      "<td>" + (k.status === "active" ? '<span class="badge ok">启用</span>' : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
-      "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>复制</button> " +
+      "<tr><td data-label='名字'><strong>" + esc(k.name) + "</strong></td>" +
+      "<td data-label='Key'><code>" + esc(maskAtk(k.id)) + "</code></td>" +
+      "<td data-label='创建时间'>" + esc(k.created) + "</td>" +
+      "<td data-label='最近使用'>" + timeCell(k.last) + "</td>" +
+      "<td data-label='状态'>" + (k.status === "active" ? '<span class="badge ok">启用</span>' : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
+      "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>复制</button> " +
       "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>改名</button> " +
       "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + i + "'>删除</button></td></tr>"
     ).join("") : emptyRow(6, "还没有 API Key", "生成一个 key，用于本地工具 / 代码接入平台",
@@ -1004,12 +1005,12 @@
         stat("剩余 Remain", D.fmt(total - used) + " 点", "按成员分配"),
       ].join("");
       $("#emp-body").innerHTML = D.EMPLOYEES.map((e, i) =>
-        "<tr data-emp-row='" + i + "'><td><strong>" + esc(e.name) + "</strong></td>" +
-        "<td>" + (e.dept ? esc(e.dept) : '<span class="muted">未分配</span>') + "</td>" +
-        '<td class="num">' + D.fmt(e.used) + " / " + D.fmt(e.quota) + "</td>" +
-        '<td class="num">' + D.fmt(e.quota - e.used) + "</td>" +
-        "<td>" + (e.used / e.quota > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>') + "</td>" +
-        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>改部门</button> " +
+        "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + esc(e.name) + "</strong></td>" +
+        "<td data-label='部门'>" + (e.dept ? esc(e.dept) : '<span class="muted">未分配</span>') + "</td>" +
+        '<td class="num" data-label="配额 / 已用">' + D.fmt(e.used) + " / " + D.fmt(e.quota) + "</td>" +
+        '<td class="num" data-label="剩余">' + D.fmt(e.quota - e.used) + "</td>" +
+        "<td data-label='状态'>" + (e.used / e.quota > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>') + "</td>" +
+        "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>改部门</button> " +
         "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
       ).join("");
       pulseTbody($("#emp-body"));
@@ -1095,13 +1096,13 @@
       const used = deptUsed(d);
       const pct = d.quota > 0 ? used / d.quota : 0;
       const st = pct >= 1 ? '<span class="badge danger">已用尽</span>' : pct > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>';
-      return "<tr><td><strong>" + esc(d.name) + "</strong></td>" +
-        '<td class="num">' + deptMemberCount(d.name) + " 人</td>" +
-        '<td class="num">' + D.fmt(d.quota) + " 点</td>" +
-        '<td class="num">' + D.fmt(used) + " 点</td>" +
-        '<td class="num">' + D.fmt(d.quota - used) + " 点</td>" +
-        "<td>" + st + "</td>" +
-        "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-dept-edit='" + i + "'>编辑</button> " +
+      return "<tr><td data-label='部门'><strong>" + esc(d.name) + "</strong></td>" +
+        '<td class="num" data-label="成员数">' + deptMemberCount(d.name) + " 人</td>" +
+        '<td class="num" data-label="月分配（点数）">' + D.fmt(d.quota) + " 点</td>" +
+        '<td class="num" data-label="已用">' + D.fmt(used) + " 点</td>" +
+        '<td class="num" data-label="剩余">' + D.fmt(d.quota - used) + " 点</td>" +
+        "<td data-label='状态'>" + st + "</td>" +
+        "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-dept-edit='" + i + "'>编辑</button> " +
         "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-dept-del='" + i + "'>删除</button></td></tr>";
     }).join("") : emptyRow(7, "没有匹配的部门", "试试调整搜索关键词",
       '<button type="button" class="btn btn-ghost" data-dept-clear-search>清除搜索</button>');
@@ -1188,10 +1189,10 @@
     ].join("");
 
     $("#ops-body").innerHTML = list.length ? list.map((u) =>
-      "<tr><td><strong>" + esc(u.name) + "</strong></td>" +
-      "<td>" + esc(u.email) + "</td>" +
-      '<td class="num">' + D.fmt(u.balance) + " 点</td>" +
-      "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>充值点数</button></td></tr>"
+      "<tr><td data-label='用户'><strong>" + esc(u.name) + "</strong></td>" +
+      "<td data-label='邮箱'>" + esc(u.email) + "</td>" +
+      '<td class="num" data-label="余额（点数）">' + D.fmt(u.balance) + " 点</td>" +
+      "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>充值点数</button></td></tr>"
     ).join("") : emptyRow(4, "没有匹配的用户", "试试其他用户名 / 邮箱");
     pulseTbody($("#ops-body"));
   }
