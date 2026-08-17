@@ -265,6 +265,14 @@ ui/
 - 下载：`Blob(type="text/csv;charset=utf-8")` → `URL.createObjectURL` → 临时 `<a download>` click → `remove()` → `setTimeout 1s` revoke；文件名 **`aitokenpool-transactions-YYYYMMDD.csv`**（`new Date()` 本地日期）；
 - 冒烟测试注意：stub 需给 `document.createElement("a")` 返回带 `click()`/`remove()` 的元素并捕获 `href`/`download`，`URL.createObjectURL` 捕获 Blob（`arrayBuffer()` 首 3 字节 EF BB BF 验证 BOM——`blob.text()` 会按规范剥掉 BOM）；列筛选联动可注入 `#tx-table` 的 `querySelectorAll(".th-filter")`/`querySelector('[data-filter-key=…]')` 假输入并 fire `input`。
 
+## 数据表格键盘导航约定（v1.20，rant 2026-08-17T20:46:57 F）
+
+- **作用表**（`KBD_TABLE_IDS`）：`mk-body` / `share-body` / `api-keys` / `emp-body` / `dept-body` / `ops-body`（tbody）+ `tx-table`（div 包 table）；
+- **激活**：① 点击表格行（容器 click 委托，`e.target.closest("tr")`，跳过 `.mk-detail`）；② 直接按 ↑/↓——`kbdContainerFrom(t)` 沿 `closest("tbody")`（id 匹配）或 `closest("table").parentNode`（#tx-table）解析当前表格，找不到沿用 `kbd.c`；
+- **键位**：`ArrowDown/Up` → `kbdMove(dir, c)` 行高亮 `.row-active`（accent 左侧竖条 `inset 3px 0 0` + `--accent-soft` 底），未激活时 ↓ 首行 / ↑ 末行，`scrollIntoView({block:"nearest"})`；`Enter` → `kbdEnter()` 点击行内首个可用 `button.btn:not(.row-expand)`（disabled 不触发）；`Esc` → `kbdClear()`（无高亮时落到原逻辑：关帮助/行内表单/引导）；
+- **守卫**：typing（INPUT/TEXTAREA/SELECT/contentEditable）与 meta/ctrl/alt 组合键不拦截；`?`、1-7 视图切换、Esc 原有优先级（引导 > 帮助 > 行内新建 Key > 表格高亮）均不受影响；
+- 冒烟测试注意：`qs(sel)` 的 stub id 会带 `#` 前缀——`kbdContainerFrom` 依赖真实无 `#` 的 id（如 `tx-table`），须手动修正；Esc 分支链依赖 `#ak-new-inline`、`#help-panel` hidden 预置 + `atp-tour-done=1`（防 tour 拦截）。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
