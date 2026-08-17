@@ -152,9 +152,9 @@
     const recent = txs.slice(0, 5);
 
     $("#dash-stats").innerHTML = [
-      stat("点数余额 Points", D.fmt(D.USER.balance), "1 点 ≈ 1 元", "accent"),
+      stat("点数余额 Points", D.fmt(D.USER.balance), "", "accent"),
       stat("本月用量 Usage", D.fmt(monthUse) + " 点", "共 " + txs.filter((t) => t.type === "consume").length + " 笔消费"),
-      stat("共享收益 Earnings", "+" + D.fmt(monthEarn) + " 点", "已扣 10% 平台分成 · " + D.SHARINGS.filter((s) => s.status === "on").length + " 个 key 上架中"),
+      stat("共享收益 Earnings", "+" + D.fmt(monthEarn) + " 点", D.SHARINGS.filter((s) => s.status === "on").length + " 个 key 上架中"),
       stat("交易笔数 Trades", txs.length + " 笔", "含充值 / 提现 / 消费 / 收益 / 赠送"),
     ].join("");
 
@@ -273,13 +273,10 @@
     if (activeView === "dashboard") renderDashboard();
   }
 
-  /* --- 点数来源（G2：钱包 / 仪表盘统一展示来源与有效期，赠送当日有效 / 收益充值永久） --- */
+  /* --- 点数来源（G2：钱包 / 仪表盘统一展示点数构成） --- */
 
   function pointSourceItem(s) {
-    const cls = s.validity === "永久有效" ? "ok" : "warn";
-    return '<div class="mini-item"><div><div class="t">' + esc(s.label) +
-      ' <span class="badge ' + cls + '">' + esc(s.validity) + "</span></div>" +
-      '<div class="d">' + esc(s.note) + "</div></div>" +
+    return '<div class="mini-item"><div><div class="t">' + esc(s.label) + "</div></div>" +
       '<div class="r"><span class="pts">' + (s.pts > 0 ? "+" : "") + D.fmt(s.pts) + "</span></div></div>";
   }
 
@@ -297,7 +294,7 @@
     // 钱包只做余额与资金操作；收支明细统一到【交易记录】（见 index.html wallet-hint）
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     $("#wallet-balance").textContent = D.fmt(D.USER.balance);
-    // 点数来源 / 有效期（G2：赠送当日有效剩 N 天 · 收益/充值永久；消费先扣赠送）
+    // 点数来源构成（v1.8：只展示构成，机制细节进 docs）
     renderPointSources();
   }
 
@@ -329,7 +326,7 @@
     if (top) top.pts = Math.round((top.pts + amt) * 100) / 100;
     D.TRANSACTIONS.unshift({
       id: Date.now(), time: nowTime(), type: "topup", partner: "—",
-      detail: "充值 · 模拟支付（永久有效 · 演示，真实支付后续接入）", tokens: "—", pts: +amt, status: "成功",
+      detail: "充值 · 模拟支付（演示，真实支付后续接入）", tokens: "—", pts: +amt, status: "成功",
     });
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     renderWallet();
