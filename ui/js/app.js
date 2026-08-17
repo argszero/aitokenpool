@@ -85,6 +85,14 @@
     panel.classList.toggle("hidden", !open);
   }
 
+  /* --- 表格密度（rant 20:46:57 C：舒适/紧凑两档，localStorage atp-density 记忆，全站 .table 生效） --- */
+  function applyDensity(d) {
+    const app = $("#app");
+    app.classList.toggle("density-compact", d === "compact");
+    try { localStorage.setItem("atp-density", d); } catch (e) { /* 隐私模式忽略 */ }
+  }
+  function getDensity() { try { return localStorage.getItem("atp-density") === "compact" ? "compact" : "comfortable"; } catch (e) { return "comfortable"; } }
+
   /* --- 首次引导 tour（rant 20:46:57 A：非 modal 浮层 + 目标 accent 高亮环；localStorage atp-tour-done 控制） --- */
   const TOUR_STEPS = [
     { view: "dashboard",  sel: "#dash-stats",    title: "仪表盘",     desc: "看点数余额与本月用量 / 收益趋势" },
@@ -1928,6 +1936,12 @@
     document.documentElement.dataset.theme = initialTheme;
     // 记住我（rant 20:39:30 G）：还原上次勾选状态
     try { $("#login-remember").checked = localStorage.getItem("atp-remember") === "1"; } catch (e) { /* 隐私模式忽略 */ }
+    // 表格密度（rant 20:46:57 C）：还原上次选择
+    applyDensity(getDensity());
+    document.querySelectorAll('input[name="density"]').forEach((r) => {
+      r.checked = r.value === getDensity();
+      r.addEventListener("change", () => applyDensity(r.value));
+    });
     $("#theme-toggle").addEventListener("click", () => {
       const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
       document.documentElement.dataset.theme = next;

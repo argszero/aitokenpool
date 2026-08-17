@@ -242,6 +242,13 @@ ui/
 - **`gotoEndpointCard()`**：`switchView("settings")`（幂等，已在设置页保持）→ `#endpoint-card` 加 `.ep-flash`（accent 光圈闪烁 0.8s ×2，重放时 remove→reflow→add）→ `scrollIntoView({behavior:"smooth", block:"center"})`；
 - 与 20:44:18 端点卡片联动：复制 key → 跳转端点卡片 → 填 Base URL 闭环。
 
+## 表格密度切换约定（v1.20，rant 2026-08-17T20:46:57 C）
+
+- 设置页「偏好」区**「表格密度」**两档单选：`#density-comfortable`（舒适，默认）/ `#density-compact`（紧凑），name 统一 `density`，`.density-options` 纵向布局；
+- **localStorage `atp-density`**（`"comfortable"` / `"compact"`，无值默认 `comfortable`）：启动时 `applyDensity(getDensity())` 还原并勾选对应 radio；`change` 事件 → `applyDensity(value)`（`#app` 加/移 `.density-compact` 类 + 写 localStorage，try/catch 兼容隐私模式）；
+- 修饰类**只加在 `#app`**，通过 `.density-compact .table …` 选择器全站生效：紧凑档 `th/td` padding `4px 8px`、`td` 字号 12px、`th`/行内按钮 11px；舒适档不写任何规则（默认样式零回归）；
+- 新增表格无需改动——继承 `.table` 即自动响应密度；冒烟测试断言走 `#app` 的 `_classes.has("density-compact")` 与 radio `checked`。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）

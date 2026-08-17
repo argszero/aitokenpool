@@ -337,6 +337,15 @@ select.input option { background: var(--bg-card); }
 .table tbody tr:nth-child(even) { background: var(--table-stripe); }
 .table tbody tr:hover { background: var(--bg-hover); }
 
+/* 表格密度切换（rant 20:46:57 C：紧凑档行 padding 减小、字号 13px，全站 .table 统一生效） */
+.density-compact .table th { padding: 4px 8px; font-size: 11px; }
+.density-compact .table td { padding: 4px 8px; font-size: 12px; }
+.density-compact .table tbody td::before { font-size: 11px; }
+.density-compact .table .btn { padding: 2px 8px; font-size: 11px; }
+.density-options { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.density-options .check { display: flex; align-items: center; gap: 6px; flex-direction: row; color: var(--text-dim); font-size: 13px; cursor: pointer; }
+.density-options input { accent-color: var(--accent); }
+
 .badge {
   display: inline-flex;
   align-items: center;
