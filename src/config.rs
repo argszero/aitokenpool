@@ -114,7 +114,47 @@ impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let s = std::fs::read_to_string(path)?;
         let cfg: Config = toml::from_str(&s)?;
+        cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// 校验规则（issue #6：points_per_unit > 0、plan 引用的 provider 必须存在、
+    /// endpoints 至少 1 个、protocol 枚举合法）
+    pub fn validate(&self) -> anyhow::Result<()> {
+        use anyhow::anyhow;
+
+        if self.points.points_per_unit == 0 {
+            return Err(anyhow!("[points] points_per_unit 必须 > 0，当前为 0"));
+        }
+        if self.providers.is_empty() {
+            return Err(anyhow!("providers 不能为空"));
+        }
+        let ids: std::collections::HashSet<&str> =
+            self.providers.iter().map(|p| p.id.as_str()).collect();
+        for plan in &self.plans {
+            if !ids.contains(plan.provider.as_str()) {
+                return Err(anyhow!(
+                    "plan[{}] 引用了不存在的 provider: {}",
+                    plan.id,
+                    plan.provider
+                ));
+            }
+            if plan.endpoints.is_empty() {
+                return Err(anyhow!("plan[{}] endpoints 至少 1 个", plan.id));
+            }
+            for ep in &plan.endpoints {
+                match ep.protocol.as_str() {
+                    "openai_chat" | "anthropic" | "responses" => {}
+                    other => {
+                        return Err(anyhow!(
+                            "plan[{}] 非法 protocol: {}（允许 openai_chat | anthropic | responses）",
+                            plan.id, other
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -126,6 +166,8 @@ mod tests {
     fn parse_config_example_ok() {
         let cfg =
             Config::load("config/config.example.toml").expect("解析 config.example.toml 应成功");
+        // 校验规则也应通过
+        cfg.validate().expect("example 配置应通过校验");
         // 点数
         assert_eq!(cfg.points.anchor_currency, "USD");
         assert_eq!(cfg.points.points_per_unit, 1000);
@@ -172,5 +214,37 @@ mod tests {
         // server 默认值
         assert_eq!(cfg.server.addr, "0.0.0.0:8080");
         assert_eq!(cfg.server.db_path, "data/aitokenpool.db");
+    }
+
+    #[test]
+    fn validate_rejects_zero_points_per_unit() {
+        let mut cfg = Config::load("config/config.example.toml").unwrap();
+        cfg.points.points_per_unit = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("points_per_unit"), "err: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_missing_provider_ref() {
+        let mut cfg = Config::load("config/config.example.toml").unwrap();
+        cfg.plans[0].provider = "nonexistent".to_string();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("不存在的 provider"), "err: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_endpoints() {
+        let mut cfg = Config::load("config/config.example.toml").unwrap();
+        cfg.plans[0].endpoints.clear();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("endpoints 至少 1 个"), "err: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_illegal_protocol() {
+        let mut cfg = Config::load("config/config.example.toml").unwrap();
+        cfg.plans[0].endpoints[0].protocol = "grpc".to_string();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("非法 protocol"), "err: {err}");
     }
 }
