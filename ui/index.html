@@ -31,17 +31,6 @@
     <button type="button" class="btn btn-ghost btn-block" id="guest-browse-btn">先逛逛市场 <span class="en">(Guest browse)</span></button>
     <p class="login-foot">还没有账号？<a href="#">注册 <span class="en">Register</span></a> · <a href="#">找回密码</a></p>
     <p class="login-tip">静态演示原型 · 数据为内嵌 mock，无真实后端 · 管理员与普通用户由账号角色决定登录后看到的界面</p>
-
-    <!-- 点数机制说明（US-2）：登录页可见 -->
-    <div class="login-points">
-      <h4>点数机制 <span class="en">Points</span></h4>
-      <ul>
-        <li>1 点 ≈ 1 元人民币 · 消费点数可为小数（如 -0.37 点）</li>
-        <li>每日赠送 1 点（当日有效）· 连续 10 天</li>
-        <li>分享收益 &amp; 充值点数永久有效 · 分享收益扣 10% 平台分成</li>
-        <li>未登录可先浏览市场；使用 / 消费需登录</li>
-      </ul>
-    </div>
   </div>
 </div>
 
@@ -170,7 +159,7 @@
         </div>
         <div class="card">
           <h3>我的共享列表 <span class="en">My listings</span></h3>
-          <p class="muted">收益为已扣 10% 平台分成后的金额（平台抽取 10% 作为运营费用）</p>
+          <p class="muted">收益已到账</p>
           <div class="table-wrap compact">
             <table class="table">
               <thead><tr><th>模型</th><th>Key</th><th>已用/额度</th><th>单价</th><th>收益</th><th>状态</th><th></th></tr></thead>
@@ -191,7 +180,6 @@
         <div>
           <h3>点数余额 <span class="en">Points balance</span></h3>
           <div class="balance-big" id="wallet-balance">0</div>
-          <p>1 点 ≈ 1 元 <span class="en">(1 point ≈ 1 CNY)</span> · 消费点数可为小数</p>
         </div>
         <div class="wallet-actions">
           <button class="btn btn-primary" id="topup-btn">充值 <span class="en">Top up</span></button>
@@ -202,13 +190,12 @@
       </div>
       <div class="card">
         <h3>点数来源 <span class="en">Point sources</span></h3>
-        <p class="muted">每日赠送 1 点 · 当日有效（先扣有有效期的赠送点数）；收益 / 充值点数永久有效</p>
         <div class="mini-list" id="points-sources"></div>
       </div>
       <div class="card">
         <p class="wallet-hint">收支明细已统一到
           <button class="btn btn-ghost" id="wallet-goto-tx">交易记录</button>
-          ——涵盖消费（用别人的 key）、收益（别人用我的 key，已扣 10% 平台分成）、充值、提现、赠送（每日 1 点 · 连续 10 天）</p>
+          ——涵盖消费、收益、充值、提现、赠送</p>
       </div>
     </section>
 
@@ -216,7 +203,7 @@
     <section class="view hidden" id="view-transactions">
       <header class="page-head">
         <h2>交易记录 <span class="en">Transactions</span></h2>
-        <p>涵盖消费（用别人的 key）、收益（别人用我的 key，已扣 10% 平台分成）、充值、提现、赠送（每日 1 点 · 连续 10 天）</p>
+        <p>涵盖消费、收益、充值、提现、赠送</p>
       </header>
       <div class="tabs" id="tx-tabs">
         <button class="tab active" data-tx-tab="all">全部</button>
@@ -408,7 +395,7 @@
       <h3>充值点数 <span class="en">Top up</span></h3>
       <button type="button" class="btn btn-ghost" data-modal-close="topup-modal">✕</button>
     </div>
-    <p class="muted">演示流程：真实支付通道后续接入。充值获得<strong>永久有效点数</strong>（1 点 ≈ 1 元）。</p>
+    <p class="muted">演示流程：真实支付通道后续接入。</p>
     <div class="form">
       <label>选择金额（点数）
         <div class="topup-presets">

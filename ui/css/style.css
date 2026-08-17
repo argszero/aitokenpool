@@ -310,17 +310,6 @@ select.input option { background: var(--bg-card); }
 .login-foot a { color: var(--accent-text); text-decoration: none; }
 .login-tip { margin-top: 14px; text-align: center; color: var(--text-mute); font-size: 11px; }
 
-/* 登录页点数机制说明（US-2） */
-.login-points {
-  margin-top: 18px; padding: 12px 14px;
-  background: rgba(78, 205, 196, 0.06);
-  border: 1px dashed var(--border);
-  border-radius: 10px;
-}
-.login-points h4 { font-size: 13px; margin-bottom: 8px; color: var(--text); }
-.login-points ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 5px; }
-.login-points li { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
-
 /* ---------- 应用布局 ---------- */
 
 .app { display: flex; height: 100vh; overflow: hidden; }
