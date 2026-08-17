@@ -148,8 +148,29 @@
                 <span id="sf-price-view" class="price-view">选择模型后自动计算</span>
               </label>
             </div>
-            <label>备注（可选）
-              <input id="sf-note" class="input" placeholder="如：工作日 9:00-18:00 可用">
+            <label>可用时间段（可选，留空 = 全天不限）
+              <span class="chips" id="sf-days">
+                <label class="chip"><input type="checkbox" value="1">周一</label>
+                <label class="chip"><input type="checkbox" value="2">周二</label>
+                <label class="chip"><input type="checkbox" value="3">周三</label>
+                <label class="chip"><input type="checkbox" value="4">周四</label>
+                <label class="chip"><input type="checkbox" value="5">周五</label>
+                <label class="chip"><input type="checkbox" value="6">周六</label>
+                <label class="chip"><input type="checkbox" value="7">周日</label>
+                <label class="chip" id="sf-days-all"><input type="checkbox">每天</label>
+              </span>
+              <span class="form-hint">可多选星期并设置起止时间；不选任何星期 = 全天不限</span>
+            </label>
+            <div class="form-row">
+              <label>开始时间
+                <input id="sf-start" type="time" class="input">
+              </label>
+              <label>结束时间
+                <input id="sf-end" type="time" class="input">
+              </label>
+            </div>
+            <label>备注（可选，纯文本说明）
+              <input id="sf-note" class="input" placeholder="可填写任意说明，不影响生效规则">
             </label>
             <div class="form-row">
               <button type="submit" class="btn btn-primary">上架 <span class="en">(List)</span></button>

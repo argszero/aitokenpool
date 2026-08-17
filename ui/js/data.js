@@ -98,11 +98,12 @@
 
     // 我的共享（price = 按模型定价自动计算的输出单价 点数/1M；earned = 累计收益；key 仅脱敏展示）
     // provider + plan：上架时选择「厂商 → Plan → 模型」，列表展示「厂商 · Plan」
+    // available：结构化可用时间段（days 星期 1-7 + start/end 起止；null = 全天不限）
     SHARINGS: [
-      { id: 1, provider: "zhipu", plan: "GLM Coding Plan", model: "glm-5.2", quota: 100000, used: 32800, price: 28, earned: 1611, status: "on", key: "sk-zhipu-9f2c41ab7d22" },
-      { id: 2, provider: "deepseek", plan: "API（按量）", model: "deepseek-v4-flash", quota: 80000, used: 51200, price: 2, earned: 1116, status: "on", key: "sk-ds-3b88d077aa91" },
-      { id: 3, provider: "moonshot", plan: "Kimi Code 会员", model: "kimi-k3", quota: 50000, used: 800, price: 100, earned: 54, status: "paused", key: "sk-ms-c31f2e8b4405" },
-      { id: 4, provider: "minimax", plan: "Coding Plan", model: "minimax-m3", quota: 20000, used: 20000, price: 9, earned: 432, status: "off", key: "sk-mx-77d2a1c9e356" },
+      { id: 1, provider: "zhipu", plan: "GLM Coding Plan", model: "glm-5.2", quota: 100000, used: 32800, price: 28, earned: 1611, status: "on", key: "sk-zhipu-9f2c41ab7d22", available: { days: [1, 2, 3, 4, 5], start: "09:00", end: "18:00" } },
+      { id: 2, provider: "deepseek", plan: "API（按量）", model: "deepseek-v4-flash", quota: 80000, used: 51200, price: 2, earned: 1116, status: "on", key: "sk-ds-3b88d077aa91", available: null },
+      { id: 3, provider: "moonshot", plan: "Kimi Code 会员", model: "kimi-k3", quota: 50000, used: 800, price: 100, earned: 54, status: "paused", key: "sk-ms-c31f2e8b4405", available: { days: [6, 7], start: "10:00", end: "22:00" } },
+      { id: 4, provider: "minimax", plan: "Coding Plan", model: "minimax-m3", quota: 20000, used: 20000, price: 9, earned: 432, status: "off", key: "sk-mx-77d2a1c9e356", available: null },
     ],
 
     // 市场在售 key（公共版浏览；multi=true 表示该模型配置多个上游 key → 自动故障转移，架构 v0.2 路由策略 G5）

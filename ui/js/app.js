@@ -209,6 +209,33 @@
     ).join("") : '<tr><td colspan="7" class="muted">没有匹配的模型</td></tr>';
   }
 
+  /* --- 可用时间段（rant 10:54:48：结构化字段，备注只作纯备注） --- */
+
+  const DAY_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+  // 星期数字 → 展示文本：连续区间压缩为「周一~周五」，间断用 / 连接
+  function fmtDays(nums) {
+    const sorted = [...nums].sort((a, b) => a - b);
+    const parts = [];
+    let i = 0;
+    while (i < sorted.length) {
+      let j = i;
+      while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+      parts.push(sorted[i] === sorted[j]
+        ? DAY_LABELS[sorted[i] - 1]
+        : DAY_LABELS[sorted[i] - 1] + "~" + DAY_LABELS[sorted[j] - 1]);
+      i = j + 1;
+    }
+    return parts.join("/");
+  }
+
+  function fmtAvailable(s) {
+    const a = s && s.available;
+    if (!a || !a.days || !a.days.length) return "全天";
+    const t = a.start && a.end ? " " + a.start + "-" + a.end : "";
+    return fmtDays(a.days) + t;
+  }
+
   /* --- 共享管理 --- */
 
   const SHARE_STATUS = {
@@ -259,7 +286,7 @@
 
     $("#share-body").innerHTML = D.SHARINGS.map((s, i) =>
       "<tr><td><strong>" + esc(D.PROVIDER_LABELS[s.provider] || s.provider) + " · " + esc(s.plan || "API") +
-      "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + "</div></td>" +
+      "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + " · " + esc(fmtAvailable(s)) + "</div></td>" +
       "<td class='mono'>" + esc(maskKey(s.key)) + "</td>" +
       "<td>" + D.fmt(s.used) + " / " + D.fmt(s.quota) + "</td>" +
       "<td>" + D.fmt(s.price) + " 点/1M</td>" +
@@ -1072,6 +1099,14 @@
     $("#share-add-btn").addEventListener("click", showShareForm);
     $("#sf-cancel").addEventListener("click", hideShareForm);
 
+    // 「每天」快捷选项：勾选 = 全选周一~周日（并禁用单日），取消 = 全清
+    const allCb = document.querySelector("#sf-days-all input");
+    if (allCb) allCb.addEventListener("change", () => {
+      $$("#sf-days .chip input").forEach((cb) => {
+        if (cb !== allCb) { cb.checked = allCb.checked; cb.disabled = allCb.checked; }
+      });
+    });
+
     // 共享上架表单（选 厂商 → Plan → 模型；单价由平台按模型定价自动计算）
     $("#share-form").addEventListener("submit", (e) => {
       e.preventDefault();
@@ -1080,10 +1115,17 @@
       const plan = D.PLANS.find((pl) => pl.id === planId);
       const quota = Number($("#sf-quota").value || 0);
       const key = $("#sf-key").value.trim();
+      const note = $("#sf-note").value.trim();
       if (!key) { toast("请填写 API Key（上架 key 必须提供真实密钥）"); return; }
       if (!plan || !model || quota <= 0) { toast("请选择厂商 / Plan / 模型并填写有效额度"); return; }
+      // 可用时间段：星期多选 + 起止时间；不选任何星期 = null（全天不限）
+      const days = $$("#sf-days .chip input:not(#sf-days-all input)")
+        .filter((cb) => cb.checked).map((cb) => Number(cb.value)).sort((a, b) => a - b);
+      const start = $("#sf-start").value;
+      const end = $("#sf-end").value;
+      const available = days.length ? { days, start: start || "", end: end || "" } : null;
       const price = autoPrice(model);
-      D.SHARINGS.unshift({ id: Date.now(), provider: plan.provider, plan: plan.name, model, quota, used: 0, price, earned: 0, status: "on", key });
+      D.SHARINGS.unshift({ id: Date.now(), provider: plan.provider, plan: plan.name, model, quota, used: 0, price, earned: 0, status: "on", key, note, available });
       renderSharing();
       if (activeView === "dashboard") renderDashboard();
       const label = (D.PROVIDER_LABELS[plan.provider] || plan.provider) + " · " + plan.name;
