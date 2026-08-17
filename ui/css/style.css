@@ -481,7 +481,24 @@ select.input option { background: var(--bg-card); }
   box-shadow: var(--shadow); z-index: 999; font-size: 14px;
   animation: toast-in .2s ease;
 }
+/* toast 分级（rant 15:50:05 B.8：成功/错误/信息不同样式） */
+.toast.success { border-color: var(--ok); color: var(--ok); }
+.toast.error { border-color: var(--danger); color: var(--danger); }
+.toast.info { border-color: var(--accent); color: var(--accent-text); }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* 按钮 loading 转圈（rant 15:50:05 B.8：提交中反馈） */
+.spin {
+  display: inline-block;
+  width: 12px; height: 12px;
+  border: 2px solid rgba(255,255,255,.35);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  vertical-align: -2px;
+  margin-right: 6px;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- 响应式预留 ---------- */
 
