@@ -159,6 +159,11 @@ ui/
 - **默认「AITokenPool」**：DOMContentLoaded 初始化与登录页/无视图态回默认；HTML `<title>` 即「AITokenPool」；
 - 游客受限视图被 `GUEST_VIEWS` 拦截时 `switchView` 提前 return → 标题保持不变。
 
+## 其他细节约定（v1.18，rant 2026-08-17T18:06:09 G 收尾）
+
+- **视图切换滚动复位**：`switchView` 内 `$("#main").scrollTop = 0`（`.main` 为 `overflow-y:auto` 滚动容器，渲染后复位）；新增视图切换入口都必须经过 `switchView` 以保证复位；
+- **复制反馈**：`copyKey` 的 `flash(ok)`——复制成功按钮短暂变「已复制 ✓」（禁用 + 1.2s 恢复），降级路径「请 Ctrl+C」（v1.16 起，DOM 冒烟验证）。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
