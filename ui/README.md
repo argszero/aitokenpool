@@ -227,6 +227,14 @@ ui/
 - **复制**：`copyEndpoint(i)` 复用 copyKey 的降级链（clipboard API → textarea+execCommand → 提示 Ctrl+C）与「已复制 ✓」flash（1.2s 恢复）；事件绑定 `document.querySelectorAll("[data-ep-copy]")`（bindEvents）；
 - 窄屏（≤560px）：`.endpoint-row` 纵向堆叠，`.ep-url` `word-break:break-all` 自动换行。
 
+## 首次引导 tour 约定（v1.20，rant 2026-08-17T20:46:57 A）
+
+- **触发**：登录成功后 `maybeStartTour()`——`localStorage atp-tour-done === "1"` 则不触发；设置页 `#tour-replay-btn`「重新查看引导」随时重放；
+- **4 步**（`TOUR_STEPS`，每步 `{view, sel, title, desc}`）：仪表盘 `#dash-stats` → 模型市场 `#view-marketplace` → 共享管理 `#view-sharing` → 钱包/设置 `#endpoint-card`；
+- **结构**：`#tour-overlay`（半透明遮罩，点击=关闭）+ `#tour-ring`（目标 accent 高亮环，`getBoundingClientRect` 定位，`tour-pulse` 呼吸动画，reduced-motion 静止）+ `#tour-pop` 气泡（右上「跳过」、底部「上一步/下一步/完成」、计数 `n / 4`；`data-tour-action` 委托）；
+- **行为**：步骤切换自动 `switchView(step.view, {sync:false})`（不入历史）；气泡定位视口内钳制；**Esc / 点外 / 跳过 / 完成 均关闭并写 `atp-tour-done=1`**（关闭即标记，之后不再出现）；
+- 全局 keydown 优先级：**引导开时 Esc 先关引导**（再处理帮助/行内表单）；冒烟测试注意 stub 需给元素 `getBoundingClientRect`，登录须预填邮箱/密码（item G 行内校验拦截空值）。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）

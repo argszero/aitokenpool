@@ -290,6 +290,7 @@
       <header class="page-head">
         <h2>设置 <span class="en">Settings</span></h2>
         <p>账户 · API Key · 通知 · 偏好（原型展示）</p>
+        <button type="button" class="btn btn-ghost tour-replay" id="tour-replay-btn">重新查看引导 <span class="en">(Tour)</span></button>
       </header>
       <div class="card" id="endpoint-card">
         <h3>接入方式 <span class="en">API Endpoints</span></h3>
@@ -494,6 +495,22 @@
 </div>
 
 <div id="toast-wrap"></div>
+
+<!-- 首次引导 tour（rant 20:46:57 A：非 modal 浮层 + 目标 accent 高亮环；Esc/点外关闭） -->
+<div id="tour-overlay" class="hidden"></div>
+<div id="tour-ring" class="hidden"></div>
+<div id="tour-pop" class="hidden">
+  <button type="button" class="tour-skip" data-tour-action="skip">跳过</button>
+  <div class="tour-title" id="tour-title"></div>
+  <div class="tour-desc" id="tour-desc"></div>
+  <div class="tour-foot">
+    <span class="tour-progress" id="tour-progress"></span>
+    <div class="tour-nav">
+      <button type="button" class="btn btn-ghost" data-tour-action="prev">上一步</button>
+      <button type="button" class="btn btn-primary" data-tour-action="next">下一步</button>
+    </div>
+  </div>
+</div>
 
 <script src="js/data.js"></script>
 <script src="js/app.js"></script>

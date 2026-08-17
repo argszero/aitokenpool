@@ -64,6 +64,64 @@
     panel.classList.toggle("hidden", !open);
   }
 
+  /* --- 首次引导 tour（rant 20:46:57 A：非 modal 浮层 + 目标 accent 高亮环；localStorage atp-tour-done 控制） --- */
+  const TOUR_STEPS = [
+    { view: "dashboard",  sel: "#dash-stats",    title: "仪表盘",     desc: "看点数余额与本月用量 / 收益趋势" },
+    { view: "marketplace", sel: "#view-marketplace", title: "模型市场", desc: "浏览在售模型，点「使用 / 消费」开始调用" },
+    { view: "sharing",    sel: "#view-sharing",  title: "共享管理",   desc: "上架闲置 key 赚点数，随时暂停 / 恢复" },
+    { view: "settings",   sel: "#endpoint-card", title: "钱包 / 设置", desc: "充值、生成 API Key、查看接入端点（Base URL）" },
+  ];
+  let tourStep = -1; // -1 = 未在引导中
+
+  function isTourDone() { try { return localStorage.getItem("atp-tour-done") === "1"; } catch (e) { return true; } }
+  function markTourDone() { try { localStorage.setItem("atp-tour-done", "1"); } catch (e) { /* 隐私模式忽略 */ } }
+
+  function maybeStartTour() { if (!isTourDone()) startTour(); }
+
+  function startTour() {
+    tourStep = 0;
+    renderTourStep();
+  }
+
+  function renderTourStep() {
+    const step = TOUR_STEPS[tourStep];
+    if (!step) return;
+    // 引导中自动切到对应视图（不入历史，避免后退需多次）
+    if (step.view !== activeView) switchView(step.view, { sync: false });
+    const target = document.querySelector(step.sel);
+    const r = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
+    $("#tour-overlay").classList.remove("hidden");
+    $("#tour-ring").classList.remove("hidden");
+    $("#tour-pop").classList.remove("hidden");
+    const ring = $("#tour-ring");
+    if (r && r.width) {
+      ring.style.top = r.top + "px";
+      ring.style.left = r.left + "px";
+      ring.style.width = r.width + "px";
+      ring.style.height = r.height + "px";
+    } else { ring.classList.add("hidden"); }
+    $("#tour-title").textContent = step.title;
+    $("#tour-desc").textContent = step.desc;
+    $("#tour-progress").textContent = (tourStep + 1) + " / " + TOUR_STEPS.length;
+    const pop = $("#tour-pop");
+    if (r && r.width) pop.style.top = Math.min(r.bottom + 12, (window.innerHeight || 800) - 220) + "px";
+    else pop.style.top = "84px";
+    pop.style.left = Math.max(12, Math.min(r ? r.left : 12, (window.innerWidth || 800) - 312)) + "px";
+    const prev = document.querySelector('#tour-pop [data-tour-action="prev"]');
+    if (prev) prev.disabled = tourStep === 0;
+    const next = document.querySelector('#tour-pop [data-tour-action="next"]');
+    if (next) next.textContent = tourStep === TOUR_STEPS.length - 1 ? "完成" : "下一步";
+  }
+
+  function closeTour() {
+    if (tourStep < 0) return;
+    markTourDone();
+    tourStep = -1;
+    $("#tour-overlay").classList.add("hidden");
+    $("#tour-ring").classList.add("hidden");
+    $("#tour-pop").classList.add("hidden");
+  }
+
   // 按钮 loading 态（rant 15:50:05 B.8：提交中转圈，模拟反馈后恢复）
   const SPINNER = '<span class="spin" aria-hidden="true"></span>';
   function withLoading(btn, fn, ms) {
@@ -1576,6 +1634,7 @@
       // URL hash 路由：登录后恢复刷新前的视图（无 hash 则仪表盘）
       switchView(pendingHashView || "dashboard");
       pendingHashView = null;
+      maybeStartTour(); // 首次登录引导（rant 20:46:57 A：atp-tour-done 未标记才触发）
       toast("欢迎回来，阿零（演示账号）", "info");
     });
 
@@ -1857,9 +1916,12 @@
 
     // 全局快捷键（rant 16:57:17 D）：/ 聚焦市场搜索；数字 1-7 切换侧边栏视图；Esc 关闭行内新建 key
     // rant 20:39:30 E：? / Shift+/ 开合快捷键帮助面板（Esc 优先关帮助）
+    // rant 20:46:57 A：引导中 Esc 优先关引导
     document.addEventListener("keydown", (e) => {
       const t = e.target;
       const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+      const tourOpen = tourStep >= 0;
+      if (e.key === "Escape" && tourOpen) { closeTour(); return; }
       const helpOpen = !$("#help-panel").classList.contains("hidden");
       if (e.key === "Escape" && helpOpen) { toggleHelp(false); return; }
       if (e.key === "Escape" && !$("#ak-new-inline").hidden) { closeNewKeyInline(); return; }
@@ -1876,5 +1938,20 @@
       }
     });
     $("#help-close").addEventListener("click", () => toggleHelp(false));
+
+    // 首次引导 tour 事件（rant 20:46:57 A）：点浮层外关闭；气泡内 跳过/上一步/下一步/完成；设置页重放
+    $("#tour-overlay").addEventListener("click", closeTour);
+    $("#tour-pop").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-tour-action]");
+      if (!b) return;
+      const act = b.dataset.tourAction;
+      if (act === "skip") { closeTour(); return; }
+      if (act === "prev" && tourStep > 0) { tourStep--; renderTourStep(); return; }
+      if (act === "next") {
+        if (tourStep < TOUR_STEPS.length - 1) { tourStep++; renderTourStep(); }
+        else closeTour();
+      }
+    });
+    $("#tour-replay-btn").addEventListener("click", () => { startTour(); });
   });
 })();
