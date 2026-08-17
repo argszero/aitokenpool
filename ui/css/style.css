@@ -677,18 +677,27 @@ mark {
 .chat-input-row { display: flex; gap: 10px; align-items: center; }
 .chat-input-row .input { flex: 1; }
 
-.toast {
+/* toast 队列容器（rant 20:39:30 D：最多 3 条纵向堆叠，独立淡入淡出；不拦截点击） */
+#toast-wrap {
   position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  z-index: 999; pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
   background: var(--bg-card); border: 1px solid var(--accent);
   color: var(--text); padding: 12px 22px; border-radius: 999px;
-  box-shadow: var(--shadow); z-index: 999; font-size: 14px;
+  box-shadow: var(--shadow); font-size: 14px;
+  max-width: min(90vw, 420px); text-align: center;
   animation: toast-in .2s ease;
 }
 /* toast 分级（rant 15:50:05 B.8：成功/错误/信息不同样式） */
 .toast.success { border-color: var(--ok); color: var(--ok); }
 .toast.error { border-color: var(--danger); color: var(--danger); }
 .toast.info { border-color: var(--accent); color: var(--accent-text); }
-@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.toast.out { animation: toast-out .2s ease forwards; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes toast-out { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(8px); } }
 
 /* 按钮 loading 转圈（rant 15:50:05 B.8：提交中反馈） */
 .spin {
