@@ -273,6 +273,14 @@ ui/
 - **守卫**：typing（INPUT/TEXTAREA/SELECT/contentEditable）与 meta/ctrl/alt 组合键不拦截；`?`、1-7 视图切换、Esc 原有优先级（引导 > 帮助 > 行内新建 Key > 表格高亮）均不受影响；
 - 冒烟测试注意：`qs(sel)` 的 stub id 会带 `#` 前缀——`kbdContainerFrom` 依赖真实无 `#` 的 id（如 `tx-table`），须手动修正；Esc 分支链依赖 `#ak-new-inline`、`#help-panel` hidden 预置 + `atp-tour-done=1`（防 tour 拦截）。
 
+## 品牌与登录页氛围约定（v1.20，rant 2026-08-17T20:46:57 G）
+
+- **favicon**：`ui/index.html` `<head>` 内 **inline SVG data URI**（`rel="icon" type="image/svg+xml"`）——渐变圆角方块（`#4ecdc4→#2a9d8f`）+ AT 文字，零外部文件；URL 编码（`%23`=#、`%3E`=>、`%3C`=<）；
+- **登录页氛围**：`.login-view::before` = 44px 淡色网格（两个 1px `linear-gradient`）+ **径向 mask**（`radial-gradient(ellipse … #000 25%, transparent 72%)`）边缘淡出，`pointer-events:none`；`.login-view::after` = accent 微光圆（`rgba(78,205,196,.16)` 径向渐变）+ `login-float`（10s `translate` + `scale` 交替动画）；`.login-card { position:relative; z-index:1 }` 浮于氛围层之上；
+- **logo 质感**：`.logo`（登录页 + 侧边栏共用）加 accent 描边 ring（`0 0 0 1.5px rgba(78,205,196,.45)`）+ 外发光（`0 0 14px`）；`.logo::after` 顶部内高光 `inset 0 1px 0 rgba(255,255,255,.30)` + 底部内阴影 `inset 0 -1px 0 rgba(0,0,0,.14)`（`position:relative` 定位基准）；
+- **reduced-motion**：全局规则（`prefers-reduced-motion` 下 `animation-iteration-count:1 !important`）自动让 `login-float` 静止，无需单独规则；
+- 冒烟测试以结构断言为主（favicon data URI 含渐变/AT、::before 网格、::after 动画、logo::after 内高光、reduced-motion 覆盖）。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
