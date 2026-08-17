@@ -552,6 +552,33 @@
 
   /* --- 模型市场 --- */
 
+  // 最近使用（rant 20:46:57 D：localStorage atp-recent-models 最近 5 个去重，复用 .chip，点击直接使用）
+  const RECENT_MAX = 5;
+  const RECENT_KEY = "atp-recent-models";
+  function getRecentIds() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+      return Array.isArray(arr) ? arr.filter((x) => Number.isFinite(+x)).map(Number) : [];
+    } catch (e) { return []; } // 旧数据/隐私模式：按空处理
+  }
+  function saveRecentIds(ids) {
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(ids.slice(0, RECENT_MAX))); } catch (e) { /* 隐私模式忽略 */ }
+  }
+  function markRecentUsed(id) {
+    const ids = getRecentIds().filter((x) => x !== id); // 去重：已存在则先移除
+    ids.unshift(id);                                     // 最新使用放最前
+    saveRecentIds(ids);
+  }
+  function renderRecent() {
+    const wrap = $("#mk-recent-chips");
+    const chips = getRecentIds().map((id) => {
+      const m = D.MARKET.find((x) => x.id === id);
+      return m ? '<button type="button" class="chip" data-recent-model="' + id + '" title="' + esc(m.provider) + " · 点击直接使用\">" + esc(m.model) + "</button>" : null;
+    }).filter(Boolean);
+    wrap.innerHTML = chips.join("");
+    $("#mk-recent").hidden = chips.length === 0;
+  }
+
   // 市场行展开详情（rant 20:39:30 F：max tokens / 1M tokens ≈ N 点换算 / 多 key 故障转移说明）
   function mkDetailHtml(m) {
     const md = D.MODELS.find((x) => x.model === m.model);
@@ -596,6 +623,7 @@
     ).join("") : emptyRow(7, "没有匹配的模型", "试试调整搜索或筛选条件",
       '<button type="button" class="btn btn-ghost" data-mk-clear-filters>清除筛选</button>');
     pulseTbody($("#mk-body"));
+    renderRecent(); // 最近使用 chips（rant 20:46:57 D）
   }
 
   /* --- 可用时间段（rant 10:54:48：结构化字段，备注只作纯备注） --- */
@@ -1572,6 +1600,8 @@
     const m = D.MARKET.find((x) => x.id === id);
     if (!m) return;
     if (!m.avail) { toast("该模型当前繁忙，无法使用", "error"); return; }
+    markRecentUsed(id); // 记录最近使用（rant 20:46:57 D：去重 + 置顶，最多 5 个）
+    renderRecent();     // 立即刷新最近使用 chips
     chatModel = m;
     $("#chat-title").textContent = "使用 " + m.model;
     $("#chat-meta").textContent = "参考价：输入 " + D.fmt(m.in) + " 点 / 输出 " + D.fmt(m.out) + " 点（每 1M tokens）· 余额 " + D.fmt(D.USER.balance) + " 点" +
@@ -1703,6 +1733,19 @@
         $("#mk-provider").value = "";
         $("#mk-sort").value = "default";
         renderMarketplace();
+      }
+    });
+    // 最近使用 chips（rant 20:46:57 D：点击直接使用 / 清空）
+    $("#mk-recent").addEventListener("click", (e) => {
+      if (e.target.closest("[data-mk-recent-clear]")) {
+        saveRecentIds([]);
+        renderRecent();
+        return;
+      }
+      const c = e.target.closest("[data-recent-model]");
+      if (c) {
+        if (isGuest) { toast("请先登录后再使用 / 消费模型", "error"); return; }
+        openChat(Number(c.dataset.recentModel));
       }
     });
     $("#chat-send").addEventListener("click", sendChat);

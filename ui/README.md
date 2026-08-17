@@ -249,6 +249,14 @@ ui/
 - 修饰类**只加在 `#app`**，通过 `.density-compact .table …` 选择器全站生效：紧凑档 `th/td` padding `4px 8px`、`td` 字号 12px、`th`/行内按钮 11px；舒适档不写任何规则（默认样式零回归）；
 - 新增表格无需改动——继承 `.table` 即自动响应密度；冒烟测试断言走 `#app` 的 `_classes.has("density-compact")` 与 radio `checked`。
 
+## 市场「最近使用」约定（v1.20，rant 2026-08-17T20:46:57 D）
+
+- 位置：市场页工具栏计数下方 `#mk-recent` 行（`recent-label` + `.chips` 容器 `#mk-recent-chips` + 「清空」按钮 `data-mk-recent-clear`），无记录时 `hidden`；
+- 数据：**localStorage `atp-recent-models`** = 最近模型 id 数组（JSON），**最多 5 个**、**去重**（`markRecentUsed(id)`：先滤掉已存在再 `unshift` 置顶，`saveRecentIds` 截断 5）；`getRecentIds()` try/catch 容错（旧数据/隐私模式 → 空数组）；
+- 渲染：`renderRecent()` 把 id 映射为 `.chip` 按钮（`data-recent-model`，找不到模型则跳过），写入 chips 容器并同步 `#mk-recent.hidden`；**`renderMarketplace()` 末尾调用**（进市场即还原）+ **`openChat()` 内 markRecentUsed 后立即调用**（使用后即时更新）；
+- 交互：`#mk-recent` click 委托——`[data-recent-model]` → 游客 toast「请先登录」/ 否则 `openChat(id)`（复用市场「使用 / 消费」主操作）；`[data-mk-recent-clear]` → `saveRecentIds([])` + `renderRecent()`（行隐藏）；
+- 样式：`.recent-row`（flex 换行，label 次要色）+ `.recent-row .chip:hover` accent 高亮（复用 `.chip` 基础药丸）；冒烟测试注意 stub 需给 chip 元素 `closest("[data-recent-model]")` 返回自身。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）

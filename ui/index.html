@@ -110,6 +110,12 @@
         </select>
         <span class="toolbar-count" id="mk-count"></span>
       </div>
+      <!-- 最近使用（rant 20:46:57 D：localStorage 最近 5 个去重，复用 .chip，点击直接使用） -->
+      <div class="recent-row" id="mk-recent" hidden>
+        <span class="recent-label">最近使用</span>
+        <span class="chips" id="mk-recent-chips"></span>
+        <button type="button" class="btn btn-ghost" data-mk-recent-clear title="清空最近使用记录">清空</button>
+      </div>
       <div class="table-wrap">
         <table class="table">
           <thead>
