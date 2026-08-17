@@ -235,6 +235,13 @@ ui/
 - **行为**：步骤切换自动 `switchView(step.view, {sync:false})`（不入历史）；气泡定位视口内钳制；**Esc / 点外 / 跳过 / 完成 均关闭并写 `atp-tour-done=1`**（关闭即标记，之后不再出现）；
 - 全局 keydown 优先级：**引导开时 Esc 先关引导**（再处理帮助/行内表单）；冒烟测试注意 stub 需给元素 `getBoundingClientRect`，登录须预填邮箱/密码（item G 行内校验拦截空值）。
 
+## 可交互 toast / 复制后引导约定（v1.20，rant 2026-08-17T20:46:57 B）
+
+- **`toast(msg, type, opts)` 扩展**：`opts.action = { label, onClick }` 时渲染为**内嵌按钮**（`.toast-action`，accent 药丸，hover 反色）并延长展示时长至 `TOAST_ACTION_MS=6000`（普通 toast 仍 2600ms）；无 action 时保持 `textContent` 路径（零回归）；
+- **复制 API Key 成功**（`copyKey` 的 `okToast` 路径，含 clipboard 成功与 execCommand 降级成功）→ toast「已复制…」+「配置接入端点 →」按钮；
+- **`gotoEndpointCard()`**：`switchView("settings")`（幂等，已在设置页保持）→ `#endpoint-card` 加 `.ep-flash`（accent 光圈闪烁 0.8s ×2，重放时 remove→reflow→add）→ `scrollIntoView({behavior:"smooth", block:"center"})`；
+- 与 20:44:18 端点卡片联动：复制 key → 跳转端点卡片 → 填 Base URL 闭环。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
