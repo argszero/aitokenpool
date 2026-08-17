@@ -360,21 +360,22 @@
     renderMonthChanges();
   }
 
-  /* --- 充值模拟（US-4：钱包充值入口 → 模拟支付 → 余额增加 + topup 交易，永久有效点数） --- */
+  /* --- 充值模拟（US-4：钱包页行内卡片 → 输入点数 → 余额增加 + topup 交易，永久有效点数） --- */
 
   function openTopup() {
     $("#topup-custom").value = "";
-    $$("#topup-modal .topup-presets .btn").forEach((b) => b.classList.remove("active"));
-    $("#topup-modal").classList.remove("hidden");
+    $$("#topup-card .topup-presets .btn").forEach((b) => b.classList.remove("active"));
+    $("#topup-card").hidden = false;
+    $("#raise-card").hidden = true; // 互斥：开充值收起加额
     $("#topup-custom").focus();
   }
 
   function closeTopup() {
-    $("#topup-modal").classList.add("hidden");
+    $("#topup-card").hidden = true;
   }
 
   function confirmTopup() {
-    const preset = document.querySelector("#topup-modal .topup-presets .btn.active");
+    const preset = document.querySelector("#topup-card .topup-presets .btn.active");
     const customRaw = $("#topup-custom").value;
     let amt;
     if (preset && !customRaw) amt = Number(preset.dataset.topupAmt);
@@ -399,12 +400,13 @@
   function openRaise() {
     $("#raise-amount").value = "";
     $("#raise-reason").value = "";
-    $("#raise-modal").classList.remove("hidden");
+    $("#raise-card").hidden = false;
+    $("#topup-card").hidden = true; // 互斥：开加额收起充值
     $("#raise-amount").focus();
   }
 
   function closeRaise() {
-    $("#raise-modal").classList.add("hidden");
+    $("#raise-card").hidden = true;
   }
 
   function confirmRaise() {
@@ -1112,28 +1114,20 @@
       if (d) deleteSharing(Number(d.dataset.shareDelete));
     });
 
-    // 钱包按钮（充值：US-4 模拟流程；申请加额：US-20；提现仍 disabled）
+    // 钱包按钮（充值：US-4 行内卡片；申请加额：US-20 行内卡片；提现仍 disabled）
     $("#topup-btn").addEventListener("click", openTopup);
     $("#raise-btn").addEventListener("click", openRaise);
     $("#topup-confirm").addEventListener("click", confirmTopup);
     $("#raise-confirm").addEventListener("click", confirmRaise);
-    $$("#topup-modal .topup-presets .btn").forEach((b) =>
+    $("#topup-cancel").addEventListener("click", closeTopup);
+    $("#raise-cancel").addEventListener("click", closeRaise);
+    $$("#topup-card .topup-presets .btn").forEach((b) =>
       b.addEventListener("click", () => {
-        $$("#topup-modal .topup-presets .btn").forEach((x) => x.classList.remove("active"));
+        $$("#topup-card .topup-presets .btn").forEach((x) => x.classList.remove("active"));
         b.classList.add("active");
         $("#topup-custom").value = "";
       })
     );
-    $$("[data-modal-close]").forEach((b) =>
-      b.addEventListener("click", () => {
-        const id = b.dataset.modalClose;
-        const m = document.getElementById(id);
-        if (m) m.classList.add("hidden");
-      })
-    );
-    ["topup-modal", "raise-modal"].forEach((id) => {
-      document.getElementById(id).addEventListener("click", (e) => { if (e.target === document.getElementById(id)) document.getElementById(id).classList.add("hidden"); });
-    });
     // 钱包页提示 → 跳转交易记录（明细统一入口）
     $("#wallet-goto-tx").addEventListener("click", () => switchView("transactions"));
 

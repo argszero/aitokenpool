@@ -420,7 +420,6 @@ select.input option { background: var(--bg-card); }
 .modal-head h3 { font-size: 16px; margin: 0; }
 
 /* 模态框操作行 / 充值预设（US-4） */
-.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
 .topup-presets { display: flex; gap: 8px; margin-top: 6px; }
 .topup-presets .btn { min-width: 72px; }
 .topup-presets .btn.active { background: var(--accent-soft); border-color: rgba(78,205,196,.5); color: var(--accent-text); }
