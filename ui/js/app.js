@@ -195,6 +195,9 @@
     ]},
   ];
 
+  // 侧边栏视图顺序（rant 16:57:17 D：数字 1-7 切换对应视图，title 提示快捷键）
+  const NAV_ORDER = NAV.flatMap((g) => g.items);
+
   const VIEW_TITLE = {
     dashboard: "仪表盘 Dashboard", marketplace: "模型市场 Marketplace", sharing: "共享管理 Sharing",
     wallet: "钱包 Wallet", transactions: "交易记录 Transactions", settings: "设置 Settings",
@@ -221,7 +224,10 @@
         const b = document.createElement("button");
         b.className = "nav-item" + (item.id === activeView ? " active" : "");
         b.dataset.view = item.id;
-        b.innerHTML = '<span class="ico">' + (ICONS[item.icon] || "") + '</span><span class="label">' + esc(item.label) + "</span>";
+        const short = NAV_ORDER.indexOf(item) + 1; // 1-7
+        b.title = "快捷键 " + short + " · " + item.label;
+        b.innerHTML = '<span class="ico">' + (ICONS[item.icon] || "") + '</span><span class="label">' + esc(item.label) + "</span>" +
+          (item.role ? "" : '<span class="nav-key">' + short + "</span>");
         if (item.role) {
           const tag = document.createElement("span");
           tag.className = "nav-tag";
@@ -1445,5 +1451,22 @@
     bindEvents();
     renderView("dashboard");
     $("#side-balance").textContent = D.fmt(D.USER.balance);
+
+    // 全局快捷键（rant 16:57:17 D）：/ 聚焦市场搜索；数字 1-7 切换侧边栏视图；Esc 关闭行内新建 key
+    document.addEventListener("keydown", (e) => {
+      const t = e.target;
+      const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+      if (e.key === "Escape" && !$("#ak-new-inline").hidden) { closeNewKeyInline(); return; }
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "/") {
+        e.preventDefault();
+        $("#mk-search").focus();
+        return;
+      }
+      if (e.key >= "1" && e.key <= "7") {
+        const item = NAV_ORDER[Number(e.key) - 1];
+        if (item) switchView(item.id);
+      }
+    });
   });
 })();
