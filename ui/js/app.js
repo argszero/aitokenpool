@@ -346,6 +346,8 @@
     renderNav();
     renderView(id);
     $("#main").scrollTop = 0;
+    // 动态文档标题（rant 18:06:09 F：视图切换跟随「视图 · AITokenPool」，未知视图回默认）
+    document.title = VIEW_TITLE[id] ? VIEW_TITLE[id] + " · AITokenPool" : "AITokenPool";
   }
 
   /* ---------------- 视图渲染 ---------------- */
@@ -1658,6 +1660,7 @@
   /* ---------------- 初始化 ---------------- */
 
   document.addEventListener("DOMContentLoaded", () => {
+    document.title = "AITokenPool"; // 默认标题（rant 18:06:09 F：无视图时回「AITokenPool」）
     renderNav();
     bindEvents();
     renderView("dashboard");

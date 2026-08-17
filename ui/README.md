@@ -153,6 +153,12 @@ ui/
 - **数字跳动**：`bump(el)` 助手（remove `.bump` → reflow → add，重放 `@keyframes numJump`：`translateY(-3px) scale(1.02)`，0.35s）；**接入 4 处余额变化点**——钱包充值（`#side-balance` + `#wallet-balance`）、聊天消费扣款、加额批准、运营者给自己充值（`isMe` 判断）；`#side-balance` 为 inline 元素需 `display:inline-block` 才可 transform；
 - **系统偏好**：`@media (prefers-reduced-motion: reduce)` 全局压 `animation-duration`/`transition-duration` 到 0.01ms、`animation-iteration-count: 1`、`scroll-behavior: auto`——**禁用过渡/动画但保留全部功能**；新增加动画时不得绕过此规则。
 
+## 动态文档标题约定（v1.18，rant 2026-08-17T18:06:09 F）
+
+- `document.title` **跟随视图切换**：`switchView` 内统一设置「`VIEW_TITLE[id]` · AITokenPool」（如「模型市场 Marketplace · AITokenPool」）；7 个视图全覆盖，未知视图回退「AITokenPool」；
+- **默认「AITokenPool」**：DOMContentLoaded 初始化与登录页/无视图态回默认；HTML `<title>` 即「AITokenPool」；
+- 游客受限视图被 `GUEST_VIEWS` 拦截时 `switchView` 提前 return → 标题保持不变。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
