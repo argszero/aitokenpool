@@ -181,6 +181,13 @@ ui/
 - **随 tab 过滤联动**：切换「全部 / 消费 / 收益」tab 即时重算；且与表格**列筛选**一致——汇总基于 `filterRows(list, TX_COLUMNS, txTable.filters)`（`buildDataTable` 的筛选逻辑抽出的公共函数），反映与表格可见行相同的过滤集，**不受分页影响**；
 - 窄屏（≤560px）自动收窄间距 / 字号，`flex-wrap` 换行兜底。
 
+## select 美化约定（v1.19，rant 2026-08-17T20:39:30 C）
+
+- 全站 `select` **移除原生箭头**（`appearance:none` + `-webkit-appearance:none`），改用**自定义 SVG 下拉箭头**：`--select-arrow` CSS 变量（内联 data-URI，深色主题浅色箭头 `#aab6c8`、亮色主题深色箭头 `#55627a`，`url("data:image/svg+xml,…")` 内空格须 `%20` 编码）；
+- `padding-right` 预留箭头空间（`select.input` 30px / `.th-filter` 24px / page-size 22px）；**hover / focus 边框同 input**（`var(--accent)`，focus 加 `box-shadow: 0 0 0 1px var(--accent)` 光圈）；`disabled` 态 `opacity:.55` + `not-allowed`；
+- **覆盖所有 select 来源**：静态 `.input`（市场筛选、共享表单三级联动、设置页）、动态 `select.th-filter`（表格列筛选）、`select[data-page-size]`（分页器每页条数）；
+- ⚠️ 注意：这些选择器的规则**必须用 `background-color` 而非 `background` 简写**（简写会把 `background-image` 置 none 抹掉箭头）；`select.input option { background: var(--bg-card) }`（下拉项深色）与 `select.input.input-error`（错误红边框）保持不动。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
