@@ -33,6 +33,18 @@
       esc(labels[status] ? labels[status].text : status) + "</span>";
   }
 
+  // 空状态组件（rant 15:50:05 A.4：列表/表格为空时给出图标 + 文案 + 可选行动按钮）
+  const EMPTY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="es-ico"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13l3.5 7v6a2 2 0 0 1-2 2h-16a2 2 0 0 1-2-2v-6l3.5-7z"/></svg>';
+
+  function emptyState(text, sub, actionHtml) {
+    return '<div class="empty-state">' + EMPTY_ICON + "<p>" + esc(text) + "</p>" +
+      (sub ? '<p class="muted">' + esc(sub) + "</p>" : "") + (actionHtml || "") + "</div>";
+  }
+
+  function emptyRow(colspan, text, sub, actionHtml) {
+    return '<tr><td colspan="' + colspan + '" class="empty-cell">' + emptyState(text, sub, actionHtml) + "</td></tr>";
+  }
+
   // 自动单价：单价是模型×厂商的客观属性，由平台按模型定价自动计算（输出 1M tokens 折算点数）
   function autoPrice(model) {
     const m = D.MODELS.find((x) => x.model === model);
@@ -74,17 +86,28 @@
 
   /* ---------------- 导航 ---------------- */
 
+  // 统一内联 SVG 图标（线性风格、同尺寸、currentColor，替代 emoji；rant 15:50:05 A.2）
+  const ICONS = {
+    dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></svg>',
+    marketplace: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/><path d="M3 4h2l2.4 11.2a1.5 1.5 0 0 0 1.5 1.2h7.9a1.5 1.5 0 0 0 1.5-1.2L20 8H6"/></svg>',
+    sharing: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1.5 1.5"/><path d="M14 10a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1l1.5-1.5"/></svg>',
+    wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18"/><circle cx="16.5" cy="15" r="1.1" fill="currentColor" stroke="none"/></svg>',
+    transactions: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-2-1.5L14 21l-2-1.5L10 21l-2-1.5L6 21V3z"/><path d="M9 8h6M9 12h6"/></svg>',
+    admin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9.5 12l2 2 3.5-3.5"/></svg>',
+    settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h13M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="19" cy="18" r="2"/></svg>',
+  };
+
   const NAV = [
     { g: "主导航", items: [
-      { id: "dashboard", ico: "📊", label: "仪表盘 Dashboard" },
-      { id: "marketplace", ico: "🛒", label: "模型市场 Marketplace" },
-      { id: "sharing", ico: "🔗", label: "共享管理 Sharing" },
-      { id: "wallet", ico: "👛", label: "钱包 Wallet" },
-      { id: "transactions", ico: "🧾", label: "交易记录 Transactions" },
+      { id: "dashboard", icon: "dashboard", label: "仪表盘 Dashboard" },
+      { id: "marketplace", icon: "marketplace", label: "模型市场 Marketplace" },
+      { id: "sharing", icon: "sharing", label: "共享管理 Sharing" },
+      { id: "wallet", icon: "wallet", label: "钱包 Wallet" },
+      { id: "transactions", icon: "transactions", label: "交易记录 Transactions" },
     ]},
     { g: "角色视图", items: [
-      { id: "admin", ico: "🛠️", label: "管理视图 Admin", role: "admin" },
-      { id: "settings", ico: "⚙️", label: "设置 Settings" },
+      { id: "admin", icon: "admin", label: "管理视图 Admin", role: "admin" },
+      { id: "settings", icon: "settings", label: "设置 Settings" },
     ]},
   ];
 
@@ -102,7 +125,7 @@
     nav.innerHTML = "";
     const groups = isGuest
       ? [{ g: "游客浏览", items: [
-          { id: "marketplace", ico: "🛒", label: "模型市场 Marketplace" },
+          { id: "marketplace", icon: "marketplace", label: "模型市场 Marketplace" },
         ]}]
       : NAV;
     groups.forEach((group) => {
@@ -114,7 +137,7 @@
         const b = document.createElement("button");
         b.className = "nav-item" + (item.id === activeView ? " active" : "");
         b.dataset.view = item.id;
-        b.innerHTML = '<span class="ico">' + item.ico + '</span><span class="label">' + esc(item.label) + "</span>";
+        b.innerHTML = '<span class="ico">' + (ICONS[item.icon] || "") + '</span><span class="label">' + esc(item.label) + "</span>";
         if (item.role) {
           const tag = document.createElement("span");
           tag.className = "nav-tag";
@@ -173,7 +196,7 @@
       '<div class="mini-item"><div><div class="t">' + esc(s.model) + "</div>" +
       '<div class="d">' + esc(s.plan || "API") + " · 已用 " + D.fmt(s.used) + " / " + D.fmt(s.quota) + " 点 · 单价 " + D.fmt(s.price) + " 点/1M</div></div>" +
       '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>累计收益</div></div></div>"
-    ).join("") + (on.length ? "" : '<p class="muted">还没有上架的 key</p>');
+    ).join("") + (on.length ? "" : '<div class="empty-state compact">' + EMPTY_ICON + '<p>还没有上架的 key</p><p class="muted">去「共享管理」把闲置 key 放进池子</p></div>');
     renderMonthChanges();
   }
 
@@ -206,7 +229,8 @@
       (m.multi ? ' <span class="badge ok" title="该模型配置多个上游 key，单个 key 不可用时自动故障转移（架构 v0.2 路由策略）">多 key · 自动故障转移</span>' : "") + "</td>" +
       "<td><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">使用 / 消费</button>" +
       "<div class='muted' style='margin-top:4px;font-size:12px'>成功率 " + m.success + "%</div></td></tr>"
-    ).join("") : '<tr><td colspan="7" class="muted">没有匹配的模型</td></tr>';
+    ).join("") : emptyRow(7, "没有匹配的模型", "试试调整搜索或筛选条件",
+      '<button type="button" class="btn btn-ghost" data-mk-clear-filters>清除筛选</button>');
   }
 
   /* --- 可用时间段（rant 10:54:48：结构化字段，备注只作纯备注） --- */
@@ -284,7 +308,7 @@
       fillPlans();
     }
 
-    $("#share-body").innerHTML = D.SHARINGS.map((s, i) =>
+    $("#share-body").innerHTML = D.SHARINGS.length ? D.SHARINGS.map((s, i) =>
       "<tr><td><strong>" + esc(D.PROVIDER_LABELS[s.provider] || s.provider) + " · " + esc(s.plan || "API") +
       "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + " · " + esc(fmtAvailable(s)) + "</div></td>" +
       "<td class='mono'>" + esc(maskKey(s.key)) + "</td>" +
@@ -295,7 +319,8 @@
       "<td><button class='btn btn-ghost' data-share-toggle='" + i + "' style='padding:4px 10px;font-size:12px'>" +
       (s.status === "on" ? "暂停" : s.status === "paused" ? "恢复" : "重新上架") + "</button> " +
       "<button class='btn btn-danger' data-share-delete='" + i + "' style='padding:4px 10px;font-size:12px'>删除</button></td></tr>"
-    ).join("");
+    ).join("") : emptyRow(7, "还没有上架的 key", "把闲置 key 放进池子，开始赚点数",
+      '<button type="button" class="btn btn-primary" data-share-add>上架新 key</button>');
   }
 
   function deleteSharing(i) {
@@ -445,7 +470,7 @@
             "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>驳回</button>"
           : '<span class="muted" style="font-size:12px">' + esc(r.time) + "</span>") + "</td></tr>"
       ).join("") + "</tbody></table></div>"
-      : '<p class="muted">暂无加额申请</p>';
+      : emptyState("暂无加额申请", "成员提交的加额申请会显示在这里，批准后自动加点数");
   }
 
   function approveRaise(i) {
@@ -580,7 +605,7 @@
       }
     });
     html += "</tr></thead><tbody>";
-    if (!pageRows.length) html += '<tr><td colspan="' + columns.length + '" class="muted">没有匹配的记录</td></tr>';
+    if (!pageRows.length) html += '<tr><td colspan="' + columns.length + '" class="empty-cell">' + emptyState("没有匹配的记录", "试试调整筛选条件") + "</td></tr>";
     pageRows.forEach((row) => {
       html += "<tr>";
       columns.forEach((col) => {
@@ -666,7 +691,8 @@
       "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>复制</button> " +
       "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>改名</button> " +
       "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + i + "'>删除</button></td></tr>"
-    ).join("") : '<tr><td colspan="6" class="muted">没有匹配的 key</td></tr>';
+    ).join("") : emptyRow(6, "还没有 API Key", "生成一个 key，用于本地工具 / 代码接入平台",
+      '<button type="button" class="btn btn-ghost" data-new-key>生成新 Key</button>');
   }
 
   // 一键复制完整 key；file:// 下 clipboard API 受限 → 降级：临时 textarea 选中 + execCommand("copy")，仍失败则提示 Ctrl+C
@@ -691,6 +717,17 @@
     } else {
       fallback();
     }
+  }
+
+  // 生成新 API Key（带名字；列表展示脱敏、复制给完整 id）
+  function generateApiKey() {
+    const input = window.prompt("新 key 名字（留空则默认「未命名」）：", "未命名");
+    if (input == null) return;
+    const name = String(input).trim() || "未命名";
+    const id = "atk_live_" + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+    D.API_KEYS.unshift({ id, name, created: "2026-08-14", last: "从未", status: "active" });
+    renderSettings();
+    toast("已生成新 API Key「" + name + "」（完整 key 已展示在列表，可复制）");
   }
 
   function renameKey(i) {
@@ -829,7 +866,8 @@
         "<td>" + st + "</td>" +
         "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-dept-edit='" + i + "'>编辑</button> " +
         "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-dept-del='" + i + "'>删除</button></td></tr>";
-    }).join("") : '<tr><td colspan="7" class="muted">没有匹配的部门</td></tr>';
+    }).join("") : emptyRow(7, "没有匹配的部门", "试试调整搜索关键词",
+      '<button type="button" class="btn btn-ghost" data-dept-clear-search>清除搜索</button>');
   }
 
   /* --- 部门添加/编辑：行内展开表单（UI 原则：少用弹窗，优先行内交互；继承 rant 10:59:47 的可靠响应） --- */
@@ -915,7 +953,7 @@
       "<td>" + esc(u.email) + "</td>" +
       "<td>" + D.fmt(u.balance) + " 点</td>" +
       "<td><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>充值点数</button></td></tr>"
-    ).join("") : '<tr><td colspan="4" class="muted">没有匹配的用户</td></tr>';
+    ).join("") : emptyRow(4, "没有匹配的用户", "试试其他用户名 / 邮箱");
   }
 
   /* --- 消费模拟（US-6：市场页「使用 / 消费」→ 聊天 Mock，按模型参考价扣小数点数） --- */
@@ -1029,9 +1067,18 @@
     // 市场页：使用 / 消费（G4：聊天 Mock 扣小数点数并产生 consume 交易；游客需先登录 US-1）
     $("#mk-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-use-model]");
-      if (!b) return;
-      if (isGuest) { toast("请先登录后再使用 / 消费模型"); return; }
-      openChat(Number(b.dataset.useModel));
+      if (b) {
+        if (isGuest) { toast("请先登录后再使用 / 消费模型"); return; }
+        openChat(Number(b.dataset.useModel));
+        return;
+      }
+      // 空状态：清除筛选
+      if (e.target.closest("[data-mk-clear-filters]")) {
+        $("#mk-search").value = "";
+        $("#mk-provider").value = "";
+        $("#mk-sort").value = "default";
+        renderMarketplace();
+      }
     });
     $("#chat-send").addEventListener("click", sendChat);
     $("#chat-close").addEventListener("click", closeChat);
@@ -1106,12 +1153,13 @@
       hideShareForm();
     });
 
-    // 共享列表操作（事件委托：暂停/恢复/重新上架 + 删除）
+    // 共享列表操作（事件委托：暂停/恢复/重新上架 + 删除 + 空状态上架）
     $("#share-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-share-toggle]");
       if (b) { toggleSharing(Number(b.dataset.shareToggle)); return; }
       const d = e.target.closest("[data-share-delete]");
-      if (d) deleteSharing(Number(d.dataset.shareDelete));
+      if (d) { deleteSharing(Number(d.dataset.shareDelete)); return; }
+      if (e.target.closest("[data-share-add]")) showShareForm();
     });
 
     // 钱包按钮（充值：US-4 行内卡片；申请加额：US-20 行内卡片；提现仍 disabled）
@@ -1135,15 +1183,7 @@
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); }));
 
     // API Key 生成（带名字；列表展示脱敏、复制给完整 id）
-    $("#new-api-key-btn").addEventListener("click", () => {
-      const input = window.prompt("新 key 名字（留空则默认「未命名」）：", "未命名");
-      if (input == null) return;
-      const name = String(input).trim() || "未命名";
-      const id = "atk_live_" + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
-      D.API_KEYS.unshift({ id, name, created: "2026-08-14", last: "从未", status: "active" });
-      renderSettings();
-      toast("已生成新 API Key「" + name + "」（完整 key 已展示在列表，可复制）");
-    });
+    $("#new-api-key-btn").addEventListener("click", generateApiKey);
 
     // API Key 搜索 + 行内操作（复制 / 改名 / 删除）
     $("#ak-search").addEventListener("input", renderSettings);
@@ -1154,7 +1194,8 @@
       const rn = e.target.closest("[data-key-rename]");
       if (rn) { renameKey(Number(rn.dataset.keyRename)); return; }
       const dl = e.target.closest("[data-key-del]");
-      if (dl) deleteKey(Number(dl.dataset.keyDel));
+      if (dl) { deleteKey(Number(dl.dataset.keyDel)); return; }
+      if (e.target.closest("[data-new-key]")) generateApiKey();
     });
 
     // 管理台 Tabs
@@ -1203,7 +1244,11 @@
       const ed = e.target.closest("[data-dept-edit]");
       if (ed) { openDeptForm(Number(ed.dataset.deptEdit)); return; }
       const dl = e.target.closest("[data-dept-del]");
-      if (dl) deleteDept(Number(dl.dataset.deptDel));
+      if (dl) { deleteDept(Number(dl.dataset.deptDel)); return; }
+      if (e.target.closest("[data-dept-clear-search]")) {
+        $("#od-search").value = "";
+        renderAdmin();
+      }
     });
   }
 

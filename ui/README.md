@@ -61,11 +61,18 @@ python3 -m http.server 8000 --directory ui
 ```
 ui/
 ├── index.html        # 入口（登录页 + 应用外壳 + 全部视图）
-├── css/style.css     # 设计系统（深色主题 · 强调色 #4ecdc4 · 响应式预留）
+├── css/style.css     # 设计系统（深色主题 · 强调色 #4ecdc4 · 响应式预留 · v1.15 视觉美化）
 ├── js/data.js        # 内嵌 mock 数据（模型价格、交易、共享、成员等）
-├── js/app.js         # 交互逻辑（导航、筛选、表单、分页、Toast）
+├── js/app.js         # 交互逻辑（导航、筛选、表单、分页、Toast；v1.15 内联 SVG 图标 + 空状态组件）
 └── README.md         # 本文件
 ```
+
+## 视觉约定（v1.15，rant 2026-08-17T15:50:05 A 视觉美化）
+
+- 侧边栏导航图标用**统一内联 SVG**（线性风格、同尺寸、currentColor，禁用 emoji 散落）；
+- 卡片 hover 阴影/边框轻提升；表格**斑马纹 + 行 hover 高亮**；
+- 空状态统一 `empty-state` 组件（图标 + 文案 + 行动按钮），禁用裸文本占位；
+- 状态徽章统一带**语义色点**（ok/warn/danger/dim），配色与 `badge.*` 类一致。
 
 ## 数据说明
 
