@@ -78,6 +78,8 @@ body {
 }
 
 .hidden { display: none !important; }
+/* 全局防御：hidden 属性不被作者 display 样式覆盖（rant 2026-08-17T21:36:27：.inline-edit 的 inline-flex 曾盖过 hidden） */
+[hidden] { display: none !important; }
 
 /* 视图切换过渡（rant 16:57:17 F：fade + 轻微上移 ~150ms，替代生硬切换） */
 @keyframes viewIn {
