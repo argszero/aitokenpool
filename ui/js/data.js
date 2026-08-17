@@ -135,16 +135,6 @@
 
     // —— 企业版 ——
 
-    // Key 池
-    KEYS: [
-      { id: 1, provider: "openai",   model: "gpt-5.5-pro",    key: "sk-****-8f2a", quota: 300000, used: 214000, status: "ok" },
-      { id: 2, provider: "anthropic",model: "claude-opus-4.7", key: "sk-****-1c77", quota: 200000, used: 62000,  status: "ok" },
-      { id: 3, provider: "deepseek", model: "deepseek-v4-flash", key: "sk-****-90bb", quota: 500000, used: 461000, status: "limit" },
-      { id: 4, provider: "zhipu",    model: "glm-5.2",        key: "sk-****-44e9", quota: 150000, used: 150000, status: "exhausted" },
-      { id: 5, provider: "google",   model: "gemini-3.1-pro", key: "sk-****-77d2", quota: 180000, used: 15000,  status: "ok" },
-      { id: 6, provider: "moonshot", model: "kimi-k3",        key: "sk-****-ab31", quota: 100000, used: 0,      status: "revoked" },
-    ],
-
     // 员工（dept 可为空 = 未分配部门，如新注册未安排）
     EMPLOYEES: [
       { id: 1, name: "陈默", dept: "研发", quota: 20000, used: 12400 },

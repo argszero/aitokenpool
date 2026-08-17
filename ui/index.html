@@ -289,32 +289,16 @@
     <section class="view hidden" id="view-admin">
       <header class="page-head">
         <h2>管理视图 <span class="en">Admin</span></h2>
-        <p>管理员角色专属：Key 池 · 成员/员工点数 · 用量报表 · 组织管理（普通用户无此视图）</p>
+        <p>管理员角色专属：成员/员工点数 · 用量报表 · 组织管理 · 平台运营（普通用户无此视图）</p>
       </header>
       <div class="tabs" id="admin-tabs">
-        <button class="tab active" data-admin-tab="keys">Key 池</button>
-        <button class="tab" data-admin-tab="employees">成员管理</button>
+        <button class="tab active" data-admin-tab="employees">成员管理</button>
         <button class="tab" data-admin-tab="usage">用量报表</button>
         <button class="tab" data-admin-tab="org">组织管理</button>
         <button class="tab" data-admin-tab="ops">平台运营 <span class="en">Operator</span></button>
       </div>
 
-      <div class="admin-pane" data-admin-pane="keys">
-        <div class="toolbar">
-          <input id="ak-search" class="input" placeholder="搜索 key / 厂商 / 模型…">
-          <button class="btn btn-primary" id="add-key-btn">添加上游 Key <span class="en">(+ Add key)</span></button>
-        </div>
-        <div class="card">
-          <div class="table-wrap compact">
-            <table class="table">
-              <thead><tr><th>厂商</th><th>模型</th><th>Key</th><th>额度（点数）</th><th>状态</th><th></th></tr></thead>
-              <tbody id="keys-body"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div class="admin-pane hidden" data-admin-pane="employees">
+      <div class="admin-pane" data-admin-pane="employees">
         <div class="stat-grid" id="emp-stats"></div>
         <div class="card">
           <div class="table-wrap compact">
