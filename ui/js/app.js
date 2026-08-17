@@ -15,6 +15,7 @@
   let txTab = "all";
   let isGuest = false; // 游客模式（US-1：未登录可浏览市场）
   let pendingHashView = null; // URL hash 路由（rant 20:39:30 A）：刷新后登录时恢复上次视图
+  let mkExpanded = null; // 市场行展开（rant 20:39:30 F）：当前展开的模型 id，null=全部收起；仅展开当前行
 
   // MRT 风格表格状态（页面级变量：切换页面不丢失排序/筛选/分页）
   const txTable = { sort: [], filters: {}, page: 1, pageSize: 10 };
@@ -464,6 +465,21 @@
 
   /* --- 模型市场 --- */
 
+  // 市场行展开详情（rant 20:39:30 F：max tokens / 1M tokens ≈ N 点换算 / 多 key 故障转移说明）
+  function mkDetailHtml(m) {
+    const md = D.MODELS.find((x) => x.model === m.model);
+    const maxTok = md && md.max ? D.fmt(md.max) : "未公布";
+    const items = [
+      ["Max tokens（单次输出上限）", maxTok],
+      ["价格换算", "1M tokens ≈ " + D.fmt(m.out) + " 点（按输出价） · 输入 " + D.fmt(m.in) + " 点/1M"],
+      ["上下文长度", D.ctxFmt(m.ctx) + " tokens"],
+      ["可用性", m.avail ? "当前可用 · 成功率 " + m.success + "%" : "当前繁忙 · 成功率 " + m.success + "%"],
+    ];
+    if (m.multi) items.push(["路由", "多 key · 自动故障转移：该模型配置多个上游 key，单个 key 不可用时自动切换到其他 key（架构 v0.2 路由策略）"]);
+    return '<div class="mk-detail-grid">' + items.map(([k, v]) =>
+      '<div class="mkd-item"><span class="mkd-label">' + esc(k) + '</span><span class="mkd-val">' + esc(v) + "</span></div>").join("") + "</div>";
+  }
+
   function renderMarketplace() {
     const rawQ = $("#mk-search").value || "";
     const q = rawQ.toLowerCase();
@@ -480,13 +496,16 @@
 
     $("#mk-count").textContent = list.length + " 个在售 key";
     $("#mk-body").innerHTML = list.length ? list.map((m) =>
-      "<tr><td data-label='厂商'>" + hl(m.provider, rawQ) + "</td><td data-label='模型'><strong>" + hl(m.model, rawQ) + "</strong></td>" +
+      "<tr><td data-label='厂商'>" +
+      '<button type="button" class="row-expand" data-mk-expand="' + m.id + '" title="' + (mkExpanded === m.id ? "收起详情" : "展开详情") + '">' + (mkExpanded === m.id ? "−" : "+") + "</button>" +
+      hl(m.provider, rawQ) + "</td><td data-label='模型'><strong>" + hl(m.model, rawQ) + "</strong></td>" +
       '<td class="num" data-label="输入价 /1M">' + D.fmt(m.in) + " 点</td>" + '<td class="num" data-label="输出价 /1M">' + D.fmt(m.out) + " 点</td>" +
       '<td class="num" data-label="上下文">' + D.ctxFmt(m.ctx) + "</td>" +
       "<td data-label='可用性'>" + (m.avail ? '<span class="badge ok">可用</span>' : '<span class="badge warn">繁忙</span>') +
       (m.multi ? ' <span class="badge ok" title="该模型配置多个上游 key，单个 key 不可用时自动故障转移（架构 v0.2 路由策略）">多 key · 自动故障转移</span>' : "") + "</td>" +
       "<td data-label='操作'><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">使用 / 消费</button>" +
-      "<div class='muted' style='margin-top:4px;font-size:12px'>成功率 " + m.success + "%</div></td></tr>"
+      "<div class='muted' style='margin-top:4px;font-size:12px'>成功率 " + m.success + "%</div></td></tr>" +
+      (mkExpanded === m.id ? '<tr class="mk-detail"><td colspan="7">' + mkDetailHtml(m) + "</td></tr>" : "")
     ).join("") : emptyRow(7, "没有匹配的模型", "试试调整搜索或筛选条件",
       '<button type="button" class="btn btn-ghost" data-mk-clear-filters>清除筛选</button>');
     pulseTbody($("#mk-body"));
@@ -1527,6 +1546,14 @@
 
     // 市场页：使用 / 消费（G4：聊天 Mock 扣小数点数并产生 consume 交易；游客需先登录 US-1）
     $("#mk-body").addEventListener("click", (e) => {
+      // 行展开 / 收起（rant 20:39:30 F：仅展开当前行，点其它行自动收起）
+      const ex = e.target.closest("[data-mk-expand]");
+      if (ex) {
+        const id = Number(ex.dataset.mkExpand);
+        mkExpanded = mkExpanded === id ? null : id;
+        renderMarketplace();
+        return;
+      }
       const b = e.target.closest("[data-use-model]");
       if (b) {
         if (isGuest) { toast("请先登录后再使用 / 消费模型", "error"); return; }

@@ -204,6 +204,14 @@ ui/
 - **优先级**：全局 keydown 里帮助打开时 **Esc 先关帮助**（再关行内新建 Key），`?` 在 typing 守卫之后（输入框内不劫持）；`toggleHelp(force)` 支持强制开/关（close 按钮用 `toggleHelp(false)`）；
 - **kbd 键帽**：`.kbd` 样式（等宽、边框、底部 2px 立体），与 `.nav-key` 视觉一致。
 
+## 市场行展开约定（v1.19，rant 2026-08-17T20:39:30 F）
+
+- 市场表格每行首列（厂商）加 **`+`/`−` 展开按钮** `.row-expand`（小号等宽，hover accent）；点击在 **tr 下追加详情行** `.mk-detail`（`colspan=7`，浅底 `--bg-soft`，`tbodyIn` 轻动画，**行内展开不弹窗**）；
+- 详情内容（`mkDetailHtml(m)`）：**Max tokens**（查 `D.MODELS` 同名模型的 `max`，未公布显示「未公布」）、**价格换算**（`1M tokens ≈ N 点` 按输出价 + 输入价/1M）、**上下文长度**（`D.ctxFmt`）、**可用性**（可用/繁忙 + 成功率）、**多 key 自动故障转移**（仅 `m.multi` 显示，架构 v0.2 路由策略）；
+- **仅展开当前行**：`mkExpanded` 存展开模型 id（**数据态而非 DOM**，搜索/筛选 `renderMarketplace` 整表重建后仍保留）；点其它行自动收起，再点当前行收起；
+- 事件在 `#mk-body` 现有 click 委托里扩展 `[data-mk-expand]` 分支（先于 `[data-use-model]` 判断）；
+- 移动端卡片模式：详情 td 无 `data-label`（`td::before` 空）→ 整行仅展示详情内容，`mk-detail-grid` `auto-fit` 自适应列数。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）

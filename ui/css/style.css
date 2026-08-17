@@ -603,6 +603,25 @@ mark {
 .nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .nav-item.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 
+/* 市场行展开按钮（rant 20:39:30 F：+/- 切换详情行） */
+.row-expand {
+  display: inline-block; margin-right: 8px; padding: 0 7px;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--bg-soft); color: var(--text-mute);
+  font-family: var(--mono); font-size: 13px; line-height: 1.5; cursor: pointer;
+  vertical-align: middle;
+}
+.row-expand:hover { color: var(--accent-text); border-color: var(--accent); background: var(--bg-hover); }
+/* 详情行（tr 下追加；浅底、网格信息、轻动画） */
+.mk-detail td {
+  background: var(--bg-soft); border-top: none; padding: 12px 16px;
+  animation: tbodyIn .18s ease-out;
+}
+.mk-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px 28px; }
+.mkd-item { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.mkd-label { color: var(--text-mute); font-size: 12px; }
+.mkd-val { color: var(--text); line-height: 1.55; }
+
 .sidebar-bottom { border-top: 1px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .user-chip {
   display: flex; align-items: center; gap: 10px;
