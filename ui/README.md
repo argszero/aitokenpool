@@ -116,6 +116,13 @@ ui/
 - **视图切换**：`.view:not(.hidden)` 播放 `viewIn`（opacity 0→1 + translateY(6px)→0，150ms ease-out）；每次从隐藏变为可见自动重放；
 - **表格更新**：`.table tbody` 播放 `tbodyIn`（opacity 0→1，150ms）；整表重建（buildDataTable / 加额申请列表）新 tbody 节点自动播放；静态 tbody（market/sharing/api-keys/emp/dept/ops）在 innerHTML 更新后用 `pulseTbody(el)` 重启动画（style.animation=none → 强制 reflow → 还原）。
 
+## 一致性约定（v1.17，rant 2026-08-17T16:57:17 G 细节一致性）
+
+- **金额**：所有数字/金额一律 `D.fmt()`（整数千分位；小数 2 位），侧边栏余额 / 统计卡 / 表格 / 钱包格式一致；已用/额度统一「已用 X / 额度 Y」；
+- **按钮**：表格操作按钮统一 `padding:4px 10px;font-size:12px`，主操作用默认 `.btn` 尺寸；
+- **行内编辑校验**：`inlineForm` 的 `opts.validate` 失败走 `setFieldError`（红边框+行内文案），与 E 项表单校验一致，不使用 toast 承载错误；
+- 子文本（邮箱/模型等）统一 `font-size:12px`；单价措辞统一「点/1M」。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
