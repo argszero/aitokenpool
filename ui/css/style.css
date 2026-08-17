@@ -699,6 +699,39 @@ mark {
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes toast-out { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(8px); } }
 
+/* 快捷键帮助面板（rant 20:39:30 E：行内卡片非 modal，右上角浮层，无遮罩） */
+.help-panel {
+  position: fixed; top: 76px; right: 24px; width: 264px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--card-shadow);
+  padding: 14px 16px; z-index: 950;
+  animation: help-in .18s ease;
+}
+@keyframes help-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+.help-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.help-close {
+  border: none; background: none; color: var(--text-mute); font-size: 18px;
+  line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px;
+}
+.help-close:hover { color: var(--text); background: var(--bg-hover); }
+.help-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 13px; }
+.help-row .kbd { flex: 0 0 auto; }
+.help-desc { color: var(--text-dim); }
+.kbd {
+  display: inline-block; min-width: 26px; text-align: center;
+  padding: 1px 6px; border-radius: 5px;
+  border: 1px solid var(--border); border-bottom-width: 2px;
+  color: var(--text); background: var(--bg-soft);
+  font-family: var(--mono); font-size: 12px;
+}
+.help-context {
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
+  color: var(--text-mute); font-size: 12px;
+}
+@media (max-width: 560px) {
+  .help-panel { right: 12px; left: 12px; width: auto; top: 68px; }
+}
+
 /* 按钮 loading 转圈（rant 15:50:05 B.8：提交中反馈） */
 .spin {
   display: inline-block;

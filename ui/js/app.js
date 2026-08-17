@@ -43,6 +43,26 @@
     }, TOAST_MS);
   }
 
+  // 快捷键帮助面板（rant 20:39:30 E：行内卡片非 modal；? / Shift+/ 开合，Esc 或再按 ? 关闭）
+  const HELP_KEYS = [
+    ["/", "聚焦市场搜索"],
+    ["1–7", "切换侧边栏视图"],
+    ["Esc", "关闭 / 取消"],
+    ["?", "打开 / 关闭帮助"],
+  ];
+  function renderHelp() {
+    $("#help-body").innerHTML = HELP_KEYS.map(([k, d]) =>
+      '<div class="help-row"><span class="kbd">' + esc(k) + "</span><span class=\"help-desc\">" + esc(d) + "</span></div>").join("");
+    const theme = document.documentElement.dataset.theme === "light" ? "亮色" : "深色";
+    $("#help-context").textContent = "当前视图：" + (VIEW_TITLE[activeView] || activeView) + " · 主题：" + theme;
+  }
+  function toggleHelp(force) {
+    const panel = $("#help-panel");
+    const open = force !== undefined ? force : panel.classList.contains("hidden");
+    if (open) renderHelp();
+    panel.classList.toggle("hidden", !open);
+  }
+
   // 按钮 loading 态（rant 15:50:05 B.8：提交中转圈，模拟反馈后恢复）
   const SPINNER = '<span class="spin" aria-hidden="true"></span>';
   function withLoading(btn, fn, ms) {
@@ -1754,11 +1774,15 @@
     });
 
     // 全局快捷键（rant 16:57:17 D）：/ 聚焦市场搜索；数字 1-7 切换侧边栏视图；Esc 关闭行内新建 key
+    // rant 20:39:30 E：? / Shift+/ 开合快捷键帮助面板（Esc 优先关帮助）
     document.addEventListener("keydown", (e) => {
       const t = e.target;
       const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+      const helpOpen = !$("#help-panel").classList.contains("hidden");
+      if (e.key === "Escape" && helpOpen) { toggleHelp(false); return; }
       if (e.key === "Escape" && !$("#ak-new-inline").hidden) { closeNewKeyInline(); return; }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "?") { toggleHelp(); return; }
       if (e.key === "/") {
         e.preventDefault();
         $("#mk-search").focus();
@@ -1769,5 +1793,6 @@
         if (item) switchView(item.id);
       }
     });
+    $("#help-close").addEventListener("click", () => toggleHelp(false));
   });
 })();
