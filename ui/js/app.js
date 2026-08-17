@@ -81,6 +81,56 @@
     el.style.animation = "";
   }
 
+  /* --- 搜索增强（rant 18:06:09 D：防抖 + <mark> 关键词高亮 + 清空 × 按钮） --- */
+
+  // 用户输入作为正则关键词时先转义，避免误当正则语法（如 "C++"、"("）
+  function escapeRegExp(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  // 关键词高亮：先 HTML 转义，再对查询词大小写不敏感包 <mark>；无关键词返回转义原样（重置后自动清除）
+  function hl(s, q) {
+    const t = esc(s);
+    if (!q) return t;
+    const eq = esc(q); // 与转义后的正文同构，避免 & < > 等字符错位
+    if (!eq) return t;
+    const re = new RegExp(escapeRegExp(eq), "gi");
+    return t.replace(re, (m) => "<mark>" + m + "</mark>");
+  }
+
+  // 搜索框接线：输入防抖渲染（默认 ~150ms，避免每次按键整表重绘闪烁）+ 清空 × 按钮（有内容时显示，点击清空立即重绘）
+  function wireSearch(input, render, ms) {
+    if (!input) return;
+    const delay = ms || 150;
+    const box = input.closest(".search-box");
+    const clear = box ? box.querySelector(".search-clear") : null;
+    const syncClear = () => { if (clear) clear.hidden = !input.value; };
+    let t = null;
+    input.addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(() => render(), delay);
+      syncClear();
+    });
+    if (clear) {
+      clear.addEventListener("click", () => {
+        input.value = "";
+        syncClear();
+        render(); // 清空立即重绘，不走防抖
+        input.focus();
+      });
+    }
+    syncClear();
+  }
+
+  // 程序化清空搜索框（值 + × 按钮态同步，不触发渲染；调用方随后自行重绘）
+  function resetSearch(input) {
+    if (!input) return;
+    input.value = "";
+    const box = input.closest(".search-box");
+    const clear = box ? box.querySelector(".search-clear") : null;
+    if (clear) clear.hidden = true;
+  }
+
   /* --- 行内二次确认 / 行内编辑（rant 16:57:17 A：清除原生确认/输入弹窗） --- */
 
   // 行内二次确认：首次点击按钮变「确认删除？」红色态，3 秒无操作或 Esc 还原，再次点击执行
@@ -342,7 +392,8 @@
   /* --- 模型市场 --- */
 
   function renderMarketplace() {
-    const q = ($("#mk-search").value || "").toLowerCase();
+    const rawQ = $("#mk-search").value || "";
+    const q = rawQ.toLowerCase();
     const prov = $("#mk-provider").value;
     const sort = $("#mk-sort").value;
 
@@ -356,7 +407,7 @@
 
     $("#mk-count").textContent = list.length + " 个在售 key";
     $("#mk-body").innerHTML = list.length ? list.map((m) =>
-      "<tr><td data-label='厂商'>" + esc(m.provider) + "</td><td data-label='模型'><strong>" + esc(m.model) + "</strong></td>" +
+      "<tr><td data-label='厂商'>" + hl(m.provider, rawQ) + "</td><td data-label='模型'><strong>" + hl(m.model, rawQ) + "</strong></td>" +
       '<td class="num" data-label="输入价 /1M">' + D.fmt(m.in) + " 点</td>" + '<td class="num" data-label="输出价 /1M">' + D.fmt(m.out) + " 点</td>" +
       '<td class="num" data-label="上下文">' + D.ctxFmt(m.ctx) + "</td>" +
       "<td data-label='可用性'>" + (m.avail ? '<span class="badge ok">可用</span>' : '<span class="badge warn">繁忙</span>') +
@@ -892,10 +943,11 @@
   }
 
   function renderSettings() {
-    const q = ($("#ak-search").value || "").toLowerCase();
+    const rawQ = $("#ak-search").value || "";
+    const q = rawQ.toLowerCase();
     const list = D.API_KEYS.filter((k) => !q || k.name.toLowerCase().includes(q));
     $("#api-keys").innerHTML = list.length ? list.map((k, i) =>
-      "<tr><td data-label='名字'><strong>" + esc(k.name) + "</strong></td>" +
+      "<tr><td data-label='名字'><strong>" + hl(k.name, rawQ) + "</strong></td>" +
       "<td data-label='Key'><code>" + esc(maskAtk(k.id)) + "</code></td>" +
       "<td data-label='创建时间'>" + esc(k.created) + "</td>" +
       "<td data-label='最近使用'>" + timeCell(k.last) + "</td>" +
@@ -1079,7 +1131,8 @@
   }
 
   function renderOrg() {
-    const q = ($("#od-search").value || "").toLowerCase();
+    const rawQ = $("#od-search").value || "";
+    const q = rawQ.toLowerCase();
     const list = D.DEPARTMENTS.filter((d) => !q || d.name.toLowerCase().includes(q));
 
     const totalQuota = D.DEPARTMENTS.reduce((a, d) => a + d.quota, 0);
@@ -1096,7 +1149,7 @@
       const used = deptUsed(d);
       const pct = d.quota > 0 ? used / d.quota : 0;
       const st = pct >= 1 ? '<span class="badge danger">已用尽</span>' : pct > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>';
-      return "<tr><td data-label='部门'><strong>" + esc(d.name) + "</strong></td>" +
+      return "<tr><td data-label='部门'><strong>" + hl(d.name, rawQ) + "</strong></td>" +
         '<td class="num" data-label="成员数">' + deptMemberCount(d.name) + " 人</td>" +
         '<td class="num" data-label="月分配（点数）">' + D.fmt(d.quota) + " 点</td>" +
         '<td class="num" data-label="已用">' + D.fmt(used) + " 点</td>" +
@@ -1172,7 +1225,8 @@
   /* --- 平台运营者视图（US-运营1 / US-运营2：运营者 = 宿主本人，职责仅两项） --- */
 
   function renderOperator() {
-    const q = ($("#ops-search").value || "").toLowerCase();
+    const rawQ = $("#ops-search").value || "";
+    const q = rawQ.toLowerCase();
     const list = D.OPERATOR_USERS.filter((u) => !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
     const txs = D.TRANSACTIONS;
     const flowIn = txs.filter((t) => t.pts > 0).reduce((a, t) => a + t.pts, 0);
@@ -1189,8 +1243,8 @@
     ].join("");
 
     $("#ops-body").innerHTML = list.length ? list.map((u) =>
-      "<tr><td data-label='用户'><strong>" + esc(u.name) + "</strong></td>" +
-      "<td data-label='邮箱'>" + esc(u.email) + "</td>" +
+      "<tr><td data-label='用户'><strong>" + hl(u.name, rawQ) + "</strong></td>" +
+      "<td data-label='邮箱'>" + hl(u.email, rawQ) + "</td>" +
       '<td class="num" data-label="余额（点数）">' + D.fmt(u.balance) + " 点</td>" +
       "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>充值点数</button></td></tr>"
     ).join("") : emptyRow(4, "没有匹配的用户", "试试其他用户名 / 邮箱");
@@ -1359,8 +1413,8 @@
       toast("已退出（静态演示）", "info");
     });
 
-    // 市场筛选
-    $("#mk-search").addEventListener("input", renderMarketplace);
+    // 市场筛选（搜索防抖 ~150ms + 高亮 + 清空按钮，rant 18:06:09 D）
+    wireSearch($("#mk-search"), renderMarketplace);
     $("#mk-provider").addEventListener("change", renderMarketplace);
     $("#mk-sort").addEventListener("change", renderMarketplace);
     if (!$("#mk-provider").dataset.init) {
@@ -1378,7 +1432,7 @@
       }
       // 空状态：清除筛选
       if (e.target.closest("[data-mk-clear-filters]")) {
-        $("#mk-search").value = "";
+        resetSearch($("#mk-search"));
         $("#mk-provider").value = "";
         $("#mk-sort").value = "default";
         renderMarketplace();
@@ -1390,7 +1444,7 @@
     $("#chat-modal").addEventListener("click", (e) => { if (e.target === $("#chat-modal")) closeChat(); });
 
     // 平台运营者（G1 / US-运营2）：搜索定位用户 + 充值（行内编辑，永久有效点数，产生交易记录）
-    $("#ops-search").addEventListener("input", renderAdmin);
+    wireSearch($("#ops-search"), renderAdmin);
     $("#ops-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-ops-topup]");
       if (!b) return;
@@ -1507,7 +1561,7 @@
     });
 
     // API Key 搜索 + 行内操作（复制 / 改名 / 删除[行内二次确认]）
-    $("#ak-search").addEventListener("input", renderSettings);
+    wireSearch($("#ak-search"), renderSettings);
 
     $("#api-keys").addEventListener("click", (e) => {
       const cp = e.target.closest("[data-key-copy]");
@@ -1565,7 +1619,7 @@
     });
 
     // 组织管理：部门搜索 / 添加 / 编辑 / 删除（事件委托；添加/编辑用行内展开表单）
-    $("#od-search").addEventListener("input", renderAdmin);
+    wireSearch($("#od-search"), renderAdmin);
 
     $("#add-dept-btn").addEventListener("click", () => openDeptForm(null));
     $("#dept-confirm").addEventListener("click", (e) => withLoading(e.currentTarget, confirmDept));
@@ -1581,7 +1635,7 @@
       const dl = e.target.closest("[data-dept-del]");
       if (dl) { confirmInline(dl, () => deleteDept(Number(dl.dataset.deptDel)), "确认删除部门？"); return; }
       if (e.target.closest("[data-dept-clear-search]")) {
-        $("#od-search").value = "";
+        resetSearch($("#od-search"));
         renderAdmin();
       }
     });

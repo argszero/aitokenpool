@@ -92,7 +92,10 @@
         <p>浏览 / 搜索各家模型，按点数计价</p>
       </header>
       <div class="toolbar">
-        <input id="mk-search" class="input" placeholder="搜索模型名 / 厂商…">
+        <span class="search-box">
+          <input id="mk-search" class="input" placeholder="搜索模型名 / 厂商…">
+          <button type="button" class="search-clear" hidden aria-label="清空搜索" title="清空搜索">×</button>
+        </span>
         <select id="mk-provider" class="input">
           <option value="">全部厂商</option>
         </select>
@@ -287,7 +290,10 @@
       <div class="card api-key-card">
         <h3>API Key <span class="en">API keys</span></h3>
         <p class="muted">用于本地工具 / 代码接入平台的密钥。独占整行，避免表格字段挤压。</p>
-        <input id="ak-search" class="input" placeholder="搜索 key 名字…" style="margin-bottom:10px">
+        <span class="search-box" style="display:block;margin-bottom:10px">
+          <input id="ak-search" class="input" placeholder="搜索 key 名字…">
+          <button type="button" class="search-clear" hidden aria-label="清空搜索" title="清空搜索">×</button>
+        </span>
         <div class="table-wrap compact">
           <table class="table">
             <thead><tr><th>名字</th><th>Key</th><th>创建时间</th><th>最近使用</th><th>状态</th><th></th></tr></thead>
@@ -378,7 +384,10 @@
       <div class="admin-pane hidden" data-admin-pane="org">
         <div class="stat-grid" id="dept-stats"></div>
         <div class="toolbar">
-          <input id="od-search" class="input" placeholder="搜索部门…">
+          <span class="search-box">
+            <input id="od-search" class="input" placeholder="搜索部门…">
+            <button type="button" class="search-clear" hidden aria-label="清空搜索" title="清空搜索">×</button>
+          </span>
           <button class="btn btn-primary" id="add-dept-btn">添加部门 <span class="en">(+ Add dept)</span></button>
         </div>
         <div class="card">
@@ -416,7 +425,10 @@
           <h3>用户充值 <span class="en">Top up a user</span></h3>
           <p class="muted">运营者 = 宿主本人（职责最小化：仅运行概览 + 充值）。按用户名 / 邮箱定位用户 → 输入点数金额 → 确认后余额增加<strong>永久有效点数</strong>并产生一条交易记录。</p>
           <div class="toolbar">
-            <input id="ops-search" class="input" placeholder="搜索用户名 / 邮箱…">
+            <span class="search-box">
+              <input id="ops-search" class="input" placeholder="搜索用户名 / 邮箱…">
+              <button type="button" class="search-clear" hidden aria-label="清空搜索" title="清空搜索">×</button>
+            </span>
           </div>
           <div class="table-wrap compact">
             <table class="table">

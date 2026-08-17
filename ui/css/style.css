@@ -287,6 +287,37 @@ select.input option { background: var(--bg-card); }
 .toolbar .input { max-width: 240px; }
 .toolbar-count { align-self: center; color: var(--text-mute); font-size: 12px; margin-left: auto; }
 
+/* 搜索增强（rant 18:06:09 D：清空 × 按钮 + <mark> 关键词高亮） */
+.search-box { position: relative; display: block; }
+.search-box .input { padding-right: 30px; }
+.search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-hover);
+  color: var(--text-mute);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.search-clear:hover { background: var(--border); color: var(--text); }
+/* 关键词高亮：accent 柔和底色 + 主色文字，双主题对比度达标；无关键词时重置为普通文本 */
+mark {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
 .tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
 .tab {
   border: 1px solid var(--border);
