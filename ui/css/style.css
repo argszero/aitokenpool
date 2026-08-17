@@ -83,6 +83,9 @@ body {
 .inline-edit { display: inline-flex; gap: 6px; align-items: center; vertical-align: middle; }
 .inline-edit .input { width: auto; }
 
+/* 相对时间（rant 16:57:17 B）：hover 提示完整绝对时间 */
+.timeago { white-space: nowrap; cursor: help; }
+
 .input, select.input {
   width: 100%;
   background: var(--bg-soft);
