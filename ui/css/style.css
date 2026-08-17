@@ -259,6 +259,9 @@ select.input option { background: var(--bg-card); }
 .mini-item .d { color: var(--text-mute); font-size: 12px; }
 .mini-item .r { text-align: right; }
 .mini-item .r .pts { color: var(--accent-text); font-weight: 700; }
+.mini-item .r .pts.neg { color: var(--danger); }
+.mini-item.net { background: var(--accent-soft); border-color: var(--accent); }
+.mini-item.net .t { color: var(--accent-text); }
 
 .bar-list { display: flex; flex-direction: column; gap: 12px; }
 .bar-row .bar-label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }

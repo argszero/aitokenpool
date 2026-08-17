@@ -163,7 +163,7 @@
       '<div class="d">已用 ' + D.fmt(s.used) + " / " + D.fmt(s.quota) + " 点 · 单价 " + D.fmt(s.price) + " 点/1M</div></div>" +
       '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>累计收益</div></div></div>"
     ).join("") + (on.length ? "" : '<p class="muted">还没有上架的 key</p>');
-    renderPointSources();
+    renderMonthChanges();
   }
 
   function stat(label, value, sub, cls) {
@@ -266,18 +266,36 @@
     if (activeView === "dashboard") renderDashboard();
   }
 
-  /* --- 点数来源（G2：钱包 / 仪表盘统一展示点数构成） --- */
+  /* --- 本月点数变化（rant 10:45:27：近 1 月按类型汇总收支，取代静态"点数来源"分组） --- */
 
-  function pointSourceItem(s) {
-    return '<div class="mini-item"><div><div class="t">' + esc(s.label) + "</div></div>" +
-      '<div class="r"><span class="pts">' + (s.pts > 0 ? "+" : "") + D.fmt(s.pts) + "</span></div></div>";
+  const MONTH_TYPE_LABELS = [
+    ["gift", "赠送"],
+    ["expire", "过期"],
+    ["earn", "收益"],
+    ["consume", "消费"],
+    ["topup", "充值"],
+    ["withdraw", "提现"],
+  ];
+
+  function monthChangeItem(label, pts, isNet) {
+    const sign = pts > 0 ? "+" : "";
+    const neg = pts < 0 ? " neg" : "";
+    return '<div class="mini-item' + (isNet ? " net" : "") + '"><div><div class="t">' + esc(label) + "</div></div>" +
+      '<div class="r"><span class="pts' + neg + '">' + sign + D.fmt(pts) + "</span></div></div>";
   }
 
-  function renderPointSources() {
-    const html = D.POINT_SOURCES.map(pointSourceItem).join("");
-    const walletEl = $("#points-sources");
+  function renderMonthChanges() {
+    const sums = {};
+    D.TRANSACTIONS.forEach((t) => { sums[t.type] = (sums[t.type] || 0) + t.pts; });
+    const net = D.TRANSACTIONS.reduce((a, t) => a + t.pts, 0);
+    const rows = MONTH_TYPE_LABELS
+      .filter(([k]) => sums[k])
+      .map(([k, label]) => monthChangeItem(label, sums[k], false));
+    const html = monthChangeItem("本月净变化", net, true) +
+      (rows.length ? rows.join("") : '<p class="muted">本月暂无变动</p>');
+    const walletEl = $("#month-changes");
     if (walletEl) walletEl.innerHTML = html;
-    const dashEl = $("#dash-point-sources");
+    const dashEl = $("#dash-month-changes");
     if (dashEl) dashEl.innerHTML = html;
   }
 
@@ -287,8 +305,8 @@
     // 钱包只做余额与资金操作；收支明细统一到【交易记录】（见 index.html wallet-hint）
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     $("#wallet-balance").textContent = D.fmt(D.USER.balance);
-    // 点数来源构成（v1.8：只展示构成，机制细节进 docs）
-    renderPointSources();
+    // 本月点数变化（近 1 月按类型汇总收支，与仪表盘一致）
+    renderMonthChanges();
   }
 
   /* --- 充值模拟（US-4：钱包充值入口 → 模拟支付 → 余额增加 + topup 交易，永久有效点数） --- */
@@ -315,8 +333,6 @@
       if (!raw || isNaN(amt) || amt <= 0) { toast("请输入大于 0 的充值点数（未生效）"); return; }
     }
     D.USER.balance = Math.round((D.USER.balance + amt) * 100) / 100;
-    const top = D.POINT_SOURCES.find((s) => s.kind === "topup");
-    if (top) top.pts = Math.round((top.pts + amt) * 100) / 100;
     D.TRANSACTIONS.unshift({
       id: Date.now(), time: nowTime(), type: "topup", partner: "—",
       detail: "充值 · 模拟支付（演示，真实支付后续接入）", tokens: "—", pts: +amt, status: "成功",
