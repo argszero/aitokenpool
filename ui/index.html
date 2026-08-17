@@ -128,10 +128,14 @@
               <label>厂商
                 <select id="sf-provider" class="input"></select>
               </label>
-              <label>模型
-                <select id="sf-model" class="input"></select>
+              <label>Plan
+                <select id="sf-plan" class="input"></select>
               </label>
             </div>
+            <span id="sf-plan-hint" class="form-hint"></span>
+            <label>模型
+              <select id="sf-model" class="input"></select>
+            </label>
             <label>API Key
               <input id="sf-key" type="password" class="input" placeholder="sk-xxx">
               <span class="form-hint">key 由平台加密托管，仅用于代理调用，不会展示给其他用户</span>
@@ -158,7 +162,7 @@
           <p class="muted">收益已到账</p>
           <div class="table-wrap compact">
             <table class="table">
-              <thead><tr><th>模型</th><th>Key</th><th>已用/额度</th><th>单价</th><th>收益</th><th>状态</th><th></th></tr></thead>
+              <thead><tr><th>厂商 · Plan / 模型</th><th>Key</th><th>已用/额度</th><th>单价</th><th>收益</th><th>状态</th><th></th></tr></thead>
               <tbody id="share-body"></tbody>
             </table>
           </div>
