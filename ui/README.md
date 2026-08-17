@@ -175,6 +175,12 @@ ui/
 - **刷新恢复**：DOMContentLoaded 先 `pendingHashView = viewFromHash()`；登录成功恢复 `pendingHashView || "dashboard"`（游客浏览 / 未登录态不冲突）；
 - **游客拦截**：游客访问受限 hash（如 `#/settings`）→ `switchView` 内 `GUEST_VIEWS` 拦截（toast 提示），视图与 URL 均保持原状、不入栈新条目。
 
+## 交易汇总条约定（v1.19，rant 2026-08-17T20:39:30 B）
+
+- 交易记录页卡片顶部（表格上方）有**紧凑汇总条** `#tx-summary`（`.tx-summary`，三列 inline，不引入新布局）：**总收入 / 总支出 / 净变化**，正数 `+` 绿（`var(--ok)`）、负数 `-` 红（`var(--danger-text)`）、零值中性显示 `0`；
+- **随 tab 过滤联动**：切换「全部 / 消费 / 收益」tab 即时重算；且与表格**列筛选**一致——汇总基于 `filterRows(list, TX_COLUMNS, txTable.filters)`（`buildDataTable` 的筛选逻辑抽出的公共函数），反映与表格可见行相同的过滤集，**不受分页影响**；
+- 窄屏（≤560px）自动收窄间距 / 字号，`flex-wrap` 换行兜底。
+
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
