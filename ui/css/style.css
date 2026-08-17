@@ -492,6 +492,13 @@ mark {
 .chip input { accent-color: var(--accent); }
 .chip:has(input:checked) { border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); }
 
+/* 最近使用（rant 20:46:57 D：复用 .chip，点击直接使用） */
+.recent-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.recent-row .recent-label { color: var(--text-mute); font-size: 12px; margin-right: 2px; }
+.recent-row .chip { font-family: inherit; border-color: var(--border); transition: border-color .15s, color .15s, background .15s; }
+.recent-row .chip:hover { border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); }
+.recent-row .btn { padding: 3px 10px; font-size: 12px; }
+
 .mini-list { display: flex; flex-direction: column; gap: 8px; }
 .mini-item {
   display: flex; justify-content: space-between; align-items: center;
