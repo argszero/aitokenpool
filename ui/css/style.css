@@ -179,6 +179,10 @@ select.input option { background: var(--bg-card); }
   white-space: nowrap;
 }
 .table td { padding: 10px 12px; border-bottom: 1px solid rgba(42,51,66,.5); white-space: nowrap; }
+/* 数字列（rant 16:57:17 C：价格/点数/已用/额度/余额 右对齐 + 等宽字体，便于扫读） */
+.table .num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.table th.num { text-align: right; }
+.table th.num .th-sort { text-align: right; }
 /* 斑马纹（rant 15:50:05 A.3：行 hover 高亮保留，hover 覆盖斑马纹） */
 .table tbody tr:nth-child(even) { background: rgba(255,255,255,.018); }
 .table tbody tr:hover { background: var(--bg-hover); }
