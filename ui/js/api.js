@@ -63,11 +63,11 @@ const api = (() => {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (e) {
-      throw { status: 0, message: "网络不可用，请检查后端服务是否启动" };
+      throw { status: 0, message: (window.I18n ? window.I18n.mapErr("网络不可用，请检查后端服务是否启动") : "网络不可用，请检查后端服务是否启动") };
     }
     if (resp.status === 401) {
       handleUnauthorized();
-      throw { status: 401, message: "登录已过期，请重新登录" };
+      throw { status: 401, message: (window.I18n ? window.I18n.mapErr("登录已过期，请重新登录") : "登录已过期，请重新登录") };
     }
     const text = await resp.text();
     let data = null;
@@ -77,7 +77,8 @@ const api = (() => {
     if (!resp.ok) {
       // 取后端 error.message 或 error 字段
       const message = (data && (data.error && (data.error.message || data.error))) || (data && data.message) || ("请求失败（HTTP " + resp.status + "）");
-      const err = new Error(message);
+      const errMsg = window.I18n ? window.I18n.mapErr(message) : message;
+      const err = new Error(errMsg);
       err.status = resp.status;
       throw err;
     }

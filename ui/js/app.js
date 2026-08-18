@@ -10,6 +10,7 @@
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const T = window.t; // i18n（rant 2026-08-18T20:49:22）
 
   let activeView = "dashboard";
   let txTab = "all";
@@ -67,16 +68,16 @@
 
   // 快捷键帮助面板（rant 20:39:30 E：行内卡片非 modal；? / Shift+/ 开合，Esc 或再按 ? 关闭）
   const HELP_KEYS = [
-    ["/", "聚焦市场搜索"],
-    ["1–7", "切换侧边栏视图"],
-    ["Esc", "关闭 / 取消"],
-    ["?", "打开 / 关闭帮助"],
+    ["/", "help.k1"],
+    ["1–7", "help.k2"],
+    ["Esc", "help.k3"],
+    ["?", "help.k4"],
   ];
   function renderHelp() {
     $("#help-body").innerHTML = HELP_KEYS.map(([k, d]) =>
-      '<div class="help-row"><span class="kbd">' + esc(k) + "</span><span class=\"help-desc\">" + esc(d) + "</span></div>").join("");
-    const theme = document.documentElement.dataset.theme === "light" ? "亮色" : "深色";
-    $("#help-context").textContent = "当前视图：" + (VIEW_TITLE[activeView] || activeView) + " · 主题：" + theme;
+      '<div class="help-row"><span class="kbd">' + esc(k) + "</span><span class=\"help-desc\">" + esc(T(d)) + "</span></div>").join("");
+    const theme = document.documentElement.dataset.theme === "light" ? T("help.theme.light") : T("help.theme.dark");
+    $("#help-context").textContent = T("help.context", { view: T(VIEW_TITLE[activeView] || activeView), theme: theme });
   }
   function toggleHelp(force) {
     const panel = $("#help-panel");
@@ -95,10 +96,10 @@
 
   /* --- 首次引导 tour（rant 20:46:57 A：非 modal 浮层 + 目标 accent 高亮环；localStorage atp-tour-done 控制） --- */
   const TOUR_STEPS = [
-    { view: "dashboard",  sel: "#dash-stats",    title: "仪表盘",     desc: "看点数余额与本月用量 / 收益趋势" },
-    { view: "marketplace", sel: "#view-marketplace", title: "模型市场", desc: "浏览在售模型，点「使用 / 消费」开始调用" },
-    { view: "sharing",    sel: "#view-sharing",  title: "共享管理",   desc: "上架闲置 key 赚点数，随时暂停 / 恢复" },
-    { view: "settings",   sel: "#endpoint-card", title: "钱包 / 设置", desc: "充值、生成 API Key、查看接入端点（Base URL）" },
+    { view: "dashboard",  sel: "#dash-stats",    title: "tour.step1.title",     desc: "tour.step1.desc" },
+    { view: "marketplace", sel: "#view-marketplace", title: "tour.step2.title", desc: "tour.step2.desc" },
+    { view: "sharing",    sel: "#view-sharing",  title: "tour.step3.title",   desc: "tour.step3.desc" },
+    { view: "settings",   sel: "#endpoint-card", title: "tour.step4.title", desc: "tour.step4.desc" },
   ];
   let tourStep = -1; // -1 = 未在引导中
 
@@ -129,8 +130,8 @@
       ring.style.width = r.width + "px";
       ring.style.height = r.height + "px";
     } else { ring.classList.add("hidden"); }
-    $("#tour-title").textContent = step.title;
-    $("#tour-desc").textContent = step.desc;
+    $("#tour-title").textContent = T(step.title);
+    $("#tour-desc").textContent = T(step.desc);
     $("#tour-progress").textContent = (tourStep + 1) + " / " + TOUR_STEPS.length;
     const pop = $("#tour-pop");
     if (r && r.width) pop.style.top = Math.min(r.bottom + 12, (window.innerHeight || 800) - 220) + "px";
@@ -139,7 +140,7 @@
     const prev = document.querySelector('#tour-pop [data-tour-action="prev"]');
     if (prev) prev.disabled = tourStep === 0;
     const next = document.querySelector('#tour-pop [data-tour-action="next"]');
-    if (next) next.textContent = tourStep === TOUR_STEPS.length - 1 ? "完成" : "下一步";
+    if (next) next.textContent = tourStep === TOUR_STEPS.length - 1 ? T("tour.done") : T("tour.next");
   }
 
   function closeTour() {
@@ -158,7 +159,7 @@
     const orig = btn.innerHTML;
     btn.dataset.loading = "1";
     btn.disabled = true;
-    btn.innerHTML = SPINNER + " 处理中…";
+    btn.innerHTML = SPINNER + " " + T("common.loading");
     setTimeout(() => {
       try { fn(); } finally {
         btn.dataset.loading = "";
@@ -274,7 +275,7 @@
     }
     btn.dataset.confirm = "1";
     const orig = btn.innerHTML;
-    btn.innerHTML = confirmText || "确认删除？";
+    btn.innerHTML = confirmText || T("common.confirmInline");
     btn.classList.add("confirming");
     btn._confirmT = setTimeout(() => revert(), 3000);
     const revert = () => {
@@ -301,10 +302,10 @@
     input.placeholder = opts.placeholder || "";
     input.style.cssText = "padding:4px 8px;font-size:12px;width:" + (opts.width || "140px");
     const ok = document.createElement("button");
-    ok.type = "button"; ok.className = "btn btn-primary"; ok.textContent = "确认";
+    ok.type = "button"; ok.className = "btn btn-primary"; ok.textContent = T("common.confirm");
     ok.style.cssText = "padding:4px 10px;font-size:12px";
     const cancel = document.createElement("button");
-    cancel.type = "button"; cancel.className = "btn btn-ghost"; cancel.textContent = "取消";
+    cancel.type = "button"; cancel.className = "btn btn-ghost"; cancel.textContent = T("common.cancel");
     cancel.style.cssText = "padding:4px 10px;font-size:12px";
     wrap.append(input, ok, cancel);
     cell.innerHTML = "";
@@ -327,8 +328,9 @@
   }
 
   function badge(status, labels) {
-    return '<span class="badge ' + (labels[status] ? labels[status].cls : "dim") + '">' +
-      esc(labels[status] ? labels[status].text : status) + "</span>";
+    const l = labels[status];
+    const text = l && typeof l.text === "function" ? l.text() : (l ? l.text : status);
+    return '<span class="badge ' + (l ? l.cls : "dim") + '">' + esc(text) + "</span>";
   }
 
   // 空状态组件（rant 15:50:05 A.4：列表/表格为空时给出图标 + 文案 + 可选行动按钮）
@@ -352,6 +354,9 @@
     return same ? same.out : 300;
   }
 
+  // 厂商展示名：zh 用中文标签（阿里云百炼…），en 用 provider id（English-friendly）
+  const provLabel = (p) => (I18n.lang === "zh" ? (D.PROVIDER_LABELS[p] || p) : p);
+
   // key 脱敏展示：仅显示前 3 后 4（如 sk-****1234）
   function maskKey(key) {
     if (!key) return "—";
@@ -363,11 +368,11 @@
     const el = $("#sf-price-view");
     if (!el) return;
     const m = D.MODELS.find((x) => x.model === model);
-    if (!model) { el.textContent = "选择模型后自动计算"; return; }
+    if (!model) { el.textContent = T("share.form.priceAuto"); return; }
     if (m && typeof m.out === "number") {
-      el.textContent = D.fmt(m.out) + " 点 / 1M 输出（自动）";
+      el.textContent = T("share.price.auto", { n: D.fmt(m.out) });
     } else {
-      el.textContent = "按默认价：" + D.fmt(autoPrice(model)) + " 点 / 1M 输出（自动）";
+      el.textContent = T("share.price.default", { n: D.fmt(autoPrice(model)) });
     }
   }
 
@@ -378,9 +383,9 @@
     const plans = Live.plans || D.PLANS;
     const pl = plans.find((x) => x.id === planId);
     if (!pl) { el.textContent = ""; return; }
-    el.textContent = (pl.type === "paygo" ? "按量计价的 key" : "订阅 Plan") +
-      (pl.keyPrefix ? " · 建议 key 前缀 " + pl.keyPrefix : "") +
-      (pl.note ? " · " + pl.note : "");
+    el.textContent = (pl.type === "paygo" ? T("share.plan.paygo") : T("share.plan.sub")) +
+      (pl.keyPrefix ? T("share.plan.keyPrefix", { prefix: pl.keyPrefix }) : "") +
+      (pl.note ? T("share.plan.note", { note: pl.note }) : "");
   }
 
   /* ---------------- 导航 ---------------- */
@@ -397,17 +402,17 @@
   };
 
   const NAV = [
-    { g: "主导航", items: [
-      { id: "dashboard", icon: "dashboard", label: "仪表盘 Dashboard" },
-      { id: "marketplace", icon: "marketplace", label: "模型市场 Marketplace" },
-      { id: "sharing", icon: "sharing", label: "共享管理 Sharing" },
-      { id: "wallet", icon: "wallet", label: "钱包 Wallet" },
-      { id: "transactions", icon: "transactions", label: "交易记录 Transactions" },
+    { g: "nav.main", items: [
+      { id: "dashboard", icon: "dashboard", label: "nav.dashboard" },
+      { id: "marketplace", icon: "marketplace", label: "nav.marketplace" },
+      { id: "sharing", icon: "sharing", label: "nav.sharing" },
+      { id: "wallet", icon: "wallet", label: "nav.wallet" },
+      { id: "transactions", icon: "transactions", label: "nav.transactions" },
     ]},
-    { g: "角色视图", items: [
-      { id: "admin", icon: "admin", label: "管理视图 Admin", role: "admin" },
-      { id: "ops", icon: "admin", label: "运营视图 Operator", role: "ops" },
-      { id: "settings", icon: "settings", label: "设置 Settings" },
+    { g: "nav.role", items: [
+      { id: "admin", icon: "admin", label: "nav.admin", role: "admin" },
+      { id: "ops", icon: "admin", label: "nav.ops", role: "ops" },
+      { id: "settings", icon: "settings", label: "nav.settings" },
     ]},
   ];
 
@@ -415,10 +420,10 @@
   const NAV_ORDER = NAV.flatMap((g) => g.items);
 
   const VIEW_TITLE = {
-    dashboard: "仪表盘 Dashboard", marketplace: "模型市场 Marketplace", sharing: "共享管理 Sharing",
-    wallet: "钱包 Wallet", transactions: "交易记录 Transactions", settings: "设置 Settings",
-    admin: "管理视图 Admin",
-    ops: "运营视图 Operator",
+    dashboard: "view.dashboard", marketplace: "view.marketplace", sharing: "view.sharing",
+    wallet: "view.wallet", transactions: "view.transactions", settings: "view.settings",
+    admin: "view.admin",
+    ops: "view.ops",
   };
 
   // 游客可见的页面（US-1：仅市场；其余需登录）
@@ -460,49 +465,49 @@
       .map((g) => ({ g: g.g, items: g.items.filter((it) => !it.role || D.USER.role === it.role) }))
       .filter((g) => g.items.length > 0);
     const groups = isGuest
-      ? [{ g: "游客浏览", items: [
-          { id: "marketplace", icon: "marketplace", label: "模型市场 Marketplace" },
+      ? [{ g: "nav.guest", items: [
+          { id: "marketplace", icon: "marketplace", label: T("nav.marketplace") },
         ]}]
       : roleNav;
     groups.forEach((group) => {
       const g = document.createElement("div");
       g.className = "nav-group";
-      g.textContent = group.g;
+      g.textContent = T(group.g);
       nav.appendChild(g);
       group.items.forEach((item) => {
         const b = document.createElement("button");
         b.className = "nav-item" + (item.id === activeView ? " active" : "");
         b.dataset.view = item.id;
         const short = NAV_ORDER.indexOf(item) + 1; // 1-7
-        b.title = "快捷键 " + short + " · " + item.label;
-        b.innerHTML = '<span class="ico">' + (ICONS[item.icon] || "") + '</span><span class="label">' + esc(item.label) + "</span>" +
+        b.title = T("nav.shortcut", { n: short, label: T(item.label) });
+        b.innerHTML = '<span class="ico">' + (ICONS[item.icon] || "") + '</span><span class="label">' + esc(T(item.label)) + "</span>" +
           (item.role ? "" : '<span class="nav-key">' + short + "</span>");
         if (item.role) {
           const tag = document.createElement("span");
           tag.className = "nav-tag";
-          tag.textContent = item.role === "ops" ? "运营者" : "管理员";
+          tag.textContent = item.role === "ops" ? T("nav.tag.ops") : T("nav.tag.admin");
           b.appendChild(tag);
         }
         b.addEventListener("click", () => switchView(item.id));
         nav.appendChild(b);
       });
     });
-    $("#mode-label").textContent = isGuest ? "游客模式 · 仅浏览市场" : "共享市场 · 角色视图";
+    $("#mode-label").textContent = isGuest ? T("nav.mode.guest") : T("nav.mode.normal");
   }
 
   function switchView(id, opts) {
     // 游客限制（US-1）：非市场页面 → 提示需登录
     if (isGuest && !GUEST_VIEWS.includes(id)) {
-      toast("请先登录后再访问「" + (VIEW_TITLE[id] || id) + "」", "error");
+      toast(T("view.guest.lock", { view: T(VIEW_TITLE[id] || id) }), "error");
       return;
     }
     // 角色限制（P2-A/P2-C）：管理视图仅 admin；运营视图仅 ops（hash 直达 / 快捷键也兜底）
     if (id === "admin" && D.USER.role !== "admin") {
-      toast("管理视图仅管理员可见", "error");
+      toast(T("view.admin.lock"), "error");
       return;
     }
     if (id === "ops" && D.USER.role !== "ops") {
-      toast("运营视图仅运营者可见", "error");
+      toast(T("view.ops.lock"), "error");
       return;
     }
     activeView = id;
@@ -512,7 +517,7 @@
     renderView(id);
     $("#main").scrollTop = 0;
     // 动态文档标题（rant 18:06:09 F：视图切换跟随「视图 · AITokenPool」，未知视图回默认）
-    document.title = VIEW_TITLE[id] ? VIEW_TITLE[id] + " · AITokenPool" : "AITokenPool";
+    document.title = VIEW_TITLE[id] ? T(VIEW_TITLE[id]) + " · AITokenPool" : "AITokenPool";
     // URL hash 路由（rant 20:39:30 A：视图切换同步 #/视图；非法 hash 回退时不清 URL，避免污染历史）
     if (!opts || opts.sync !== false) syncHash(id);
   }
@@ -544,19 +549,19 @@
     }
 
     $("#dash-stats").innerHTML = [
-      stat("点数余额 Points", D.fmt(D.USER.balance), "", "accent"),
-      stat("本月用量 Usage", D.fmt(monthUse) + " 点", "消费合计"),
-      stat("共享收益 Earnings", "+" + D.fmt(monthEarn) + " 点", "本月收益"),
-      stat("交易笔数 Trades", (Live.transactions ? (Live.transactions.total || 0) : txs.length) + " 笔", "含充值 / 消费 / 收益 / 赠送"),
+      stat(T("dash.balance"), D.fmt(D.USER.balance), "", "accent"),
+      stat(T("dash.usage"), D.fmt(monthUse) + " " + T("common.points"), T("dash.usage.sub")),
+      stat(T("dash.earnings"), "+" + D.fmt(monthEarn) + " " + T("common.points"), T("dash.earnings.sub")),
+      stat(T("dash.trades"), T("cnt.trades", { n: (Live.transactions ? (Live.transactions.total || 0) : txs.length) }), T("dash.trades.sub")),
     ].join("");
 
     const shares = Live.sharings ? sharingsToView(Live.sharings) : D.SHARINGS;
     const on = shares.filter((s) => s.status === "on");
     $("#dash-sharings").innerHTML = on.map((s) =>
       '<div class="mini-item"><div><div class="t">' + esc(s.model) + "</div>" +
-      '<div class="d">' + esc(s.plan || "API") + " · 已用 " + D.fmt(s.used) + " / " + D.fmt(s.quota) + " 点 · 单价 " + D.fmt(s.price) + " 点/1M</div></div>" +
-      '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>累计收益</div></div></div>"
-    ).join("") + (on.length ? "" : '<div class="empty-state compact">' + EMPTY_ICON + '<p>还没有上架的 key</p><p class="muted">去「共享管理」把闲置 key 放进池子</p></div>');
+      '<div class="d">' + esc(s.plan || "API") + " · " + T("dash.used", { used: D.fmt(s.used), quota: D.fmt(s.quota), price: D.fmt(s.price) }) + "</div></div>" +
+      '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>" + T("dash.earned") + "</div></div></div>"
+    ).join("") + (on.length ? "" : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("dash.noSharing") + "</p><p class='muted'>" + T("dash.noSharing.sub") + "</p></div>");
     // 共享收益累计趋势 sparkline（rant 18:06:09 A；无上架 key 时保留空状态，不画图）
     if (on.length) {
       const days = lastDayLabels(7);
@@ -607,7 +612,7 @@
     const wrap = $("#mk-recent-chips");
     const chips = getRecentIds().map((id) => {
       const m = D.MARKET.find((x) => x.id === id);
-      return m ? '<button type="button" class="chip" data-recent-model="' + id + '" title="' + esc(m.provider) + " · 点击直接使用\">" + esc(m.model) + "</button>" : null;
+      return m ? '<button type="button" class="chip" data-recent-model="' + id + '" title="' + esc(m.provider) + " · " + T("mk.recent.use") + '">' + esc(m.model) + "</button>" : null;
     }).filter(Boolean);
     wrap.innerHTML = chips.join("");
     $("#mk-recent").hidden = chips.length === 0;
@@ -616,14 +621,14 @@
   // 市场行展开详情（rant 20:39:30 F：max tokens / 1M tokens ≈ N 点换算 / 多 key 故障转移说明）
   function mkDetailHtml(m) {
     const md = D.MODELS.find((x) => x.model === m.model);
-    const maxTok = md && md.max ? D.fmt(md.max) : "未公布";
+    const maxTok = md && md.max ? D.fmt(md.max) : T("mk.detail.unpublished");
     const items = [
-      ["Max tokens（单次输出上限）", maxTok],
-      ["价格换算", "1M tokens ≈ " + D.fmt(m.out) + " 点（按输出价） · 输入 " + D.fmt(m.in) + " 点/1M"],
-      ["上下文长度", D.ctxFmt(m.ctx) + " tokens"],
-      ["可用性", m.avail ? "当前可用 · 成功率 " + m.success + "%" : "当前繁忙 · 成功率 " + m.success + "%"],
+      [T("mk.detail.max"), maxTok],
+      [T("mk.detail.price"), T("mk.detail.priceVal", { out: D.fmt(m.out), in: D.fmt(m.in) })],
+      [T("mk.detail.ctx"), T("mk.detail.ctxVal", { n: D.ctxFmt(m.ctx) })],
+      [T("mk.detail.avail"), m.avail ? T("mk.detail.availOn", { p: m.success }) : T("mk.detail.availOff", { p: m.success })],
     ];
-    if (m.multi) items.push(["路由", "多 key · 自动故障转移：该模型配置多个上游 key，单个 key 不可用时自动切换到其他 key（架构 v0.2 路由策略）"]);
+    if (m.multi) items.push([T("mk.detail.route"), T("mk.detail.routeVal")]);
     return '<div class="mk-detail-grid">' + items.map(([k, v]) =>
       '<div class="mkd-item"><span class="mkd-label">' + esc(k) + '</span><span class="mkd-val">' + esc(v) + "</span></div>").join("") + "</div>";
   }
@@ -647,23 +652,23 @@
     // 游客提示（P2-B：游客浏览用静态列表 + 顶部提示）
     const guestHint = isGuest
       ? '<div class="empty-state compact" style="margin-bottom:10px">' + EMPTY_ICON +
-        '<p>游客模式：浏览静态模型列表</p><p class="muted">登录后可见真实数据并可消费</p></div>'
+        "<p>" + T("mk.guest.hint") + "</p><p class='muted'>" + T("mk.guest.hint.sub") + "</p></div>"
       : "";
 
-    $("#mk-count").textContent = list.length + " 个在售 key";
+    $("#mk-count").textContent = T("cnt.on", { n: list.length });
     $("#mk-body").innerHTML = guestHint + (list.length ? list.map((m) =>
       "<tr><td data-label='厂商'>" +
-      '<button type="button" class="row-expand" data-mk-expand="' + m.id + '" title="' + (mkExpanded === m.id ? "收起详情" : "展开详情") + '">' + (mkExpanded === m.id ? "−" : "+") + "</button>" +
+      '<button type="button" class="row-expand" data-mk-expand="' + m.id + '" title="' + (mkExpanded === m.id ? T("mk.collapse") : T("mk.expand")) + '">' + (mkExpanded === m.id ? "−" : "+") + "</button>" +
       hl(m.provider, rawQ) + "</td><td data-label='模型'><strong>" + hl(m.model, rawQ) + "</strong></td>" +
-      '<td class="num" data-label="输入价 /1M">' + D.fmt(m.in) + " 点</td>" + '<td class="num" data-label="输出价 /1M">' + D.fmt(m.out) + " 点</td>" +
+      '<td class="num" data-label="输入价 /1M">' + D.fmt(m.in) + " " + T("common.points") + "</td>" + '<td class="num" data-label="输出价 /1M">' + D.fmt(m.out) + " " + T("common.points") + "</td>" +
       '<td class="num" data-label="上下文">' + D.ctxFmt(m.ctx) + "</td>" +
-      "<td data-label='可用性'>" + (m.avail ? '<span class="badge ok">可用</span>' : '<span class="badge warn">繁忙</span>') +
-      (m.multi ? ' <span class="badge ok" title="该模型配置多个上游 key，单个 key 不可用时自动故障转移（架构 v0.2 路由策略）">多 key · 自动故障转移</span>' : "") + "</td>" +
-      "<td data-label='操作'><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">使用 / 消费</button>" +
-      "<div class='muted' style='margin-top:4px;font-size:12px'>成功率 " + m.success + "%</div></td></tr>" +
+      "<td data-label='可用性'>" + (m.avail ? '<span class="badge ok">' + T("mk.avail") + "</span>" : '<span class="badge warn">' + T("mk.busy") + "</span>") +
+      (m.multi ? ' <span class="badge ok" title="' + T("mk.multi") + '">' + T("mk.multi") + "</span>" : "") + "</td>" +
+      "<td data-label='操作'><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">" + T("mk.use") + "</button>" +
+      "<div class='muted' style='margin-top:4px;font-size:12px'>" + T("mk.success", { p: m.success }) + "</div></td></tr>" +
       (mkExpanded === m.id ? '<tr class="mk-detail"><td colspan="7">' + mkDetailHtml(m) + "</td></tr>" : "")
-    ).join("") : emptyRow(7, "没有匹配的模型", "试试调整搜索或筛选条件",
-      '<button type="button" class="btn btn-ghost" data-mk-clear-filters>清除筛选</button>'));
+    ).join("") : emptyRow(7, T("mk.empty"), T("mk.empty.sub"),
+      '<button type="button" class="btn btn-ghost" data-mk-clear-filters>' + T("mk.clearFilters") + "</button>"));
     pulseTbody($("#mk-body"));
     renderRecent(); // 最近使用 chips（rant 20:46:57 D）
   }
@@ -679,7 +684,7 @@
 
   /* --- 可用时间段（rant 10:54:48：结构化字段，备注只作纯备注） --- */
 
-  const DAY_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  const DAY_LABELS = [1, 2, 3, 4, 5, 6, 7];
 
   // 星期数字 → 展示文本：连续区间压缩为「周一~周五」，间断用 / 连接
   function fmtDays(nums) {
@@ -690,8 +695,8 @@
       let j = i;
       while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
       parts.push(sorted[i] === sorted[j]
-        ? DAY_LABELS[sorted[i] - 1]
-        : DAY_LABELS[sorted[i] - 1] + "~" + DAY_LABELS[sorted[j] - 1]);
+        ? T("share.day." + sorted[i])
+        : T("share.day." + sorted[i]) + "~" + T("share.day." + sorted[j]));
       i = j + 1;
     }
     return parts.join("/");
@@ -699,7 +704,7 @@
 
   function fmtAvailable(s) {
     const a = s && s.available;
-    if (!a || !a.days || !a.days.length) return "全天";
+    if (!a || !a.days || !a.days.length) return T("share.allDay");
     const t = a.start && a.end ? " " + a.start + "-" + a.end : "";
     return fmtDays(a.days) + t;
   }
@@ -707,9 +712,9 @@
   /* --- 共享管理 --- */
 
   const SHARE_STATUS = {
-    on: { text: "上架中", cls: "ok" },
-    paused: { text: "已暂停", cls: "warn" },
-    off: { text: "已下线", cls: "dim" },
+    on: { text: () => T("share.status.on"), cls: "ok" },
+    paused: { text: () => T("share.status.paused"), cls: "warn" },
+    off: { text: () => T("share.status.off"), cls: "dim" },
   };
 
   function renderSharing() {
@@ -720,9 +725,9 @@
     const totalUsed = list.reduce((a, s) => a + s.used, 0);
 
     $("#share-stats").innerHTML = [
-      stat("上架中 Listings", on.length + " 个", list.length + " 个历史"),
-      stat("累计收益 Earnings", "+" + D.fmt(totalEarned) + " 点", "全部 key"),
-      stat("已用量 Used", D.fmt(totalUsed) + " 点", list.reduce((a, s) => a + s.quota, 0) + " 点总额度"),
+      stat(T("share.stats.listings"), T("cnt.keys", { n: on.length }), T("cnt.hist", { n: list.length })),
+      stat(T("share.stats.earnings"), "+" + D.fmt(totalEarned) + " " + T("common.points"), T("share.stats.earnings.sub")),
+      stat(T("share.stats.used"), D.fmt(totalUsed) + " " + T("common.points"), T("cnt.quota", { n: D.fmt(list.reduce((a, s) => a + s.quota, 0)) })),
     ].join("");
 
     // 表单下拉（厂商 → Plan → 模型 三级联动；Plan 中「API」= 按量计价的 key）
@@ -731,20 +736,20 @@
       // Bug 1 修复：优先用 /api/plans（后端 config [[plans]]），未登录/失败降级 data.js 对齐清单
       const plans = Live.plans || D.PLANS;
       const planProviders = [...new Set(plans.map((pl) => pl.provider))];
-      selP.innerHTML = '<option value="">选择厂商</option>' + planProviders
-        .map((p) => '<option value="' + p + '">' + (D.PROVIDER_LABELS[p] || p) + "</option>").join("");
+      selP.innerHTML = '<option value="">' + T("share.select.provider") + "</option>" + planProviders
+        .map((p) => '<option value="' + p + '">' + esc(provLabel(p)) + "</option>").join("");
       const selPlan = $("#sf-plan");
       const selM = $("#sf-model");
       const fillModels = () => {
         const plan = plans.find((pl) => pl.id === selPlan.value);
         const p = plan ? plan.provider : selP.value;
-        selM.innerHTML = '<option value="">选择模型</option>' + D.MODELS.filter((m) => !p || m.provider === p)
+        selM.innerHTML = '<option value="">' + T("share.select.model") + "</option>" + D.MODELS.filter((m) => !p || m.provider === p)
           .map((m) => '<option value="' + m.model + '">' + m.model + "</option>").join("");
         showPriceHint(selM.value);
       };
       const fillPlans = () => {
         const p = selP.value;
-        selPlan.innerHTML = '<option value="">选择 Plan</option>' + plans.filter((pl) => pl.provider === p)
+        selPlan.innerHTML = '<option value="">' + T("share.select.plan") + "</option>" + plans.filter((pl) => pl.provider === p)
           .map((pl) => '<option value="' + pl.id + '">' + esc(pl.name) + "</option>").join("");
         showPlanHint("");
         fillModels();
@@ -757,19 +762,19 @@
     }
 
     $("#share-body").innerHTML = list.length ? list.map((s, i) =>
-      "<tr><td data-label='厂商 · Plan / 模型'><strong>" + esc(D.PROVIDER_LABELS[s.provider] || s.provider) + " · " + esc(s.plan || "API") +
+      "<tr><td data-label='厂商 · Plan / 模型'><strong>" + esc(provLabel(s.provider)) + " · " + esc(s.plan || "API") +
       "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + " · " + esc(fmtAvailable(s)) + "</div></td>" +
       "<td data-label='Key' class='mono'>" + esc(maskKey(s.key)) + "</td>" +
       "<td data-label='已用/额度' class='num'>" + D.fmt(s.used) + " / " + D.fmt(s.quota) + "</td>" +
-      '<td class="num" data-label="单价">' + D.fmt(s.price) + " 点/1M</td>" +
-      '<td class="num" data-label="收益">+' + D.fmt(s.earned) + " 点</td>" +
+      '<td class="num" data-label="单价">' + D.fmt(s.price) + " " + T("share.priceUnit") + "</td>" +
+      '<td class="num" data-label="收益">+' + D.fmt(s.earned) + " " + T("common.points") + "</td>" +
       "<td data-label='上架时间'>" + timeCell(s.time) + "</td>" +
       "<td data-label='状态'>" + badge(s.status, SHARE_STATUS) + "</td>" +
       "<td data-label='操作'><button class='btn btn-ghost' data-share-toggle='" + i + "' style='padding:4px 10px;font-size:12px'>" +
-      (s.status === "on" ? "暂停" : s.status === "paused" ? "恢复" : "重新上架") + "</button> " +
-      "<button class='btn btn-danger' data-share-delete='" + i + "' style='padding:4px 10px;font-size:12px'>删除</button></td></tr>"
-    ).join("") : emptyRow(8, "还没有上架的 key", "把闲置 key 放进池子，开始赚点数",
-      '<button type="button" class="btn btn-primary" data-share-add>上架新 key</button>');
+      (s.status === "on" ? T("share.toggle.pause") : s.status === "paused" ? T("share.toggle.resume") : T("share.toggle.relist")) + "</button> " +
+      "<button class='btn btn-danger' data-share-delete='" + i + "' style='padding:4px 10px;font-size:12px'>" + T("common.delete") + "</button></td></tr>"
+    ).join("") : emptyRow(8, T("share.empty"), T("share.empty.sub"),
+      '<button type="button" class="btn btn-primary" data-share-add>' + T("share.empty.add") + "</button>");
     pulseTbody($("#share-body"));
   }
 
@@ -793,17 +798,17 @@
       try {
         await api.patch("/api/sharings/" + s.id, { status: "off" }); // 软删
         await loadSharing();
-        toast("已删除 " + s.model + " 的 key（彻底下架）", "success");
+        toast(T("share.del.ok", { model: s.model }), "success");
         return;
       } catch (err) {
-        toast((err && err.message) || "删除失败", "error");
+        toast((err && err.message) ? I18n.mapErr(err.message) : T("share.del.fail"), "error");
         return;
       }
     }
     D.SHARINGS.splice(i, 1);
     renderSharing();
     if (activeView === "dashboard") renderDashboard();
-    toast("已删除 " + s.model + " 的 key（彻底下架）", "success");
+    toast(T("share.del.ok", { model: s.model }), "success");
   }
 
   async function toggleSharing(i) {
@@ -814,16 +819,16 @@
       try {
         await api.patch("/api/sharings/" + s.id, { status: next });
         await loadSharing();
-        toast(next === "paused" ? "已暂停 " + s.model + " 的共享" : "已恢复 " + s.model + " 的共享", "success");
+        toast(next === "paused" ? T("share.toggle.paused", { model: s.model }) : T("share.toggle.resumed", { model: s.model }), "success");
         return;
       } catch (err) {
-        toast((err && err.message) || "操作失败", "error");
+        toast((err && err.message) ? I18n.mapErr(err.message) : T("share.op.fail"), "error");
         return;
       }
     }
-    if (s.status === "on") { s.status = "paused"; toast("已暂停 " + s.model + " 的共享", "success"); }
-    else if (s.status === "paused") { s.status = "on"; toast("已恢复 " + s.model + " 的共享", "success"); }
-    else { s.status = "on"; s.quota = 50000; s.used = 0; toast("已重新上架 " + s.model, "success"); }
+    if (s.status === "on") { s.status = "paused"; toast(T("share.toggle.paused", { model: s.model }), "success"); }
+    else if (s.status === "paused") { s.status = "on"; toast(T("share.toggle.resumed", { model: s.model }), "success"); }
+    else { s.status = "on"; s.quota = 50000; s.used = 0; toast(T("share.toggle.relisted", { model: s.model }), "success"); }
     renderSharing();
     if (activeView === "dashboard") renderDashboard();
   }
@@ -831,12 +836,12 @@
   /* --- 本月点数变化（rant 10:45:27：近 1 月按类型汇总收支，取代静态"点数来源"分组） --- */
 
   const MONTH_TYPE_LABELS = [
-    ["gift", "赠送"],
-    ["expire", "过期"],
-    ["earn", "收益"],
-    ["consume", "消费"],
-    ["topup", "充值"],
-    ["withdraw", "提现"],
+    ["gift", () => T("tx.type.gift")],
+    ["expire", () => T("tx.type.expire")],
+    ["earn", () => T("tx.type.earn")],
+    ["consume", () => T("tx.type.consume")],
+    ["topup", () => T("tx.type.topup")],
+    ["withdraw", () => T("tx.type.withdraw")],
   ];
 
   function monthChangeItem(label, pts, isNet) {
@@ -917,7 +922,7 @@
       net = Live.dashboard.net || 0;
       rowsHtml = MONTH_TYPE_LABELS
         .filter(([k]) => sums[k])
-        .map(([k, label]) => monthChangeItem(label, sums[k], false)).join("");
+        .map(([k, label]) => monthChangeItem(label(), sums[k], false)).join("");
       const series = Live.dashboard.series || [];
       sparkData = series.map((s) => s.pts || 0);
       sparkLabels = series.map((s) => String(s.date || "").slice(5));
@@ -927,13 +932,13 @@
       net = D.TRANSACTIONS.reduce((a, t) => a + t.pts, 0);
       rowsHtml = MONTH_TYPE_LABELS
         .filter(([k]) => sums[k])
-        .map(([k, label]) => monthChangeItem(label, sums[k], false)).join("");
+        .map(([k, label]) => monthChangeItem(label(), sums[k], false)).join("");
       const days = lastDayLabels(7);
       sparkData = dailySeries(days);
       sparkLabels = days;
     }
-    const html = monthChangeItem("本月净变化", net, true) +
-      (rowsHtml ? rowsHtml : '<p class="muted">本月暂无变动</p>');
+    const html = monthChangeItem(T("dash.net"), net, true) +
+      (rowsHtml ? rowsHtml : '<p class="muted">' + T("dash.noChange") + "</p>");
     const walletEl = $("#month-changes");
     if (walletEl) walletEl.innerHTML = html;
     const dashEl = $("#dash-month-changes");
@@ -977,7 +982,7 @@
       const raw = String(customRaw).trim();
       amt = Math.round(Number(raw) * 100) / 100;
       if (!raw || isNaN(amt) || amt <= 0) {
-        setFieldError($("#topup-custom"), "请输入大于 0 的充值点数");
+        setFieldError($("#topup-custom"), T("wallet.err.amount"));
         return;
       }
     }
@@ -992,7 +997,7 @@
     bump($("#side-balance")); // 余额跳动（rant 18:06:09 E）
     bump($("#wallet-balance"));
     closeTopup();
-    toast("充值成功 +" + D.fmt(amt) + " 点（永久有效 · 演示）", "success");
+    toast(T("wallet.topup.ok", { amt: D.fmt(amt) }), "success");
   }
 
   /* --- 成员申请加额（US-20：余额低时申请更多点数 → 管理员审批开关联动） --- */
@@ -1016,9 +1021,9 @@
     const reason = String($("#raise-reason").value).trim();
     const amt = Number(rawAmt);
     let firstErr = null;
-    if (!rawAmt || !Number.isInteger(amt) || amt <= 0) { setFieldError($("#raise-amount"), "请输入正整数申请点数"); firstErr = firstErr || $("#raise-amount"); }
+    if (!rawAmt || !Number.isInteger(amt) || amt <= 0) { setFieldError($("#raise-amount"), T("wallet.raise.err.amount")); firstErr = firstErr || $("#raise-amount"); }
     else clearFieldError($("#raise-amount"));
-    if (!reason) { setFieldError($("#raise-reason"), "请填写申请原因"); firstErr = firstErr || $("#raise-reason"); }
+    if (!reason) { setFieldError($("#raise-reason"), T("wallet.raise.err.reason")); firstErr = firstErr || $("#raise-reason"); }
     else clearFieldError($("#raise-reason"));
     if (firstErr) { firstErr.focus(); return; }
     // 加额申请默认需管理员审批（原「需审批」开关随组织设置表单移除，见 rant 10:59:23）
@@ -1026,9 +1031,9 @@
     if (loggedIn()) {
       api.post("/api/raise-requests", { amount: amt, reason }).then(() => {
         closeRaise();
-        toast("已提交申请 +" + D.fmt(amt) + " 点，等待管理员审批", "success");
+        toast(T("wallet.raise.ok", { amt: D.fmt(amt) }), "success");
       }).catch((err) => {
-        const msg = (err && err.message) || "提交失败";
+        const msg = (err && err.message) ? I18n.mapErr(err.message) : T("wallet.raise.fail");
         if (err && err.status === 409) {
           closeRaise();
           toast(msg, "error");
@@ -1042,36 +1047,36 @@
       id: Date.now(), user: D.USER.name, email: D.USER.email, amount: amt, reason, status: "pending", time: nowTime(),
     });
     closeRaise();
-    toast("已提交申请 +" + D.fmt(amt) + " 点，等待管理员审批", "success");
+    toast(T("wallet.raise.ok", { amt: D.fmt(amt) }), "success");
   }
 
   /* --- 管理员：加额申请审批（US-20） --- */
 
   const RAISE_STATUS = {
-    pending: { text: "待审批", cls: "warn" },
-    approved: { text: "已批准", cls: "ok" },
-    rejected: { text: "已驳回", cls: "dim" },
+    pending: { text: () => T("admin.raise.status.pending"), cls: "warn" },
+    approved: { text: () => T("admin.raise.status.approved"), cls: "ok" },
+    rejected: { text: () => T("admin.raise.status.rejected"), cls: "dim" },
   };
 
   function renderRaiseRequests(demo) {
     const el = $("#raise-requests");
     if (!el) return;
-    const demoTag = demo ? '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 加额审批后端待 P2-C 补齐</p>' : "";
+    const demoTag = demo ? '<p class="muted" style="font-size:12px;margin-bottom:6px">' + T("admin.raise.demo") + "</p>" : "";
     // P2-C：登录 → /api/raise-requests 真实列表（admin 视角全部）
     const list = Live.raiseRequests ? Live.raiseRequests : D.RAISE_REQUESTS;
     const live = !!Live.raiseRequests;
     el.innerHTML = demoTag + (list.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
       list.map((r, i) =>
         "<tr><td data-label='成员'><strong>" + esc(r.name || r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
-        '<td class="num" data-label="申请点数">+' + D.fmt(r.amount) + " 点</td>" +
+        '<td class="num" data-label="申请点数">+' + D.fmt(r.amount) + " " + T("common.points") + "</td>" +
         "<td data-label='原因'>" + esc(r.reason) + "</td>" +
         "<td data-label='状态'>" + badge(r.status, RAISE_STATUS) + "</td>" +
         "<td data-label='操作'>" + (r.status === "pending"
-          ? "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-raise-approve='" + i + "'>批准</button> " +
-            "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>驳回</button>"
+          ? "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-raise-approve='" + i + "'>" + T("admin.raise.approve") + "</button> " +
+            "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>" + T("admin.raise.reject") + "</button>"
           : '<span class="muted" style="font-size:12px">' + (live ? esc((r.created_at || "").slice(5, 16)) : timeCell(r.time)) + "</span>") + "</td></tr>"
       ).join("") + "</tbody></table></div>"
-      : emptyState("暂无加额申请", "成员提交的加额申请会显示在这里，批准后自动加点数"));
+      : emptyState(T("admin.raise.empty"), T("admin.raise.empty.sub")));
   }
 
   function approveRaise(i) {
@@ -1081,8 +1086,8 @@
     if (Live.raiseRequests) {
       api.post("/api/admin/raise-requests/" + r.id + "/approve", {}).then(async () => {
         await loadAdmin();
-        toast("已批准「" + (r.name || r.email) + "」申请 +" + D.fmt(r.amount) + " 点", "success");
-      }).catch((err) => toast((err && err.message) || "批准失败", "error"));
+        toast(T("admin.raise.approve.ok", { name: r.name || r.email, amt: D.fmt(r.amount) }), "success");
+      }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.raise.approve.fail"), "error"));
       return;
     }
     r.status = "approved";
@@ -1097,7 +1102,7 @@
       bump($("#side-balance")); // 批准加额 → 余额跳动（rant 18:06:09 E）
     }
     renderRaiseRequests();
-    toast("已批准「" + r.user + "」申请 +" + D.fmt(r.amount) + " 点", "success");
+    toast(T("admin.raise.approve.ok", { name: r.user, amt: D.fmt(r.amount) }), "success");
   }
 
   function rejectRaise(i) {
@@ -1107,31 +1112,38 @@
     if (Live.raiseRequests) {
       api.post("/api/admin/raise-requests/" + r.id + "/reject", {}).then(async () => {
         await loadAdmin();
-        toast("已驳回「" + (r.name || r.email) + "」的加额申请", "success");
-      }).catch((err) => toast((err && err.message) || "驳回失败", "error"));
+        toast(T("admin.raise.reject.ok", { name: r.name || r.email }), "success");
+      }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.raise.reject.fail"), "error"));
       return;
     }
     r.status = "rejected";
     renderRaiseRequests();
-    toast("已驳回「" + r.user + "」的加额申请", "success");
+    toast(T("admin.raise.reject.ok", { name: r.user }), "success");
   }
 
   /* --- 交易记录 --- */
 
   const TX_TYPE = {
-    consume: "消费", earn: "收益", topup: "充值", withdraw: "提现", gift: "赠送",
+    consume: () => T("tx.type.consume"), earn: () => T("tx.type.earn"), topup: () => T("tx.type.topup"),
+    withdraw: () => T("tx.type.withdraw"), gift: () => T("tx.type.gift"),
   };
+  const txType = (k) => (TX_TYPE[k] ? TX_TYPE[k]() : k);
+  const txStatus = (s) => s === "成功" ? T("tx.status.success") : s === "处理中" ? T("tx.status.pending") : s === "入账" ? T("tx.status.credited") : s;
 
   const TX_COLUMNS = [
-    { key: "time", title: "时间", sort: "string", filter: "text", render: (t) => timeCell(t.time) },
-    { key: "type", title: "类型", sort: "string", filter: "select", options: ["消费", "收益", "充值", "提现", "赠送"], filterVal: (t) => TX_TYPE[t.type] || t.type,
-      render: (t) => t.type === "earn" ? '<span class="badge ok">收益</span>' : t.type === "consume" ? '<span class="badge accent">消费</span>' : t.type === "gift" ? '<span class="badge ok">赠送</span>' : '<span class="badge dim">' + esc(TX_TYPE[t.type] || t.type) + "</span>" },
-    { key: "partner", title: "模型 / Key", sort: "string", filter: "text" },
-    { key: "tokens", title: "Token 用量", sort: "string", filter: "text", align: "num" },
-    { key: "pts", title: "点数", sort: "number", filter: "number-range", align: "num",
+    { key: "time", title: () => T("tx.col.time"), sort: "string", filter: "text", render: (t) => timeCell(t.time) },
+    { key: "type", title: () => T("tx.col.type"), sort: "string", filter: "select",
+      options: () => ["consume", "earn", "topup", "withdraw", "gift"].map(txType),
+      filterVal: (t) => txType(t.type),
+      render: (t) => t.type === "earn" ? '<span class="badge ok">' + T("tx.type.earn") + "</span>" : t.type === "consume" ? '<span class="badge accent">' + T("tx.type.consume") + "</span>" : t.type === "gift" ? '<span class="badge ok">' + T("tx.type.gift") + "</span>" : '<span class="badge dim">' + esc(txType(t.type)) + "</span>" },
+    { key: "partner", title: () => T("tx.col.partner"), sort: "string", filter: "text" },
+    { key: "tokens", title: () => T("tx.col.tokens"), sort: "string", filter: "text", align: "num" },
+    { key: "pts", title: () => T("tx.col.pts"), sort: "number", filter: "number-range", align: "num",
       render: (t) => '<span style="color:' + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ';font-weight:600">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span>" },
-    { key: "status", title: "状态", sort: "string", filter: "select", options: ["成功", "入账", "处理中"],
-      render: (t) => t.status === "处理中" ? '<span class="badge warn">' + esc(t.status) + "</span>" : esc(t.status) },
+    { key: "status", title: () => T("tx.col.status"), sort: "string", filter: "select",
+      options: () => ["成功", "入账", "处理中"].map(txStatus),
+      filterVal: (t) => txStatus(t.status),
+      render: (t) => t.status === "处理中" ? '<span class="badge warn">' + esc(txStatus(t.status)) + "</span>" : esc(txStatus(t.status)) },
   ];
 
   // 交易汇总条（rant 20:39:30 B：随 tab + 列筛选联动 — 总收入/总支出/净变化，+绿 −红，紧凑 inline 条）
@@ -1142,9 +1154,9 @@
     const cls = (n) => (n > 0 ? "ok" : n < 0 ? "danger" : "");
     const fmt = (n) => (n > 0 ? "+" : n < 0 ? "-" : "") + D.fmt(Math.abs(n));
     $("#tx-summary").innerHTML =
-      '<div class="ts-item"><span class="ts-label">总收入</span><span class="ts-value num ' + cls(income) + '">' + fmt(income) + "</span></div>" +
-      '<div class="ts-item"><span class="ts-label">总支出</span><span class="ts-value num ' + cls(-expense) + '">' + fmt(-expense) + "</span></div>" +
-      '<div class="ts-item"><span class="ts-label">净变化</span><span class="ts-value num ' + cls(net) + '">' + fmt(net) + "</span></div>";
+      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.income") + "</span><span class='ts-value num ' + cls(income) + '\'>" + fmt(income) + "</span></div>" +
+      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.expense") + "</span><span class='ts-value num ' + cls(-expense) + '\'>" + fmt(-expense) + "</span></div>" +
+      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.net") + "</span><span class='ts-value num ' + cls(net) + '\'>" + fmt(net) + "</span></div>";
   }
 
   function renderTransactions() {
@@ -1185,10 +1197,10 @@
       else if (txTab === "earn") list = list.filter((t) => t.type === "earn");
     }
     list = filterRows(list, TX_COLUMNS, txTable.filters); // 与表格可见行一致（含列筛选）
-    if (!list.length) { toast("没有可导出的交易记录", "info"); return; }
+    if (!list.length) { toast(T("tx.export.none"), "info"); return; }
     const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const headers = ["时间", "类型", "模型 / Key", "Token 用量", "点数", "状态"];
-    const lines = list.map((t) => [t.time, TX_TYPE[t.type] || t.type, t.partner, t.tokens, t.pts, t.status].map(cell).join(","));
+    const headers = [T("tx.col.time"), T("tx.col.type"), T("tx.col.partner"), T("tx.col.tokens"), T("tx.col.pts"), T("tx.col.status")];
+    const lines = list.map((t) => [t.time, txType(t.type), t.partner, t.tokens, t.pts, txStatus(t.status)].map(cell).join(","));
     const csv = "\uFEFF" + [headers.join(","), ...lines].join("\r\n"); // UTF-8 BOM，Excel 中文不乱码
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1201,7 +1213,7 @@
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    toast("已导出 " + list.length + " 条交易记录", "success");
+    toast(T("tx.export.ok", { n: list.length }), "success");
   }
 
   /* --- 数据表格键盘导航（rant 20:46:57 F：↑/↓ 行高亮 .row-active，Enter 触发主操作，Esc 清除） --- */
@@ -1315,32 +1327,32 @@
     columns.forEach((col) => {
       const sk = state.sort.find((s) => s.key === col.key);
       const arrow = sk ? (sk.dir === "asc" ? " ▲" : " ▼") : "";
-      html += '<th' + (col.align === "num" ? ' class="num"' : "") + '><button type="button" class="th-sort" data-sort-key="' + esc(col.key) + '" title="点击排序 · Shift+点击叠加多列">' +
-        esc(col.title) + arrow + "</button></th>";
+      html += '<th' + (col.align === "num" ? ' class="num"' : "") + '><button type="button" class="th-sort" data-sort-key="' + esc(col.key) + '" title="' + T("tx.sort.title") + '">' +
+        esc(typeof col.title === "function" ? col.title() : col.title) + arrow + "</button></th>";
     });
     html += "</tr><tr>";
     columns.forEach((col) => {
       const fv = state.filters[col.key] != null ? String(state.filters[col.key]) : "";
       if (col.filter === "select") {
-        const opts = (col.options || []).map((o) =>
+        const opts = (typeof col.options === "function" ? col.options() : (col.options || [])).map((o) =>
           '<option value="' + esc(o) + '"' + (fv === String(o) ? " selected" : "") + ">" + esc(o) + "</option>").join("");
-        html += '<td><select class="th-filter" data-filter-key="' + esc(col.key) + '"><option value="">全部</option>' + opts + "</select></td>";
+        html += '<td><select class="th-filter" data-filter-key="' + esc(col.key) + '"><option value="">' + T("common.all") + "</option>" + opts + "</select></td>";
       } else if (col.filter === "number-range") {
         const p = fv ? fv.split(":") : ["", ""];
-        html += '<td class="range-filter"><input class="th-filter" data-filter-key="' + esc(col.key) + '" data-range="min" placeholder="最小" value="' + esc(p[0] || "") + '">' +
-          '<input class="th-filter" data-filter-key="' + esc(col.key) + '" data-range="max" placeholder="最大" value="' + esc(p[1] || "") + '"></td>';
+        html += '<td class="range-filter"><input class="th-filter" data-filter-key="' + esc(col.key) + '" data-range="min" placeholder="' + T("tx.filter.min") + '" value="' + esc(p[0] || "") + '">' +
+          '<input class="th-filter" data-filter-key="' + esc(col.key) + '" data-range="max" placeholder="' + T("tx.filter.max") + '" value="' + esc(p[1] || "") + '"></td>';
       } else if (col.filter) {
-        html += '<td><input class="th-filter" data-filter-key="' + esc(col.key) + '" placeholder="筛选…" value="' + esc(fv) + '"></td>';
+        html += '<td><input class="th-filter" data-filter-key="' + esc(col.key) + '" placeholder="' + T("tx.filter.placeholder") + '" value="' + esc(fv) + '"></td>';
       } else {
         html += "<td></td>";
       }
     });
     html += "</tr></thead><tbody>";
-    if (!pageRows.length) html += '<tr><td colspan="' + columns.length + '" class="empty-cell">' + emptyState("没有匹配的记录", "试试调整筛选条件") + "</td></tr>";
+    if (!pageRows.length) html += '<tr><td colspan="' + columns.length + '" class="empty-cell">' + emptyState(T("tx.empty"), T("tx.empty.sub")) + "</td></tr>";
     pageRows.forEach((row) => {
       html += "<tr>";
       columns.forEach((col) => {
-        html += "<td" + (col.align === "num" ? ' class="num"' : "") + ' data-label="' + esc(col.title) + '">' +
+        html += "<td" + (col.align === "num" ? ' class="num"' : "") + ' data-label="' + esc(typeof col.title === "function" ? col.title() : col.title) + '">' +
           (col.render ? col.render(row) : esc(row[col.key] == null ? "" : row[col.key])) + "</td>";
       });
       html += "</tr>";
@@ -1351,9 +1363,9 @@
     if (pages > 1) {
       html += '<div class="pager">';
       for (let i = 1; i <= pages; i++) html += '<button type="button" class="' + (i === state.page ? "active" : "") + '" data-p="' + i + '">' + i + "</button>";
-      html += "<span>" + state.page + " / " + pages + " · 共 " + data.length + " 条</span></div>";
+      html += "<span>" + state.page + " / " + pages + " · " + T("tx.pager.count", { n: data.length }) + "</span></div>";
     }
-    html += '<div class="pager-size">每页 <select data-page-size><option value="5">5</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select> 条</div>';
+    html += '<div class="pager-size">' + T("tx.pager.size") + ' <select data-page-size><option value="5">5</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select> ' + T("tx.pager.rows") + '</div>';
 
     container.innerHTML = html;
 
@@ -1420,14 +1432,14 @@
       list = Live.apiKeys.map((k) => ({
         id: k.id,
         fullKey: Live.fullKeys ? Live.fullKeys[k.id] : null,
-        name: k.name || "未命名",
+        name: k.name || T("common.unnamed"),
         key: k.key,
         created: String(k.created_at || "").slice(0, 10),
-        last: "从未",
+        last: T("settings.ak.last.never"),
         status: k.status || "active",
       }));
     } else {
-      list = D.API_KEYS.map((k) => ({ ...k, fullKey: k.id }));
+      list = D.API_KEYS.map((k) => ({ ...k, fullKey: k.id, last: T("settings.ak.last.never") }));
     }
     list = list.filter((k) => !q || k.name.toLowerCase().includes(q));
     $("#api-keys").innerHTML = list.length ? list.map((k, i) =>
@@ -1435,12 +1447,12 @@
       "<td data-label='Key'><code>" + esc(Live.apiKeys ? k.key : maskAtk(k.id)) + "</code></td>" +
       "<td data-label='创建时间'>" + esc(k.created) + "</td>" +
       "<td data-label='最近使用'>" + timeCell(k.last) + "</td>" +
-      "<td data-label='状态'>" + (k.status === "active" ? '<span class="badge ok">启用</span>' : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
-      "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>复制</button> " +
-      "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>改名</button> " +
-      "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + i + "'>删除</button></td></tr>"
-    ).join("") : emptyRow(6, "还没有 API Key", "生成一个 key，用于本地工具 / 代码接入平台",
-      '<button type="button" class="btn btn-ghost" data-new-key>生成新 Key</button>');
+      "<td data-label='状态'>" + (k.status === "active" ? '<span class="badge ok">' + T("settings.ak.status.active") + "</span>" : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
+      "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>" + T("settings.ak.copy") + "</button> " +
+      "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>" + T("settings.ak.rename") + "</button> " +
+      "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + i + "'>" + T("settings.ak.del") + "</button></td></tr>"
+    ).join("") : emptyRow(6, T("settings.ak.empty"), T("settings.ak.empty.sub"),
+      '<button type="button" class="btn btn-ghost" data-new-key>' + T("settings.ak.empty.add") + "</button>");
     pulseTbody($("#api-keys"));
   }
 
@@ -1461,7 +1473,7 @@
     if (!k) return;
     const full = k.fullKey || (Live.apiKeys ? null : k.id);
     if (!full) {
-      toast("完整 key 仅在生成时展示一次，请重新生成", "info");
+      toast(T("settings.ak.copy.once"), "info");
       return;
     }
     const btn = document.querySelector('[data-key-copy="' + i + '"]');
@@ -1469,10 +1481,10 @@
       if (!btn) return;
       const orig = btn.innerHTML;
       btn.disabled = true;
-      btn.innerHTML = ok ? "已复制 ✓" : "请 Ctrl+C";
+      btn.innerHTML = ok ? T("common.copied") : T("common.ctrlC");
       setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 1200);
     };
-    const okToast = () => { toast("已复制「" + k.name + "」完整 key 到剪贴板", "success", { action: { label: "配置接入端点 →", onClick: gotoEndpointCard } }); flash(true); };
+    const okToast = () => { toast(T("settings.ak.copy.full", { name: k.name }), "success", { action: { label: T("settings.ak.copy.full.action"), onClick: gotoEndpointCard } }); flash(true); };
     const fallback = () => {
       const ta = document.createElement("textarea");
       ta.value = full;
@@ -1483,7 +1495,7 @@
       try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
       document.body.removeChild(ta);
       if (ok) okToast();
-      else { toast("已选中完整 key，请按 Ctrl+C / Cmd+C 复制"); flash(false); }
+      else { toast(T("common.copyHint")); flash(false); }
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(full).then(okToast).catch(fallback);
@@ -1495,8 +1507,8 @@
   /* --- 接入端点（rant 2026-08-17T20:44:18：设置页展示 OpenAI/Anthropic 兼容 base URL） --- */
   // 原型静态常量：真实值来自部署配置（后端实现时接入 config 的 server.base_url 之类）
   const API_ENDPOINTS = [
-    { tag: "OpenAI 兼容", url: "https://gateway.aitokenpool.local/v1", desc: "Chat Completions · Cursor / Cline / Roo Code / OpenCode / OpenAI SDK" },
-    { tag: "Anthropic 兼容", url: "https://gateway.aitokenpool.local/anthropic", desc: "Messages API · Claude Code / Goose / OpenClaw" },
+    { tag: () => T("settings.ep.openai"), url: "https://gateway.aitokenpool.local/v1", desc: "Chat Completions · Cursor / Cline / Roo Code / OpenCode / OpenAI SDK" },
+    { tag: () => T("settings.ep.anthropic"), url: "https://gateway.aitokenpool.local/anthropic", desc: "Messages API · Claude Code / Goose / OpenClaw" },
   ];
 
   // 复制端点 URL（复用 copyKey 的降级逻辑：clipboard API → execCommand → 提示 Ctrl+C）
@@ -1508,10 +1520,10 @@
       if (!btn) return;
       const orig = btn.innerHTML;
       btn.disabled = true;
-      btn.innerHTML = ok ? "已复制 ✓" : "请 Ctrl+C";
+      btn.innerHTML = ok ? T("common.copied") : T("common.ctrlC");
       setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 1200);
     };
-    const okToast = () => { toast("已复制「" + ep.tag + "」端点地址", "success"); flash(true); };
+    const okToast = () => { toast(T("settings.ep.copied", { tag: ep.tag() }), "success"); flash(true); };
     const fallback = () => {
       const ta = document.createElement("textarea");
       ta.value = ep.url;
@@ -1522,7 +1534,7 @@
       try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
       document.body.removeChild(ta);
       if (ok) okToast();
-      else { toast("已选中端点地址，请按 Ctrl+C / Cmd+C 复制"); flash(false); }
+      else { toast(T("common.copyEpHint")); flash(false); }
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(ep.url).then(okToast).catch(fallback);
@@ -1545,7 +1557,7 @@
 
   function commitNewKey() {
     const raw = String($("#ak-new-name").value).trim();
-    const name = raw || "未命名";
+    const name = raw || T("common.unnamed");
     if (loggedIn()) {
       // P2-B：真实生成（POST /api/api-keys）
       const btn = $("#ak-new-ok");
@@ -1558,18 +1570,18 @@
           if (fresh) Live.fullKeys[fresh.id] = r.api_key;
           renderSettings();
           closeNewKeyInline();
-          toast("已生成新 API Key「" + name + "」（完整 key 已展示，仅此一次）", "success");
+          toast(T("settings.ak.gen.ok", { name: name }), "success");
         }).catch((err) => {
-          toast((err && err.message) || "生成失败", "error");
+          toast((err && err.message) ? I18n.mapErr(err.message) : T("settings.ak.gen.fail"), "error");
         });
       });
       return;
     }
     const id = "atk_live_" + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
-    D.API_KEYS.unshift({ id, name, created: "2026-08-14", last: "从未", status: "active" });
+    D.API_KEYS.unshift({ id, name, created: "2026-08-14", last: T("settings.ak.last.never"), status: "active" });
     renderSettings();
     closeNewKeyInline();
-    toast("已生成新 API Key「" + name + "」（完整 key 已展示在列表，可复制）", "success");
+    toast(T("settings.ak.gen.ok.mock", { name: name }), "success");
   }
 
   // API Key 改名：行内编辑（替代原生输入弹窗）
@@ -1581,10 +1593,10 @@
     if (!cell) return;
     inlineForm(cell, {
       value: k.name,
-      placeholder: "key 名字",
+      placeholder: T("settings.ak.rename.ph"),
       width: "160px",
-      validate: (v) => v ? null : "名字不能为空",
-      onSubmit: (name) => { k.name = name; renderSettings(); toast("已改名为「" + name + "」", "success"); },
+      validate: (v) => v ? null : T("settings.ak.err.name"),
+      onSubmit: (name) => { k.name = name; renderSettings(); toast(T("settings.ak.renamed", { name: name }), "success"); },
       onCancel: () => renderSettings(),
     });
   }
@@ -1597,15 +1609,15 @@
       // P2-B：真实软删（DELETE /api/api-keys/:id）
       api.del("/api/api-keys/" + k.id).then(async () => {
         await loadApiKeys();
-        toast("已删除 key「" + (k.name || "未命名") + "」", "success");
+        toast(T("settings.ak.deleted", { name: k.name || T("common.unnamed") }), "success");
       }).catch((err) => {
-        toast((err && err.message) || "删除失败", "error");
+        toast((err && err.message) ? I18n.mapErr(err.message) : T("settings.ak.del.fail"), "error");
       });
       return;
     }
     D.API_KEYS.splice(i, 1);
     renderSettings();
-    toast("已删除 key「" + k.name + "」", "success");
+    toast(T("settings.ak.deleted", { name: k.name }), "success");
   }
 
   /* --- 管理员角色视图 --- */
@@ -1621,21 +1633,21 @@
         const depts = Live.departments || [];
         const total = users.reduce((a, u) => a + (u.balance || 0), 0);
         $("#emp-stats").innerHTML = [
-          stat("成员数 Members", users.length + " 人", "真实用户"),
-          stat("总余额 Total", D.fmt(total) + " 点", "balance + gift"),
-          stat("管理员 Admins", users.filter((u) => u.role === "admin").length + " 人", "role=admin"),
-          stat("部门 Deps", depts.length + " 个", "组织管理"),
+          stat(T("admin.emp.stats.members"), T("cnt.members", { n: users.length }), T("admin.emp.stats.members.sub.real")),
+          stat(T("admin.emp.stats.total"), D.fmt(total) + " " + T("common.points"), T("admin.emp.stats.total.sub")),
+          stat(T("admin.emp.stats.admins"), T("cnt.members", { n: users.filter((u) => u.role === "admin").length }), T("admin.emp.stats.admins.sub")),
+          stat(T("admin.emp.stats.deps"), T("cnt.depts", { n: depts.length }), T("admin.emp.stats.deps.sub")),
         ].join("");
         $("#emp-body").innerHTML = users.map((u, i) =>
           "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + esc(u.name || u.email) + "</strong>" +
-          "<div class='muted' style='font-size:12px'>" + esc(u.email) + (u.role === "admin" ? " · 管理员" : u.role === "ops" ? " · 运营者" : "") + "</div></td>" +
+          "<div class='muted' style='font-size:12px'>" + esc(u.email) + (u.role === "admin" ? T("admin.emp.role.admin") : u.role === "ops" ? T("admin.emp.role.ops") : "") + "</div></td>" +
           "<td data-label='角色'>" + (u.role === "admin" ? '<span class="badge ok">admin</span>' : u.role === "ops" ? '<span class="badge warn">ops</span>' : '<span class="badge dim">user</span>') + "</td>" +
-          "<td data-label='部门'>" + (u.dept_name ? esc(u.dept_name) : '<span class="muted">未分配</span>') + "</td>" +
+          "<td data-label='部门'>" + (u.dept_name ? esc(u.dept_name) : '<span class="muted">' + T("common.unassigned") + "</span>") + "</td>" +
           '<td class="num" data-label="永久点数">' + D.fmt(u.balance || 0) + "</td>" +
           '<td class="num" data-label="赠送点数">' + D.fmt(u.gift_balance || 0) + "</td>" +
           '<td class="num" data-label="可用">' + D.fmt((u.balance || 0) + (u.gift_balance || 0)) + "</td>" +
-          "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>改部门</button> " +
-          "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
+          "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>" + T("admin.emp.dept.change") + "</button> " +
+          "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>" + T("admin.emp.topup") + "</button></td></tr>"
         ).join("");
         pulseTbody($("#emp-body"));
         renderRaiseRequests(false);
@@ -1645,19 +1657,19 @@
       const used = D.EMPLOYEES.reduce((a, e) => a + e.used, 0);
       const unassigned = D.EMPLOYEES.filter((e) => !e.dept).length;
       $("#emp-stats").innerHTML = [
-        stat("成员数 Members", D.EMPLOYEES.length + " 人", D.DEPARTMENTS.length + " 个部门" + (unassigned ? " · 未分配 " + unassigned + " 人" : "")),
-        stat("总配额 Quota", D.fmt(total) + " 点", "月"),
-        stat("已用 Usage", D.fmt(used) + " 点", Math.round((used / total) * 100) + "% 消耗率"),
-        stat("剩余 Remain", D.fmt(total - used) + " 点", "按成员分配"),
+        stat(T("admin.emp.stats.members"), T("cnt.members", { n: D.EMPLOYEES.length }), T("admin.emp.stats.members.sub.mock", { d: D.DEPARTMENTS.length, n: unassigned })),
+        stat(T("admin.emp.stats.quota"), D.fmt(total) + " " + T("common.points"), T("admin.emp.stats.quota.sub")),
+        stat(T("admin.emp.stats.used"), D.fmt(used) + " " + T("common.points"), T("admin.emp.stats.used.sub", { p: Math.round((used / total) * 100) })),
+        stat(T("admin.emp.stats.remain"), D.fmt(total - used) + " " + T("common.points"), T("admin.emp.stats.remain.sub")),
       ].join("");
       $("#emp-body").innerHTML = D.EMPLOYEES.map((e, i) =>
         "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + esc(e.name) + "</strong></td>" +
-        "<td data-label='部门'>" + (e.dept ? esc(e.dept) : '<span class="muted">未分配</span>') + "</td>" +
+        "<td data-label='部门'>" + (e.dept ? esc(e.dept) : '<span class="muted">' + T("common.unassigned") + "</span>") + "</td>" +
         '<td class="num" data-label="配额 / 已用">' + D.fmt(e.used) + " / " + D.fmt(e.quota) + "</td>" +
         '<td class="num" data-label="剩余">' + D.fmt(e.quota - e.used) + "</td>" +
-        "<td data-label='状态'>" + (e.used / e.quota > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>') + "</td>" +
-        "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>改部门</button> " +
-        "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
+        "<td data-label='状态'>" + (e.used / e.quota > 0.9 ? '<span class="badge warn">' + T("admin.emp.status.near") + "</span>" : '<span class="badge ok">' + T("admin.emp.status.normal") + "</span>") + "</td>" +
+        "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>" + T("admin.emp.dept.change") + "</button> " +
+        "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>" + T("admin.emp.topup") + "</button></td></tr>"
       ).join("");
       pulseTbody($("#emp-body"));
       renderRaiseRequests(false);
@@ -1669,22 +1681,22 @@
         // 按模型（barRow 用 cost 归一）
         const maxMC = Math.max(1, ...models.map((m) => m.cost || 0));
         $("#usage-model").innerHTML = models.length
-          ? models.map((m) => barRow(m.model, m.cost, maxMC, "元")).join("")
-          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>本月暂无模型用量</p></div>";
+          ? models.map((m) => barRow(m.model, m.cost, maxMC, T("admin.usage.unit.yuan"))).join("")
+          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.model") + "</p></div>";
         // 按成员（barRow 用 tokens 归一）
         const maxUT = Math.max(1, ...users.map((x) => x.month_tokens || 0));
         $("#usage-emp").innerHTML = users.length
           ? users.map((x) =>
               '<div class="mini-item"><div><div class="t">' + esc(x.name || x.email) + (x.dept_name ? '<span class="muted" style="font-size:11px"> · ' + esc(x.dept_name) + "</span>" : "") + "</div>" +
-              '<div class="d">本月 tokens ' + D.fmt(x.month_tokens || 0) + " · 成本 " + D.fmt(x.month_cost || 0) + "</div></div>" +
-              '<div class="r"><span class="pts">' + (x.month_calls || 0) + " 次</span><div class='d'>调用</div></div></div>"
-            ).join("") + barRow("合计 tokens", users.reduce((a, x) => a + (x.month_tokens || 0), 0), maxUT, "tokens")
-          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>本月暂无成员用量</p></div>";
+              '<div class="d">' + T("admin.usage.emp.row", { tokens: D.fmt(x.month_tokens || 0), cost: D.fmt(x.month_cost || 0) }) + "</div></div>" +
+              '<div class="r"><span class="pts">' + T("cnt.calls", { n: x.month_calls || 0 }) + "</span><div class='d'>" + T("admin.usage.emp.calls") + "</div></div></div>"
+            ).join("") + barRow(T("admin.usage.total"), users.reduce((a, x) => a + (x.month_tokens || 0), 0), maxUT, T("admin.usage.unit.tokens"))
+          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.emp") + "</p></div>";
         // 按部门（barRow 用 cost 归一）
         const maxDC = Math.max(1, ...depts.map((d) => d.cost || 0));
         $("#usage-dept").innerHTML = depts.length
-          ? depts.map((d) => barRow(d.name, d.cost, maxDC, "元")).join("")
-          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>本月暂无部门用量</p></div>";
+          ? depts.map((d) => barRow(d.name, d.cost, maxDC, T("admin.usage.unit.yuan"))).join("")
+          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.dept") + "</p></div>";
         return;
       }
       const maxM = Math.max(...D.USAGE_MODEL.map((u) => u.pts));
@@ -1696,9 +1708,9 @@
         { name: "设计", pts: 2100 },
       ];
       const maxD = Math.max(...deptMock.map((u) => u.pts));
-      $("#usage-model").innerHTML = D.USAGE_MODEL.map((u) => barRow(u.name, u.pts, maxM, "点")).join("");
-      $("#usage-emp").innerHTML = D.USAGE_EMP.map((u) => barRow(u.name, u.pts, maxE, "点")).join("");
-      $("#usage-dept").innerHTML = deptMock.map((u) => barRow(u.name, u.pts, maxD, "点")).join("");
+      $("#usage-model").innerHTML = D.USAGE_MODEL.map((u) => barRow(u.name, u.pts, maxM, T("admin.usage.unit.points"))).join("");
+      $("#usage-emp").innerHTML = D.USAGE_EMP.map((u) => barRow(u.name, u.pts, maxE, T("admin.usage.unit.points"))).join("");
+      $("#usage-dept").innerHTML = deptMock.map((u) => barRow(u.name, u.pts, maxD, T("admin.usage.unit.points"))).join("");
     } else if (tab === "org") {
       renderOrg();
     }
@@ -1728,16 +1740,16 @@
     sel.className = "input";
     sel.style.cssText = "padding:4px 8px;font-size:12px;width:auto";
     const cur = liveEmp ? (liveEmp.dept_id == null ? "" : liveEmp.dept_id) : (emp.dept || "");
-    sel.innerHTML = '<option value="">未分配</option>' +
+    sel.innerHTML = '<option value="">' + T("common.unassigned") + "</option>" +
       depts.map((d) => '<option value="' + (liveEmp ? d.id : d.name) + '"' + (String(cur) === String(liveEmp ? d.id : d.name) ? " selected" : "") + ">" + esc(d.name) + "</option>").join("");
     const ok = document.createElement("button");
     ok.className = "btn btn-primary";
     ok.style.cssText = "padding:4px 10px;font-size:12px";
-    ok.textContent = "确认";
+    ok.textContent = T("common.confirm");
     const cancel = document.createElement("button");
     cancel.className = "btn btn-ghost";
     cancel.style.cssText = "padding:4px 10px;font-size:12px";
-    cancel.textContent = "取消";
+    cancel.textContent = T("common.cancel");
     const wrap = document.createElement("span");
     wrap.style.cssText = "display:inline-flex;gap:6px;align-items:center";
     wrap.append(sel, ok, cancel);
@@ -1749,10 +1761,10 @@
       if (liveEmp) {
         api.patch("/api/admin/users/" + liveEmp.id, { dept_id: v === "" ? null : Number(v) }).then(async () => {
           await loadAdmin();
-          const deptName = v === "" ? "未分配" : (depts.find((d) => String(d.id) === v) || {}).name;
-          toast("已把 " + (liveEmp.name || liveEmp.email) + " 调整到 " + (deptName || "部门"), "success");
+          const deptName = v === "" ? T("common.unassigned") : (depts.find((d) => String(d.id) === v) || {}).name;
+          toast(T("admin.emp.dept.ok", { name: liveEmp.name || liveEmp.email, dept: deptName }), "success");
         }).catch((err) => {
-          toast((err && err.message) || "调整失败", "error");
+          toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.emp.dept.fail"), "error");
           renderAdmin();
         });
         return;
@@ -1760,7 +1772,7 @@
       if (v !== emp.dept) {
         emp.dept = v;
         renderAdmin();
-        toast("已把 " + emp.name + " 调整到 " + (v ? v + " 部门" : "未分配"), "success");
+        toast(T("admin.emp.dept.ok", { name: emp.name, dept: v ? v : T("common.unassigned") }), "success");
       } else {
         renderAdmin();
       }
@@ -1788,33 +1800,33 @@
     const live = !!Live.departments;
 
     const demoNote = $("#dept-demo-note");
-    if (demoNote) demoNote.innerHTML = live ? "" : '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 部门/组织管理后端待 P2-C 补齐</p>';
+    if (demoNote) demoNote.innerHTML = live ? "" : '<p class="muted" style="font-size:12px;margin-bottom:6px">' + T("admin.org.demo") + "</p>";
 
     const totalQuota = src.reduce((a, d) => a + (d.quota || 0), 0);
     const totalUsed = src.reduce((a, d) => a + (live ? (d.month_cost || 0) : deptUsed(d)), 0);
     const unassigned = live ? (Live.adminUsers || []).filter((u) => !u.dept_id).length : D.EMPLOYEES.filter((e) => !e.dept).length;
     $("#dept-stats").innerHTML = [
-      stat("部门数 Departments", src.length + " 个", unassigned ? "未分配 " + unassigned + " 人" : "全部部门"),
-      stat("月度总分配 Monthly quota", D.fmt(totalQuota) + " 点", "按月分配"),
-      stat("已用 Used", D.fmt(totalUsed) + " 点", totalQuota ? Math.round((totalUsed / totalQuota) * 100) + "% 消耗率" : "—"),
-      stat("剩余 Remain", D.fmt(totalQuota - totalUsed) + " 点", "按部门分配"),
+      stat(T("admin.org.stats.depts"), T("cnt.depts", { n: src.length }), unassigned ? T("admin.org.stats.depts.sub", { n: unassigned }) : T("admin.org.stats.depts.sub2")),
+      stat(T("admin.org.stats.monthly"), D.fmt(totalQuota) + " " + T("common.points"), T("admin.org.stats.monthly.sub")),
+      stat(T("admin.org.stats.used"), D.fmt(totalUsed) + " " + T("common.points"), totalQuota ? T("admin.org.stats.used.sub", { p: Math.round((totalUsed / totalQuota) * 100) }) : "—"),
+      stat(T("admin.org.stats.remain"), D.fmt(totalQuota - totalUsed) + " " + T("common.points"), T("admin.org.stats.remain.sub")),
     ].join("");
 
     $("#dept-body").innerHTML = list.length ? list.map((d, i) => {
       const used = live ? (d.month_cost || 0) : deptUsed(d);
       const members = live ? (d.member_count || 0) : deptMemberCount(d.name);
       const pct = d.quota > 0 ? used / d.quota : 0;
-      const st = pct >= 1 ? '<span class="badge danger">已用尽</span>' : pct > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>';
+      const st = pct >= 1 ? '<span class="badge danger">' + T("common.exhausted") + "</span>" : pct > 0.9 ? '<span class="badge warn">' + T("common.nearLimit") + "</span>" : '<span class="badge ok">' + T("common.normal") + "</span>";
       return "<tr><td data-label='部门'><strong>" + hl(d.name, rawQ) + "</strong></td>" +
-        '<td class="num" data-label="成员数">' + members + " 人</td>" +
-        '<td class="num" data-label="月分配（点数）">' + D.fmt(d.quota) + " 点</td>" +
-        '<td class="num" data-label="已用">' + D.fmt(used) + " 点</td>" +
-        '<td class="num" data-label="剩余">' + D.fmt(d.quota - used) + " 点</td>" +
+        '<td class="num" data-label="成员数">' + T("cnt.members", { n: members }) + "</td>" +
+        '<td class="num" data-label="月分配（点数）">' + D.fmt(d.quota) + " " + T("common.points") + "</td>" +
+        '<td class="num" data-label="已用">' + D.fmt(used) + " " + T("common.points") + "</td>" +
+        '<td class="num" data-label="剩余">' + D.fmt(d.quota - used) + " " + T("common.points") + "</td>" +
         "<td data-label='状态'>" + st + "</td>" +
-        "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-dept-edit='" + i + "'>编辑</button> " +
-        "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-dept-del='" + i + "'>删除</button></td></tr>";
-    }).join("") : emptyRow(7, "没有匹配的部门", "试试调整搜索关键词",
-      '<button type="button" class="btn btn-ghost" data-dept-clear-search>清除搜索</button>');
+        "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-dept-edit='" + i + "'>" + T("common.edit") + "</button> " +
+        "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-dept-del='" + i + "'>" + T("common.delete") + "</button></td></tr>";
+    }).join("") : emptyRow(7, T("admin.org.empty"), T("admin.org.empty.sub"),
+      '<button type="button" class="btn btn-ghost" data-dept-clear-search>' + T("admin.org.clearSearch") + "</button>");
     pulseTbody($("#dept-body"));
   }
 
@@ -1827,8 +1839,8 @@
     const src = Live.departments ? Live.departments : D.DEPARTMENTS;
     const d = (i == null ? null : src[i]);
     $("#dept-form-title").innerHTML = d
-      ? "编辑部门 <span class='en'>Edit department</span>"
-      : "添加部门 <span class='en'>Add department</span>";
+      ? T("admin.org.edit.title")
+      : T("admin.org.add.title");
     $("#dept-form-name").value = d ? d.name : "";
     $("#dept-form-quota").value = d ? String(d.quota) : "";
     clearFieldError($("#dept-form-name"));
@@ -1842,42 +1854,42 @@
     const rawQ = String($("#dept-form-quota").value).trim();
     const quota = Number(rawQ);
     let firstErr = null;
-    if (!name) { setFieldError($("#dept-form-name"), "请输入部门名称"); firstErr = firstErr || $("#dept-form-name"); }
+    if (!name) { setFieldError($("#dept-form-name"), T("admin.org.err.name")); firstErr = firstErr || $("#dept-form-name"); }
     else clearFieldError($("#dept-form-name"));
-    if (!rawQ || !Number.isInteger(quota) || quota <= 0) { setFieldError($("#dept-form-quota"), "请输入正整数月分配点数"); firstErr = firstErr || $("#dept-form-quota"); }
+    if (!rawQ || !Number.isInteger(quota) || quota <= 0) { setFieldError($("#dept-form-quota"), T("admin.org.err.quota")); firstErr = firstErr || $("#dept-form-quota"); }
     else clearFieldError($("#dept-form-quota"));
     if (firstErr) { firstErr.focus(); return; }
     const live = !!Live.departments;
     const src = live ? Live.departments : D.DEPARTMENTS;
     if (deptEditIndex == null) {
-      if (src.some((d) => d.name === name)) { setFieldError($("#dept-form-name"), "部门「" + name + "」已存在"); $("#dept-form-name").focus(); return; }
+      if (src.some((d) => d.name === name)) { setFieldError($("#dept-form-name"), T("admin.org.err.dup", { name: name })); $("#dept-form-name").focus(); return; }
       if (live) {
         api.post("/api/admin/departments", { name, quota }).then(async () => {
           await loadAdmin();
           $("#dept-form-card").hidden = true;
-          toast("已添加部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）", "success");
-        }).catch((err) => toast((err && err.message) || "添加失败", "error"));
+          toast(T("admin.org.add.ok", { name: name, quota: D.fmt(quota) }), "success");
+        }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.org.add.fail"), "error"));
         return;
       }
       D.DEPARTMENTS.push({ id: Date.now(), name, quota });
-      toast("已添加部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）", "success");
+      toast(T("admin.org.add.ok", { name: name, quota: D.fmt(quota) }), "success");
     } else {
       const d = src[deptEditIndex];
       if (!d) return;
-      if (name !== d.name && src.some((x) => x.name === name)) { setFieldError($("#dept-form-name"), "部门「" + name + "」已存在"); $("#dept-form-name").focus(); return; }
+      if (name !== d.name && src.some((x) => x.name === name)) { setFieldError($("#dept-form-name"), T("admin.org.err.dup", { name: name })); $("#dept-form-name").focus(); return; }
       if (live) {
         api.patch("/api/admin/departments/" + d.id, { name, quota }).then(async () => {
           await loadAdmin();
           $("#dept-form-card").hidden = true;
-          toast("已更新部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）", "success");
-        }).catch((err) => toast((err && err.message) || "更新失败", "error"));
+          toast(T("admin.org.edit.ok", { name: name, quota: D.fmt(quota) }), "success");
+        }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.org.edit.fail"), "error"));
         return;
       }
       const old = d.name;
       d.name = name;
       d.quota = quota;
       if (name !== old) D.EMPLOYEES.forEach((e) => { if (e.dept === old) e.dept = name; }); // 成员部门联动改名
-      toast("已更新部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）", "success");
+      toast(T("admin.org.edit.ok", { name: name, quota: D.fmt(quota) }), "success");
     }
     renderAdmin();
     $("#dept-form-card").hidden = true;
@@ -1890,13 +1902,13 @@
     if (Live.departments) {
       api.del("/api/admin/departments/" + d.id).then(async () => {
         await loadAdmin();
-        toast("已删除部门「" + d.name + "」", "success");
-      }).catch((err) => toast((err && err.message) || "删除失败", "error"));
+        toast(T("admin.org.del.ok", { name: d.name }), "success");
+      }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.org.del.fail"), "error"));
       return;
     }
     D.DEPARTMENTS.splice(i, 1);
     renderAdmin();
-    toast("已删除部门「" + d.name + "」", "success");
+    toast(T("admin.org.del.ok", { name: d.name }), "success");
   }
 
   function barRow(name, pts, max, unit) {
@@ -1916,30 +1928,30 @@
       if (Live.opsRuntime) {
         const rt = Live.opsRuntime;
         $("#ops-stats").innerHTML = [
-          stat("运行状态 Status", '<span class="badge ok">在线</span>', "平台服务正常"),
-          stat("用户数 Users", rt.users + " 人", "全平台注册用户"),
-          stat("上架 key 数 Keys", rt.active_keys + " 个", "status=on"),
-          stat("本月调用 Calls", rt.month_calls + " 次", "usage_records"),
-          stat("点数流入 In", "+" + D.fmt(rt.month_in) + " 点", "本月"),
-          stat("点数流出 Out", "-" + D.fmt(rt.month_out) + " 点", "本月"),
+          stat(T("ops.stats.status"), '<span class="badge ok">' + T("common.online") + "</span>", T("ops.stats.status.sub")),
+          stat(T("ops.stats.users"), T("cnt.people", { n: rt.users }), T("ops.stats.users.sub")),
+          stat(T("ops.stats.keys"), T("cnt.keys", { n: rt.active_keys }), T("ops.stats.keys.sub.on")),
+          stat(T("ops.stats.calls"), T("cnt.calls", { n: rt.month_calls }), T("ops.stats.calls.sub")),
+          stat(T("ops.stats.in"), "+" + D.fmt(rt.month_in) + " " + T("common.points"), T("ops.stats.in.sub")),
+          stat(T("ops.stats.out"), "-" + D.fmt(rt.month_out) + " " + T("common.points"), T("ops.stats.out.sub")),
         ].join("");
         const note = $("#ops-demo-note");
         if (note) note.innerHTML = "";
         return;
       }
       const note = $("#ops-demo-note");
-      if (note) note.innerHTML = '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 平台运营者（ops）端点待 P2-C 补齐</p>';
+      if (note) note.innerHTML = '<p class="muted" style="font-size:12px;margin-bottom:6px">' + T("ops.demo") + "</p>";
       const txs = D.TRANSACTIONS;
       const flowIn = txs.filter((t) => t.pts > 0).reduce((a, t) => a + t.pts, 0);
       const flowOut = txs.filter((t) => t.pts < 0).reduce((a, t) => a + Math.abs(t.pts), 0);
       const onKeys = D.SHARINGS.filter((s2) => s2.status === "on").length;
       $("#ops-stats").innerHTML = [
-        stat("运行状态 Status", '<span class="badge ok">在线</span>', "平台服务正常"),
-        stat("用户数 Users", D.OPERATOR_USERS.length + " 人", "注册用户"),
-        stat("共享 key 数 Keys", onKeys + " 个", D.SHARINGS.length + " 个历史上架"),
-        stat("交易量 Trades", txs.length + " 笔", "累计全部类型"),
-        stat("点数流入 In", "+" + D.fmt(flowIn) + " 点", "收益 / 充值 / 赠送"),
-        stat("点数流出 Out", "-" + D.fmt(flowOut) + " 点", "消费 / 提现"),
+        stat(T("ops.stats.status"), '<span class="badge ok">' + T("common.online") + "</span>", T("ops.stats.status.sub")),
+        stat(T("ops.stats.users"), T("cnt.people", { n: D.OPERATOR_USERS.length }), T("ops.stats.users.sub.mock")),
+        stat(T("ops.stats.keys"), T("cnt.keys", { n: onKeys }), T("ops.stats.keys.sub.mock", { n: D.SHARINGS.length })),
+        stat(T("ops.stats.trades"), T("cnt.trades", { n: txs.length }), T("ops.stats.trades.sub")),
+        stat(T("ops.stats.in"), "+" + D.fmt(flowIn) + " " + T("common.points"), T("ops.stats.in.sub.mock")),
+        stat(T("ops.stats.out"), "-" + D.fmt(flowOut) + " " + T("common.points"), T("ops.stats.out.sub.mock")),
       ].join("");
       return;
     }
@@ -1952,9 +1964,9 @@
     $("#ops-body").innerHTML = list.length ? list.map((u) =>
       "<tr><td data-label='用户'><strong>" + hl(u.name, rawQ) + "</strong></td>" +
       "<td data-label='邮箱'>" + hl(u.email, rawQ) + "</td>" +
-      '<td class="num" data-label="余额（点数）">' + D.fmt(u.balance || 0) + " 点</td>" +
-      "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>充值点数</button></td></tr>"
-    ).join("") : emptyRow(4, "没有匹配的用户", "试试其他用户名 / 邮箱");
+      '<td class="num" data-label="余额（点数）">' + D.fmt(u.balance || 0) + " " + T("common.points") + "</td>" +
+      "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>" + T("ops.users.topup") + "</button></td></tr>"
+    ).join("") : emptyRow(4, T("ops.users.empty"), T("ops.users.empty.sub"));
     pulseTbody($("#ops-body"));
   }
 
@@ -1973,12 +1985,12 @@
     const cell = row.children[3];
     inlineForm(cell, {
       value: "100",
-      placeholder: "点数（可为小数）",
+      placeholder: T("ops.users.topup.ph"),
       type: "number",
       width: "120px",
       validate: (raw) => {
         const amt = Math.round(Number(raw) * 100) / 100;
-        return (!raw || isNaN(amt) || amt <= 0) ? "请输入大于 0 的点数金额" : null;
+        return (!raw || isNaN(amt) || amt <= 0) ? T("ops.users.err.amount") : null;
       },
       onSubmit: (raw) => {
         const amt = Math.round(Number(raw) * 100) / 100;
@@ -1989,8 +2001,8 @@
             if (u.email === D.USER.email) {
               try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance; $("#side-balance").textContent = D.fmt(D.USER.balance); bump($("#side-balance")); } catch (e) {}
             }
-            toast("已给「" + u.name + "」充值 " + D.fmt(amt) + " 点（永久有效）", "success");
-          }).catch((err) => toast((err && err.message) || "充值失败", "error"));
+            toast(T("ops.users.topup.ok", { name: u.name, amt: D.fmt(amt) }), "success");
+          }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("ops.users.topup.fail"), "error"));
           return;
         }
         u.balance = Math.round((u.balance + amt) * 100) / 100;
@@ -2003,7 +2015,7 @@
         renderOps();
         $("#side-balance").textContent = D.fmt(D.USER.balance);
         if (isMe) bump($("#side-balance")); // 给自己充值 → 余额跳动（rant 18:06:09 E）
-        toast("已给「" + u.name + "」充值 " + D.fmt(amt) + " 点（永久有效）", "success");
+        toast(T("ops.users.topup.ok", { name: u.name, amt: D.fmt(amt) }), "success");
       },
       onCancel: () => renderOps(),
     });
@@ -2037,12 +2049,12 @@
     const d = new Date(y, MM - 1, DD, HH, mm);
     if (isNaN(d.getTime())) return full;
     const min = Math.floor((now - d) / 60000);
-    if (min < 1) return "刚刚";
-    if (min < 60) return min + " 分钟前";
-    if (min < 60 * 24) return Math.floor(min / 60) + " 小时前";
+    if (min < 1) return T("time.justNow");
+    if (min < 60) return T("time.minAgo", { n: min });
+    if (min < 60 * 24) return T("time.hourAgo", { n: Math.floor(min / 60) });
     const dayDiff = Math.floor(
       (new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(y, MM - 1, DD)) / 86400000);
-    if (dayDiff === 1) return "昨天";
+    if (dayDiff === 1) return T("time.yesterday");
     return p2(MM) + "-" + p2(DD); // MM-DD
   }
 
@@ -2055,14 +2067,14 @@
   function openChat(id) {
     const m = D.MARKET.find((x) => x.id === id);
     if (!m) return;
-    if (!m.avail) { toast("该模型当前繁忙，无法使用", "error"); return; }
+    if (!m.avail) { toast(T("chat.busy"), "error"); return; }
     markRecentUsed(id); // 记录最近使用（rant 20:46:57 D：去重 + 置顶，最多 5 个）
     renderRecent();     // 立即刷新最近使用 chips
     chatModel = m;
-    $("#chat-title").textContent = "使用 " + m.model;
-    $("#chat-meta").textContent = "参考价：输入 " + D.fmt(m.in) + " 点 / 输出 " + D.fmt(m.out) + " 点（每 1M tokens）· 余额 " + D.fmt(D.USER.balance) + " 点" +
-      (m.multi ? " · 多 key 自动故障转移" : "");
-    $("#chat-log").innerHTML = '<p class="muted chat-tip">输入内容并发送，模拟一次模型调用（按参考价扣除小数点数，保留 2 位）</p>';
+    $("#chat-title").textContent = T("chat.title", { model: m.model });
+    $("#chat-meta").textContent = T("chat.meta", { in: D.fmt(m.in), out: D.fmt(m.out), balance: D.fmt(D.USER.balance) }) +
+      (m.multi ? T("chat.meta.multi") : "");
+    $("#chat-log").innerHTML = '<p class="muted chat-tip">' + T("chat.tip") + "</p>";
     $("#chat-input").value = "";
     $("#chat-modal").classList.remove("hidden");
     $("#chat-input").focus();
@@ -2078,27 +2090,27 @@
     const src = Live.models ? modelsToView(Live.models) : D.MARKET;
     const m = src.find((x) => x.id === id);
     if (!m) return;
-    if (!m.avail) { toast("该模型当前繁忙，无法使用", "error"); return; }
-    if (!loggedIn()) { toast("请先登录后再使用 / 消费模型", "error"); return; }
+    if (!m.avail) { toast(T("chat.busy"), "error"); return; }
+    if (!loggedIn()) { toast(T("chat.login.need"), "error"); return; }
     markRecentUsed(id); // 记录最近使用（rant 20:46:57 D）
     renderRecent();
     const btn = document.querySelector('[data-use-model="' + id + '"]');
-    if (btn) { btn.disabled = true; btn.textContent = "调用中…"; }
+    if (btn) { btn.disabled = true; btn.textContent = T("chat.calling"); }
     try {
       await api.post("/v1/chat/completions", {
         model: m.model,
         messages: [{ role: "user", content: "ping" }],
         stream: false,
       });
-      toast("已消费「" + m.model + "」", "success");
+      toast(T("chat.consume.live", { model: m.model }), "success");
       await refreshBalanceAndView(); // 刷新钱包 + 当前视图
     } catch (err) {
       // 余额不足（402）/ 暂无可用 key（503）等后端错误直接展示
-      toast((err && err.message) || "调用失败，请稍后重试", "error");
+      toast((err && err.message) ? I18n.mapErr(err.message) : T("chat.consume.fail"), "error");
       await refreshWallet();
       $("#side-balance").textContent = D.fmt(D.USER.balance);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "使用 / 消费"; }
+      if (btn) { btn.disabled = false; btn.textContent = T("mk.use"); }
     }
   }
 
@@ -2106,12 +2118,12 @@
     const m = chatModel;
     if (!m) return;
     const text = $("#chat-input").value.trim();
-    if (!text) { toast("请输入消息内容", "error"); return; }
+    if (!text) { toast(T("chat.err.empty"), "error"); return; }
     // 模拟一次调用：0.19M tokens，按输出参考价计费（v1.6：消费点数可为小数，保留 2 位）
     const tokens = 0.19;
     const cost = Math.round(tokens * m.out * 100) / 100;
     if (D.USER.balance < cost) {
-      toast("点数余额不足：本次约需 " + D.fmt(cost) + " 点（当前 " + D.fmt(D.USER.balance) + " 点）", "error");
+      toast(T("chat.err.balance", { cost: D.fmt(cost), balance: D.fmt(D.USER.balance) }), "error");
       return;
     }
     D.USER.balance = Math.round((D.USER.balance - cost) * 100) / 100;
@@ -2123,12 +2135,12 @@
     if (log.querySelector(".chat-tip")) log.innerHTML = "";
     log.innerHTML +=
       '<div class="chat-msg user"><div class="bubble">' + esc(text) + "</div></div>" +
-      '<div class="chat-msg bot"><div class="bubble">（模拟回复）已收到你的请求。本次调用消耗约 0.19M tokens。</div></div>';
+      '<div class="chat-msg bot"><div class="bubble">' + T("chat.reply") + "</div></div>";
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     bump($("#side-balance")); // 消费扣款 → 余额跳动（rant 18:06:09 E）
-    $("#chat-meta").textContent = "已扣 " + D.fmt(cost) + " 点（模拟 0.19M tokens）· 余额 " + D.fmt(D.USER.balance) + " 点";
+    $("#chat-meta").textContent = T("chat.meta.after", { cost: D.fmt(cost), balance: D.fmt(D.USER.balance) });
     $("#chat-input").value = "";
-    toast("已扣 " + D.fmt(cost) + " 点（模拟 0.19M tokens）", "success");
+    toast(T("chat.consume.ok", { cost: D.fmt(cost) }), "success");
   }
 
   /* ---------------- 游客模式（US-1：未登录浏览市场） ---------------- */
@@ -2142,7 +2154,7 @@
     document.querySelector(".user-chip").classList.add("hidden");
     renderNav();
     switchView("marketplace");
-    toast("游客模式：可浏览模型市场，使用 / 消费需登录", "info");
+    toast(T("guest.enter"), "info");
   }
 
   function exitGuest() {
@@ -2157,7 +2169,7 @@
   // 拉当前用户信息 + 钱包余额（替代 mock D.USER.*）；余额失败 → 0 + 红色提示
   async function loadSession() {
     const me = await api.get("/api/me");
-    D.USER.name = (me && me.name) || (me && me.email ? me.email.split("@")[0] : "用户");
+    D.USER.name = (me && me.name) || (me && me.email ? me.email.split("@")[0] : T("common.user"));
     D.USER.email = (me && me.email) || D.USER.email;
     D.USER.role = (me && me.role) || "user";
     try {
@@ -2165,7 +2177,7 @@
       D.USER.balance = (w && typeof w.available === "number") ? w.available : (w ? w.balance : 0);
     } catch (e) {
       D.USER.balance = 0;
-      toast("余额加载失败，显示 0", "error");
+      toast(T("login.balance.fail"), "error");
     }
   }
 
@@ -2187,7 +2199,7 @@
   window.__atpLogout = () => {
     api.clearToken();
     exitGuest();
-    toast("登录已过期，请重新登录", "error");
+    toast(T("login.session.expired"), "error");
   };
 
   /* ---------------- P2-B 真实 API 数据层（各视图 mock 数据逐步替换为后端） ---------------- */
@@ -2223,8 +2235,8 @@
   function loadErrorHtml(emptyLabel, retryFn, retryLabel) {
     return '<div class="empty-state">' + EMPTY_ICON +
       "<p>" + esc(emptyLabel) + "</p>" +
-      '<p class="muted">' + esc(retryLabel || "数据加载失败，请检查后端服务") + '</p>' +
-      '<button type="button" class="btn btn-ghost" data-live-retry>重试</button></div>';
+      '<p class="muted">' + esc(retryLabel || T("err.loadFail")) + '</p>' +
+      '<button type="button" class="btn btn-ghost" data-live-retry>' + T("common.retry") + "</button></div>";
   }
   // 重试按钮委托（容器级）
   function bindLiveRetry(containerId, fn) {
@@ -2328,38 +2340,38 @@
       const email = $("#login-email").value.trim();
       const pass = $("#login-pass").value;
       let firstErr = null;
-      if (!email) { setFieldError($("#login-email"), "请输入邮箱 / 账号"); firstErr = firstErr || $("#login-email"); }
+      if (!email) { setFieldError($("#login-email"), T("login.err.email")); firstErr = firstErr || $("#login-email"); }
       else clearFieldError($("#login-email"));
-      if (!pass) { setFieldError($("#login-pass"), "请输入密码"); firstErr = firstErr || $("#login-pass"); }
+      if (!pass) { setFieldError($("#login-pass"), T("login.err.pass")); firstErr = firstErr || $("#login-pass"); }
       else clearFieldError($("#login-pass"));
       if (firstErr) { firstErr.focus(); return; }
       // 记住我（P2-A：token 存 localStorage 长期 / sessionStorage 关闭失效）
       try { localStorage.setItem("atp-remember", $("#login-remember").checked ? "1" : "0"); } catch (err) { /* 隐私模式忽略 */ }
       const btn = e.target.querySelector('button[type="submit"]');
-      if (btn) { btn.disabled = true; btn.textContent = "登录中…"; }
+      if (btn) { btn.disabled = true; btn.textContent = T("login.logging"); }
       try {
         const r = await api.post("/api/auth/login", { email, password: pass });
         api.saveToken(r.api_key);
         await loadSession(); // /api/me → 用户信息；/api/wallet → 余额
         enterApp();
-        toast("欢迎回来，" + (D.USER.name || email), "success");
+        toast(T("login.welcome", { name: D.USER.name || email }), "success");
       } catch (err) {
         if (err && err.status === 401) {
-          setFieldError($("#login-pass"), "邮箱或密码错误");
+          setFieldError($("#login-pass"), T("login.err.bad"));
           clearFieldError($("#login-email"));
           $("#login-pass").focus();
         } else {
-          toast((err && err.message) || "登录失败，请稍后重试", "error");
+          toast((err && err.message) ? I18n.mapErr(err.message) : T("login.err.fail"), "error");
         }
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = "登 录"; }
+        if (btn) { btn.disabled = false; btn.textContent = T("login.submit"); }
       }
     });
 
     $("#logout-btn").addEventListener("click", () => {
       api.clearToken();
       exitGuest();
-      toast("已退出登录", "info");
+      toast(T("logout.done"), "info");
     });
 
     // 市场筛选（搜索防抖 ~150ms + 高亮 + 清空按钮，rant 18:06:09 D）
@@ -2367,7 +2379,7 @@
     $("#mk-provider").addEventListener("change", renderMarketplace);
     $("#mk-sort").addEventListener("change", renderMarketplace);
     if (!$("#mk-provider").dataset.init) {
-      $("#mk-provider").innerHTML = '<option value="">全部厂商</option>' + D.PROVIDERS.map((p) => '<option value="' + p + '">' + p + "</option>").join("");
+      $("#mk-provider").innerHTML = '<option value="">' + T("mk.provider.all") + "</option>" + D.PROVIDERS.map((p) => '<option value="' + p + '">' + p + "</option>").join("");
       $("#mk-provider").dataset.init = "1";
     }
 
@@ -2383,7 +2395,7 @@
       }
       const b = e.target.closest("[data-use-model]");
       if (b) {
-        if (isGuest) { toast("请先登录后再使用 / 消费模型", "error"); return; }
+        if (isGuest) { toast(T("chat.login.need"), "error"); return; }
         consumeModel(Number(b.dataset.useModel));
         return;
       }
@@ -2404,7 +2416,7 @@
       }
       const c = e.target.closest("[data-recent-model]");
       if (c) {
-        if (isGuest) { toast("请先登录后再使用 / 消费模型", "error"); return; }
+        if (isGuest) { toast(T("chat.login.need"), "error"); return; }
         openChat(Number(c.dataset.recentModel));
       }
     });
@@ -2464,10 +2476,10 @@
         const key = $("#sf-key").value.trim();
         const note = $("#sf-note").value.trim();
         let firstErr = null;
-        if (!key) { setFieldError($("#sf-key"), "请填写 API Key（上架 key 必须提供真实密钥）"); firstErr = firstErr || $("#sf-key"); }
+        if (!key) { setFieldError($("#sf-key"), T("share.err.key")); firstErr = firstErr || $("#sf-key"); }
         else clearFieldError($("#sf-key"));
         if (!plan || !model || quota <= 0) {
-          setFieldError($("#sf-quota"), "请选择厂商 / Plan / 模型并填写有效额度");
+          setFieldError($("#sf-quota"), T("share.err.plan"));
           firstErr = firstErr || $("#sf-quota");
         } else clearFieldError($("#sf-quota"));
         if (firstErr) { firstErr.focus(); return; }
@@ -2492,8 +2504,8 @@
           const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
           $("#sf-quota").value = 5000;
           hideShareForm();
-          const label = (D.PROVIDER_LABELS[plan.provider] || plan.provider) + " · " + plan.name;
-          toast("已上架「" + label + " · " + model + "」（key 已加密托管，单价 " + D.fmt(price) + " 点/1M（自动））", "success");
+          const label = provLabel(plan.provider) + " · " + plan.name;
+          toast(T("share.list.ok", { label: label, model: model, price: D.fmt(price) }), "success");
         };
         if (loggedIn()) {
           // P2-B：真实上架
@@ -2502,7 +2514,7 @@
             if (activeView === "dashboard") renderDashboard();
             afterOk();
           }).catch((err) => {
-            toast((err && err.message) || "上架失败", "error");
+            toast((err && err.message) ? I18n.mapErr(err.message) : T("share.list.fail"), "error");
           });
           return;
         }
@@ -2519,7 +2531,7 @@
       const b = e.target.closest("[data-share-toggle]");
       if (b) { toggleSharing(Number(b.dataset.shareToggle)); return; }
       const d = e.target.closest("[data-share-delete]");
-      if (d) { confirmInline(d, () => deleteSharing(Number(d.dataset.shareDelete)), "确认彻底下架？"); return; }
+      if (d) { confirmInline(d, () => deleteSharing(Number(d.dataset.shareDelete)), T("share.del.confirm")); return; }
       if (e.target.closest("[data-share-add]")) showShareForm();
     });
 
@@ -2586,7 +2598,7 @@
       const rn = e.target.closest("[data-key-rename]");
       if (rn) { renameKey(Number(rn.dataset.keyRename)); return; }
       const dl = e.target.closest("[data-key-del]");
-      if (dl) { confirmInline(dl, () => deleteKey(Number(dl.dataset.keyDel)), "确认删除？"); return; }
+      if (dl) { confirmInline(dl, () => deleteKey(Number(dl.dataset.keyDel)), T("settings.ak.del.confirm")); return; }
       if (e.target.closest("[data-new-key]")) openNewKeyInline();
     });
 
@@ -2611,21 +2623,21 @@
         const cell = row.children[row.children.length - 1];
         inlineForm(cell, {
           value: "5000",
-          placeholder: "点数（正整数）",
+          placeholder: T("admin.emp.topup.ph"),
           type: "number",
           width: "120px",
           validate: (raw) => {
             const amt = Number(raw);
-            return (!raw || !Number.isInteger(amt) || amt <= 0) ? "请输入正整数点数金额" : null;
+            return (!raw || !Number.isInteger(amt) || amt <= 0) ? T("admin.emp.topup.err") : null;
           },
           onSubmit: (raw) => {
             const amt = Number(raw);
             api.post("/api/admin/credits", { user_id: liveEmp.id, amount: amt, note: "admin recharge" })
               .then(async () => {
                 await loadAdmin();
-                toast("已给 " + (liveEmp.name || liveEmp.email) + " 充值 " + D.fmt(amt) + " 点", "success");
+                toast(T("admin.emp.topup.ok", { name: liveEmp.name || liveEmp.email, amt: D.fmt(amt) }), "success");
               })
-              .catch((err) => toast((err && err.message) || "充值失败", "error"));
+              .catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.emp.topup.fail"), "error"));
           },
           onCancel: () => renderAdmin(),
         });
@@ -2635,21 +2647,21 @@
       if (!emp) return;
       const row = b.closest("tr");
       if (!row) return;
-      const cell = row.children[5];
+      const cell = row.children[row.children.length - 1];
       inlineForm(cell, {
         value: "5000",
-        placeholder: "点数（正整数）",
+        placeholder: T("admin.emp.topup.ph"),
         type: "number",
         width: "120px",
         validate: (raw) => {
           const amt = Number(raw);
-          return (!raw || !Number.isInteger(amt) || amt <= 0) ? "请输入正整数点数金额" : null;
+          return (!raw || !Number.isInteger(amt) || amt <= 0) ? T("admin.emp.topup.err") : null;
         },
         onSubmit: (raw) => {
           const amt = Number(raw);
           emp.quota += amt;
           renderAdmin();
-          toast("已给 " + emp.name + " 充值 " + D.fmt(amt) + " 点", "success");
+          toast(T("admin.emp.topup.ok", { name: emp.name, amt: D.fmt(amt) }), "success");
         },
         onCancel: () => renderAdmin(),
       });
@@ -2678,7 +2690,7 @@
       const ed = e.target.closest("[data-dept-edit]");
       if (ed) { openDeptForm(Number(ed.dataset.deptEdit)); return; }
       const dl = e.target.closest("[data-dept-del]");
-      if (dl) { confirmInline(dl, () => deleteDept(Number(dl.dataset.deptDel)), "确认删除部门？"); return; }
+      if (dl) { confirmInline(dl, () => deleteDept(Number(dl.dataset.deptDel)), T("admin.org.del.confirm")); return; }
       if (e.target.closest("[data-dept-clear-search]")) {
         resetSearch($("#od-search"));
         renderAdmin();
@@ -2710,7 +2722,7 @@
         enterApp();
       } catch (e) {
         // 401 已由 api.js 清 token；其余错误保持登录页并提示
-        if (!(e && e.status === 401)) toast("会话恢复失败，请重新登录", "error");
+        if (!(e && e.status === 401)) toast(T("login.session.fail"), "error");
       }
     })();
 
@@ -2728,11 +2740,25 @@
       r.checked = r.value === getDensity();
       r.addEventListener("change", () => applyDensity(r.value));
     });
+    // 界面语言（rant 2026-08-18T20:49:22 i18n）：下拉切换 + localStorage 记忆 + 即时重渲染
+    const langSel = $("#prefs-lang");
+    if (langSel) {
+      langSel.value = I18n.getLang();
+      langSel.addEventListener("change", () => I18n.setLang(langSel.value));
+    }
+    document.addEventListener("atp:langchange", () => {
+      if (langSel) langSel.value = I18n.getLang();
+      renderNav();
+      if (activeView) renderView(activeView);
+      document.title = (VIEW_TITLE[activeView] ? T(VIEW_TITLE[activeView]) + " · AITokenPool" : "AITokenPool");
+      if (tourStep >= 0) renderTourStep(); // 引导中的按钮/文案随语言更新
+    });
+
     $("#theme-toggle").addEventListener("click", () => {
       const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
       document.documentElement.dataset.theme = next;
       try { localStorage.setItem("atp-theme", next); } catch (e) { /* 隐私模式忽略 */ }
-      toast("已切换为" + (next === "light" ? "亮色" : "深色") + "主题", "info");
+      toast(T("theme.switched", { theme: next === "light" ? T("theme.light") : T("theme.dark") }), "info");
     });
 
     // 全局快捷键（rant 16:57:17 D）：/ 聚焦市场搜索；数字 1-7 切换侧边栏视图；Esc 关闭行内新建 key
