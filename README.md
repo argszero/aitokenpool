@@ -17,11 +17,23 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 
 ## 状态
 
-- ✅ **P0-A（v0.2.0，2026-08-17）**：后端骨架 + 配置加载（`config/config.example.toml`，含 `Config::validate` 校验：points_per_unit>0 / plan→provider 存在 / endpoints≥1 / protocol 枚举）+ SQLite 数据层（幂等迁移 + demo 种子）+ 认证（argon2 + Bearer API Key）+ API Key 端点。`cargo run` 后：
-  - `GET /healthz` → `{"status":"ok","version":"0.2.0"}`
-  - `POST /api/auth/login`（demo@aitokenpool.local / demo1234）→ `{api_key}`
-  - `POST|GET /api/api-keys`（Bearer 认证，key 脱敏 `atk_live_****xxxx`）
-- 🚧 P0 后续（网关路由 / 用量追踪）进行中；UI 原型 v1.20（`ui/` 静态页 + mock 数据）。
+后端已实现 **P0（A/B/C）+ P1**，当前版本 **v0.3.0**（61/61 测试全绿）：
+
+- ✅ **P0-A（v0.2.0）**：后端骨架 + TOML 配置（`Config::validate`：points_per_unit>0 / plan→provider 存在 / endpoints≥1 / protocol 枚举）+ SQLite 数据层（幂等迁移 v3 + demo/admin 种子）+ 认证（argon2 + Bearer API Key）+ API Key 端点
+- ✅ **P0-B（v0.2.1）**：网关转发（OpenAI Chat Completions + Anthropic Messages）+ 路由故障转移（粘性 / 健康冷却 / 3 次切换上限）+ 计量账本（点数计算、90/10 分成、事务性 settle）
+- ✅ **P0-C（v0.2.2）**：SSE 流式转发（流尾 usage 入账、断连不入账）+ 上游 key AES-256-GCM 加密 + 共享 / 钱包 / 交易 API
+- ✅ **P1（v0.3.0）**：点数规则细化——新人每日赠送（10 天窗口·当日有效）+ 先扣最早到期赠送再扣永久 + 管理员充值 API（role=admin）
+
+`cargo run` 后可用端点（Bearer 认证；demo@aitokenpool.local / demo1234，admin@aitokenpool.local / admin1234）：
+- `GET /healthz` → `{"status":"ok","version":"0.3.0"}`
+- `POST /api/auth/login` → `{api_key}`；`POST|GET /api/api-keys`（key 脱敏 `atk_live_****xxxx`）
+- `POST /v1/chat/completions` / `POST /anthropic/v1/messages`（网关，支持 SSE 流式）
+- `GET /api/models`（模型市场）
+- `POST|GET /api/sharings` + `PATCH /api/sharings/:id`（key 上架 / 列表 / 暂停下线）
+- `GET /api/wallet` / `GET /api/transactions?type=` / `GET /api/dashboard`（钱包 / 交易 / 仪表盘）
+- `POST /api/admin/credits` / `GET /api/admin/users` / `GET /api/admin/usage`（管理员充值 / 成员 / 用量）
+
+UI 原型 v1.20（`ui/` 静态页 + mock 数据）；架构细节见 docs/architecture.md v0.3。
 
 ## License
 
