@@ -30,11 +30,11 @@
         <label class="checkbox-line"><input type="checkbox" id="login-remember"> <span data-i18n="login.remember">记住我</span></label>
         <span class="demo-hint" data-i18n="login.demo">演示账号：demo@aitokenpool.local / demo1234 · 管理员 admin@aitokenpool.local / admin1234</span>
       </div>
-      <button type="submit" class="btn btn-primary btn-block" data-i18n="login.enter">进入平台 <span class="en">(Enter)</span></button>
+      <button type="submit" class="btn btn-primary btn-block" data-i18n="login.enter">进入平台</button>
     </form>
     <div class="login-divider"><span data-i18n="login.or">或</span></div>
-    <button type="button" class="btn btn-ghost btn-block" id="guest-browse-btn" data-i18n="login.guest">先逛逛市场 <span class="en">(Guest browse)</span></button>
-    <p class="login-foot" data-i18n="login.foot">还没有账号？<a href="#">注册 <span class="en">Register</span></a> · <a href="#">找回密码</a></p>
+    <button type="button" class="btn btn-ghost btn-block" id="guest-browse-btn" data-i18n="login.guest">先逛逛市场</button>
+    <p class="login-foot" data-i18n="login.foot">还没有账号？<a href="#">注册</a> · <a href="#">找回密码</a></p>
     <p class="login-tip" data-i18n="login.tip">已对接后端 API · 登录后进入真实数据界面 · 管理员账号登录可见「管理视图」</p>  </div>
 </div>
 
@@ -57,11 +57,11 @@
     <nav class="nav" id="nav"></nav>
 
     <div class="sidebar-bottom">
-      <button class="btn btn-ghost btn-block" id="logout-btn" data-i18n="logout.btn">退出登录 <span class="en">(Logout)</span></button>
+      <button class="btn btn-ghost btn-block" id="logout-btn" data-i18n="logout.btn">退出登录</button>
       <div class="user-chip">
         <div class="avatar">零</div>
         <div>
-          <strong>阿零 <span class="en">demo</span></strong>
+          <strong>阿零</strong>
           <span><span data-i18n="common.balance">点数余额</span> <b id="side-balance">0</b></span>
         </div>
       </div>
@@ -73,17 +73,17 @@
     <!-- 仪表盘 Dashboard -->
     <section class="view" id="view-dashboard">
       <header class="page-head">
-        <h2 data-i18n="view.dashboard">仪表盘 <span class="en">Dashboard</span></h2>
+        <h2 data-i18n="view.dashboard">仪表盘</h2>
         <p data-i18n="view.dashboard.sub">总览你的点数、用量与收益</p>
       </header>
       <div class="stat-grid" id="dash-stats"></div>
       <div class="card-grid">
         <div class="card">
-          <h3 data-i18n="dash.sharings">我的共享 <span class="en">My sharings</span></h3>
+          <h3 data-i18n="dash.sharings">我的共享</h3>
           <div class="mini-list" id="dash-sharings"></div>
         </div>
         <div class="card">
-          <h3 data-i18n="dash.month">本月点数变化 <span class="en">Month point changes</span></h3>
+          <h3 data-i18n="dash.month">本月点数变化</h3>
           <div class="mini-list" id="dash-month-changes"></div>
         </div>
       </div>
@@ -92,7 +92,7 @@
     <!-- 模型市场 Marketplace -->
     <section class="view hidden" id="view-marketplace">
       <header class="page-head">
-        <h2 data-i18n="view.marketplace">模型市场 <span class="en">Marketplace</span></h2>
+        <h2 data-i18n="view.marketplace">模型市场</h2>
         <p data-i18n="view.marketplace.sub">浏览 / 搜索各家模型，按点数计价</p>
       </header>
       <div class="toolbar">
@@ -120,7 +120,7 @@
       <div class="table-wrap">
         <table class="table">
           <thead>
-            <tr><th data-i18n="mk.col.provider">厂商 Provider</th><th data-i18n="mk.col.model">模型 Model</th><th class="num" data-i18n="mk.col.in">输入价 /1M</th><th class="num" data-i18n="mk.col.out">输出价 /1M</th><th class="num" data-i18n="mk.col.ctx">上下文</th><th data-i18n="mk.col.avail">可用性</th><th data-i18n="mk.col.action">操作 <span class="en">Use</span></th></tr>
+            <tr><th data-i18n="mk.col.provider">厂商 Provider</th><th data-i18n="mk.col.model">模型 Model</th><th class="num" data-i18n="mk.col.in">输入价 /1M</th><th class="num" data-i18n="mk.col.out">输出价 /1M</th><th class="num" data-i18n="mk.col.ctx">上下文</th><th data-i18n="mk.col.avail">可用性</th><th data-i18n="mk.col.action">操作</th></tr>
           </thead>
           <tbody id="mk-body"></tbody>
         </table>
@@ -130,16 +130,16 @@
     <!-- 共享管理 Sharing -->
     <section class="view hidden" id="view-sharing">
       <header class="page-head">
-        <h2 data-i18n="view.sharing">共享管理 <span class="en">Sharing</span></h2>
+        <h2 data-i18n="view.sharing">共享管理</h2>
         <p data-i18n="view.sharing.sub">上架闲置 key 赚点数 · 管理共享中的 key</p>
       </header>
       <div class="stat-grid" id="share-stats"></div>
       <div class="toolbar">
-        <button type="button" class="btn btn-primary" id="share-add-btn" data-i18n="share.add">＋ 添加 / 上架新 key <span class="en">(List a key)</span></button>
+        <button type="button" class="btn btn-primary" id="share-add-btn" data-i18n="share.add">＋ 添加 / 上架新 key</button>
       </div>
       <div class="card-grid">
         <div class="card" id="share-form-card" hidden>
-          <h3 data-i18n="share.form.title">上架新 key <span class="en">List a key</span></h3>
+          <h3 data-i18n="share.form.title">上架新 key</h3>
           <form id="share-form" class="form">
             <div class="form-row">
               <label><span data-i18n="share.form.provider">厂商</span>
@@ -190,13 +190,13 @@
               <input id="sf-note" class="input" data-i18n-ph="share.form.note.ph" placeholder="可填写任意说明，不影响生效规则">
             </label>
             <div class="form-row">
-              <button type="submit" class="btn btn-primary" data-i18n="share.form.list">上架 <span class="en">(List)</span></button>
-              <button type="button" class="btn btn-ghost" id="sf-cancel" data-i18n="share.form.cancel">取消 <span class="en">(Cancel)</span></button>
+              <button type="submit" class="btn btn-primary" data-i18n="share.form.list">上架</button>
+              <button type="button" class="btn btn-ghost" id="sf-cancel" data-i18n="share.form.cancel">取消</button>
             </div>
           </form>
         </div>
         <div class="card">
-          <h3 data-i18n="share.list">我的共享列表 <span class="en">My listings</span></h3>
+          <h3 data-i18n="share.list">我的共享列表</h3>
           <p class="muted" data-i18n="share.earned">收益已到账</p>
           <div class="table-wrap compact">
             <table class="table">
@@ -211,24 +211,24 @@
     <!-- 钱包 Wallet -->
     <section class="view hidden" id="view-wallet">
       <header class="page-head">
-        <h2 data-i18n="view.wallet">钱包 <span class="en">Wallet</span></h2>
+        <h2 data-i18n="view.wallet">钱包</h2>
         <p data-i18n="view.wallet.sub">点数余额 · 充值 / 提现（收支明细见【交易记录】）</p>
       </header>
       <div class="card wallet-hero">
         <div>
-          <h3 data-i18n="wallet.balance">点数余额 <span class="en">Points balance</span></h3>
+          <h3 data-i18n="wallet.balance">点数余额</h3>
           <div class="balance-big" id="wallet-balance">0</div>
         </div>
         <div class="wallet-actions">
-          <button class="btn btn-primary" id="topup-btn" data-i18n="wallet.topup">充值 <span class="en">Top up</span></button>
-          <button class="btn btn-ghost" id="raise-btn" data-i18n="wallet.raise">申请加额 <span class="en">Request more</span></button>
-          <button class="btn btn-ghost" id="withdraw-btn" disabled data-i18n="wallet.withdraw">提现 <span class="en">Withdraw</span></button>
+          <button class="btn btn-primary" id="topup-btn" data-i18n="wallet.topup">充值</button>
+          <button class="btn btn-ghost" id="raise-btn" data-i18n="wallet.raise">申请加额</button>
+          <button class="btn btn-ghost" id="withdraw-btn" disabled data-i18n="wallet.withdraw">提现</button>
           <span class="muted wallet-note" data-i18n="wallet.note">充值（演示流程，真实支付后续接入） · 提现暂不支持</span>
         </div>
       </div>
       <!-- 充值：行内展开卡片（US-4 · 少用弹窗原则 v1.13：充值改行内，替代原 topup-modal） -->
       <div class="card" id="topup-card" hidden>
-        <h3 data-i18n="wallet.topup.title">充值点数 <span class="en">Top up</span></h3>
+        <h3 data-i18n="wallet.topup.title">充值点数</h3>
         <p class="muted" style="margin-bottom:12px" data-i18n="wallet.topup.sub">演示流程：真实支付通道后续接入。</p>
         <div class="form">
           <label><span data-i18n="wallet.topup.choose">选择金额（点数）</span>
@@ -242,14 +242,14 @@
             <input id="topup-custom" type="number" min="1" step="0.01" class="input" data-i18n-ph="wallet.topup.ph" placeholder="如 300 或 25.5">
           </label>
           <div class="form-row">
-            <button type="button" class="btn btn-primary" id="topup-confirm" data-i18n="wallet.topup.confirm">确认充值 <span class="en">(Confirm)</span></button>
-            <button type="button" class="btn btn-ghost" id="topup-cancel" data-i18n="wallet.topup.cancel">取消 <span class="en">(Cancel)</span></button>
+            <button type="button" class="btn btn-primary" id="topup-confirm" data-i18n="wallet.topup.confirm">确认充值</button>
+            <button type="button" class="btn btn-ghost" id="topup-cancel" data-i18n="wallet.topup.cancel">取消</button>
           </div>
         </div>
       </div>
       <!-- 申请加额：行内展开卡片（US-20 · 少用弹窗原则：替代原 raise-modal） -->
       <div class="card" id="raise-card" hidden>
-        <h3 data-i18n="wallet.raise.title">申请加额 <span class="en">Request more points</span></h3>
+        <h3 data-i18n="wallet.raise.title">申请加额</h3>
         <p class="muted" style="margin-bottom:12px" data-i18n="wallet.raise.sub">余额低时可申请更多点数，提交后等待管理员审批（US-20）。</p>
         <div class="form">
           <label><span data-i18n="wallet.raise.amount">申请点数</span>
@@ -259,13 +259,13 @@
             <input id="raise-reason" class="input" data-i18n-ph="wallet.raise.reason.ph" placeholder="如：本月配额已用完，需要继续开发">
           </label>
           <div class="form-row">
-            <button type="button" class="btn btn-primary" id="raise-confirm" data-i18n="wallet.raise.submit">提交申请 <span class="en">(Submit)</span></button>
-            <button type="button" class="btn btn-ghost" id="raise-cancel" data-i18n="wallet.raise.cancel">取消 <span class="en">(Cancel)</span></button>
+            <button type="button" class="btn btn-primary" id="raise-confirm" data-i18n="wallet.raise.submit">提交申请</button>
+            <button type="button" class="btn btn-ghost" id="raise-cancel" data-i18n="wallet.raise.cancel">取消</button>
           </div>
         </div>
       </div>
       <div class="card">
-        <h3 data-i18n="wallet.month">本月点数变化 <span class="en">Month point changes</span></h3>
+        <h3 data-i18n="wallet.month">本月点数变化</h3>
         <div class="mini-list" id="month-changes"></div>
       </div>
       <div class="card">
@@ -278,7 +278,7 @@
     <!-- 交易记录 Transactions -->
     <section class="view hidden" id="view-transactions">
       <header class="page-head">
-        <h2 data-i18n="view.transactions">交易记录 <span class="en">Transactions</span></h2>
+        <h2 data-i18n="view.transactions">交易记录</h2>
         <p data-i18n="view.transactions.sub">涵盖消费、收益、充值、提现、赠送</p>
       </header>
       <div class="tabs" id="tx-tabs">
@@ -287,7 +287,7 @@
         <button class="tab" data-tx-tab="earn" data-i18n="tx.tab.earn">收益</button>
       </div>
       <div class="toolbar" style="justify-content:flex-end">
-        <button type="button" class="btn btn-ghost" id="tx-export-btn" data-i18n-title="tx.export.title" data-i18n="tx.export" title="导出当前筛选的交易记录为 CSV">导出 CSV <span class="en">(CSV)</span></button>
+        <button type="button" class="btn btn-ghost" id="tx-export-btn" data-i18n-title="tx.export.title" data-i18n="tx.export" title="导出当前筛选的交易记录为 CSV">导出 CSV</button>
       </div>
       <div class="card">
         <div class="tx-summary" id="tx-summary"></div>
@@ -298,12 +298,12 @@
     <!-- 设置 Settings -->
     <section class="view hidden" id="view-settings">
       <header class="page-head">
-        <h2 data-i18n="view.settings">设置 <span class="en">Settings</span></h2>
+        <h2 data-i18n="view.settings">设置</h2>
         <p data-i18n="view.settings.sub">账户 · API Key · 通知 · 偏好（原型展示）</p>
-        <button type="button" class="btn btn-ghost tour-replay" id="tour-replay-btn" data-i18n="settings.tour">重新查看引导 <span class="en">(Tour)</span></button>
+        <button type="button" class="btn btn-ghost tour-replay" id="tour-replay-btn" data-i18n="settings.tour">重新查看引导</button>
       </header>
       <div class="card" id="endpoint-card">
-        <h3 data-i18n="settings.endpoints">接入方式 <span class="en">API Endpoints</span></h3>
+        <h3 data-i18n="settings.endpoints">接入方式</h3>
         <p class="muted" data-i18n="settings.endpoints.sub">生成了 API Key 后，把下面端点填进 Cursor / Cline / Roo Code / Claude Code 等工具的 Base URL。</p>
         <div class="endpoint-row">
           <span class="ep-tag" data-i18n="settings.ep.openai">OpenAI 兼容</span>
@@ -323,7 +323,7 @@
         </div>
       </div>
       <div class="card api-key-card">
-        <h3 data-i18n="settings.apikey">API Key <span class="en">API keys</span></h3>
+        <h3 data-i18n="settings.apikey">API Key</h3>
         <p class="muted" data-i18n="settings.apikey.sub">用于本地工具 / 代码接入平台的密钥。独占整行，避免表格字段挤压。</p>
         <span class="search-box" style="display:block;margin-bottom:10px">
           <input id="ak-search" class="input" data-i18n-ph="settings.ak.search.ph" placeholder="搜索 key 名字…">
@@ -335,25 +335,25 @@
             <tbody id="api-keys"></tbody>
           </table>
         </div>
-        <button class="btn btn-ghost" id="new-api-key-btn" data-i18n="settings.ak.new">生成新 Key <span class="en">(Generate)</span></button>
+        <button class="btn btn-ghost" id="new-api-key-btn" data-i18n="settings.ak.new">生成新 Key</button>
         <!-- 行内新建 key（rant 16:57:17 A：替代原生输入弹窗，Enter 确认 / Esc 取消） -->
         <span class="inline-edit" id="ak-new-inline" hidden>
           <input id="ak-new-name" class="input" data-i18n-ph="settings.ak.name.ph" placeholder="key 名字（留空默认「未命名」）" style="max-width:260px;padding:6px 10px">
-          <button type="button" class="btn btn-primary" id="ak-new-ok" data-i18n="settings.ak.ok">确认 <span class="en">(OK)</span></button>
-          <button type="button" class="btn btn-ghost" id="ak-new-cancel" data-i18n="settings.ak.cancel">取消 <span class="en">(Cancel)</span></button>
+          <button type="button" class="btn btn-primary" id="ak-new-ok" data-i18n="settings.ak.ok">确认</button>
+          <button type="button" class="btn btn-ghost" id="ak-new-cancel" data-i18n="settings.ak.cancel">取消</button>
         </span>
       </div>
       <div class="card-grid settings-grid">
         <div class="card">
-          <h3 data-i18n="settings.account">账户 <span class="en">Account</span></h3>
+          <h3 data-i18n="settings.account">账户</h3>
           <div class="form">
             <label><span data-i18n="settings.account.nickname">昵称</span> <input class="input" value="阿零"></label>
             <label><span data-i18n="settings.account.email">邮箱</span> <input class="input" value="demo@aitokenpool.local"></label>
-            <button class="btn btn-primary" data-i18n="common.save">保存 <span class="en">(Save)</span></button>
+            <button class="btn btn-primary" data-i18n="common.save">保存</button>
           </div>
         </div>
         <div class="card">
-          <h3 data-i18n="settings.notify">通知 <span class="en">Notifications</span></h3>
+          <h3 data-i18n="settings.notify">通知</h3>
           <div class="form">
             <label class="check"><input type="checkbox" checked> <span data-i18n="settings.notify.balance">点数余额低于阈值时提醒</span></label>
             <label class="check"><input type="checkbox" checked> <span data-i18n="settings.notify.consume">共享 key 被消费时通知</span></label>
@@ -361,7 +361,7 @@
           </div>
         </div>
         <div class="card">
-          <h3 data-i18n="settings.prefs">偏好 <span class="en">Preferences</span></h3>
+          <h3 data-i18n="settings.prefs">偏好</h3>
           <div class="form">
             <label><span data-i18n="settings.prefs.lang">界面语言</span>
               <select class="input" id="prefs-lang"><option value="zh">中文（简体）</option><option value="en">English</option></select>
@@ -383,7 +383,7 @@
     <!-- 管理员角色视图 Admin（同一套产品中的角色权限） -->
     <section class="view hidden" id="view-admin">
       <header class="page-head">
-        <h2 data-i18n="view.admin">管理视图 <span class="en">Admin</span></h2>
+        <h2 data-i18n="view.admin">管理视图</h2>
         <p data-i18n="view.admin.sub">管理员角色专属：成员/员工点数 · 用量报表 · 组织管理 · 平台运营（普通用户无此视图）</p>
       </header>
       <div class="tabs" id="admin-tabs">
@@ -403,7 +403,7 @@
           </div>
         </div>
         <div class="card">
-          <h3 data-i18n="admin.raise.title">加额申请 <span class="en">Raise requests</span> <span class="muted" style="font-weight:400;font-size:12px" data-i18n="admin.raise.sub">（US-20：成员申请 → 管理员批准 / 驳回）</span></h3>
+          <h3 data-i18n="admin.raise.title">加额申请 <span class="muted" style="font-weight:400;font-size:12px" data-i18n="admin.raise.sub">（US-20：成员申请 → 管理员批准 / 驳回）</span></h3>
           <div id="raise-requests"></div>
         </div>
       </div>
@@ -411,15 +411,15 @@
       <div class="admin-pane hidden" data-admin-pane="usage">
         <div class="card-grid">
           <div class="card">
-            <h3 data-i18n="admin.usage.byModel">按模型用量 <span class="en">By model</span></h3>
+            <h3 data-i18n="admin.usage.byModel">按模型用量</h3>
             <div class="bar-list" id="usage-model"></div>
           </div>
           <div class="card">
-            <h3 data-i18n="admin.usage.byEmp">按成员用量 <span class="en">By member</span></h3>
+            <h3 data-i18n="admin.usage.byEmp">按成员用量</h3>
             <div class="bar-list" id="usage-emp"></div>
           </div>
           <div class="card">
-            <h3 data-i18n="admin.usage.byDept">按部门用量 <span class="en">By department</span></h3>
+            <h3 data-i18n="admin.usage.byDept">按部门用量</h3>
             <div class="bar-list" id="usage-dept"></div>
           </div>
         </div>
@@ -433,10 +433,10 @@
             <input id="od-search" class="input" data-i18n-ph="admin.org.search.ph" placeholder="搜索部门…">
             <button type="button" class="search-clear" hidden aria-label="清空搜索" title="清空搜索">×</button>
           </span>
-          <button class="btn btn-primary" id="add-dept-btn" data-i18n="admin.org.add">添加部门 <span class="en">(+ Add dept)</span></button>
+          <button class="btn btn-primary" id="add-dept-btn" data-i18n="admin.org.add">添加部门</button>
         </div>
         <div class="card">
-          <h3 data-i18n="admin.org.list">部门列表 <span class="en">Departments</span></h3>
+          <h3 data-i18n="admin.org.list">部门列表</h3>
           <div class="table-wrap compact">
             <table class="table">
               <thead><tr><th data-i18n="admin.org.col.dept">部门</th><th class="num" data-i18n="admin.org.col.members">成员数</th><th class="num" data-i18n="admin.org.col.quota">月分配（点数）</th><th class="num" data-i18n="admin.org.col.used">已用</th><th class="num" data-i18n="admin.org.col.remain">剩余</th><th data-i18n="admin.org.col.status">状态</th><th></th></tr></thead>
@@ -446,7 +446,7 @@
         </div>
         <!-- 部门添加/编辑：行内展开表单（UI 原则：少用弹窗，优先行内交互） -->
         <div class="card" id="dept-form-card" hidden>
-          <h3 id="dept-form-title">添加部门 <span class="en">Add department</span></h3>
+          <h3 id="dept-form-title">添加部门</h3>
           <div class="form">
             <div class="form-row">
               <label><span data-i18n="admin.org.form.name">部门名称</span>
@@ -457,8 +457,8 @@
               </label>
             </div>
             <div class="form-row">
-              <button type="button" class="btn btn-primary" id="dept-confirm" data-i18n="admin.org.form.confirm">确认 <span class="en">(Confirm)</span></button>
-              <button type="button" class="btn btn-ghost" id="dept-cancel" data-i18n="admin.org.form.cancel">取消 <span class="en">(Cancel)</span></button>
+              <button type="button" class="btn btn-primary" id="dept-confirm" data-i18n="admin.org.form.confirm">确认</button>
+              <button type="button" class="btn btn-ghost" id="dept-cancel" data-i18n="admin.org.form.cancel">取消</button>
             </div>
           </div>
         </div>
@@ -469,7 +469,7 @@
     <!-- 运营者角色视图 Operator（P2-C：role=ops 专属；运行概览 + 成员充值） -->
     <section class="view hidden" id="view-ops">
       <header class="page-head">
-        <h2 data-i18n="view.ops">运营视图 <span class="en">Operator</span></h2>
+        <h2 data-i18n="view.ops">运营视图</h2>
         <p data-i18n="view.ops.sub">运营者角色专属：平台运行概览 · 成员充值（普通用户无此视图）</p>
       </header>
       <div class="tabs" id="ops-tabs">
@@ -482,7 +482,7 @@
       </div>
       <div class="ops-pane hidden" data-ops-pane="users">
         <div class="card">
-          <h3 data-i18n="ops.users.title">用户充值 <span class="en">Top up a user</span></h3>
+          <h3 data-i18n="ops.users.title">用户充值</h3>
           <p class="muted" data-i18n="ops.users.sub">运营者 = 宿主本人（职责最小化：仅运行概览 + 充值）。按用户名 / 邮箱定位用户 → 输入点数金额 → 确认后余额增加<strong>永久有效点数</strong>并产生一条交易记录。</p>
           <div class="toolbar">
             <span class="search-box">
@@ -506,7 +506,7 @@
 <!-- 快捷键帮助面板（rant 20:39:30 E：行内卡片，非 modal；? / Shift+/ 开合，Esc 关闭） -->
 <div id="help-panel" class="help-panel hidden" role="dialog" aria-label="快捷键帮助">
   <div class="help-head">
-    <strong data-i18n="help.title">快捷键 <span class="en">Shortcuts</span></strong>
+    <strong data-i18n="help.title">快捷键</strong>
     <button type="button" class="help-close" id="help-close" data-i18n-title="help.close.title" title="关闭（Esc）">×</button>
   </div>
   <div id="help-body"></div>
@@ -524,7 +524,7 @@
     <div class="chat-log" id="chat-log"></div>
     <div class="chat-input-row">
       <input id="chat-input" class="input" data-i18n-ph="chat.input.ph" placeholder="输入内容，回车发送（模拟调用）…" autocomplete="off">
-      <button type="button" class="btn btn-primary" id="chat-send" data-i18n="chat.send">发送 <span class="en">(Send)</span></button>
+      <button type="button" class="btn btn-primary" id="chat-send" data-i18n="chat.send">发送</button>
     </div>
   </div>
 </div>

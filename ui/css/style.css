@@ -94,7 +94,6 @@ body {
 }
 .table tbody { animation: tbodyIn 0.15s ease-out; }
 .muted { color: var(--text-mute); }
-.en { color: var(--text-mute); font-size: 12px; font-weight: 400; }
 
 /* ---------- 通用组件 ---------- */
 
