@@ -659,6 +659,27 @@ pub async fn plans(
     Ok(Json(list))
 }
 
+/// GET /v1/models（OpenAI 兼容模型列表，rant 2026-08-18T18:10:18）
+///
+/// 认证可选：无 token → 纯 OpenAI 列表；带有效 Bearer → data[] 附加 available_keys。
+/// 与 /api/models 的关系：/api/models 保留（市场页专用，含价格 input_per_m/output_per_m）；
+/// /v1/models 为 OpenAI 标准格式（OpenAI SDK / 工具用）。
+pub async fn v1_models(
+    State(st): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    // 可选认证：header 有合法 Bearer → 附加 available_keys；无/非法 → 纯列表
+    let with_availability = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|key| dao::find_api_key_user_and_id(&conn, key).is_some())
+        .unwrap_or(false);
+    let data = dao::list_models_openai(&conn, with_availability).map_err(internal)?;
+    Ok(Json(serde_json::json!({ "object": "list", "data": data })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1237,6 +1258,78 @@ mod tests {
             String::from_utf8_lossy(&body)
         );
         up.abort();
+    }
+
+    /// P3-A 补充（rant 2026-08-18T18:10:18）：GET /v1/models 无认证 → OpenAI 列表格式
+    #[tokio::test]
+    async fn v1_models_public_list_format() {
+        let st = test_state("v1m", "test-plan", "http://127.0.0.1:9");
+        for uri in ["/v1/models", "/models"] {
+            let resp = router()
+                .with_state(st.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "uri={uri}");
+            let bytes = axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024)
+                .await
+                .unwrap();
+            let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(v["object"], "list", "uri={uri}");
+            let data = v["data"].as_array().expect("data 数组");
+            assert!(!data.is_empty(), "models 已 seed");
+            let first = &data[0];
+            assert_eq!(first["object"], "model");
+            assert!(first.get("id").is_some());
+            assert_eq!(first["created"], 0);
+            assert_eq!(first["owned_by"], "aitokenpool");
+            assert_eq!(
+                first["display_name"], first["id"],
+                "display_name 与 id 一致"
+            );
+            assert!(first.get("context_window").is_some());
+            // 无认证 → 不附加 available_keys
+            assert!(
+                first.get("available_keys").is_none(),
+                "无认证不应有 available_keys"
+            );
+        }
+    }
+
+    /// P3-A 补充：带有效 Bearer → data[].available_keys 存在
+    #[tokio::test]
+    async fn v1_models_with_token_adds_available_keys() {
+        let st = test_state("v1mk", "test-plan", "http://127.0.0.1:9");
+        let key = login_key(st.clone()).await;
+        let resp = router()
+            .with_state(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/models")
+                    .header("authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let data = v["data"].as_array().unwrap();
+        assert!(!data.is_empty());
+        assert!(
+            data[0].get("available_keys").is_some(),
+            "带 token 附加 available_keys"
+        );
     }
 
     #[tokio::test]

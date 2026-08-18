@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// 打开（或创建）数据库并执行幂等迁移 + dev 种子
 pub fn open(path: &str) -> Result<Connection> {
@@ -189,6 +189,14 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             reviewed_at TEXT
         );",
     )?;
+    // v5（rant 2026-08-18T18:10:18）：models.context_window（OpenAI 兼容 /v1/models 用，
+    // 默认 1048576；seed 时以 context_length 覆盖）
+    ensure_column(
+        conn,
+        "models",
+        "context_window",
+        "context_window INTEGER NOT NULL DEFAULT 1048576",
+    )?;
     // schema_version：INSERT OR REPLACE 保证幂等
     let v: i64 = conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
@@ -366,14 +374,22 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                 )
             });
         conn.execute(
-            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) \
+            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, context_window, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now')) \
              ON CONFLICT(provider, model) DO UPDATE SET \
                currency = excluded.currency, \
                input_per_m = excluded.input_per_m, \
                output_per_m = excluded.output_per_m, \
+               context_window = excluded.context_window, \
                updated_at = datetime('now')",
-            rusqlite::params![provider, model, currency, input, output],
+            rusqlite::params![
+                provider,
+                model,
+                currency,
+                input,
+                output,
+                m["context_length"].as_i64().unwrap_or(1048576)
+            ],
         )?;
         n += 1;
     }
