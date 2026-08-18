@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// 打开（或创建）数据库并执行幂等迁移 + dev 种子
 pub fn open(path: &str) -> Result<Connection> {
@@ -51,6 +51,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             encrypted_key TEXT NOT NULL,
             quota         REAL NOT NULL DEFAULT 0,
             used          REAL NOT NULL DEFAULT 0,
+            available_days  TEXT NOT NULL DEFAULT '',
+            available_start TEXT NOT NULL DEFAULT '',
+            available_end   TEXT NOT NULL DEFAULT '',
+            note            TEXT NOT NULL DEFAULT '',
             created_at    TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS api_keys (
@@ -103,6 +107,26 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             ON models(provider, model);
         "#,
     )?;
+    // v2：为旧库补 available_* 列（新建库已在建表语句里）
+    ensure_column(
+        conn,
+        "keys",
+        "available_days",
+        "available_days TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "keys",
+        "available_start",
+        "available_start TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "keys",
+        "available_end",
+        "available_end TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(conn, "keys", "note", "note TEXT NOT NULL DEFAULT ''")?;
     // schema_version：INSERT OR REPLACE 保证幂等
     let v: i64 = conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
@@ -114,6 +138,45 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// 幂等补列：列不存在才 ALTER TABLE ADD COLUMN
+fn ensure_column(conn: &Connection, table: &str, column: &str, ddl: &str) -> Result<()> {
+    let sql = format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1");
+    let exists: bool = conn
+        .prepare(&sql)?
+        .exists([column])
+        .with_context(|| format!("检查列 {table}.{column} 失败"))?;
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {ddl}"), [])
+            .with_context(|| format!("为 {table} 添加列 {column} 失败"))?;
+    }
+    Ok(())
+}
+
+/// 上游 key 加密迁移：旧明文占位（非 v1: 前缀）→ 启动时自动加密
+/// 返回迁移条数；已加密 / 已迁移的 key 原样保留
+pub fn migrate_key_encryption(conn: &Connection, crypto: &crate::crypto::Crypto) -> Result<usize> {
+    let mut stmt = conn.prepare("SELECT id, encrypted_key FROM keys")?;
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut n = 0usize;
+    for (id, stored) in rows {
+        if stored.starts_with(crate::crypto::PREFIX) {
+            continue; // 已是 v1 密文
+        }
+        let cipher = crypto.encrypt(stored.as_bytes())?;
+        conn.execute(
+            "UPDATE keys SET encrypted_key = ?1 WHERE id = ?2",
+            rusqlite::params![cipher, id],
+        )?;
+        n += 1;
+    }
+    if n > 0 {
+        log::info!("密钥加密迁移完成：{n} 条明文 key 已加密");
+    }
+    Ok(n)
 }
 
 /// dev 种子：demo 用户（demo@aitokenpool.local / demo1234，argon2）+ 点数账户 + 示例上游 key
@@ -288,6 +351,82 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
             .unwrap();
         assert_eq!(cnt, cnt2, "upsert 不产生重复行");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn v2_migration_adds_available_and_note_columns() {
+        // 模拟 v1 旧库：建表后不含 available_* / note 列 → migrate 幂等补列
+        let p = std::env::temp_dir().join(format!("atp_v1_{}_{}.db", std::process::id(), "v1"));
+        let _ = std::fs::remove_file(&p);
+        let conn = Connection::open(&p).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                plan TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'on',
+                owner_id INTEGER NOT NULL,
+                encrypted_key TEXT NOT NULL,
+                quota REAL NOT NULL DEFAULT 0,
+                used REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key) VALUES ('t','p','m','on',1,'sk-plain');",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        // 补列成功且旧数据保留
+        let row: (String, String, String, String) = conn
+            .query_row(
+                "SELECT available_days, available_start, available_end, note FROM keys WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "");
+        assert_eq!(row.3, "");
+        let v: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 2, "旧库迁移后版本应为 2");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn key_encryption_migration_encrypts_plaintext() {
+        let crypto = crate::crypto::Crypto::new([11u8; 32]);
+        let (conn, p) = tmp_db("kenc");
+        // 手工插入明文占位 key（模拟 v1 遗留）
+        conn.execute(
+            "INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key) VALUES ('t','p','m','on',1,'sk-placeholder-encrypted')",
+            [],
+        )
+        .unwrap();
+        let n = migrate_key_encryption(&conn, &crypto).expect("迁移成功");
+        assert!(n >= 1, "至少迁移一条");
+        let stored: String = conn
+            .query_row(
+                "SELECT encrypted_key FROM keys WHERE provider = 't'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            stored.starts_with(crate::crypto::PREFIX),
+            "已加密: {stored}"
+        );
+        assert_eq!(
+            crypto.decrypt(&stored).unwrap(),
+            b"sk-placeholder-encrypted",
+            "迁移后可解密还原原文"
+        );
+        // 幂等：二次迁移不再变化
+        let n2 = migrate_key_encryption(&conn, &crypto).expect("二次迁移");
+        assert_eq!(n2, 0, "已加密的 key 不再重复迁移");
         drop(conn);
         let _ = std::fs::remove_file(p);
     }

@@ -13,6 +13,7 @@
 mod auth;
 mod billing;
 mod config;
+mod crypto;
 mod dao;
 mod db;
 mod gateway;
@@ -56,8 +57,15 @@ async fn main() -> anyhow::Result<()> {
     let conn = db::open(&db_path)?;
     db::seed_models(&conn, &cfg)?;
 
+    // P0-C：主密钥 + 旧明文 key 加密迁移
+    let crypto = crypto::Crypto::from_config(&cfg.server.master_key);
+    let migrated = db::migrate_key_encryption(&conn, &crypto)?;
+    if migrated > 0 {
+        log::info!("已加密迁移 {migrated} 条上游 key");
+    }
+
     let cfg = Arc::new(cfg);
-    let state = routes::AppState::new(conn, cfg);
+    let state = routes::AppState::new(conn, cfg, crypto);
     let app = routes::router()
         .with_state(state)
         .layer(tower_http::trace::TraceLayer::new_for_http());
