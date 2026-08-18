@@ -139,11 +139,33 @@ pub async fn login(
     })))
 }
 
-/// 组装路由
+/// GET /api/me：当前登录用户信息（P2-A 前端会话）→ {id, email, name, role}
+pub async fn me(
+    State(st): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let (email, name, role): (String, String, String) = conn
+        .query_row(
+            "SELECT email, name, role FROM users WHERE id = ?1",
+            [auth.user_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(internal)?;
+    Ok(Json(serde_json::json!({
+        "id": auth.user_id,
+        "email": email,
+        "name": name,
+        "role": role,
+    })))
+}
+
+/// 组装路由：API 路由优先，其余请求回退到 ui/ 静态托管（P2-A）
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/api/auth/login", post(login))
+        .route("/api/me", get(me))
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))
         .route("/v1/chat/completions", post(gateway::chat_completions))
         .route("/anthropic/v1/messages", post(gateway::anthropic_messages))
@@ -158,6 +180,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/admin/credits", post(admin::credits))
         .route("/api/admin/users", get(admin::users))
         .route("/api/admin/usage", get(admin::usage))
+        // P2-A：静态托管（ui/ 目录；API 路由优先，未命中回退到文件服务）
+        .fallback_service(tower_http::services::ServeDir::new("ui"))
 }
 
 #[cfg(test)]
@@ -428,5 +452,38 @@ mod tests {
         let (_, body2) = get(st.clone(), "/api/wallet", Some(&demo_bearer)).await;
         let v2: serde_json::Value = serde_json::from_str(&body2).unwrap();
         assert_eq!(v2["gift_balance"], 1.0, "同天不重复: {body2}");
+    }
+
+    #[tokio::test]
+    async fn static_hosting_serves_ui_index() {
+        // P2-A：GET / → ui/index.html（200 + html）；GET /css/style.css → 200
+        let st = test_state("serve");
+        let (s, body) = get(st.clone(), "/", None).await;
+        assert_eq!(s, StatusCode::OK, "根路径应返回 index.html: {body:?}");
+        assert!(
+            body.contains("<!DOCTYPE html>") || body.contains("<html"),
+            "返回内容应为 HTML: {}",
+            &body[..body.len().min(80)]
+        );
+        let (s, _) = get(st, "/css/style.css", None).await;
+        assert_eq!(s, StatusCode::OK, "静态资源应 200");
+    }
+
+    #[tokio::test]
+    async fn me_returns_user_info_and_role() {
+        let st = test_state("me");
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let (s, body) = get(st.clone(), "/api/me", Some(&demo_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "me 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["email"], "demo@aitokenpool.local");
+        assert_eq!(v["role"], "user");
+        assert!(v["name"].as_str().is_some(), "含 name: {body}");
+        // admin 登录 → role=admin
+        let admin_bearer = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        let (s, body) = get(st, "/api/me", Some(&admin_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "admin me 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["role"], "admin");
     }
 }

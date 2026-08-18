@@ -452,11 +452,15 @@
   function renderNav() {
     const nav = $("#nav");
     nav.innerHTML = "";
+    // P2-A：角色视图按当前用户 role 显隐（admin 项仅 role=admin 可见）
+    const roleNav = NAV
+      .map((g) => ({ g: g.g, items: g.items.filter((it) => !it.role || D.USER.role === it.role) }))
+      .filter((g) => g.items.length > 0);
     const groups = isGuest
       ? [{ g: "游客浏览", items: [
           { id: "marketplace", icon: "marketplace", label: "模型市场 Marketplace" },
         ]}]
-      : NAV;
+      : roleNav;
     groups.forEach((group) => {
       const g = document.createElement("div");
       g.className = "nav-group";
@@ -487,6 +491,11 @@
     // 游客限制（US-1）：非市场页面 → 提示需登录
     if (isGuest && !GUEST_VIEWS.includes(id)) {
       toast("请先登录后再访问「" + (VIEW_TITLE[id] || id) + "」", "error");
+      return;
+    }
+    // 角色限制（P2-A）：管理视图仅 admin（hash 直达 / 快捷键也兜底）
+    if (id === "admin" && D.USER.role !== "admin") {
+      toast("管理视图仅管理员可见", "error");
       return;
     }
     activeView = id;
@@ -1743,14 +1752,52 @@
     $("#login-view").classList.remove("hidden");
   }
 
+  /* ---------------- 会话（P2-A：/api/me + /api/wallet） ---------------- */
+
+  // 拉当前用户信息 + 钱包余额（替代 mock D.USER.*）；余额失败 → 0 + 红色提示
+  async function loadSession() {
+    const me = await api.get("/api/me");
+    D.USER.name = (me && me.name) || (me && me.email ? me.email.split("@")[0] : "用户");
+    D.USER.email = (me && me.email) || D.USER.email;
+    D.USER.role = (me && me.role) || "user";
+    try {
+      const w = await api.get("/api/wallet");
+      D.USER.balance = (w && typeof w.available === "number") ? w.available : (w ? w.balance : 0);
+    } catch (e) {
+      D.USER.balance = 0;
+      toast("余额加载失败，显示 0", "error");
+    }
+  }
+
+  // 进入主界面（登录成功 / 会话恢复共用）
+  function enterApp() {
+    isGuest = false;
+    pendingHashView = null;
+    document.querySelector(".user-chip").classList.remove("hidden");
+    $("#login-view").classList.add("hidden");
+    $("#app").classList.remove("hidden");
+    $("#side-balance").textContent = D.fmt(D.USER.balance);
+    renderNav();
+    // URL hash 路由：登录后恢复刷新前的视图（无 hash 则仪表盘）
+    switchView(viewFromHash() || "dashboard");
+    maybeStartTour(); // 首次登录引导（rant 20:46:57 A：atp-tour-done 未标记才触发）
+  }
+
+  // api.js 401 钩子：token 失效 → 清 token 回登录页
+  window.__atpLogout = () => {
+    api.clearToken();
+    exitGuest();
+    toast("登录已过期，请重新登录", "error");
+  };
+
   /* ---------------- 事件 ---------------- */
 
   function bindEvents() {
     // 游客浏览（US-1：登录页入口 → 免登录进入市场）
     $("#guest-browse-btn").addEventListener("click", enterGuest);
 
-    // 登录（单一入口，角色由账号决定；rant 20:39:30 G：空邮箱/密码行内错误 + 记住我）
-    $("#login-form").addEventListener("submit", (e) => {
+    // 登录（P2-A：对接 POST /api/auth/login；失败行内报错；成功存 token + 拉会话）
+    $("#login-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const email = $("#login-email").value.trim();
       const pass = $("#login-pass").value;
@@ -1760,22 +1807,33 @@
       if (!pass) { setFieldError($("#login-pass"), "请输入密码"); firstErr = firstErr || $("#login-pass"); }
       else clearFieldError($("#login-pass"));
       if (firstErr) { firstErr.focus(); return; }
-      // 记住我（原型：仅记忆演示账号偏好，localStorage）
+      // 记住我（P2-A：token 存 localStorage 长期 / sessionStorage 关闭失效）
       try { localStorage.setItem("atp-remember", $("#login-remember").checked ? "1" : "0"); } catch (err) { /* 隐私模式忽略 */ }
-      isGuest = false;
-      document.querySelector(".user-chip").classList.remove("hidden");
-      $("#login-view").classList.add("hidden");
-      $("#app").classList.remove("hidden");
-      // URL hash 路由：登录后恢复刷新前的视图（无 hash 则仪表盘）
-      switchView(pendingHashView || "dashboard");
-      pendingHashView = null;
-      maybeStartTour(); // 首次登录引导（rant 20:46:57 A：atp-tour-done 未标记才触发）
-      toast("欢迎回来，阿零（演示账号）", "info");
+      const btn = e.target.querySelector('button[type="submit"]');
+      if (btn) { btn.disabled = true; btn.textContent = "登录中…"; }
+      try {
+        const r = await api.post("/api/auth/login", { email, password: pass });
+        api.saveToken(r.api_key);
+        await loadSession(); // /api/me → 用户信息；/api/wallet → 余额
+        enterApp();
+        toast("欢迎回来，" + (D.USER.name || email), "success");
+      } catch (err) {
+        if (err && err.status === 401) {
+          setFieldError($("#login-pass"), "邮箱或密码错误");
+          clearFieldError($("#login-email"));
+          $("#login-pass").focus();
+        } else {
+          toast((err && err.message) || "登录失败，请稍后重试", "error");
+        }
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "登 录"; }
+      }
     });
 
     $("#logout-btn").addEventListener("click", () => {
+      api.clearToken();
       exitGuest();
-      toast("已退出（静态演示）", "info");
+      toast("已退出登录", "info");
     });
 
     // 市场筛选（搜索防抖 ~150ms + 高亮 + 清空按钮，rant 18:06:09 D）
@@ -2059,6 +2117,18 @@
     renderView("dashboard");
     $("#side-balance").textContent = D.fmt(D.USER.balance);
 
+    // P2-A 会话恢复：已有 token → 拉 /api/me + /api/wallet 直接进 app；401 自动清 token 回登录页
+    (async () => {
+      if (!api.getToken()) return;
+      try {
+        await loadSession();
+        enterApp();
+      } catch (e) {
+        // 401 已由 api.js 清 token；其余错误保持登录页并提示
+        if (!(e && e.status === 401)) toast("会话恢复失败，请重新登录", "error");
+      }
+    })();
+
     // 主题（rant 18:06:09 B）：localStorage 记忆，首次加载尊重 prefers-color-scheme
     const savedTheme = (() => { try { return localStorage.getItem("atp-theme"); } catch (e) { return null; } })();
     const initialTheme = savedTheme === "light" || savedTheme === "dark"
@@ -2110,7 +2180,7 @@
       }
       if (e.key >= "1" && e.key <= "7") {
         const item = NAV_ORDER[Number(e.key) - 1];
-        if (item) switchView(item.id);
+        if (item && (!item.role || D.USER.role === item.role)) switchView(item.id);
       }
     });
     $("#help-close").addEventListener("click", () => toggleHelp(false));
