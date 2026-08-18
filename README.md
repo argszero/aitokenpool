@@ -17,7 +17,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 
 ## 状态
 
-后端 + 前端已全部实现，当前版本 **v0.3.3**（70/70 测试全绿）：
+后端 + 前端已全部实现，当前版本 **v0.4.0**（92/92 测试全绿）：
 
 - ✅ **P0-A（v0.2.0）**：后端骨架 + TOML 配置（`Config::validate`：points_per_unit>0 / plan→provider 存在 / endpoints≥1 / protocol 枚举）+ SQLite 数据层（幂等迁移 v4 + demo/admin/ops 种子）+ 认证（argon2 + Bearer API Key）+ API Key 端点
 - ✅ **P0-B（v0.2.1）**：网关转发（OpenAI Chat Completions + Anthropic Messages）+ 路由故障转移（粘性 / 健康冷却 / 3 次切换上限）+ 计量账本（点数计算、90/10 分成、事务性 settle）
@@ -26,6 +26,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 - ✅ **P2-A（v0.3.1）**：前端对接——后端静态托管 `ui/` + API 客户端层 + 登录/会话对接（按 role 显隐管理视图）
 - ✅ **P2-B（v0.3.2）**：各页面数据对接真实 API——市场 / 共享 / 交易 / 仪表盘 / API Key 管理全接后端
 - ✅ **P2-C（v0.3.3）**：部门/成员管理 + 加额审批 + 用量报表（users/models/departments 三组聚合）+ 运营者视图（runtime/credits/users）
+- ✅ **P3-A（v0.4.0）**：网关三协议互转——OpenAI Chat / OpenAI Responses / Anthropic 任一端点可调用只暴露其他协议的 plan（自动转换，同协议透传零损耗）+ 新增 `/v1/responses` 端点
 
 `ui/` 已由纯静态原型升级为**对接真实 API**（登录、钱包、市场、共享、交易、设置、管理、运营全部真实数据），由后端 `ServeDir` 静态托管，无需单独部署前端。
 
@@ -68,10 +69,10 @@ open http://localhost:8080/                        # 浏览器访问
 
 ## API 端点（Bearer 认证）
 
-- `GET /healthz` → `{"status":"ok","version":"0.3.3"}`
+- `GET /healthz` → `{"status":"ok","version":"0.4.0"}`
 - `POST /api/auth/login` → `{api_key}`；`GET /api/me` → `{id,email,name,role}`
 - `POST|GET /api/api-keys`（key 脱敏 `atk_live_****xxxx`）；`DELETE /api/api-keys/:id`（撤销）
-- `POST /v1/chat/completions` / `POST /anthropic/v1/messages`（网关，支持 SSE 流式）
+- `POST /v1/chat/completions` / `POST /anthropic/v1/messages` / `POST /v1/responses`（网关，三协议互转；SSE 流式同协议透传）
 - `GET /api/models`（模型市场）
 - `POST|GET /api/sharings` + `PATCH /api/sharings/:id`（上架 / 列表 / 暂停 / 恢复 / 删除）
 - `GET /api/wallet` / `GET /api/transactions?type=` / `GET /api/dashboard`（钱包 / 交易 / 仪表盘）
