@@ -6,13 +6,17 @@
 //! 架构定论见 docs/architecture.md（中心化方案 A：平台托管 key + 平台执行调用）
 //!
 //! P0-A（rant 2026-08-17T22:21:52）：服务骨架 + 配置加载 + SQLite 数据层 + 认证。
+//! P0-B（rant 2026-08-18T09:55:57）：网关转发 + 路由故障转移 + 计量账本闭环。
 //! 启动：cargo run -- --config config/config.toml（默认 config/config.toml，
 //! 不存在时提示复制 config.example.toml）。
 
 mod auth;
+mod billing;
 mod config;
 mod dao;
 mod db;
+mod gateway;
+mod router;
 mod routes;
 
 use std::sync::Arc;
@@ -50,8 +54,10 @@ async fn main() -> anyhow::Result<()> {
     let db_path = cfg.server.db_path.clone();
     log::info!("打开数据库: {db_path}");
     let conn = db::open(&db_path)?;
+    db::seed_models(&conn, &cfg)?;
 
-    let state = routes::AppState::new(conn, Arc::new(cfg));
+    let cfg = Arc::new(cfg);
+    let state = routes::AppState::new(conn, cfg);
     let app = routes::router()
         .with_state(state)
         .layer(tower_http::trace::TraceLayer::new_for_http());
