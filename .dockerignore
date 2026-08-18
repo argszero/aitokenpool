@@ -1,0 +1,9 @@
+.git/
+.github/
+target/
+data/
+config/config.toml
+.emrg/
+docs/
+*.md
+.DS_Store
