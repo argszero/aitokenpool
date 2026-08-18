@@ -1,6 +1,6 @@
 [package]
 name = "aitokenpool"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "AI Token 共享池 — 企业 key 池 + 公共共享市场"
 license = "MIT"
@@ -20,6 +20,9 @@ reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"] }
 
 # SSE 流式（bytes_stream + Body::from_stream）
 futures-util = "0.3"
+# SSE 流式协议转换（P3-B：跨协议流事件互转）
+async-stream = "0.3"
+bytes = "1"
 
 # 上游 key 加密（AES-256-GCM，RustCrypto）
 aes-gcm = "0.10"
