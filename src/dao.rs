@@ -69,12 +69,14 @@ pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::
     Ok(out)
 }
 
-/// Bearer 认证：按 key 查归属用户 + api_key id → Some((user_id, api_key_id))
-pub fn find_api_key_user_and_id(conn: &Connection, key: &str) -> Option<(i64, i64)> {
+/// Bearer 认证：按 key 查归属用户 + api_key id + 角色 → Some((user_id, api_key_id, role))
+pub fn find_api_key_user_and_id(conn: &Connection, key: &str) -> Option<(i64, i64, String)> {
     conn.query_row(
-        "SELECT user_id, id FROM api_keys WHERE key_value = ?1 AND status = 'active'",
+        "SELECT a.user_id, a.id, u.role FROM api_keys a \
+         JOIN users u ON u.id = a.user_id \
+         WHERE a.key_value = ?1 AND a.status = 'active'",
         [key],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )
     .ok()
 }
@@ -111,14 +113,20 @@ pub fn find_keys_by_model(conn: &Connection, model: &str) -> Result<Vec<KeyRow>>
     Ok(out)
 }
 
-/// 用户点数余额（无账户按 0）
-pub fn get_balance(conn: &Connection, user_id: i64) -> f64 {
+/// 用户可用余额拆分 → (permanent, gift)；可用总额 = 两者之和
+pub fn get_balances(conn: &Connection, user_id: i64) -> (f64, f64) {
     conn.query_row(
-        "SELECT balance FROM quotas WHERE user_id = ?1",
+        "SELECT balance, gift_balance FROM quotas WHERE user_id = ?1",
         [user_id],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )
-    .unwrap_or(0.0)
+    .unwrap_or((0.0, 0.0))
+}
+
+/// 用户可用余额（赠送 + 永久）——网关预检口径
+pub fn get_available_balance(conn: &Connection, user_id: i64) -> f64 {
+    let (permanent, gift) = get_balances(conn, user_id);
+    permanent + gift
 }
 
 /// 模型单价（按 provider+model）→ (input_per_m, output_per_m, currency)

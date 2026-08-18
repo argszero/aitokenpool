@@ -9,6 +9,7 @@
 //! - POST /v1/chat/completions / POST /anthropic/v1/messages（网关）
 //! - GET /api/models（市场）
 
+pub mod admin;
 pub mod api_keys;
 pub mod sharing;
 pub mod wallet;
@@ -72,10 +73,12 @@ pub fn internal(e: impl std::fmt::Display) -> ApiErr {
 }
 
 /// 已认证用户（Bearer 提取器）：无效 key → 401
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: i64,
     pub api_key_id: i64,
+    /// 用户角色：user | admin（P1 起 require_admin 使用）
+    pub role: String,
 }
 
 #[axum::async_trait]
@@ -94,11 +97,12 @@ impl FromRequestParts<AppState> for AuthUser {
         let key = header.strip_prefix("Bearer ").ok_or_else(unauthorized)?;
         let conn = state.db.lock().map_err(|_| internal("db lock poisoned"))?;
         match dao::find_api_key_user_and_id(&conn, key) {
-            Some((user_id, api_key_id)) => {
+            Some((user_id, api_key_id, role)) => {
                 let _ = dao::touch_api_key(&conn, key);
                 Ok(AuthUser {
                     user_id,
                     api_key_id,
+                    role,
                 })
             }
             None => Err(unauthorized()),
@@ -150,6 +154,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/wallet", get(wallet::wallet))
         .route("/api/transactions", get(wallet::transactions))
         .route("/api/dashboard", get(wallet::dashboard))
+        // P1：管理员（充值 / 成员列表 / 用量报表）
+        .route("/api/admin/credits", post(admin::credits))
+        .route("/api/admin/users", get(admin::users))
+        .route("/api/admin/usage", get(admin::usage))
 }
 
 #[cfg(test)]
@@ -302,5 +310,123 @@ mod tests {
     async fn api_keys_without_bearer_401() {
         let (s, _) = get(test_state("nobearer"), "/api/api-keys", None).await;
         assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+
+    /// 登录并返回 Bearer
+    async fn login_bearer(st: &AppState, email: &str, password: &str) -> String {
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/login",
+            &format!(r#"{{"email":"{email}","password":"{password}"}}"#),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "登录应成功: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        v["api_key"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn admin_credits_rejects_non_admin() {
+        let st = test_state("admin403");
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/credits",
+            r#"{"user_id":2,"amount":50}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "非 admin 应 403: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v["error"].as_str().is_some(), "返回错误信息");
+    }
+
+    #[tokio::test]
+    async fn admin_credits_recharges_permanent_and_writes_topup() {
+        let st = test_state("admincred");
+        let admin_bearer = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        // 充值前余额
+        let (s, body) = get(st.clone(), "/api/wallet", Some(&admin_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "admin 可看钱包: {body}");
+        // 给 demo（user_id=1）充 50 点
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/credits",
+            r#"{"user_id":1,"amount":50,"note":"P1 test"}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "充值应成功: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["amount"], 50.0);
+        assert_eq!(v["balance"], 12471.0 + 50.0, "demo 余额增加 50");
+        // transactions 出现 topup 记录（demo 视角）
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=topup",
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "topup 过滤应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let arr = v["items"].as_array().expect("items 为数组");
+        assert_eq!(arr.len(), 1, "一条 topup 记录: {body}");
+        assert_eq!(arr[0]["pts"], 50.0);
+        // 管理员给自己的充值非法 amount → 400
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/credits",
+            r#"{"user_id":1,"amount":-5}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "负数金额应 400: {body}");
+    }
+
+    #[tokio::test]
+    async fn admin_users_and_usage_lists() {
+        let st = test_state("adminlist");
+        let admin_bearer = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        // users：demo + admin 都在列表
+        let (s, body) = get(st.clone(), "/api/admin/users", Some(&admin_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "users 应 200: {body}");
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(arr.len(), 2, "demo + admin: {body}");
+        assert!(arr.iter().any(|u| u["role"] == "admin"), "admin 在列表中");
+        assert!(
+            arr.iter().any(|u| u["email"] == "demo@aitokenpool.local"),
+            "demo 在列表中"
+        );
+        // usage：每用户本月聚合
+        let (s, body) = get(st.clone(), "/api/admin/usage", Some(&admin_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "usage 应 200: {body}");
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(arr.len(), 2);
+        assert!(
+            arr.iter().all(|u| u["month_tokens"] == 0.0),
+            "无调用时 tokens 为 0: {body}"
+        );
+        // 非 admin 访问 users → 403
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let (s, _) = get(st.clone(), "/api/admin/users", Some(&demo_bearer)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn wallet_shows_daily_gift_balance() {
+        let st = test_state("wallet_gift");
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        // demo 今天注册（seed 默认 created_at=now）→ 10 天窗口内 → 首次访问 wallet 补发 1 点
+        let (s, body) = get(st.clone(), "/api/wallet", Some(&demo_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "wallet 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["gift_balance"], 1.0, "当日赠送 1 点: {body}");
+        assert_eq!(v["balance"], 12471.0, "永久余额不变: {body}");
+        // 重复访问不重复赠送
+        let (_, body2) = get(st.clone(), "/api/wallet", Some(&demo_bearer)).await;
+        let v2: serde_json::Value = serde_json::from_str(&body2).unwrap();
+        assert_eq!(v2["gift_balance"], 1.0, "同天不重复: {body2}");
     }
 }
