@@ -71,8 +71,8 @@
       deepseek: "DeepSeek",
     },
 
-    // 当前用户（公共版）
-    USER: { name: "阿零", email: "demo@aitokenpool.local", balance: 12471 },
+    // 当前用户（公共版；P2-A 登录后由 /api/me 覆盖 name/email/role、/api/wallet 覆盖 balance）
+    USER: { name: "阿零", email: "demo@aitokenpool.local", role: "user", balance: 12471 },
 
     // 加额申请（US-20：企业成员申请 → 管理员批准 / 驳回；mock 内嵌数据）
     RAISE_REQUESTS: [
