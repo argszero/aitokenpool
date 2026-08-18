@@ -1,6 +1,6 @@
 [package]
 name = "aitokenpool"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "AI Token 共享池 — 企业 key 池 + 公共共享市场"
 license = "MIT"
@@ -9,7 +9,7 @@ rust-version = "1.86"
 
 [dependencies]
 # HTTP 服务器（复用 openlocalrouter 技术栈）
-axum = "0.7"
+axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }

@@ -69,14 +69,94 @@ pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::
     Ok(out)
 }
 
-/// Bearer 认证：按 key 查归属用户 → Some(user_id)
-pub fn find_user_by_api_key(conn: &Connection, key: &str) -> Option<i64> {
+/// Bearer 认证：按 key 查归属用户 + api_key id → Some((user_id, api_key_id))
+pub fn find_api_key_user_and_id(conn: &Connection, key: &str) -> Option<(i64, i64)> {
     conn.query_row(
-        "SELECT user_id FROM api_keys WHERE key_value = ?1 AND status = 'active'",
+        "SELECT user_id, id FROM api_keys WHERE key_value = ?1 AND status = 'active'",
         [key],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .ok()
+}
+
+/// 上游 key 行（路由/网关用）
+#[derive(Debug, Clone)]
+pub struct KeyRow {
+    pub id: i64,
+    pub provider: String,
+    pub plan: String,
+    pub owner_id: i64,
+    pub encrypted_key: String,
+}
+
+/// 查某模型的健康 key（status='on'）——路由候选集
+pub fn find_keys_by_model(conn: &Connection, model: &str) -> Result<Vec<KeyRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, provider, plan, owner_id, encrypted_key FROM keys \
+         WHERE model = ?1 AND status = 'on'",
+    )?;
+    let rows = stmt.query_map([model], |r| {
+        Ok(KeyRow {
+            id: r.get(0)?,
+            provider: r.get(1)?,
+            plan: r.get(2)?,
+            owner_id: r.get(3)?,
+            encrypted_key: r.get(4)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// 用户点数余额（无账户按 0）
+pub fn get_balance(conn: &Connection, user_id: i64) -> f64 {
+    conn.query_row(
+        "SELECT balance FROM quotas WHERE user_id = ?1",
+        [user_id],
+        |r| r.get(0),
+    )
+    .unwrap_or(0.0)
+}
+
+/// 模型单价（按 provider+model）→ (input_per_m, output_per_m, currency)
+pub fn get_model_price(
+    conn: &Connection,
+    provider: &str,
+    model: &str,
+) -> Option<(f64, f64, String)> {
+    conn.query_row(
+        "SELECT input_per_m, output_per_m, currency FROM models WHERE provider = ?1 AND model = ?2",
+        rusqlite::params![provider, model],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .ok()
+}
+
+/// 市场页：models 表 + key 可用性（可用 key 数）
+pub fn list_models_with_availability(conn: &Connection) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT m.provider, m.model, m.currency, m.input_per_m, m.output_per_m, \
+                (SELECT COUNT(*) FROM keys k WHERE k.model = m.model AND k.status = 'on') AS avail \
+         FROM models m ORDER BY m.provider, m.model",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(serde_json::json!({
+            "provider": r.get::<_, String>(0)?,
+            "model": r.get::<_, String>(1)?,
+            "currency": r.get::<_, String>(2)?,
+            "input_per_m": r.get::<_, f64>(3)?,
+            "output_per_m": r.get::<_, f64>(4)?,
+            "available_keys": r.get::<_, i64>(5)?,
+        }))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 /// 更新最近使用时间

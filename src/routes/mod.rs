@@ -1,9 +1,13 @@
-//! HTTP 路由装配：healthz + 认证 + API Key 管理
+//! HTTP 路由装配：healthz + 认证 + API Key 管理 + 网关/市场端点
 //!
 //! P0-A（rant 2026-08-17T22:21:52）：
 //! - GET /healthz → {"status":"ok","version":"0.2.0"}
 //! - POST /api/auth/login → 200 {api_key} / 401
 //! - POST /api/api-keys / GET /api/api-keys（Bearer 认证）
+//!
+//! P0-B（rant 2026-08-18T09:55:57）：
+//! - POST /v1/chat/completions / POST /anthropic/v1/messages（网关）
+//! - GET /api/models（市场）
 
 pub mod api_keys;
 
@@ -19,13 +23,16 @@ use serde::Deserialize;
 
 use crate::config::Config;
 use crate::dao;
+use crate::gateway;
+use crate::router::RouterState;
 
-/// 共享状态：数据库连接 + 配置
+/// 共享状态：数据库连接 + 配置 + 路由状态 + HTTP 客户端
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
-    #[allow(dead_code)] // 供后续 P0 网关路由阶段消费
     pub cfg: Arc<Config>,
+    pub router: Arc<RouterState>,
+    pub http: reqwest::Client,
 }
 
 impl AppState {
@@ -33,6 +40,11 @@ impl AppState {
         Self {
             db: Arc::new(Mutex::new(conn)),
             cfg,
+            router: Arc::new(RouterState::new()),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .expect("reqwest client 构建失败"),
         }
     }
 }
@@ -47,7 +59,7 @@ fn unauthorized() -> ApiErr {
     )
 }
 
-fn internal(e: impl std::fmt::Display) -> ApiErr {
+pub fn internal(e: impl std::fmt::Display) -> ApiErr {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "error": format!("{e}") })),
@@ -58,6 +70,7 @@ fn internal(e: impl std::fmt::Display) -> ApiErr {
 #[derive(Debug, Clone, Copy)]
 pub struct AuthUser {
     pub user_id: i64,
+    pub api_key_id: i64,
 }
 
 #[axum::async_trait]
@@ -75,10 +88,13 @@ impl FromRequestParts<AppState> for AuthUser {
             .unwrap_or("");
         let key = header.strip_prefix("Bearer ").ok_or_else(unauthorized)?;
         let conn = state.db.lock().map_err(|_| internal("db lock poisoned"))?;
-        match dao::find_user_by_api_key(&conn, key) {
-            Some(user_id) => {
+        match dao::find_api_key_user_and_id(&conn, key) {
+            Some((user_id, api_key_id)) => {
                 let _ = dao::touch_api_key(&conn, key);
-                Ok(AuthUser { user_id })
+                Ok(AuthUser {
+                    user_id,
+                    api_key_id,
+                })
             }
             None => Err(unauthorized()),
         }
@@ -120,6 +136,9 @@ pub fn router() -> Router<AppState> {
         .route("/healthz", get(healthz))
         .route("/api/auth/login", post(login))
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))
+        .route("/v1/chat/completions", post(gateway::chat_completions))
+        .route("/anthropic/v1/messages", post(gateway::anthropic_messages))
+        .route("/api/models", get(gateway::models))
 }
 
 #[cfg(test)]
@@ -135,6 +154,7 @@ mod tests {
         let _ = std::fs::remove_file(&p);
         let conn = crate::db::open(p.to_str().unwrap()).expect("open tmp db");
         let cfg = crate::config::Config::load("config/config.example.toml").unwrap();
+        crate::db::seed_models(&conn, &cfg).expect("seed models");
         AppState::new(conn, Arc::new(cfg))
     }
 
@@ -186,7 +206,7 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["status"], "ok");
-        assert_eq!(v["version"], "0.2.0");
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[tokio::test]

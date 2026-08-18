@@ -99,6 +99,8 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             cost       REAL NOT NULL DEFAULT 0,
             time       TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_models_provider_model
+            ON models(provider, model);
         "#,
     )?;
     // schema_version：INSERT OR REPLACE 保证幂等
@@ -150,6 +152,63 @@ pub fn seed(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// models 表种子（启动时 upsert）：data/models.example.json 价格大表 +
+/// config.price_overrides 官方价覆盖（覆盖同名模型）。文件缺失时仅告警不报错。
+pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()> {
+    let path = "data/models.example.json";
+    let raw = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("models 种子文件缺失（{path}），跳过：{e}");
+            return Ok(());
+        }
+    };
+    let v: serde_json::Value =
+        serde_json::from_str(&raw).with_context(|| format!("解析 {path} 失败"))?;
+    let models = v["models"].as_array().cloned().unwrap_or_default();
+
+    // 官方价覆盖：(provider, model) → (input_per_m, output_per_m, currency)
+    let mut overrides = std::collections::HashMap::new();
+    for o in &cfg.price_overrides {
+        overrides.insert(
+            (o.provider.clone(), o.model.clone()),
+            (o.input_per_m, o.output_per_m, o.currency.clone()),
+        );
+    }
+
+    let mut n = 0u32;
+    for m in models {
+        let provider = m["provider"].as_str().unwrap_or("").to_string();
+        let model = m["model"].as_str().unwrap_or("").to_string();
+        if provider.is_empty() || model.is_empty() {
+            continue;
+        }
+        let (input, output, currency) = overrides
+            .get(&(provider.clone(), model.clone()))
+            .cloned()
+            .unwrap_or_else(|| {
+                (
+                    m["input_per_m"].as_f64().unwrap_or(0.0),
+                    m["output_per_m"].as_f64().unwrap_or(0.0),
+                    m["currency"].as_str().unwrap_or("USD").to_string(),
+                )
+            });
+        conn.execute(
+            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) \
+             ON CONFLICT(provider, model) DO UPDATE SET \
+               currency = excluded.currency, \
+               input_per_m = excluded.input_per_m, \
+               output_per_m = excluded.output_per_m, \
+               updated_at = datetime('now')",
+            rusqlite::params![provider, model, currency, input, output],
+        )?;
+        n += 1;
+    }
+    log::info!("models seed：{n} 行 upsert（来源 {path} + price_overrides）");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +256,38 @@ mod tests {
             })
             .unwrap();
         assert!(n >= 1, "示例上游 key 已种子");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn seed_models_upserts_from_example_and_overrides() {
+        let (conn, p) = tmp_db("models");
+        let cfg = crate::config::Config::load("config/config.example.toml").unwrap();
+        seed_models(&conn, &cfg).expect("seed models");
+        // example 文件里的模型已入库
+        let cnt: i64 = conn
+            .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
+            .unwrap();
+        assert!(cnt >= 5, "models 已从 example 文件 seed，cnt={cnt}");
+        // deepseek-v4-pro 被 price_overrides 覆盖为官方价（0.435 / 0.87 USD）
+        let (input, output, currency): (f64, f64, String) = conn
+            .query_row(
+                "SELECT input_per_m, output_per_m, currency FROM models \
+                 WHERE provider = 'deepseek' AND model = 'deepseek-v4-pro'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!((input - 0.435).abs() < 1e-9, "input={input}");
+        assert!((output - 0.87).abs() < 1e-9, "output={output}");
+        assert_eq!(currency, "USD");
+        // 幂等：重复 seed 不报错且不产生重复行
+        seed_models(&conn, &cfg).expect("二次 seed");
+        let cnt2: i64 = conn
+            .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cnt, cnt2, "upsert 不产生重复行");
         drop(conn);
         let _ = std::fs::remove_file(p);
     }
