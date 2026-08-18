@@ -269,11 +269,16 @@ pub fn seed(conn: &Connection) -> Result<()> {
         [demo_id],
     )?;
     // 示例上游 key（不真实可用的占位：占位密钥 + deepseek paygo plan）
-    conn.execute(
-        "INSERT OR IGNORE INTO keys (provider, plan, model, status, owner_id, encrypted_key, quota, used) \
-         VALUES ('deepseek', 'deepseek-paygo', 'deepseek-v4-flash', 'on', ?1, 'sk-placeholder-encrypted', 1000, 0)",
-        [demo_id],
-    )?;
+    // 幂等：仅当 keys 表为空时插入一次（否则每次启动都会新增一条脏占位 key，
+    // 干扰路由随机选择；rant 2026-08-18T16:14:21 Bug 2）
+    let key_count: i64 = conn.query_row("SELECT COUNT(*) FROM keys", [], |r| r.get(0))?;
+    if key_count == 0 {
+        conn.execute(
+            "INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key, quota, used) \
+             VALUES ('deepseek', 'deepseek-paygo', 'deepseek-v4-flash', 'on', ?1, 'sk-placeholder-encrypted', 1000, 0)",
+            [demo_id],
+        )?;
+    }
 
     // 管理员账号（P1）：admin@aitokenpool.local / admin1234，role=admin
     let admin_id: Option<i64> = conn
@@ -423,6 +428,25 @@ mod tests {
             })
             .unwrap();
         assert!(n >= 1, "示例上游 key 已种子");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn seed_placeholder_key_is_idempotent() {
+        // rant 2026-08-18T16:14:21 Bug 2：占位 key 只允许在 keys 表为空时插入一次，
+        // 连续 seed（模拟多次启动）keys 数量不增长。
+        let p = std::env::temp_dir().join(format!("atp_test_seed_idem_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        let conn = Connection::open(&p).expect("open raw db");
+        migrate(&conn).expect("migrate");
+        seed(&conn).expect("seed 1st");
+        seed(&conn).expect("seed 2nd");
+        seed(&conn).expect("seed 3rd");
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, 1, "连续 seed 3 次 keys 仍只有 1 条占位 key");
         drop(conn);
         let _ = std::fs::remove_file(p);
     }

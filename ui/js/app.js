@@ -371,13 +371,14 @@
     }
   }
 
-  // Plan 提示：按量/订阅 + key 前缀 + 专属端点说明（来自 PLANS）
+  // Plan 提示：按量/订阅 + key 前缀 + 专属端点说明（来自 PLANS；登录后为 /api/plans）
   function showPlanHint(planId) {
     const el = $("#sf-plan-hint");
     if (!el) return;
-    const pl = D.PLANS.find((x) => x.id === planId);
+    const plans = Live.plans || D.PLANS;
+    const pl = plans.find((x) => x.id === planId);
     if (!pl) { el.textContent = ""; return; }
-    el.textContent = (pl.type === "api" ? "按量计价的 key" : "订阅 Plan") +
+    el.textContent = (pl.type === "paygo" ? "按量计价的 key" : "订阅 Plan") +
       (pl.keyPrefix ? " · 建议 key 前缀 " + pl.keyPrefix : "") +
       (pl.note ? " · " + pl.note : "");
   }
@@ -727,13 +728,15 @@
     // 表单下拉（厂商 → Plan → 模型 三级联动；Plan 中「API」= 按量计价的 key）
     const selP = $("#sf-provider");
     if (!selP.dataset.init) {
-      const planProviders = [...new Set(D.PLANS.map((pl) => pl.provider))];
+      // Bug 1 修复：优先用 /api/plans（后端 config [[plans]]），未登录/失败降级 data.js 对齐清单
+      const plans = Live.plans || D.PLANS;
+      const planProviders = [...new Set(plans.map((pl) => pl.provider))];
       selP.innerHTML = '<option value="">选择厂商</option>' + planProviders
         .map((p) => '<option value="' + p + '">' + (D.PROVIDER_LABELS[p] || p) + "</option>").join("");
       const selPlan = $("#sf-plan");
       const selM = $("#sf-model");
       const fillModels = () => {
-        const plan = D.PLANS.find((pl) => pl.id === selPlan.value);
+        const plan = plans.find((pl) => pl.id === selPlan.value);
         const p = plan ? plan.provider : selP.value;
         selM.innerHTML = '<option value="">选择模型</option>' + D.MODELS.filter((m) => !p || m.provider === p)
           .map((m) => '<option value="' + m.model + '">' + m.model + "</option>").join("");
@@ -741,7 +744,7 @@
       };
       const fillPlans = () => {
         const p = selP.value;
-        selPlan.innerHTML = '<option value="">选择 Plan</option>' + D.PLANS.filter((pl) => pl.provider === p)
+        selPlan.innerHTML = '<option value="">选择 Plan</option>' + plans.filter((pl) => pl.provider === p)
           .map((pl) => '<option value="' + pl.id + '">' + esc(pl.name) + "</option>").join("");
         showPlanHint("");
         fillModels();
@@ -776,6 +779,10 @@
     try {
       await liveLoad("sharings", "/api/sharings");
     } catch (e) { /* 降级 mock */ }
+    try {
+      // Bug 1 修复：上架表单 Plan 数据源改真实后端（config [[plans]] 单一真源）
+      await liveLoad("plans", "/api/plans");
+    } catch (e) { Live.plans = null; /* 降级 data.js 对齐清单 */ }
     renderSharing();
   }
 
@@ -2188,6 +2195,7 @@
   // 各视图真实数据缓存：登录且加载成功后使用；游客 / 失败降级 mock
   const Live = {
     models: null,        // GET /api/models 原始数组
+    plans: null,         // GET /api/plans 原始数组（上架表单数据源；rant 16:14:21 Bug 1）
     sharings: null,      // GET /api/sharings 原始数组
     transactions: null,  // GET /api/transactions → {items,total,...}
     wallet: null,        // GET /api/wallet
@@ -2451,7 +2459,7 @@
       const done = () => {
         const model = $("#sf-model").value;
         const planId = $("#sf-plan").value;
-        const plan = D.PLANS.find((pl) => pl.id === planId);
+        const plan = (Live.plans || D.PLANS).find((pl) => pl.id === planId);
         const quota = Number($("#sf-quota").value || 0);
         const key = $("#sf-key").value.trim();
         const note = $("#sf-note").value.trim();

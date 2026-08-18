@@ -43,22 +43,23 @@
 
     PROVIDERS: [...new Set(MODELS.map((m) => m.provider))],
 
-    // Plan 清单（内置国内已知 Plan，源自 docs/plan-api-matrix.md 与 config/config.example.toml）
-    // type: api=按量计价 key | coding=编码订阅 | token=统一计量订阅（Credits）
-    // 每个厂商至少含一个 type=api 的「API（按量）」plan；models 按 provider 关联 MODELS
+    // Plan 清单（与 config/config.example.toml 的 [[plans]] id 对齐 —— 上架表单 payload.plan
+    // 直接提交给后端，id 必须一致；rant 2026-08-18T16:14:21 Bug 1）
+    // type: paygo=按量计价 key | coding=编码订阅 | token=统一计量订阅（Credits）
+    // 登录后 renderSharing 优先用 GET /api/plans 覆盖此清单（后端单一真源）
     PLANS: [
-      { id: "aliyun-api",    provider: "aliyun-bailian", name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "按量计价" },
-      { id: "aliyun-token",  provider: "aliyun-bailian", name: "Token Plan",      type: "token",  keyPrefix: "sk-sp-",  note: "Credits 统一计量，专属 key sk-sp-，多工具通用" },
-      { id: "zhipu-api",     provider: "zhipu",          name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "open.bigmodel.cn 按量" },
-      { id: "zhipu-coding",  provider: "zhipu",          name: "GLM Coding Plan", type: "coding", keyPrefix: "sk-",    note: "专属端点 /api/coding/paas/v4、/api/anthropic" },
-      { id: "ark-api",       provider: "bytedance-ark",  name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "按量计价" },
-      { id: "ark-coding",    provider: "bytedance-ark",  name: "Coding Plan",     type: "coding", keyPrefix: "sk-",    note: "/api/coding/v3、/api/coding" },
-      { id: "ark-agent",     provider: "bytedance-ark",  name: "Agent Plan",      type: "token",  keyPrefix: "sk-",    note: "/api/plan/v3、/api/plan" },
-      { id: "kimi-api",      provider: "moonshot",       name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "api.kimi.com 按量" },
-      { id: "kimi-code",     provider: "moonshot",       name: "Kimi Code 会员",  type: "coding", keyPrefix: "sk-",    note: "api.kimi.com/coding/v1、/coding" },
-      { id: "minimax-api",   provider: "minimax",        name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "按量计价" },
-      { id: "minimax-coding",provider: "minimax",        name: "Coding Plan",     type: "coding", keyPrefix: "sk-cp-", note: "专属 key sk-cp-，/anthropic、/v1" },
-      { id: "deepseek-api",  provider: "deepseek",       name: "API（按量）",     type: "api",    keyPrefix: "sk-",    note: "无订阅 plan，仅按量；OpenAI/Anthropic/Responses 端点" },
+      { id: "deepseek-paygo",      provider: "deepseek",       name: "API（按量）",     type: "paygo",  keyPrefix: "sk-",    note: "无订阅 plan，仅按量；OpenAI/Anthropic/Responses 端点" },
+      { id: "zhipu-coding",        provider: "zhipu",          name: "GLM Coding Plan", type: "coding", keyPrefix: "",      note: "专属端点 /api/coding/paas/v4、/api/anthropic" },
+      { id: "zhipu-paygo",         provider: "zhipu",          name: "API（按量）",     type: "paygo",  keyPrefix: "sk-",    note: "open.bigmodel.cn 按量" },
+      { id: "aliyun-token-plan",   provider: "aliyun-bailian", name: "Token Plan",      type: "token",  keyPrefix: "sk-sp-", note: "Credits 统一计量，专属 key sk-sp-，多工具通用" },
+      { id: "aliyun-bailian-paygo",provider: "aliyun-bailian", name: "API（按量）",     type: "paygo",  keyPrefix: "sk-",    note: "dashscope 兼容模式按量" },
+      { id: "ark-coding",          provider: "bytedance-ark",  name: "Coding Plan",     type: "coding", keyPrefix: "",      note: "/api/coding/v3、/api/coding" },
+      { id: "ark-agent",           provider: "bytedance-ark",  name: "Agent Plan",      type: "token",  keyPrefix: "",      note: "/api/plan/v3、/api/plan" },
+      { id: "ark-paygo",           provider: "bytedance-ark",  name: "API（按量）",     type: "paygo",  keyPrefix: "sk-",    note: "按量计价" },
+      { id: "kimi-code",           provider: "moonshot",       name: "Kimi Code 会员",  type: "coding", keyPrefix: "",      note: "api.kimi.com/coding/v1、/coding" },
+      { id: "moonshot-paygo",      provider: "moonshot",       name: "API（按量）",     type: "paygo",  keyPrefix: "sk-",    note: "api.moonshot.cn 按量" },
+      { id: "minimax-coding",      provider: "minimax",        name: "Coding Plan",     type: "coding", keyPrefix: "sk-cp-", note: "专属 key sk-cp-，/anthropic、/v1" },
+      { id: "minimax-paygo",       provider: "minimax",        name: "API（按量）",     type: "paygo",  keyPrefix: "sk-",    note: "按量计价" },
     ],
 
     // 厂商显示名（上架表单 / 共享列表）

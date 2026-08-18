@@ -174,6 +174,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/chat/completions", post(gateway::chat_completions))
         .route("/anthropic/v1/messages", post(gateway::anthropic_messages))
         .route("/api/models", get(gateway::models))
+        .route("/api/plans", get(gateway::plans))
         // P0-C：共享 / 钱包 / 交易 / 仪表盘
         .route("/api/sharings", post(sharing::create).get(sharing::list))
         .route("/api/sharings/:id", axum::routing::patch(sharing::patch))
