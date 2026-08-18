@@ -47,10 +47,11 @@ pub fn create_api_key(conn: &Connection, user_id: i64, name: &str) -> Result<Str
     Ok(key)
 }
 
-/// 列出用户的 API Key（key 值脱敏）
+/// 列出用户的 API Key（key 值脱敏；P2-B 起只列 active，revoked 不再显示）
 pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::Value>> {
     let mut stmt = conn.prepare(
-        "SELECT id, key_value, name, status, created_at FROM api_keys WHERE user_id = ?1 ORDER BY id DESC",
+        "SELECT id, key_value, name, status, created_at FROM api_keys \
+         WHERE user_id = ?1 AND status = 'active' ORDER BY id DESC",
     )?;
     let rows = stmt.query_map([user_id], |r| {
         let raw: String = r.get(1)?;
@@ -67,6 +68,15 @@ pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::
         out.push(r?);
     }
     Ok(out)
+}
+
+/// 软删 API Key（P2-B：status → 'revoked'）；仅属主可删；返回是否删除成功
+pub fn revoke_api_key(conn: &Connection, user_id: i64, key_id: i64) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE api_keys SET status = 'revoked' WHERE id = ?1 AND user_id = ?2 AND status = 'active'",
+        rusqlite::params![key_id, user_id],
+    )?;
+    Ok(n == 1)
 }
 
 /// Bearer 认证：按 key 查归属用户 + api_key id + 角色 → Some((user_id, api_key_id, role))

@@ -513,30 +513,37 @@
   /* ---------------- 视图渲染 ---------------- */
 
   function renderView(id) {
-    if (id === "dashboard") renderDashboard();
-    else if (id === "marketplace") renderMarketplace();
-    else if (id === "sharing") renderSharing();
+    // P2-B：先渲染（缓存/mock），再异步拉真实数据刷新（登录时）
+    if (id === "dashboard") { renderDashboard(); if (loggedIn()) loadDashboard(); }
+    else if (id === "marketplace") { renderMarketplace(); if (loggedIn()) loadMarketplace(); }
+    else if (id === "sharing") { renderSharing(); if (loggedIn()) loadSharing(); }
     else if (id === "wallet") renderWallet();
-    else if (id === "transactions") renderTransactions();
-    else if (id === "settings") renderSettings();
-    else if (id === "admin") renderAdmin();
+    else if (id === "transactions") { renderTransactions(); if (loggedIn()) loadTransactions(); }
+    else if (id === "settings") { renderSettings(); if (loggedIn()) loadApiKeys(); }
+    else if (id === "admin") { renderAdmin(); if (loggedIn() && D.USER.role === "admin") loadAdmin(); }
   }
 
   /* --- 仪表盘 --- */
 
   function renderDashboard() {
-    const txs = D.TRANSACTIONS;
-    const monthUse = txs.filter((t) => t.type === "consume").reduce((a, t) => a + Math.abs(t.pts), 0);
-    const monthEarn = txs.filter((t) => t.type === "earn").reduce((a, t) => a + t.pts, 0);
+    // P2-B：登录 → 用 /api/wallet（month_use/month_earn）+ /api/dashboard（month/series）；否则 mock 聚合
+    let txs = D.TRANSACTIONS;
+    let monthUse = txs.filter((t) => t.type === "consume").reduce((a, t) => a + Math.abs(t.pts), 0);
+    let monthEarn = txs.filter((t) => t.type === "earn").reduce((a, t) => a + t.pts, 0);
+    if (Live.wallet) {
+      monthUse = Live.wallet.month_use || 0;
+      monthEarn = Live.wallet.month_earn || 0;
+    }
 
     $("#dash-stats").innerHTML = [
       stat("点数余额 Points", D.fmt(D.USER.balance), "", "accent"),
-      stat("本月用量 Usage", D.fmt(monthUse) + " 点", "共 " + txs.filter((t) => t.type === "consume").length + " 笔消费"),
-      stat("共享收益 Earnings", "+" + D.fmt(monthEarn) + " 点", D.SHARINGS.filter((s) => s.status === "on").length + " 个 key 上架中"),
-      stat("交易笔数 Trades", txs.length + " 笔", "含充值 / 提现 / 消费 / 收益 / 赠送"),
+      stat("本月用量 Usage", D.fmt(monthUse) + " 点", "消费合计"),
+      stat("共享收益 Earnings", "+" + D.fmt(monthEarn) + " 点", "本月收益"),
+      stat("交易笔数 Trades", (Live.transactions ? (Live.transactions.total || 0) : txs.length) + " 笔", "含充值 / 消费 / 收益 / 赠送"),
     ].join("");
 
-    const on = D.SHARINGS.filter((s) => s.status === "on");
+    const shares = Live.sharings ? sharingsToView(Live.sharings) : D.SHARINGS;
+    const on = shares.filter((s) => s.status === "on");
     $("#dash-sharings").innerHTML = on.map((s) =>
       '<div class="mini-item"><div><div class="t">' + esc(s.model) + "</div>" +
       '<div class="d">' + esc(s.plan || "API") + " · 已用 " + D.fmt(s.used) + " / " + D.fmt(s.quota) + " 点 · 单价 " + D.fmt(s.price) + " 点/1M</div></div>" +
@@ -552,6 +559,16 @@
         sparkline(cumSeries, { labels: days, fmt: (v) => "+" + D.fmt(v), stroke: "var(--ok)" }));
     }
     renderMonthChanges();
+  }
+
+  // P2-B：拉取仪表盘所需数据（wallet + dashboard + 交易数）
+  async function loadDashboard() {
+    if (!loggedIn()) return;
+    try { await refreshWallet(); } catch (e) { /* 降级 */ }
+    try {
+      Live.dashboard = await api.get("/api/dashboard");
+    } catch (e) { Live.dashboard = null; }
+    renderDashboard();
   }
 
   function stat(label, value, sub, cls) {
@@ -609,7 +626,9 @@
     const prov = $("#mk-provider").value;
     const sort = $("#mk-sort").value;
 
-    let list = D.MARKET.filter((m) =>
+    // P2-B：登录 → 用后端 /api/models；游客 / 未加载成功 → mock 列表（游客提示登录）
+    let list = Live.models ? modelsToView(Live.models) : D.MARKET;
+    list = list.filter((m) =>
       (!q || m.model.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q)) &&
       (!prov || m.provider === prov)
     );
@@ -617,8 +636,14 @@
     else if (sort === "price-desc") list = [...list].sort((a, b) => b.in - a.in);
     else if (sort === "ctx-desc") list = [...list].sort((a, b) => b.ctx - a.ctx);
 
+    // 游客提示（P2-B：游客浏览用静态列表 + 顶部提示）
+    const guestHint = isGuest
+      ? '<div class="empty-state compact" style="margin-bottom:10px">' + EMPTY_ICON +
+        '<p>游客模式：浏览静态模型列表</p><p class="muted">登录后可见真实数据并可消费</p></div>'
+      : "";
+
     $("#mk-count").textContent = list.length + " 个在售 key";
-    $("#mk-body").innerHTML = list.length ? list.map((m) =>
+    $("#mk-body").innerHTML = guestHint + (list.length ? list.map((m) =>
       "<tr><td data-label='厂商'>" +
       '<button type="button" class="row-expand" data-mk-expand="' + m.id + '" title="' + (mkExpanded === m.id ? "收起详情" : "展开详情") + '">' + (mkExpanded === m.id ? "−" : "+") + "</button>" +
       hl(m.provider, rawQ) + "</td><td data-label='模型'><strong>" + hl(m.model, rawQ) + "</strong></td>" +
@@ -630,9 +655,18 @@
       "<div class='muted' style='margin-top:4px;font-size:12px'>成功率 " + m.success + "%</div></td></tr>" +
       (mkExpanded === m.id ? '<tr class="mk-detail"><td colspan="7">' + mkDetailHtml(m) + "</td></tr>" : "")
     ).join("") : emptyRow(7, "没有匹配的模型", "试试调整搜索或筛选条件",
-      '<button type="button" class="btn btn-ghost" data-mk-clear-filters>清除筛选</button>');
+      '<button type="button" class="btn btn-ghost" data-mk-clear-filters>清除筛选</button>'));
     pulseTbody($("#mk-body"));
     renderRecent(); // 最近使用 chips（rant 20:46:57 D）
+  }
+
+  // P2-B：拉取市场真实模型（登录时）；失败保持 mock 不打断浏览
+  async function loadMarketplace() {
+    if (!loggedIn()) return;
+    try {
+      await liveLoad("models", "/api/models");
+    } catch (e) { /* 降级 mock：不打扰用户 */ }
+    renderMarketplace();
   }
 
   /* --- 可用时间段（rant 10:54:48：结构化字段，备注只作纯备注） --- */
@@ -671,14 +705,16 @@
   };
 
   function renderSharing() {
-    const on = D.SHARINGS.filter((s) => s.status === "on");
-    const totalEarned = D.SHARINGS.reduce((a, s) => a + s.earned, 0);
-    const totalUsed = D.SHARINGS.reduce((a, s) => a + s.used, 0);
+    // P2-B：登录 → 用后端 /api/sharings；否则 mock
+    const list = Live.sharings ? sharingsToView(Live.sharings) : D.SHARINGS;
+    const on = list.filter((s) => s.status === "on");
+    const totalEarned = list.reduce((a, s) => a + s.earned, 0);
+    const totalUsed = list.reduce((a, s) => a + s.used, 0);
 
     $("#share-stats").innerHTML = [
-      stat("上架中 Listings", on.length + " 个", D.SHARINGS.length + " 个历史"),
+      stat("上架中 Listings", on.length + " 个", list.length + " 个历史"),
       stat("累计收益 Earnings", "+" + D.fmt(totalEarned) + " 点", "全部 key"),
-      stat("已用量 Used", D.fmt(totalUsed) + " 点", D.SHARINGS.reduce((a, s) => a + s.quota, 0) + " 点总额度"),
+      stat("已用量 Used", D.fmt(totalUsed) + " 点", list.reduce((a, s) => a + s.quota, 0) + " 点总额度"),
     ].join("");
 
     // 表单下拉（厂商 → Plan → 模型 三级联动；Plan 中「API」= 按量计价的 key）
@@ -710,7 +746,7 @@
       fillPlans();
     }
 
-    $("#share-body").innerHTML = D.SHARINGS.length ? D.SHARINGS.map((s, i) =>
+    $("#share-body").innerHTML = list.length ? list.map((s, i) =>
       "<tr><td data-label='厂商 · Plan / 模型'><strong>" + esc(D.PROVIDER_LABELS[s.provider] || s.provider) + " · " + esc(s.plan || "API") +
       "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + " · " + esc(fmtAvailable(s)) + "</div></td>" +
       "<td data-label='Key' class='mono'>" + esc(maskKey(s.key)) + "</td>" +
@@ -727,17 +763,50 @@
     pulseTbody($("#share-body"));
   }
 
-  function deleteSharing(i) {
-    const s = D.SHARINGS[i];
+  // P2-B：拉取我的共享（登录时）
+  async function loadSharing() {
+    if (!loggedIn()) return;
+    try {
+      await liveLoad("sharings", "/api/sharings");
+    } catch (e) { /* 降级 mock */ }
+    renderSharing();
+  }
+
+  async function deleteSharing(i) {
+    const s = (Live.sharings ? sharingsToView(Live.sharings) : D.SHARINGS)[i];
     if (!s) return;
+    if (Live.sharings && s.id) {
+      try {
+        await api.patch("/api/sharings/" + s.id, { status: "off" }); // 软删
+        await loadSharing();
+        toast("已删除 " + s.model + " 的 key（彻底下架）", "success");
+        return;
+      } catch (err) {
+        toast((err && err.message) || "删除失败", "error");
+        return;
+      }
+    }
     D.SHARINGS.splice(i, 1);
     renderSharing();
     if (activeView === "dashboard") renderDashboard();
     toast("已删除 " + s.model + " 的 key（彻底下架）", "success");
   }
 
-  function toggleSharing(i) {
-    const s = D.SHARINGS[i];
+  async function toggleSharing(i) {
+    const s = (Live.sharings ? sharingsToView(Live.sharings) : D.SHARINGS)[i];
+    if (!s) return;
+    if (Live.sharings && s.id) {
+      const next = s.status === "on" ? "paused" : "on";
+      try {
+        await api.patch("/api/sharings/" + s.id, { status: next });
+        await loadSharing();
+        toast(next === "paused" ? "已暂停 " + s.model + " 的共享" : "已恢复 " + s.model + " 的共享", "success");
+        return;
+      } catch (err) {
+        toast((err && err.message) || "操作失败", "error");
+        return;
+      }
+    }
     if (s.status === "on") { s.status = "paused"; toast("已暂停 " + s.model + " 的共享", "success"); }
     else if (s.status === "paused") { s.status = "on"; toast("已恢复 " + s.model + " 的共享", "success"); }
     else { s.status = "on"; s.quota = 50000; s.used = 0; toast("已重新上架 " + s.model, "success"); }
@@ -823,22 +892,40 @@
   }
 
   function renderMonthChanges() {
-    const sums = {};
-    D.TRANSACTIONS.forEach((t) => { sums[t.type] = (sums[t.type] || 0) + t.pts; });
-    const net = D.TRANSACTIONS.reduce((a, t) => a + t.pts, 0);
-    const rows = MONTH_TYPE_LABELS
-      .filter(([k]) => sums[k])
-      .map(([k, label]) => monthChangeItem(label, sums[k], false));
+    let rowsHtml = "";
+    let net = 0;
+    let sparkData = null;
+    let sparkLabels = null;
+    if (Live.dashboard) {
+      // P2-B：/api/dashboard month 聚合 + series
+      const sums = {};
+      (Live.dashboard.month || []).forEach((m) => { sums[m.type] = (sums[m.type] || 0) + (m.pts || 0); });
+      net = Live.dashboard.net || 0;
+      rowsHtml = MONTH_TYPE_LABELS
+        .filter(([k]) => sums[k])
+        .map(([k, label]) => monthChangeItem(label, sums[k], false)).join("");
+      const series = Live.dashboard.series || [];
+      sparkData = series.map((s) => s.pts || 0);
+      sparkLabels = series.map((s) => String(s.date || "").slice(5));
+    } else {
+      const sums = {};
+      D.TRANSACTIONS.forEach((t) => { sums[t.type] = (sums[t.type] || 0) + t.pts; });
+      net = D.TRANSACTIONS.reduce((a, t) => a + t.pts, 0);
+      rowsHtml = MONTH_TYPE_LABELS
+        .filter(([k]) => sums[k])
+        .map(([k, label]) => monthChangeItem(label, sums[k], false)).join("");
+      const days = lastDayLabels(7);
+      sparkData = dailySeries(days);
+      sparkLabels = days;
+    }
     const html = monthChangeItem("本月净变化", net, true) +
-      (rows.length ? rows.join("") : '<p class="muted">本月暂无变动</p>');
+      (rowsHtml ? rowsHtml : '<p class="muted">本月暂无变动</p>');
     const walletEl = $("#month-changes");
     if (walletEl) walletEl.innerHTML = html;
     const dashEl = $("#dash-month-changes");
     if (dashEl) {
       // 迷你折线图（rant 18:06:09 A：按天聚合净变化，hover 显示当天数值）
-      const days = lastDayLabels(7);
-      const net = dailySeries(days);
-      dashEl.innerHTML = sparkline(net, { labels: days, fmt: (v) => (v > 0 ? "+" : "") + D.fmt(v) }) + html;
+      dashEl.innerHTML = sparkline(sparkData, { labels: sparkLabels, fmt: (v) => (v > 0 ? "+" : "") + D.fmt(v) }) + html;
     }
   }
 
@@ -936,10 +1023,11 @@
     rejected: { text: "已驳回", cls: "dim" },
   };
 
-  function renderRaiseRequests() {
+  function renderRaiseRequests(demo) {
     const el = $("#raise-requests");
     if (!el) return;
-    el.innerHTML = D.RAISE_REQUESTS.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
+    const demoTag = demo ? '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 加额审批后端待 P2-C 补齐</p>' : "";
+    el.innerHTML = demoTag + (D.RAISE_REQUESTS.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
       D.RAISE_REQUESTS.map((r, i) =>
         "<tr><td data-label='成员'><strong>" + esc(r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
         '<td class="num" data-label="申请点数">+' + D.fmt(r.amount) + " 点</td>" +
@@ -950,7 +1038,7 @@
             "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>驳回</button>"
           : '<span class="muted" style="font-size:12px">' + timeCell(r.time) + "</span>") + "</td></tr>"
       ).join("") + "</tbody></table></div>"
-      : emptyState("暂无加额申请", "成员提交的加额申请会显示在这里，批准后自动加点数");
+      : emptyState("暂无加额申请", "成员提交的加额申请会显示在这里，批准后自动加点数"));
   }
 
   function approveRaise(i) {
@@ -1012,9 +1100,12 @@
 
   function renderTransactions() {
     $$("#tx-tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.txTab === txTab));
-    let list = D.TRANSACTIONS;
-    if (txTab === "consume") list = list.filter((t) => t.type === "consume");
-    else if (txTab === "earn") list = list.filter((t) => t.type === "earn");
+    // P2-B：登录 → 后端分页数据（tab 切 type 参数）；否则 mock
+    let list = Live.transactions ? txsToView(Live.transactions.items || []) : D.TRANSACTIONS;
+    if (!Live.transactions) {
+      if (txTab === "consume") list = list.filter((t) => t.type === "consume");
+      else if (txTab === "earn") list = list.filter((t) => t.type === "earn");
+    }
     // 交易汇总条：与 tab + 列筛选联动，与表格可见行一致（rant 20:39:30 B）
     renderTxSummary(filterRows(list, TX_COLUMNS, txTable.filters));
     buildDataTable({
@@ -1026,11 +1117,24 @@
     });
   }
 
+  // P2-B：按 tab 拉取交易（后端分页）
+  async function loadTransactions() {
+    if (!loggedIn()) return;
+    const type = txTab === "all" ? "" : txTab;
+    try {
+      await liveLoad("transactions", "/api/transactions?type=" + type + "&page=1&page_size=100");
+    } catch (e) { Live.transactions = null; /* 降级 mock */ }
+    renderTransactions();
+  }
+
   // 交易记录导出 CSV（rant 20:46:57 E：Blob + a[download]，UTF-8 BOM，文件名 aitokenpool-transactions-YYYYMMDD.csv；导出当前筛选可见行）
   function exportTxCsv() {
-    let list = D.TRANSACTIONS;
-    if (txTab === "consume") list = list.filter((t) => t.type === "consume");
-    else if (txTab === "earn") list = list.filter((t) => t.type === "earn");
+    // P2-B：登录用后端数据
+    let list = Live.transactions ? txsToView(Live.transactions.items || []) : D.TRANSACTIONS;
+    if (!Live.transactions) {
+      if (txTab === "consume") list = list.filter((t) => t.type === "consume");
+      else if (txTab === "earn") list = list.filter((t) => t.type === "earn");
+    }
     list = filterRows(list, TX_COLUMNS, txTable.filters); // 与表格可见行一致（含列筛选）
     if (!list.length) { toast("没有可导出的交易记录", "info"); return; }
     const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -1261,10 +1365,25 @@
   function renderSettings() {
     const rawQ = $("#ak-search").value || "";
     const q = rawQ.toLowerCase();
-    const list = D.API_KEYS.filter((k) => !q || k.name.toLowerCase().includes(q));
+    // P2-B：登录 → 后端 /api/api-keys（key 已脱敏；完整 key 仅生成时可得）
+    let list;
+    if (Live.apiKeys) {
+      list = Live.apiKeys.map((k) => ({
+        id: k.id,
+        fullKey: Live.fullKeys ? Live.fullKeys[k.id] : null,
+        name: k.name || "未命名",
+        key: k.key,
+        created: String(k.created_at || "").slice(0, 10),
+        last: "从未",
+        status: k.status || "active",
+      }));
+    } else {
+      list = D.API_KEYS.map((k) => ({ ...k, fullKey: k.id }));
+    }
+    list = list.filter((k) => !q || k.name.toLowerCase().includes(q));
     $("#api-keys").innerHTML = list.length ? list.map((k, i) =>
       "<tr><td data-label='名字'><strong>" + hl(k.name, rawQ) + "</strong></td>" +
-      "<td data-label='Key'><code>" + esc(maskAtk(k.id)) + "</code></td>" +
+      "<td data-label='Key'><code>" + esc(Live.apiKeys ? k.key : maskAtk(k.id)) + "</code></td>" +
       "<td data-label='创建时间'>" + esc(k.created) + "</td>" +
       "<td data-label='最近使用'>" + timeCell(k.last) + "</td>" +
       "<td data-label='状态'>" + (k.status === "active" ? '<span class="badge ok">启用</span>' : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
@@ -1276,11 +1395,26 @@
     pulseTbody($("#api-keys"));
   }
 
+  // P2-B：拉取 API Key 列表（登录时）
+  async function loadApiKeys() {
+    if (!loggedIn()) return;
+    try {
+      await liveLoad("apiKeys", "/api/api-keys");
+    } catch (e) { Live.apiKeys = null; }
+    renderSettings();
+  }
+
   // 一键复制完整 key；file:// 下 clipboard API 受限 → 降级：临时 textarea 选中 + execCommand("copy")，仍失败则提示 Ctrl+C
   // 复制反馈（rant 15:50:05 B.10：复制后按钮短暂变「已复制」态）
   function copyKey(i) {
-    const k = D.API_KEYS[i];
+    const src = Live.apiKeys ? Live.apiKeys.map((k) => ({ ...k, fullKey: Live.fullKeys ? Live.fullKeys[k.id] : null })) : D.API_KEYS.map((k) => ({ ...k, fullKey: k.id }));
+    const k = src[i];
     if (!k) return;
+    const full = k.fullKey || (Live.apiKeys ? null : k.id);
+    if (!full) {
+      toast("完整 key 仅在生成时展示一次，请重新生成", "info");
+      return;
+    }
     const btn = document.querySelector('[data-key-copy="' + i + '"]');
     const flash = (ok) => {
       if (!btn) return;
@@ -1292,7 +1426,7 @@
     const okToast = () => { toast("已复制「" + k.name + "」完整 key 到剪贴板", "success", { action: { label: "配置接入端点 →", onClick: gotoEndpointCard } }); flash(true); };
     const fallback = () => {
       const ta = document.createElement("textarea");
-      ta.value = k.id;
+      ta.value = full;
       ta.style.cssText = "position:fixed;opacity:0";
       document.body.appendChild(ta);
       ta.select();
@@ -1303,7 +1437,7 @@
       else { toast("已选中完整 key，请按 Ctrl+C / Cmd+C 复制"); flash(false); }
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(k.id).then(okToast).catch(fallback);
+      navigator.clipboard.writeText(full).then(okToast).catch(fallback);
     } else {
       fallback();
     }
@@ -1363,6 +1497,25 @@
   function commitNewKey() {
     const raw = String($("#ak-new-name").value).trim();
     const name = raw || "未命名";
+    if (loggedIn()) {
+      // P2-B：真实生成（POST /api/api-keys）
+      const btn = $("#ak-new-ok");
+      withLoading(btn, () => {
+        api.post("/api/api-keys", { name }).then(async (r) => {
+          // 完整 key 只在生成时返回一次：重新拉列表拿真实 id 关联
+          Live.fullKeys = Live.fullKeys || {};
+          await liveLoad("apiKeys", "/api/api-keys");
+          const fresh = Live.apiKeys && Live.apiKeys[0]; // id DESC 最新一条
+          if (fresh) Live.fullKeys[fresh.id] = r.api_key;
+          renderSettings();
+          closeNewKeyInline();
+          toast("已生成新 API Key「" + name + "」（完整 key 已展示，仅此一次）", "success");
+        }).catch((err) => {
+          toast((err && err.message) || "生成失败", "error");
+        });
+      });
+      return;
+    }
     const id = "atk_live_" + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
     D.API_KEYS.unshift({ id, name, created: "2026-08-14", last: "从未", status: "active" });
     renderSettings();
@@ -1388,8 +1541,19 @@
   }
 
   function deleteKey(i) {
-    const k = D.API_KEYS[i];
+    const src = Live.apiKeys ? Live.apiKeys : D.API_KEYS;
+    const k = src[i];
     if (!k) return;
+    if (Live.apiKeys && k.id) {
+      // P2-B：真实软删（DELETE /api/api-keys/:id）
+      api.del("/api/api-keys/" + k.id).then(async () => {
+        await loadApiKeys();
+        toast("已删除 key「" + (k.name || "未命名") + "」", "success");
+      }).catch((err) => {
+        toast((err && err.message) || "删除失败", "error");
+      });
+      return;
+    }
     D.API_KEYS.splice(i, 1);
     renderSettings();
     toast("已删除 key「" + k.name + "」", "success");
@@ -1402,6 +1566,29 @@
     $$(".admin-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.adminPane !== tab));
 
     if (tab === "employees") {
+      // P2-B：登录 → /api/admin/users（真实成员）；否则 mock
+      if (Live.adminUsers) {
+        const users = Live.adminUsers;
+        const total = users.reduce((a, u) => a + (u.balance || 0), 0);
+        $("#emp-stats").innerHTML = [
+          stat("成员数 Members", users.length + " 人", "真实用户"),
+          stat("总余额 Total", D.fmt(total) + " 点", "balance + gift"),
+          stat("管理员 Admins", users.filter((u) => u.role === "admin").length + " 人", "role=admin"),
+          stat("演示标注", "部门 / 加额", "P2-C 后端补齐"),
+        ].join("");
+        $("#emp-body").innerHTML = users.map((u, i) =>
+          "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + esc(u.name || u.email) + "</strong>" +
+          "<div class='muted' style='font-size:12px'>" + esc(u.email) + (u.role === "admin" ? " · 管理员" : "") + "</div></td>" +
+          "<td data-label='角色'>" + (u.role === "admin" ? '<span class="badge ok">admin</span>' : '<span class="badge dim">user</span>') + "</td>" +
+          '<td class="num" data-label="永久点数">' + D.fmt(u.balance || 0) + "</td>" +
+          '<td class="num" data-label="赠送点数">' + D.fmt(u.gift_balance || 0) + "</td>" +
+          '<td class="num" data-label="可用">' + D.fmt((u.balance || 0) + (u.gift_balance || 0)) + "</td>" +
+          "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
+        ).join("");
+        pulseTbody($("#emp-body"));
+        renderRaiseRequests(true); // 加额审批：后端暂无 → 演示标注
+        return;
+      }
       const total = D.EMPLOYEES.reduce((a, e) => a + e.quota, 0);
       const used = D.EMPLOYEES.reduce((a, e) => a + e.used, 0);
       const unassigned = D.EMPLOYEES.filter((e) => !e.dept).length;
@@ -1421,8 +1608,22 @@
         "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
       ).join("");
       pulseTbody($("#emp-body"));
-      renderRaiseRequests();
+      renderRaiseRequests(false);
     } else if (tab === "usage") {
+      // P2-B：登录 → /api/admin/usage（每用户本月 tokens/点数/调用次数）
+      if (Live.adminUsage) {
+        const us = Live.adminUsage;
+        const maxT = Math.max(1, ...us.map((u) => u.month_tokens || 0));
+        const maxC = Math.max(1, ...us.map((u) => u.month_calls || 0));
+        $("#usage-model").innerHTML = us.map((u) =>
+          '<div class="mini-item"><div><div class="t">' + esc(u.name || u.email) + "</div>" +
+          '<div class="d">本月 tokens ' + D.fmt(u.month_tokens || 0) + " · 成本 " + D.fmt(u.month_cost || 0) + "</div></div>" +
+          '<div class="r"><span class="pts">' + (u.month_calls || 0) + " 次</span><div class='d'>调用</div></div></div>"
+        ).join("") + (us.length ? "" : '<div class="empty-state compact">' + EMPTY_ICON + "<p>暂无用量</p></div>");
+        $("#usage-emp").innerHTML = barRow("用户合计", us.reduce((a, u) => a + (u.month_tokens || 0), 0), maxT, "tokens") +
+          barRow("本月调用", us.reduce((a, u) => a + (u.month_calls || 0), 0), maxC, "次");
+        return;
+      }
       const maxM = Math.max(...D.USAGE_MODEL.map((u) => u.pts));
       const maxE = Math.max(...D.USAGE_EMP.map((u) => u.pts));
       $("#usage-model").innerHTML = D.USAGE_MODEL.map((u) => barRow(u.name, u.pts, maxM, "点")).join("");
@@ -1432,6 +1633,14 @@
     } else if (tab === "ops") {
       renderOperator();
     }
+  }
+
+  // P2-B：拉取管理员数据（users + usage；登录且 role=admin 时）
+  async function loadAdmin() {
+    if (!loggedIn()) return;
+    try { await liveLoad("adminUsers", "/api/admin/users"); } catch (e) { Live.adminUsers = null; }
+    try { await liveLoad("adminUsage", "/api/admin/usage"); } catch (e) { Live.adminUsage = null; }
+    renderAdmin();
   }
 
   /* --- 组织管理：部门列表 + 部门 CRUD + 每月点数分配 --- */
@@ -1489,6 +1698,11 @@
     const rawQ = $("#od-search").value || "";
     const q = rawQ.toLowerCase();
     const list = D.DEPARTMENTS.filter((d) => !q || d.name.toLowerCase().includes(q));
+
+    // P2-B：部门/组织后端暂无 → 演示数据标注（P2-C 补齐）
+    const demoTag = '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 部门/组织管理后端待 P2-C 补齐</p>';
+    const demoNote = $("#dept-demo-note");
+    if (demoNote) demoNote.innerHTML = demoTag;
 
     const totalQuota = D.DEPARTMENTS.reduce((a, d) => a + d.quota, 0);
     const totalUsed = D.DEPARTMENTS.reduce((a, d) => a + deptUsed(d), 0);
@@ -1580,6 +1794,9 @@
   /* --- 平台运营者视图（US-运营1 / US-运营2：运营者 = 宿主本人，职责仅两项） --- */
 
   function renderOperator() {
+    // P2-B：平台运营者端点后端暂无 → 演示数据标注（P2-C）
+    const note = $("#ops-demo-note");
+    if (note) note.innerHTML = '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 平台运营者（ops）端点待 P2-C 补齐</p>';
     const rawQ = $("#ops-search").value || "";
     const q = rawQ.toLowerCase();
     const list = D.OPERATOR_USERS.filter((u) => !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
@@ -1702,6 +1919,35 @@
     chatModel = null;
   }
 
+  // P2-B：真实消费链路 —— POST /v1/chat/completions（最小占位请求，stream=false）
+  async function consumeModel(id) {
+    const src = Live.models ? modelsToView(Live.models) : D.MARKET;
+    const m = src.find((x) => x.id === id);
+    if (!m) return;
+    if (!m.avail) { toast("该模型当前繁忙，无法使用", "error"); return; }
+    if (!loggedIn()) { toast("请先登录后再使用 / 消费模型", "error"); return; }
+    markRecentUsed(id); // 记录最近使用（rant 20:46:57 D）
+    renderRecent();
+    const btn = document.querySelector('[data-use-model="' + id + '"]');
+    if (btn) { btn.disabled = true; btn.textContent = "调用中…"; }
+    try {
+      await api.post("/v1/chat/completions", {
+        model: m.model,
+        messages: [{ role: "user", content: "ping" }],
+        stream: false,
+      });
+      toast("已消费「" + m.model + "」", "success");
+      await refreshBalanceAndView(); // 刷新钱包 + 当前视图
+    } catch (err) {
+      // 余额不足（402）/ 暂无可用 key（503）等后端错误直接展示
+      toast((err && err.message) || "调用失败，请稍后重试", "error");
+      await refreshWallet();
+      $("#side-balance").textContent = D.fmt(D.USER.balance);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "使用 / 消费"; }
+    }
+  }
+
   function sendChat() {
     const m = chatModel;
     if (!m) return;
@@ -1790,6 +2036,127 @@
     toast("登录已过期，请重新登录", "error");
   };
 
+  /* ---------------- P2-B 真实 API 数据层（各视图 mock 数据逐步替换为后端） ---------------- */
+
+  // 各视图真实数据缓存：登录且加载成功后使用；游客 / 失败降级 mock
+  const Live = {
+    models: null,        // GET /api/models 原始数组
+    sharings: null,      // GET /api/sharings 原始数组
+    transactions: null,  // GET /api/transactions → {items,total,...}
+    wallet: null,        // GET /api/wallet
+    dashboard: null,     // GET /api/dashboard
+    apiKeys: null,       // GET /api/api-keys
+    adminUsers: null,    // GET /api/admin/users
+    adminUsage: null,    // GET /api/admin/usage
+    fullKeys: null,      // 生成时返回的完整 key（id → api_key，仅会话内）
+  };
+
+  function loggedIn() { return !!api.getToken() && !isGuest; }
+
+  // 拉取并缓存；失败抛错（调用方决定降级）
+  async function liveLoad(key, path) {
+    const data = await api.get(path);
+    Live[key] = data;
+    return data;
+  }
+
+  // 通用降级渲染：加载失败 → 空态 + 重试按钮（不白屏）
+  function loadErrorHtml(emptyLabel, retryFn, retryLabel) {
+    return '<div class="empty-state">' + EMPTY_ICON +
+      "<p>" + esc(emptyLabel) + "</p>" +
+      '<p class="muted">' + esc(retryLabel || "数据加载失败，请检查后端服务") + '</p>' +
+      '<button type="button" class="btn btn-ghost" data-live-retry>重试</button></div>';
+  }
+  // 重试按钮委托（容器级）
+  function bindLiveRetry(containerId, fn) {
+    const c = document.getElementById(containerId);
+    if (!c) return;
+    c.addEventListener("click", (e) => {
+      if (e.target.closest("[data-live-retry]")) fn();
+    });
+  }
+
+  // 后端 models → 视图行（点数按 points_per_unit=1000、锚定 USD 折算；上下文/成功率从 mock 同名模型兜底）
+  function modelsToView(list) {
+    const mockById = {};
+    D.MARKET.forEach((m) => { mockById[m.model] = m; });
+    return list.map((m, i) => {
+      const mock = mockById[m.model] || {};
+      const cny = m.currency === "CNY";
+      const mult = cny ? 1000 / 7.2 : 1000;
+      return {
+        id: i,
+        provider: m.provider,
+        model: m.model,
+        in: Math.round(m.input_per_m * mult * 100) / 100,
+        out: Math.round(m.output_per_m * mult * 100) / 100,
+        ctx: mock.ctx || 0,
+        avail: m.available_keys > 0,
+        multi: mock.multi || false,
+        success: mock.success || 99,
+      };
+    });
+  }
+
+  // 后端 sharings → 视图行（字段对齐 mock：earned=earn、price 用 autoPrice、time 占位）
+  function sharingsToView(list) {
+    return list.map((s) => {
+      let days = [];
+      try { days = JSON.parse(s.available_days || "[]"); } catch (e) { days = []; }
+      return {
+        id: s.id,
+        provider: s.provider,
+        plan: s.plan || "API",
+        model: s.model,
+        key: s.key,
+        quota: s.quota,
+        used: s.used,
+        price: autoPrice(s.model),
+        earned: s.earn || 0,
+        status: s.status,
+        time: "",
+        note: s.note || "",
+        available: days.length ? { days, start: s.available_start || "", end: s.available_end || "" } : null,
+      };
+    });
+  }
+
+  // 后端 transactions items → 视图行（partner=counterpart、tokens 格式化、detail 用模型）
+  function txsToView(items) {
+    return items.map((t) => {
+      let tokens = "—";
+      if (typeof t.tokens === "number" && t.tokens > 0) {
+        tokens = t.tokens >= 1e6 ? (t.tokens / 1e6).toFixed(2) + "M" : String(Math.round(t.tokens));
+      }
+      return {
+        id: t.id,
+        time: (t.time || "").replace("T", " ").slice(0, 16),
+        type: t.type,
+        partner: t.counterpart || "—",
+        detail: t.model ? "消费 · " + t.model : "交易",
+        tokens,
+        pts: t.pts,
+        status: t.status || "成功",
+      };
+    });
+  }
+
+  // 刷新钱包缓存（登录后）；返回最新 available
+  async function refreshWallet() {
+    try {
+      Live.wallet = await api.get("/api/wallet");
+      if (typeof Live.wallet.available === "number") D.USER.balance = Live.wallet.available;
+      return Live.wallet.available;
+    } catch (e) { return D.USER.balance; }
+  }
+
+  // 刷新侧边栏余额 + 当前视图（交易/仪表盘等消费后联动）
+  async function refreshBalanceAndView() {
+    await refreshWallet();
+    $("#side-balance").textContent = D.fmt(D.USER.balance);
+    if (activeView) switchView(activeView, { sync: false });
+  }
+
   /* ---------------- 事件 ---------------- */
 
   function bindEvents() {
@@ -1858,7 +2225,7 @@
       const b = e.target.closest("[data-use-model]");
       if (b) {
         if (isGuest) { toast("请先登录后再使用 / 消费模型", "error"); return; }
-        openChat(Number(b.dataset.useModel));
+        consumeModel(Number(b.dataset.useModel));
         return;
       }
       // 空状态：清除筛选
@@ -1944,15 +2311,38 @@
         const end = $("#sf-end").value;
         const available = days.length ? { days, start: start || "", end: end || "" } : null;
         const price = autoPrice(model);
+        const payload = {
+          provider: plan.provider,
+          plan: plan.id,
+          model,
+          key,
+          quota,
+          available,
+          note,
+        };
+        const afterOk = () => {
+          e.target.reset();
+          const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
+          $("#sf-quota").value = 5000;
+          hideShareForm();
+          const label = (D.PROVIDER_LABELS[plan.provider] || plan.provider) + " · " + plan.name;
+          toast("已上架「" + label + " · " + model + "」（key 已加密托管，单价 " + D.fmt(price) + " 点/1M（自动））", "success");
+        };
+        if (loggedIn()) {
+          // P2-B：真实上架
+          api.post("/api/sharings", payload).then(async () => {
+            await loadSharing();
+            if (activeView === "dashboard") renderDashboard();
+            afterOk();
+          }).catch((err) => {
+            toast((err && err.message) || "上架失败", "error");
+          });
+          return;
+        }
         D.SHARINGS.unshift({ id: Date.now(), provider: plan.provider, plan: plan.name, model, quota, used: 0, price, earned: 0, status: "on", key, note, available });
         renderSharing();
         if (activeView === "dashboard") renderDashboard();
-        const label = (D.PROVIDER_LABELS[plan.provider] || plan.provider) + " · " + plan.name;
-        toast("已上架「" + label + " · " + model + "」（key 已加密托管，单价 " + D.fmt(price) + " 点/1M（自动））", "success");
-        e.target.reset();
-        const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
-        $("#sf-quota").value = 5000;
-        hideShareForm();
+        afterOk();
       };
       withLoading(submitBtn, done);
     });
@@ -1992,8 +2382,8 @@
     // 钱包页提示 → 跳转交易记录（明细统一入口）
     $("#wallet-goto-tx").addEventListener("click", () => switchView("transactions"));
 
-    // 交易 Tab
-    $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); }));
+    // 交易 Tab（P2-B：切 tab 重新拉后端过滤数据）
+    $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); if (loggedIn()) loadTransactions(); }));
     $("#tx-export-btn").addEventListener("click", exportTxCsv); // 导出 CSV（rant 20:46:57 E）
 
     // 表格键盘导航（rant 20:46:57 F）：点击行 → 激活高亮，之后 ↑/↓/Enter/Esc 可用
@@ -2046,6 +2436,34 @@
       if (dd) { editEmpDept(Number(dd.dataset.empDept)); return; }
       const b = e.target.closest("[data-emp-topup]");
       if (!b) return;
+      // P2-B：真实成员（/api/admin/users）→ POST /api/admin/credits
+      const liveEmp = Live.adminUsers ? Live.adminUsers[Number(b.dataset.empTopup)] : null;
+      if (liveEmp) {
+        const row = b.closest("tr");
+        if (!row) return;
+        const cell = row.children[row.children.length - 1];
+        inlineForm(cell, {
+          value: "5000",
+          placeholder: "点数（正整数）",
+          type: "number",
+          width: "120px",
+          validate: (raw) => {
+            const amt = Number(raw);
+            return (!raw || !Number.isInteger(amt) || amt <= 0) ? "请输入正整数点数金额" : null;
+          },
+          onSubmit: (raw) => {
+            const amt = Number(raw);
+            api.post("/api/admin/credits", { user_id: liveEmp.id, amount: amt, note: "admin recharge" })
+              .then(async () => {
+                await loadAdmin();
+                toast("已给 " + (liveEmp.name || liveEmp.email) + " 充值 " + D.fmt(amt) + " 点", "success");
+              })
+              .catch((err) => toast((err && err.message) || "充值失败", "error"));
+          },
+          onCancel: () => renderAdmin(),
+        });
+        return;
+      }
       const emp = D.EMPLOYEES[Number(b.dataset.empTopup)];
       if (!emp) return;
       const row = b.closest("tr");
