@@ -40,9 +40,7 @@ pub fn determine_forwarding_protocol<'a>(
     }
     [PROTOCOL_ANTHROPIC, PROTOCOL_OPENAI_CHAT, PROTOCOL_RESPONSES]
         .into_iter()
-        .find(|&candidate| {
-            candidate != inbound && plan_protocols.iter().any(|p| p == candidate)
-        })
+        .find(|&candidate| candidate != inbound && plan_protocols.iter().any(|p| p == candidate))
         .map(|v| v as _)
 }
 
