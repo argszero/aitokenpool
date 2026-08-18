@@ -186,6 +186,44 @@ pub fn touch_api_key(conn: &Connection, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// OpenAI 兼容模型列表（GET /v1/models，rant 2026-08-18T18:10:18）：
+/// id=model 名、display_name=model 名、context_window 来自 models.context_window；
+/// with_availability=true 时附加 available_keys（带 Bearer 时）。
+pub fn list_models_openai(
+    conn: &Connection,
+    with_availability: bool,
+) -> Result<Vec<serde_json::Value>> {
+    let avail_sub = if with_availability {
+        ",\n                (SELECT COUNT(*) FROM keys k WHERE k.model = m.model AND k.status = 'on') AS avail"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT m.model, m.context_window{avail_sub} \
+         FROM models m ORDER BY m.provider, m.model"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |r| {
+        let mut v = serde_json::json!({
+            "id": r.get::<_, String>(0)?,
+            "object": "model",
+            "created": 0,
+            "owned_by": "aitokenpool",
+            "display_name": r.get::<_, String>(0)?,
+            "context_window": r.get::<_, i64>(1)?,
+        });
+        if with_availability {
+            v["available_keys"] = serde_json::json!(r.get::<_, i64>(2)?);
+        }
+        Ok(v)
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 /// 校验口令（供登录用）
 pub fn verify_user_password(conn: &Connection, email: &str, pw: &str) -> Result<i64> {
     let (id, hash) = find_user_by_email(conn, email).ok_or_else(|| anyhow!("用户不存在"))?;
