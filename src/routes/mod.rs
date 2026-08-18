@@ -10,6 +10,8 @@
 //! - GET /api/models（市场）
 
 pub mod api_keys;
+pub mod sharing;
+pub mod wallet;
 
 use std::sync::{Arc, Mutex};
 
@@ -22,21 +24,23 @@ use rusqlite::Connection;
 use serde::Deserialize;
 
 use crate::config::Config;
+use crate::crypto::Crypto;
 use crate::dao;
 use crate::gateway;
 use crate::router::RouterState;
 
-/// 共享状态：数据库连接 + 配置 + 路由状态 + HTTP 客户端
+/// 共享状态：数据库连接 + 配置 + 路由状态 + HTTP 客户端 + 密钥加密器
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub cfg: Arc<Config>,
     pub router: Arc<RouterState>,
     pub http: reqwest::Client,
+    pub crypto: Crypto,
 }
 
 impl AppState {
-    pub fn new(conn: Connection, cfg: Arc<Config>) -> Self {
+    pub fn new(conn: Connection, cfg: Arc<Config>, crypto: Crypto) -> Self {
         Self {
             db: Arc::new(Mutex::new(conn)),
             cfg,
@@ -45,6 +49,7 @@ impl AppState {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .expect("reqwest client 构建失败"),
+            crypto,
         }
     }
 }
@@ -139,6 +144,12 @@ pub fn router() -> Router<AppState> {
         .route("/v1/chat/completions", post(gateway::chat_completions))
         .route("/anthropic/v1/messages", post(gateway::anthropic_messages))
         .route("/api/models", get(gateway::models))
+        // P0-C：共享 / 钱包 / 交易 / 仪表盘
+        .route("/api/sharings", post(sharing::create).get(sharing::list))
+        .route("/api/sharings/:id", axum::routing::patch(sharing::patch))
+        .route("/api/wallet", get(wallet::wallet))
+        .route("/api/transactions", get(wallet::transactions))
+        .route("/api/dashboard", get(wallet::dashboard))
 }
 
 #[cfg(test)]
@@ -155,7 +166,8 @@ mod tests {
         let conn = crate::db::open(p.to_str().unwrap()).expect("open tmp db");
         let cfg = crate::config::Config::load("config/config.example.toml").unwrap();
         crate::db::seed_models(&conn, &cfg).expect("seed models");
-        AppState::new(conn, Arc::new(cfg))
+        let crypto = crate::crypto::Crypto::new([9u8; 32]);
+        AppState::new(conn, Arc::new(cfg), crypto)
     }
 
     async fn post(

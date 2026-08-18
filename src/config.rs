@@ -15,13 +15,16 @@ fn default_db_path() -> String {
     "data/aitokenpool.db".to_string()
 }
 
-/// 服务（监听 / 数据库路径）——config.example.toml 可缺省，走默认值
+/// 服务（监听 / 数据库路径 / 主密钥）——config.example.toml 可缺省，走默认值
 #[derive(Debug, Clone, Deserialize)]
 pub struct Server {
     #[serde(default = "default_addr")]
     pub addr: String,
     #[serde(default = "default_db_path")]
     pub db_path: String,
+    /// 上游 key 主密钥（hex 32 字节；P0-C 起生效；env ATP_MASTER_KEY 优先级更高）
+    #[serde(default)]
+    pub master_key: String,
 }
 
 impl Default for Server {
@@ -29,6 +32,7 @@ impl Default for Server {
         Server {
             addr: default_addr(),
             db_path: default_db_path(),
+            master_key: String::new(),
         }
     }
 }
