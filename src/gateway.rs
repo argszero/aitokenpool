@@ -319,12 +319,16 @@ async fn forward(
     ))
 }
 
-/// SSE 流式转发（P0-C）：请求体带 stream:true 时走此分支。
+/// SSE 响应流（P3-B：透传或协议转换后的字节流）
+type SseStream = std::pin::Pin<
+    Box<dyn futures_util::Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send>,
+>;
+
+/// SSE 流式转发（P0-C 透传 + P3-B 跨协议转换）：请求体带 stream:true 时走此分支。
 ///
 /// 流程：余额预检 → 路由选 key（初始连接失败可故障转移，最高 3 次）→ 拿到 200 后
-/// 逐块透传上游响应体（data: 行原样转发，保持 event/comment 原始格式）→
-/// 流尾解析 usage（openai 最后 chunk 的 usage / anthropic message_delta 的
-/// output_tokens + message_start 的 input_tokens）→ 复用 settle_usage 入账 →
+/// 逐块转发上游响应体；跨协议时（出站协议 ≠ 入站协议）把上游 SSE 流经 src/sse.rs
+/// 转换器转为客户端协议 SSE 流（P3-B）→ 流内提取 usage → 复用 settle_usage 入账 →
 /// 记粘性。客户端提前断开 → 响应体被 drop → 上游连接自动中止，不入账。
 async fn forward_stream(
     st: &AppState,
@@ -351,19 +355,6 @@ async fn forward_stream(
             "该模型暂无可用 key",
         ));
     }
-    // P3-A：流式只支持同协议透传（SSE 协议转换留 P3-B）。
-    // 滤掉需要跨协议转换的 key（其 plan 无入站协议端点）——避免随机选 key 抖动。
-    let keys: Vec<dao::KeyRow> = keys
-        .into_iter()
-        .filter(|k| resolve_outbound(&st.cfg, &k.plan, protocol) == Some(protocol))
-        .collect();
-    if keys.is_empty() {
-        // 模型有 key 但均需协议转换 → 明确报错（P3-B 后支持）
-        return Err(err_json(
-            StatusCode::BAD_REQUEST,
-            "流式请求需要协议转换，暂不支持（P3-B 实现）",
-        ));
-    }
 
     // 选 key 并建立上游连接（此阶段失败可切换；连接成功后不再切换）
     for _ in 0..crate::router::MAX_SWITCHES {
@@ -378,7 +369,14 @@ async fn forward_stream(
             .find(|k| k.id == key_id)
             .expect("pick 返回的 key 必然在候选集");
 
-        let Some(url) = resolve_endpoint(&st.cfg, &key.plan, protocol) else {
+        // P3-B：定出站协议（同协议优先；跨协议按 anthropic → openai_chat → responses 降级）
+        let Some(outbound) = resolve_outbound(&st.cfg, &key.plan, protocol) else {
+            st.router.mark_unhealthy(key_id);
+            continue;
+        };
+        let needs_transform = outbound != protocol;
+
+        let Some(url) = resolve_endpoint(&st.cfg, &key.plan, outbound) else {
             st.router.mark_unhealthy(key_id);
             continue;
         };
@@ -387,13 +385,29 @@ async fn forward_stream(
             continue;
         };
 
-        let resp = if protocol == "anthropic" {
+        // 跨协议 → 转换请求体（P3-A transform_request 已处理 stream:true）；同协议原样透传
+        let up_body = if needs_transform {
+            match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(v) => {
+                    let transformed = crate::protocol::transform_request(&v, protocol, outbound);
+                    match serde_json::to_string(&transformed) {
+                        Ok(s) => s,
+                        Err(_) => body.clone(),
+                    }
+                }
+                Err(_) => body.clone(),
+            }
+        } else {
+            body.clone()
+        };
+
+        let resp = if outbound == "anthropic" {
             st.http
                 .post(&url)
                 .header("x-api-key", &plain_key)
                 .header("content-type", "application/json")
                 .header("anthropic-version", "2023-06-01")
-                .body(body.clone())
+                .body(up_body)
                 .send()
                 .await
         } else {
@@ -401,7 +415,7 @@ async fn forward_stream(
                 .post(&url)
                 .header("authorization", format!("Bearer {plain_key}"))
                 .header("content-type", "application/json")
-                .body(body.clone())
+                .body(up_body)
                 .send()
                 .await
         };
@@ -429,32 +443,82 @@ async fn forward_stream(
             return Ok(passthrough(status, bytes));
         }
 
-        // 连接成功：构建 SSE 透传流（usage 捕获 + 流尾入账）
+        // 连接成功：构建 SSE 流（同协议透传 / 跨协议转换），流尾 usage 入账
         let key = key.clone();
         let st = st.clone();
         let model = model.to_string();
         let protocol = protocol.to_string();
-        let capture = std::sync::Arc::new(std::sync::Mutex::new(UsageCapture::new(&protocol)));
-        let cap_fwd = std::sync::Arc::clone(&capture);
-        let fwd = resp.bytes_stream().map(move |item| {
-            if let Ok(bytes) = &item {
-                if let Ok(mut cap) = cap_fwd.lock() {
-                    cap.push(bytes);
-                }
+        let outbound = outbound.to_string();
+
+        let (fwd, finalize): (SseStream, SseStream) = if needs_transform {
+            // P3-B：responses 上游 → anthropic 客户端暂未实现，明确报错
+            if outbound == "responses" && protocol == "anthropic" {
+                return Err(err_json(
+                    StatusCode::BAD_REQUEST,
+                    "responses 上游流式转换到 anthropic 客户端暂未支持（P3-B 延后）",
+                ));
             }
-            item.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })
-        });
-        // 流尾：解析 usage → 入账（客户端未完整接收时该 future 不会执行 → 不入账）
-        let finalize = futures_util::stream::once(async move {
-            let (input, output) = {
-                let mut cap = capture.lock().expect("usage capture lock");
-                cap.finish()
+            let usage_slot = crate::sse::usage_slot();
+            let raw = resp
+                .bytes_stream()
+                .map(|item| item.map_err(std::io::Error::other));
+            let converted: SseStream = match (outbound.as_str(), protocol.as_str()) {
+                ("openai_chat", "anthropic") => {
+                    Box::pin(crate::sse::openai_sse_to_anthropic(raw, usage_slot.clone()))
+                }
+                ("openai_chat", "responses") => Box::pin(
+                    crate::sse::openai_sse_to_openai_responses(raw, usage_slot.clone()),
+                ),
+                ("anthropic", "openai_chat") => {
+                    Box::pin(crate::sse::anthropic_sse_to_openai(raw, usage_slot.clone()))
+                }
+                ("anthropic", "responses") => Box::pin(crate::sse::anthropic_sse_to_responses(
+                    raw,
+                    usage_slot.clone(),
+                )),
+                ("responses", "openai_chat") => Box::pin(crate::sse::responses_sse_to_openai_chat(
+                    raw,
+                    usage_slot.clone(),
+                )),
+                (u, c) => {
+                    return Err(err_json(
+                        StatusCode::BAD_REQUEST,
+                        &format!("流式协议转换 {u} → {c} 暂未支持"),
+                    ));
+                }
             };
-            settle_usage(&st, auth, &key, &model, input, output);
-            Ok::<axum::body::Bytes, Box<dyn std::error::Error + Send + Sync>>(
-                axum::body::Bytes::new(),
-            )
-        });
+            let slot_final = usage_slot.clone();
+            let finalize = futures_util::stream::once(async move {
+                let (input, output) = slot_final
+                    .lock()
+                    .map(|s| s.unwrap_or((0.0, 0.0)))
+                    .unwrap_or((0.0, 0.0));
+                settle_usage(&st, auth, &key, &model, input, output);
+                Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::new())
+            });
+            (converted, Box::pin(finalize))
+        } else {
+            // 同协议透传：usage 捕获 + 流尾入账
+            let capture = std::sync::Arc::new(std::sync::Mutex::new(UsageCapture::new(&protocol)));
+            let cap_fwd = std::sync::Arc::clone(&capture);
+            let fwd = resp.bytes_stream().map(move |item| {
+                if let Ok(bytes) = &item {
+                    if let Ok(mut cap) = cap_fwd.lock() {
+                        cap.push(bytes);
+                    }
+                }
+                item.map_err(|e| -> std::io::Error { std::io::Error::other(e) })
+            });
+            let finalize = futures_util::stream::once(async move {
+                let (input, output) = {
+                    let mut cap = capture.lock().expect("usage capture lock");
+                    cap.finish()
+                };
+                settle_usage(&st, auth, &key, &model, input, output);
+                Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::new())
+            });
+            (Box::pin(fwd), Box::pin(finalize))
+        };
         let body = Body::from_stream(fwd.chain(finalize));
         return Ok(Response::builder()
             .status(StatusCode::OK)
@@ -1221,21 +1285,35 @@ mod tests {
         up.abort();
     }
 
-    /// P3-A：流式 + 跨协议转换 → 400 明确报错（SSE 转换留 P3-B）
+    /// P3-B（rant 2026-08-18T18:59:29）：流式跨协议转换 — openai 客户端 stream
+    /// → plan 只暴露 anthropic 端点 → 上游 anthropic SSE → 转回 openai SSE 事件。
     #[tokio::test]
-    async fn streaming_with_conversion_rejected_400() {
+    async fn sse_cross_protocol_openai_to_anthropic_conversion() {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .unwrap();
         let port = listener.local_addr().unwrap().port();
-        let received = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
-        let recv2 = std::sync::Arc::clone(&received);
-        let up = tokio::spawn(fake_anthropic_upstream(listener, recv2));
+        let up = tokio::spawn(fake_anthropic_sse_upstream(listener));
         let base = format!("http://127.0.0.1:{port}");
 
-        // plan 只暴露 anthropic 端点
+        // plan 只暴露 anthropic 端点 → 必须走协议转换
         let st = test_state_eps("conv_sse", "test-anth-s", &["anthropic"], &base);
-        insert_key(&st, 404, 1, "test-model", "test-anth-s");
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+            // 独立分享者（owner=2，与消费者 user=1 分离 → 净扣 1.4 点可断言）
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, email, password_hash, name, role) VALUES (2, 'owner2@t.local', 'x', '分享者', 'user')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (2, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        insert_key(&st, 404, 2, "test-model", "test-anth-s");
         let key = login_key(st.clone()).await;
 
         let (s, body) = post_raw(
@@ -1247,16 +1325,33 @@ mod tests {
         .await;
         assert_eq!(
             s,
-            StatusCode::BAD_REQUEST,
+            StatusCode::OK,
             "body: {}",
             String::from_utf8_lossy(&body)
         );
-        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let text = String::from_utf8_lossy(&body);
         assert!(
-            v["error"]["message"].as_str().unwrap().contains("协议转换"),
-            "body: {}",
-            String::from_utf8_lossy(&body)
+            text.contains("\"role\":\"assistant\""),
+            "openai role chunk: {text}"
         );
+        assert!(
+            text.contains("\"content\":\"hi\""),
+            "openai 文本增量: {text}"
+        );
+        assert!(text.contains("data: [DONE]"), "openai [DONE]: {text}");
+        assert!(
+            !text.contains("event: message_start"),
+            "不应透传 anthropic 事件"
+        );
+        // 入账：80×10/1e6 + 30×20/1e6 = 0.0014 USD × 1000 = 1.4 点
+        let conn = st.db.lock().unwrap();
+        let bal: f64 = conn
+            .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!((bal - (12471.0 - 1.4)).abs() < 1e-9, "consumer={bal}");
+        drop(conn);
         up.abort();
     }
 
@@ -1457,9 +1552,11 @@ mod tests {
         let app = axum::Router::new().route(
             "/v1/messages",
             axum::routing::post(|_body: String| async {
-                let body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":80,\"output_tokens\":1}}}\n\n\
-                            event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}\n\n\
-                            event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":30}}\n\n\
+                let body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"test-model\",\"usage\":{\"input_tokens\":80,\"output_tokens\":1}}}\n\n\
+                            event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+                            event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n\
+                            event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+                            event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":30}}\n\n\
                             event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
                 (
                     [("content-type", "text/event-stream")],

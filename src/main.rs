@@ -21,6 +21,7 @@ mod gift;
 mod protocol;
 mod router;
 mod routes;
+mod sse;
 
 use std::sync::Arc;
 
