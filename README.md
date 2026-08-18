@@ -38,6 +38,10 @@ cp config/config.example.toml config/config.toml   # 首次
 cargo run                                         # http://localhost:8080/
 ```
 
+> ⚠️ **首次启动即应配置主密钥**（用于加密上游 key）：`export ATP_MASTER_KEY=$(openssl rand -hex 32)`
+> （或取消 config/config.toml `[server].master_key` 注释）。未配置时使用随机 dev 密钥，
+> **重启后已上架的 key 密文无法解密 → 全部 503**（rant 2026-08-18T16:14:21 Bug 3）。
+
 ### ② Docker 部署
 
 ```bash

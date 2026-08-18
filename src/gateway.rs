@@ -542,6 +542,44 @@ pub async fn models(
     Ok(Json(list))
 }
 
+/// GET /api/plans（上架表单数据源：config [[plans]] 单一真源，需认证）
+/// 返回 id / provider / name（config 无 name 时按 type 推导显示名）/ type / key_prefix / endpoints。
+pub async fn plans(
+    State(st): State<AppState>,
+    _auth: AuthUser,
+) -> Result<Json<Vec<serde_json::Value>>, ApiErr> {
+    let list: Vec<serde_json::Value> = st
+        .cfg
+        .plans
+        .iter()
+        .map(|p| {
+            let name = if p.name.is_empty() {
+                match p.type_.as_str() {
+                    "paygo" => "API（按量）".to_string(),
+                    "token" => "Token Plan".to_string(),
+                    "coding" => "Coding Plan".to_string(),
+                    _ => p.id.clone(),
+                }
+            } else {
+                p.name.clone()
+            };
+            serde_json::json!({
+                "id": p.id,
+                "provider": p.provider,
+                "name": name,
+                "type": p.type_,
+                "key_prefix": p.key_prefix,
+                "interactive_only": p.interactive_only,
+                "endpoints": p.endpoints.iter().map(|e| serde_json::json!({
+                    "protocol": e.protocol,
+                    "base_url": e.base_url,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(Json(list))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +605,7 @@ mod tests {
         cfg.plans.push(crate::config::Plan {
             id: plan_id.to_string(),
             provider: "test".to_string(),
+            name: String::new(),
             type_: "paygo".to_string(),
             key_prefix: "sk-".to_string(),
             interactive_only: false,
@@ -873,6 +912,64 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/api/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn plans_endpoint_lists_config_plans() {
+        // rant 2026-08-18T16:14:21 Bug 1：上架表单 Plan 数据源 = config [[plans]]（单一真源）
+        let st = test_state("plans", "test-plan", "http://127.0.0.1:9");
+        let key = login_key(st.clone()).await;
+        let resp = router()
+            .with_state(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/plans")
+                    .header("authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        let arr: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+        // config.example.toml 的 [[plans]] 至少包含 deepseek-paygo / zhipu-coding / zhipu-paygo
+        let ids: Vec<&str> = arr
+            .iter()
+            .filter_map(|p| p.get("id").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            ids.contains(&"deepseek-paygo"),
+            "plans 来自 config [[plans]]，包含 deepseek-paygo，got {ids:?}"
+        );
+        assert!(ids.contains(&"zhipu-coding"));
+        assert!(ids.contains(&"zhipu-paygo"));
+        // 字段结构：id / provider / name / type / key_prefix / endpoints
+        let dp = arr
+            .iter()
+            .find(|p| p.get("id") == Some(&serde_json::json!("deepseek-paygo")))
+            .unwrap();
+        assert_eq!(dp["provider"], "deepseek");
+        assert_eq!(dp["type"], "paygo");
+        assert_eq!(dp["key_prefix"], "sk-");
+        assert_eq!(dp["name"], "API（按量）");
+        assert!(dp["endpoints"].is_array() && !dp["endpoints"].as_array().unwrap().is_empty());
+        // 无认证 → 401
+        let resp2 = router()
+            .with_state(st)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/plans")
                     .body(Body::empty())
                     .unwrap(),
             )

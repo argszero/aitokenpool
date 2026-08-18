@@ -80,6 +80,9 @@ pub struct Provider {
 pub struct Plan {
     pub id: String,
     pub provider: String,
+    /// 显示名（可选；为空时 /api/plans 按 type 推导）
+    #[serde(default)]
+    pub name: String,
     /// paygo | token | coding
     #[serde(rename = "type")]
     pub type_: String,
