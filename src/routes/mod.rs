@@ -11,6 +11,9 @@
 
 pub mod admin;
 pub mod api_keys;
+pub mod ops;
+pub mod org;
+pub mod raise;
 pub mod sharing;
 pub mod wallet;
 
@@ -180,7 +183,26 @@ pub fn router() -> Router<AppState> {
         // P1：管理员（充值 / 成员列表 / 用量报表）
         .route("/api/admin/credits", post(admin::credits))
         .route("/api/admin/users", get(admin::users))
+        .route(
+            "/api/admin/users/:id",
+            axum::routing::patch(admin::patch_user),
+        )
         .route("/api/admin/usage", get(admin::usage))
+        // P2-C：部门管理 / 加额审批 / 运营者
+        .route("/api/admin/departments", get(org::list).post(org::create))
+        .route(
+            "/api/admin/departments/:id",
+            axum::routing::patch(org::patch).delete(org::remove),
+        )
+        .route("/api/raise-requests", post(raise::create).get(raise::list))
+        .route(
+            "/api/admin/raise-requests/:id/approve",
+            post(raise::approve),
+        )
+        .route("/api/admin/raise-requests/:id/reject", post(raise::reject))
+        .route("/api/ops/runtime", get(ops::runtime))
+        .route("/api/ops/credits", post(ops::credits))
+        .route("/api/ops/users", get(ops::users))
         // P2-A：静态托管（ui/ 目录；API 路由优先，未命中回退到文件服务）
         .fallback_service(tower_http::services::ServeDir::new("ui"))
 }
@@ -253,6 +275,31 @@ mod tests {
         let resp = router()
             .with_state(state)
             .oneshot(b.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    async fn patch(
+        state: AppState,
+        uri: &str,
+        body: &str,
+        bearer: Option<&str>,
+    ) -> (StatusCode, String) {
+        let mut b = Request::builder()
+            .method("PATCH")
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(k) = bearer {
+            b = b.header("authorization", format!("Bearer {k}"));
+        }
+        let resp = router()
+            .with_state(state)
+            .oneshot(b.body(Body::from(body.to_string())).unwrap())
             .await
             .unwrap();
         let status = resp.status();
@@ -463,25 +510,29 @@ mod tests {
     async fn admin_users_and_usage_lists() {
         let st = test_state("adminlist");
         let admin_bearer = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
-        // users：demo + admin 都在列表
+        // users：demo + admin + ops 都在列表
         let (s, body) = get(st.clone(), "/api/admin/users", Some(&admin_bearer)).await;
         assert_eq!(s, StatusCode::OK, "users 应 200: {body}");
         let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
-        assert_eq!(arr.len(), 2, "demo + admin: {body}");
+        assert_eq!(arr.len(), 3, "demo + admin + ops: {body}");
         assert!(arr.iter().any(|u| u["role"] == "admin"), "admin 在列表中");
+        assert!(arr.iter().any(|u| u["role"] == "ops"), "ops 在列表中");
         assert!(
             arr.iter().any(|u| u["email"] == "demo@aitokenpool.local"),
             "demo 在列表中"
         );
-        // usage：每用户本月聚合
+        // usage：对象 {users, models, departments} 三组聚合
         let (s, body) = get(st.clone(), "/api/admin/usage", Some(&admin_bearer)).await;
         assert_eq!(s, StatusCode::OK, "usage 应 200: {body}");
-        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
-        assert_eq!(arr.len(), 2);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let users = v["users"].as_array().expect("users 为数组");
+        assert_eq!(users.len(), 3, "每用户一行: {body}");
         assert!(
-            arr.iter().all(|u| u["month_tokens"] == 0.0),
+            users.iter().all(|u| u["month_tokens"] == 0.0),
             "无调用时 tokens 为 0: {body}"
         );
+        assert!(v["models"].as_array().is_some(), "models 组存在");
+        assert!(v["departments"].as_array().is_some(), "departments 组存在");
         // 非 admin 访问 users → 403
         let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
         let (s, _) = get(st.clone(), "/api/admin/users", Some(&demo_bearer)).await;
@@ -535,5 +586,336 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "admin me 应 200: {body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["role"], "admin");
+    }
+
+    /* ---- P2-C：部门管理 / 加额审批 / 运营者 / 用量三组聚合 ---- */
+
+    #[tokio::test]
+    async fn dept_crud_duplicate_and_delete_nonempty() {
+        let st = test_state("dept");
+        let admin = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        // 建部门
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/departments",
+            r#"{"name":"研发","quota":80000}"#,
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "建部门应 200: {body}");
+        let dept_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        // 重名 → 409
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/departments",
+            r#"{"name":"研发","quota":100}"#,
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "重名应 409: {body}");
+        // 列表含新部门
+        let (s, body) = get(st.clone(), "/api/admin/departments", Some(&admin)).await;
+        assert_eq!(s, StatusCode::OK, "列表应 200: {body}");
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "研发");
+        assert_eq!(arr[0]["member_count"], 0);
+        // PATCH 改名 + 配额
+        let (s, body) = patch(
+            st.clone(),
+            &format!("/api/admin/departments/{dept_id}"),
+            r#"{"name":"研发中心","quota":90000}"#,
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "PATCH 应 200: {body}");
+        // 分配成员（demo → 部门）
+        let (s, body) = patch(
+            st.clone(),
+            "/api/admin/users/1",
+            &format!(r#"{{"dept_id":{dept_id}}}"#),
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "成员改部门应 200: {body}");
+        // 删除非空部门 → 409
+        let (s, body) = del(
+            st.clone(),
+            &format!("/api/admin/departments/{dept_id}"),
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "非空部门应 409: {body}");
+        // 移除成员 → 可删
+        let (s, body) = patch(
+            st.clone(),
+            "/api/admin/users/1",
+            r#"{"dept_id":null}"#,
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "移除成员应 200: {body}");
+        let (s, body) = del(
+            st,
+            &format!("/api/admin/departments/{dept_id}"),
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "空部门应可删: {body}");
+    }
+
+    #[tokio::test]
+    async fn dept_requires_admin_and_valid_dept() {
+        let st = test_state("dept403");
+        // 非 admin 建部门 → 403
+        let demo = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let (s, _) = post(
+            st.clone(),
+            "/api/admin/departments",
+            r#"{"name":"研发","quota":100}"#,
+            Some(&demo),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        // admin 给不存在的部门分配成员 → 404
+        let admin = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        let (s, _) = patch(st, "/api/admin/users/1", r#"{"dept_id":999}"#, Some(&admin)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn raise_request_apply_dup_approve_reject() {
+        let st = test_state("raise");
+        let demo = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let admin = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        // demo 申请 500 点
+        let (s, body) = post(
+            st.clone(),
+            "/api/raise-requests",
+            r#"{"amount":500,"reason":"任务增加"}"#,
+            Some(&demo),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "申请应 200: {body}");
+        let req_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        // 重复 pending → 409
+        let (s, body) = post(
+            st.clone(),
+            "/api/raise-requests",
+            r#"{"amount":100,"reason":"再来"}"#,
+            Some(&demo),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "重复申请应 409: {body}");
+        // 非法 amount → 400
+        let (s, _) = post(
+            st.clone(),
+            "/api/raise-requests",
+            r#"{"amount":-1,"reason":"x"}"#,
+            Some(&demo),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        // 用户看自己的（1 条）
+        let (s, body) = get(st.clone(), "/api/raise-requests", Some(&demo)).await;
+        assert_eq!(s, StatusCode::OK);
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["amount"], 500.0);
+        // admin 看全部（1 条，含用户信息）
+        let (s, body) = get(st.clone(), "/api/raise-requests", Some(&admin)).await;
+        assert_eq!(s, StatusCode::OK);
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["email"], "demo@aitokenpool.local");
+        // 批准 → balance += 500 + 交易记录
+        let (s, body) = post(
+            st.clone(),
+            &format!("/api/admin/raise-requests/{req_id}/approve"),
+            "{}",
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "批准应 200: {body}");
+        let (_, body) = get(st.clone(), "/api/wallet", Some(&demo)).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["balance"], 12471.0 + 500.0, "批准后永久余额增加: {body}");
+        let (s, body) = get(st.clone(), "/api/transactions?type=topup", Some(&demo)).await;
+        assert_eq!(s, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["items"].as_array().unwrap().len(), 1);
+        assert_eq!(v["items"][0]["counterpart"], "加额审批");
+        // 重复批准 → 409
+        let (s, _) = post(
+            st.clone(),
+            &format!("/api/admin/raise-requests/{req_id}/approve"),
+            "{}",
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT);
+        // 再申请一条 → 驳回
+        let (s, body) = post(
+            st.clone(),
+            "/api/raise-requests",
+            r#"{"amount":50,"reason":"再试"}"#,
+            Some(&demo),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let req2 = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let (s, body) = post(
+            st,
+            &format!("/api/admin/raise-requests/{req2}/reject"),
+            "{}",
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "驳回应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["status"], "rejected");
+    }
+
+    #[tokio::test]
+    async fn raise_requires_admin_review() {
+        let st = test_state("raise403");
+        let demo = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let (s, body) = post(
+            st.clone(),
+            "/api/raise-requests",
+            r#"{"amount":100,"reason":"x"}"#,
+            Some(&demo),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let req_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        // 非 admin 批准 → 403
+        let (s, _) = post(
+            st,
+            &format!("/api/admin/raise-requests/{req_id}/approve"),
+            "{}",
+            Some(&demo),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn ops_runtime_credits_users() {
+        let st = test_state("ops");
+        let ops_bearer = login_bearer(&st, "ops@aitokenpool.local", "ops1234").await;
+        // 普通用户访问 ops → 403
+        let demo = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let (s, _) = get(st.clone(), "/api/ops/runtime", Some(&demo)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "普通用户应 403");
+        // runtime 聚合
+        let (s, body) = get(st.clone(), "/api/ops/runtime", Some(&ops_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "ops runtime 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["users"], 3, "demo+admin+ops: {body}");
+        assert_eq!(v["month_calls"], 0);
+        // users 列表（含余额）
+        let (s, body) = get(st.clone(), "/api/ops/users", Some(&ops_bearer)).await;
+        assert_eq!(s, StatusCode::OK);
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(arr.len(), 3);
+        assert!(arr.iter().any(|u| u["email"] == "demo@aitokenpool.local"));
+        // credits 给 demo 充 200
+        let (s, body) = post(
+            st.clone(),
+            "/api/ops/credits",
+            r#"{"user_id":1,"amount":200}"#,
+            Some(&ops_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "ops 充值应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["balance"], 12471.0 + 200.0);
+        // 交易记录 counterpart=运营者（demo 视角）
+        let (s, body) = get(st.clone(), "/api/transactions?type=topup", Some(&demo)).await;
+        assert_eq!(s, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["items"][0]["counterpart"], "运营者");
+        // 负数金额 → 400
+        let (s, _) = post(
+            st,
+            "/api/ops/credits",
+            r#"{"user_id":1,"amount":-5}"#,
+            Some(&ops_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn usage_three_group_aggregation() {
+        let st = test_state("usage3");
+        let admin = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        // 造部门 + 分配 demo + 插一条 usage_records
+        let (_, body) = post(
+            st.clone(),
+            "/api/admin/departments",
+            r#"{"name":"研发","quota":100000}"#,
+            Some(&admin),
+        )
+        .await;
+        let dept_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let (_, _) = patch(
+            st.clone(),
+            "/api/admin/users/1",
+            &format!(r#"{{"dept_id":{dept_id}}}"#),
+            Some(&admin),
+        )
+        .await;
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO usage_records (user_id, model, tokens, cost) VALUES (1, 'gpt-test', 1000, 2.5)",
+                [],
+            )
+            .unwrap();
+        }
+        let (s, body) = get(st.clone(), "/api/admin/usage", Some(&admin)).await;
+        assert_eq!(s, StatusCode::OK, "usage 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        // users 组
+        let demo_u = v["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == 1)
+            .unwrap();
+        assert_eq!(demo_u["month_tokens"], 1000.0);
+        assert_eq!(demo_u["month_calls"], 1);
+        assert_eq!(demo_u["dept_name"], "研发");
+        // models 组
+        let m = v["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["model"] == "gpt-test")
+            .unwrap();
+        assert_eq!(m["tokens"], 1000.0);
+        assert_eq!(m["cost"], 2.5);
+        assert_eq!(m["calls"], 1);
+        // departments 组
+        let d = v["departments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["name"] == "研发")
+            .unwrap();
+        assert_eq!(d["tokens"], 1000.0);
+        assert_eq!(d["cost"], 2.5);
     }
 }

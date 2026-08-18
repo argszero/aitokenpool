@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// 打开（或创建）数据库并执行幂等迁移 + dev 种子
 pub fn open(path: &str) -> Result<Connection> {
@@ -112,6 +112,22 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             cost       REAL NOT NULL DEFAULT 0,
             time       TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS departments (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL UNIQUE,
+            quota      REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS raise_requests (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            amount      REAL NOT NULL DEFAULT 0,
+            reason      TEXT NOT NULL DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'pending',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            reviewed_by INTEGER,
+            reviewed_at TEXT
+        );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_models_provider_model
             ON models(provider, model);
         "#,
@@ -151,6 +167,26 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             granted_at TEXT NOT NULL DEFAULT (datetime('now')),
             expires_at TEXT NOT NULL DEFAULT '',
             status     TEXT NOT NULL DEFAULT 'active'
+        );",
+    )?;
+    // v4（P2-C）：部门/加额审批——users.dept_id + departments / raise_requests 表
+    ensure_column(conn, "users", "dept_id", "dept_id INTEGER")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS departments (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL UNIQUE,
+            quota      REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS raise_requests (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            amount      REAL NOT NULL DEFAULT 0,
+            reason      TEXT NOT NULL DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'pending',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            reviewed_by INTEGER,
+            reviewed_at TEXT
         );",
     )?;
     // schema_version：INSERT OR REPLACE 保证幂等
@@ -252,6 +288,27 @@ pub fn seed(conn: &Connection) -> Result<()> {
         conn.execute(
             "INSERT INTO users (email, password_hash, name, role) VALUES (?1, ?2, '管理员', 'admin')",
             rusqlite::params!["admin@aitokenpool.local", hash],
+        )?;
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (?1, 0)",
+            [id],
+        )?;
+    }
+
+    // 运营者账号（P2-C）：ops@aitokenpool.local / ops1234，role=ops
+    let ops_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM users WHERE email = ?1",
+            ["ops@aitokenpool.local"],
+            |r| r.get(0),
+        )
+        .ok();
+    if ops_id.is_none() {
+        let hash = hash_password("ops1234")?;
+        conn.execute(
+            "INSERT INTO users (email, password_hash, name, role) VALUES (?1, ?2, '运营者', 'ops')",
+            rusqlite::params!["ops@aitokenpool.local", hash],
         )?;
         let id = conn.last_insert_rowid();
         conn.execute(

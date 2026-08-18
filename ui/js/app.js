@@ -405,6 +405,7 @@
     ]},
     { g: "角色视图", items: [
       { id: "admin", icon: "admin", label: "管理视图 Admin", role: "admin" },
+      { id: "ops", icon: "admin", label: "运营视图 Operator", role: "ops" },
       { id: "settings", icon: "settings", label: "设置 Settings" },
     ]},
   ];
@@ -416,6 +417,7 @@
     dashboard: "仪表盘 Dashboard", marketplace: "模型市场 Marketplace", sharing: "共享管理 Sharing",
     wallet: "钱包 Wallet", transactions: "交易记录 Transactions", settings: "设置 Settings",
     admin: "管理视图 Admin",
+    ops: "运营视图 Operator",
   };
 
   // 游客可见的页面（US-1：仅市场；其余需登录）
@@ -477,7 +479,7 @@
         if (item.role) {
           const tag = document.createElement("span");
           tag.className = "nav-tag";
-          tag.textContent = "管理员";
+          tag.textContent = item.role === "ops" ? "运营者" : "管理员";
           b.appendChild(tag);
         }
         b.addEventListener("click", () => switchView(item.id));
@@ -493,9 +495,13 @@
       toast("请先登录后再访问「" + (VIEW_TITLE[id] || id) + "」", "error");
       return;
     }
-    // 角色限制（P2-A）：管理视图仅 admin（hash 直达 / 快捷键也兜底）
+    // 角色限制（P2-A/P2-C）：管理视图仅 admin；运营视图仅 ops（hash 直达 / 快捷键也兜底）
     if (id === "admin" && D.USER.role !== "admin") {
       toast("管理视图仅管理员可见", "error");
+      return;
+    }
+    if (id === "ops" && D.USER.role !== "ops") {
+      toast("运营视图仅运营者可见", "error");
       return;
     }
     activeView = id;
@@ -521,6 +527,7 @@
     else if (id === "transactions") { renderTransactions(); if (loggedIn()) loadTransactions(); }
     else if (id === "settings") { renderSettings(); if (loggedIn()) loadApiKeys(); }
     else if (id === "admin") { renderAdmin(); if (loggedIn() && D.USER.role === "admin") loadAdmin(); }
+    else if (id === "ops") { renderOps(); if (loggedIn() && D.USER.role === "ops") loadOps(); }
   }
 
   /* --- 仪表盘 --- */
@@ -1008,6 +1015,22 @@
     else clearFieldError($("#raise-reason"));
     if (firstErr) { firstErr.focus(); return; }
     // 加额申请默认需管理员审批（原「需审批」开关随组织设置表单移除，见 rant 10:59:23）
+    // P2-C：登录 → POST /api/raise-requests 真实提交；游客 → 本地 mock
+    if (loggedIn()) {
+      api.post("/api/raise-requests", { amount: amt, reason }).then(() => {
+        closeRaise();
+        toast("已提交申请 +" + D.fmt(amt) + " 点，等待管理员审批", "success");
+      }).catch((err) => {
+        const msg = (err && err.message) || "提交失败";
+        if (err && err.status === 409) {
+          closeRaise();
+          toast(msg, "error");
+        } else {
+          toast(msg, "error");
+        }
+      });
+      return;
+    }
     D.RAISE_REQUESTS.unshift({
       id: Date.now(), user: D.USER.name, email: D.USER.email, amount: amt, reason, status: "pending", time: nowTime(),
     });
@@ -1027,23 +1050,34 @@
     const el = $("#raise-requests");
     if (!el) return;
     const demoTag = demo ? '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 加额审批后端待 P2-C 补齐</p>' : "";
-    el.innerHTML = demoTag + (D.RAISE_REQUESTS.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
-      D.RAISE_REQUESTS.map((r, i) =>
-        "<tr><td data-label='成员'><strong>" + esc(r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
+    // P2-C：登录 → /api/raise-requests 真实列表（admin 视角全部）
+    const list = Live.raiseRequests ? Live.raiseRequests : D.RAISE_REQUESTS;
+    const live = !!Live.raiseRequests;
+    el.innerHTML = demoTag + (list.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
+      list.map((r, i) =>
+        "<tr><td data-label='成员'><strong>" + esc(r.name || r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
         '<td class="num" data-label="申请点数">+' + D.fmt(r.amount) + " 点</td>" +
         "<td data-label='原因'>" + esc(r.reason) + "</td>" +
         "<td data-label='状态'>" + badge(r.status, RAISE_STATUS) + "</td>" +
         "<td data-label='操作'>" + (r.status === "pending"
           ? "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-raise-approve='" + i + "'>批准</button> " +
             "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>驳回</button>"
-          : '<span class="muted" style="font-size:12px">' + timeCell(r.time) + "</span>") + "</td></tr>"
+          : '<span class="muted" style="font-size:12px">' + (live ? esc((r.created_at || "").slice(5, 16)) : timeCell(r.time)) + "</span>") + "</td></tr>"
       ).join("") + "</tbody></table></div>"
       : emptyState("暂无加额申请", "成员提交的加额申请会显示在这里，批准后自动加点数"));
   }
 
   function approveRaise(i) {
-    const r = D.RAISE_REQUESTS[i];
+    const list = Live.raiseRequests ? Live.raiseRequests : D.RAISE_REQUESTS;
+    const r = list[i];
     if (!r || r.status !== "pending") return;
+    if (Live.raiseRequests) {
+      api.post("/api/admin/raise-requests/" + r.id + "/approve", {}).then(async () => {
+        await loadAdmin();
+        toast("已批准「" + (r.name || r.email) + "」申请 +" + D.fmt(r.amount) + " 点", "success");
+      }).catch((err) => toast((err && err.message) || "批准失败", "error"));
+      return;
+    }
     r.status = "approved";
     // 批准 → 成员余额 + 申请点数（演示：若为当前登录用户则同步 D.USER.balance）
     if (r.email === D.USER.email) {
@@ -1060,8 +1094,16 @@
   }
 
   function rejectRaise(i) {
-    const r = D.RAISE_REQUESTS[i];
+    const list = Live.raiseRequests ? Live.raiseRequests : D.RAISE_REQUESTS;
+    const r = list[i];
     if (!r || r.status !== "pending") return;
+    if (Live.raiseRequests) {
+      api.post("/api/admin/raise-requests/" + r.id + "/reject", {}).then(async () => {
+        await loadAdmin();
+        toast("已驳回「" + (r.name || r.email) + "」的加额申请", "success");
+      }).catch((err) => toast((err && err.message) || "驳回失败", "error"));
+      return;
+    }
     r.status = "rejected";
     renderRaiseRequests();
     toast("已驳回「" + r.user + "」的加额申请", "success");
@@ -1566,27 +1608,30 @@
     $$(".admin-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.adminPane !== tab));
 
     if (tab === "employees") {
-      // P2-B：登录 → /api/admin/users（真实成员）；否则 mock
+      // P2-B/P2-C：登录 → /api/admin/users（真实成员）+ /api/raise-requests（真实加额申请）；否则 mock
       if (Live.adminUsers) {
         const users = Live.adminUsers;
+        const depts = Live.departments || [];
         const total = users.reduce((a, u) => a + (u.balance || 0), 0);
         $("#emp-stats").innerHTML = [
           stat("成员数 Members", users.length + " 人", "真实用户"),
           stat("总余额 Total", D.fmt(total) + " 点", "balance + gift"),
           stat("管理员 Admins", users.filter((u) => u.role === "admin").length + " 人", "role=admin"),
-          stat("演示标注", "部门 / 加额", "P2-C 后端补齐"),
+          stat("部门 Deps", depts.length + " 个", "组织管理"),
         ].join("");
         $("#emp-body").innerHTML = users.map((u, i) =>
           "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + esc(u.name || u.email) + "</strong>" +
-          "<div class='muted' style='font-size:12px'>" + esc(u.email) + (u.role === "admin" ? " · 管理员" : "") + "</div></td>" +
-          "<td data-label='角色'>" + (u.role === "admin" ? '<span class="badge ok">admin</span>' : '<span class="badge dim">user</span>') + "</td>" +
+          "<div class='muted' style='font-size:12px'>" + esc(u.email) + (u.role === "admin" ? " · 管理员" : u.role === "ops" ? " · 运营者" : "") + "</div></td>" +
+          "<td data-label='角色'>" + (u.role === "admin" ? '<span class="badge ok">admin</span>' : u.role === "ops" ? '<span class="badge warn">ops</span>' : '<span class="badge dim">user</span>') + "</td>" +
+          "<td data-label='部门'>" + (u.dept_name ? esc(u.dept_name) : '<span class="muted">未分配</span>') + "</td>" +
           '<td class="num" data-label="永久点数">' + D.fmt(u.balance || 0) + "</td>" +
           '<td class="num" data-label="赠送点数">' + D.fmt(u.gift_balance || 0) + "</td>" +
           '<td class="num" data-label="可用">' + D.fmt((u.balance || 0) + (u.gift_balance || 0)) + "</td>" +
-          "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
+          "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>改部门</button> " +
+          "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>充值</button></td></tr>"
         ).join("");
         pulseTbody($("#emp-body"));
-        renderRaiseRequests(true); // 加额审批：后端暂无 → 演示标注
+        renderRaiseRequests(false);
         return;
       }
       const total = D.EMPLOYEES.reduce((a, e) => a + e.quota, 0);
@@ -1610,36 +1655,55 @@
       pulseTbody($("#emp-body"));
       renderRaiseRequests(false);
     } else if (tab === "usage") {
-      // P2-B：登录 → /api/admin/usage（每用户本月 tokens/点数/调用次数）
+      // P2-C：登录 → /api/admin/usage（{users, models, departments} 三组聚合）
       if (Live.adminUsage) {
-        const us = Live.adminUsage;
-        const maxT = Math.max(1, ...us.map((u) => u.month_tokens || 0));
-        const maxC = Math.max(1, ...us.map((u) => u.month_calls || 0));
-        $("#usage-model").innerHTML = us.map((u) =>
-          '<div class="mini-item"><div><div class="t">' + esc(u.name || u.email) + "</div>" +
-          '<div class="d">本月 tokens ' + D.fmt(u.month_tokens || 0) + " · 成本 " + D.fmt(u.month_cost || 0) + "</div></div>" +
-          '<div class="r"><span class="pts">' + (u.month_calls || 0) + " 次</span><div class='d'>调用</div></div></div>"
-        ).join("") + (us.length ? "" : '<div class="empty-state compact">' + EMPTY_ICON + "<p>暂无用量</p></div>");
-        $("#usage-emp").innerHTML = barRow("用户合计", us.reduce((a, u) => a + (u.month_tokens || 0), 0), maxT, "tokens") +
-          barRow("本月调用", us.reduce((a, u) => a + (u.month_calls || 0), 0), maxC, "次");
+        const u = Live.adminUsage;
+        const users = u.users || [], models = u.models || [], depts = u.departments || [];
+        // 按模型（barRow 用 cost 归一）
+        const maxMC = Math.max(1, ...models.map((m) => m.cost || 0));
+        $("#usage-model").innerHTML = models.length
+          ? models.map((m) => barRow(m.model, m.cost, maxMC, "元")).join("")
+          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>本月暂无模型用量</p></div>";
+        // 按成员（barRow 用 tokens 归一）
+        const maxUT = Math.max(1, ...users.map((x) => x.month_tokens || 0));
+        $("#usage-emp").innerHTML = users.length
+          ? users.map((x) =>
+              '<div class="mini-item"><div><div class="t">' + esc(x.name || x.email) + (x.dept_name ? '<span class="muted" style="font-size:11px"> · ' + esc(x.dept_name) + "</span>" : "") + "</div>" +
+              '<div class="d">本月 tokens ' + D.fmt(x.month_tokens || 0) + " · 成本 " + D.fmt(x.month_cost || 0) + "</div></div>" +
+              '<div class="r"><span class="pts">' + (x.month_calls || 0) + " 次</span><div class='d'>调用</div></div></div>"
+            ).join("") + barRow("合计 tokens", users.reduce((a, x) => a + (x.month_tokens || 0), 0), maxUT, "tokens")
+          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>本月暂无成员用量</p></div>";
+        // 按部门（barRow 用 cost 归一）
+        const maxDC = Math.max(1, ...depts.map((d) => d.cost || 0));
+        $("#usage-dept").innerHTML = depts.length
+          ? depts.map((d) => barRow(d.name, d.cost, maxDC, "元")).join("")
+          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>本月暂无部门用量</p></div>";
         return;
       }
       const maxM = Math.max(...D.USAGE_MODEL.map((u) => u.pts));
       const maxE = Math.max(...D.USAGE_EMP.map((u) => u.pts));
+      const deptMock = [
+        { name: "研发", pts: 32250 },
+        { name: "产品", pts: 3200 },
+        { name: "市场", pts: 9800 },
+        { name: "设计", pts: 2100 },
+      ];
+      const maxD = Math.max(...deptMock.map((u) => u.pts));
       $("#usage-model").innerHTML = D.USAGE_MODEL.map((u) => barRow(u.name, u.pts, maxM, "点")).join("");
       $("#usage-emp").innerHTML = D.USAGE_EMP.map((u) => barRow(u.name, u.pts, maxE, "点")).join("");
+      $("#usage-dept").innerHTML = deptMock.map((u) => barRow(u.name, u.pts, maxD, "点")).join("");
     } else if (tab === "org") {
       renderOrg();
-    } else if (tab === "ops") {
-      renderOperator();
     }
   }
 
-  // P2-B：拉取管理员数据（users + usage；登录且 role=admin 时）
+  // P2-B/P2-C：拉取管理员数据（users + usage + departments + raise-requests；登录且 role=admin 时）
   async function loadAdmin() {
     if (!loggedIn()) return;
     try { await liveLoad("adminUsers", "/api/admin/users"); } catch (e) { Live.adminUsers = null; }
     try { await liveLoad("adminUsage", "/api/admin/usage"); } catch (e) { Live.adminUsage = null; }
+    try { await liveLoad("departments", "/api/admin/departments"); } catch (e) { Live.departments = null; }
+    try { await liveLoad("raiseRequests", "/api/raise-requests"); } catch (e) { Live.raiseRequests = null; }
     renderAdmin();
   }
 
@@ -1647,15 +1711,18 @@
 
   // 成员改部门：行内下拉（选项来自 DEPARTMENTS + "未分配"），确认后更新并联动部门统计
   function editEmpDept(i) {
-    const emp = D.EMPLOYEES[i];
+    const liveEmp = Live.adminUsers ? Live.adminUsers[i] : null;
+    const emp = liveEmp || D.EMPLOYEES[i];
     const row = document.querySelector('[data-emp-row="' + i + '"]');
     if (!emp || !row) return;
-    const cell = row.children[1]; // 部门列
+    const cell = row.children[2]; // 部门列（live 布局：成员/角色/部门/…）
+    const depts = Live.departments || D.DEPARTMENTS;
     const sel = document.createElement("select");
     sel.className = "input";
     sel.style.cssText = "padding:4px 8px;font-size:12px;width:auto";
+    const cur = liveEmp ? (liveEmp.dept_id == null ? "" : liveEmp.dept_id) : (emp.dept || "");
     sel.innerHTML = '<option value="">未分配</option>' +
-      D.DEPARTMENTS.map((d) => '<option value="' + esc(d.name) + '"' + (emp.dept === d.name ? " selected" : "") + ">" + esc(d.name) + "</option>").join("");
+      depts.map((d) => '<option value="' + (liveEmp ? d.id : d.name) + '"' + (String(cur) === String(liveEmp ? d.id : d.name) ? " selected" : "") + ">" + esc(d.name) + "</option>").join("");
     const ok = document.createElement("button");
     ok.className = "btn btn-primary";
     ok.style.cssText = "padding:4px 10px;font-size:12px";
@@ -1672,6 +1739,17 @@
     sel.focus();
     const done = () => {
       const v = sel.value;
+      if (liveEmp) {
+        api.patch("/api/admin/users/" + liveEmp.id, { dept_id: v === "" ? null : Number(v) }).then(async () => {
+          await loadAdmin();
+          const deptName = v === "" ? "未分配" : (depts.find((d) => String(d.id) === v) || {}).name;
+          toast("已把 " + (liveEmp.name || liveEmp.email) + " 调整到 " + (deptName || "部门"), "success");
+        }).catch((err) => {
+          toast((err && err.message) || "调整失败", "error");
+          renderAdmin();
+        });
+        return;
+      }
       if (v !== emp.dept) {
         emp.dept = v;
         renderAdmin();
@@ -1697,29 +1775,31 @@
   function renderOrg() {
     const rawQ = $("#od-search").value || "";
     const q = rawQ.toLowerCase();
-    const list = D.DEPARTMENTS.filter((d) => !q || d.name.toLowerCase().includes(q));
+    // P2-C：登录 → /api/admin/departments 真实数据（含 member_count / month_cost / remaining）
+    const src = Live.departments ? Live.departments : D.DEPARTMENTS;
+    const list = src.filter((d) => !q || d.name.toLowerCase().includes(q));
+    const live = !!Live.departments;
 
-    // P2-B：部门/组织后端暂无 → 演示数据标注（P2-C 补齐）
-    const demoTag = '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 部门/组织管理后端待 P2-C 补齐</p>';
     const demoNote = $("#dept-demo-note");
-    if (demoNote) demoNote.innerHTML = demoTag;
+    if (demoNote) demoNote.innerHTML = live ? "" : '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 部门/组织管理后端待 P2-C 补齐</p>';
 
-    const totalQuota = D.DEPARTMENTS.reduce((a, d) => a + d.quota, 0);
-    const totalUsed = D.DEPARTMENTS.reduce((a, d) => a + deptUsed(d), 0);
-    const unassigned = D.EMPLOYEES.filter((e) => !e.dept).length;
+    const totalQuota = src.reduce((a, d) => a + (d.quota || 0), 0);
+    const totalUsed = src.reduce((a, d) => a + (live ? (d.month_cost || 0) : deptUsed(d)), 0);
+    const unassigned = live ? (Live.adminUsers || []).filter((u) => !u.dept_id).length : D.EMPLOYEES.filter((e) => !e.dept).length;
     $("#dept-stats").innerHTML = [
-      stat("部门数 Departments", D.DEPARTMENTS.length + " 个", unassigned ? "未分配 " + unassigned + " 人" : "全部部门"),
+      stat("部门数 Departments", src.length + " 个", unassigned ? "未分配 " + unassigned + " 人" : "全部部门"),
       stat("月度总分配 Monthly quota", D.fmt(totalQuota) + " 点", "按月分配"),
       stat("已用 Used", D.fmt(totalUsed) + " 点", totalQuota ? Math.round((totalUsed / totalQuota) * 100) + "% 消耗率" : "—"),
       stat("剩余 Remain", D.fmt(totalQuota - totalUsed) + " 点", "按部门分配"),
     ].join("");
 
     $("#dept-body").innerHTML = list.length ? list.map((d, i) => {
-      const used = deptUsed(d);
+      const used = live ? (d.month_cost || 0) : deptUsed(d);
+      const members = live ? (d.member_count || 0) : deptMemberCount(d.name);
       const pct = d.quota > 0 ? used / d.quota : 0;
       const st = pct >= 1 ? '<span class="badge danger">已用尽</span>' : pct > 0.9 ? '<span class="badge warn">接近限额</span>' : '<span class="badge ok">正常</span>';
       return "<tr><td data-label='部门'><strong>" + hl(d.name, rawQ) + "</strong></td>" +
-        '<td class="num" data-label="成员数">' + deptMemberCount(d.name) + " 人</td>" +
+        '<td class="num" data-label="成员数">' + members + " 人</td>" +
         '<td class="num" data-label="月分配（点数）">' + D.fmt(d.quota) + " 点</td>" +
         '<td class="num" data-label="已用">' + D.fmt(used) + " 点</td>" +
         '<td class="num" data-label="剩余">' + D.fmt(d.quota - used) + " 点</td>" +
@@ -1737,7 +1817,8 @@
 
   function openDeptForm(i) {
     deptEditIndex = (i == null ? null : i);
-    const d = (i == null ? null : D.DEPARTMENTS[i]);
+    const src = Live.departments ? Live.departments : D.DEPARTMENTS;
+    const d = (i == null ? null : src[i]);
     $("#dept-form-title").innerHTML = d
       ? "编辑部门 <span class='en'>Edit department</span>"
       : "添加部门 <span class='en'>Add department</span>";
@@ -1759,14 +1840,32 @@
     if (!rawQ || !Number.isInteger(quota) || quota <= 0) { setFieldError($("#dept-form-quota"), "请输入正整数月分配点数"); firstErr = firstErr || $("#dept-form-quota"); }
     else clearFieldError($("#dept-form-quota"));
     if (firstErr) { firstErr.focus(); return; }
+    const live = !!Live.departments;
+    const src = live ? Live.departments : D.DEPARTMENTS;
     if (deptEditIndex == null) {
-      if (D.DEPARTMENTS.some((d) => d.name === name)) { setFieldError($("#dept-form-name"), "部门「" + name + "」已存在"); $("#dept-form-name").focus(); return; }
+      if (src.some((d) => d.name === name)) { setFieldError($("#dept-form-name"), "部门「" + name + "」已存在"); $("#dept-form-name").focus(); return; }
+      if (live) {
+        api.post("/api/admin/departments", { name, quota }).then(async () => {
+          await loadAdmin();
+          $("#dept-form-card").hidden = true;
+          toast("已添加部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）", "success");
+        }).catch((err) => toast((err && err.message) || "添加失败", "error"));
+        return;
+      }
       D.DEPARTMENTS.push({ id: Date.now(), name, quota });
       toast("已添加部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）", "success");
     } else {
-      const d = D.DEPARTMENTS[deptEditIndex];
+      const d = src[deptEditIndex];
       if (!d) return;
-      if (name !== d.name && D.DEPARTMENTS.some((x) => x.name === name)) { setFieldError($("#dept-form-name"), "部门「" + name + "」已存在"); $("#dept-form-name").focus(); return; }
+      if (name !== d.name && src.some((x) => x.name === name)) { setFieldError($("#dept-form-name"), "部门「" + name + "」已存在"); $("#dept-form-name").focus(); return; }
+      if (live) {
+        api.patch("/api/admin/departments/" + d.id, { name, quota }).then(async () => {
+          await loadAdmin();
+          $("#dept-form-card").hidden = true;
+          toast("已更新部门「" + name + "」（月分配 " + D.fmt(quota) + " 点）", "success");
+        }).catch((err) => toast((err && err.message) || "更新失败", "error"));
+        return;
+      }
       const old = d.name;
       d.name = name;
       d.quota = quota;
@@ -1778,8 +1877,16 @@
   }
 
   function deleteDept(i) {
-    const d = D.DEPARTMENTS[i];
+    const src = Live.departments ? Live.departments : D.DEPARTMENTS;
+    const d = src[i];
     if (!d) return;
+    if (Live.departments) {
+      api.del("/api/admin/departments/" + d.id).then(async () => {
+        await loadAdmin();
+        toast("已删除部门「" + d.name + "」", "success");
+      }).catch((err) => toast((err && err.message) || "删除失败", "error"));
+      return;
+    }
     D.DEPARTMENTS.splice(i, 1);
     renderAdmin();
     toast("已删除部门「" + d.name + "」", "success");
@@ -1793,34 +1900,63 @@
 
   /* --- 平台运营者视图（US-运营1 / US-运营2：运营者 = 宿主本人，职责仅两项） --- */
 
-  function renderOperator() {
-    // P2-B：平台运营者端点后端暂无 → 演示数据标注（P2-C）
-    const note = $("#ops-demo-note");
-    if (note) note.innerHTML = '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 平台运营者（ops）端点待 P2-C 补齐</p>';
+  function renderOps() {
+    const tab = $("#ops-tabs .tab.active").dataset.opsTab;
+    $$(".ops-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.opsPane !== tab));
+
+    if (tab === "runtime") {
+      // P2-C：登录 → /api/ops/runtime 真实聚合；否则演示
+      if (Live.opsRuntime) {
+        const rt = Live.opsRuntime;
+        $("#ops-stats").innerHTML = [
+          stat("运行状态 Status", '<span class="badge ok">在线</span>', "平台服务正常"),
+          stat("用户数 Users", rt.users + " 人", "全平台注册用户"),
+          stat("上架 key 数 Keys", rt.active_keys + " 个", "status=on"),
+          stat("本月调用 Calls", rt.month_calls + " 次", "usage_records"),
+          stat("点数流入 In", "+" + D.fmt(rt.month_in) + " 点", "本月"),
+          stat("点数流出 Out", "-" + D.fmt(rt.month_out) + " 点", "本月"),
+        ].join("");
+        const note = $("#ops-demo-note");
+        if (note) note.innerHTML = "";
+        return;
+      }
+      const note = $("#ops-demo-note");
+      if (note) note.innerHTML = '<p class="muted" style="font-size:12px;margin-bottom:6px">⚠ 演示数据 — 平台运营者（ops）端点待 P2-C 补齐</p>';
+      const txs = D.TRANSACTIONS;
+      const flowIn = txs.filter((t) => t.pts > 0).reduce((a, t) => a + t.pts, 0);
+      const flowOut = txs.filter((t) => t.pts < 0).reduce((a, t) => a + Math.abs(t.pts), 0);
+      const onKeys = D.SHARINGS.filter((s2) => s2.status === "on").length;
+      $("#ops-stats").innerHTML = [
+        stat("运行状态 Status", '<span class="badge ok">在线</span>', "平台服务正常"),
+        stat("用户数 Users", D.OPERATOR_USERS.length + " 人", "注册用户"),
+        stat("共享 key 数 Keys", onKeys + " 个", D.SHARINGS.length + " 个历史上架"),
+        stat("交易量 Trades", txs.length + " 笔", "累计全部类型"),
+        stat("点数流入 In", "+" + D.fmt(flowIn) + " 点", "收益 / 充值 / 赠送"),
+        stat("点数流出 Out", "-" + D.fmt(flowOut) + " 点", "消费 / 提现"),
+      ].join("");
+      return;
+    }
+
+    // tab === "users"：成员充值
+    const src = Live.opsUsers ? Live.opsUsers : D.OPERATOR_USERS;
     const rawQ = $("#ops-search").value || "";
     const q = rawQ.toLowerCase();
-    const list = D.OPERATOR_USERS.filter((u) => !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
-    const txs = D.TRANSACTIONS;
-    const flowIn = txs.filter((t) => t.pts > 0).reduce((a, t) => a + t.pts, 0);
-    const flowOut = txs.filter((t) => t.pts < 0).reduce((a, t) => a + Math.abs(t.pts), 0);
-    const onKeys = D.SHARINGS.filter((s) => s.status === "on").length;
-
-    $("#ops-stats").innerHTML = [
-      stat("运行状态 Status", '<span class="badge ok">在线</span>', "平台服务正常"),
-      stat("用户数 Users", D.OPERATOR_USERS.length + " 人", "注册用户"),
-      stat("共享 key 数 Keys", onKeys + " 个", D.SHARINGS.length + " 个历史上架"),
-      stat("交易量 Trades", txs.length + " 笔", "累计全部类型"),
-      stat("点数流入 In", "+" + D.fmt(flowIn) + " 点", "收益 / 充值 / 赠送"),
-      stat("点数流出 Out", "-" + D.fmt(flowOut) + " 点", "消费 / 提现"),
-    ].join("");
-
+    const list = src.filter((u) => !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
     $("#ops-body").innerHTML = list.length ? list.map((u) =>
       "<tr><td data-label='用户'><strong>" + hl(u.name, rawQ) + "</strong></td>" +
       "<td data-label='邮箱'>" + hl(u.email, rawQ) + "</td>" +
-      '<td class="num" data-label="余额（点数）">' + D.fmt(u.balance) + " 点</td>" +
+      '<td class="num" data-label="余额（点数）">' + D.fmt(u.balance || 0) + " 点</td>" +
       "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>充值点数</button></td></tr>"
     ).join("") : emptyRow(4, "没有匹配的用户", "试试其他用户名 / 邮箱");
     pulseTbody($("#ops-body"));
+  }
+
+  // P2-C：拉取运营者数据（runtime + users；登录且 role=ops 时）
+  async function loadOps() {
+    if (!loggedIn()) return;
+    try { await liveLoad("opsRuntime", "/api/ops/runtime"); } catch (e) { Live.opsRuntime = null; }
+    try { await liveLoad("opsUsers", "/api/ops/users"); } catch (e) { Live.opsUsers = null; }
+    renderOps();
   }
 
   // 运营者给用户充值：行内编辑（替代原生输入弹窗，Enter 确认 / Esc 取消）
@@ -1839,6 +1975,17 @@
       },
       onSubmit: (raw) => {
         const amt = Math.round(Number(raw) * 100) / 100;
+        if (Live.opsUsers) {
+          api.post("/api/ops/credits", { user_id: u.id, amount: amt }).then(async () => {
+            await loadOps();
+            renderOps();
+            if (u.email === D.USER.email) {
+              try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance; $("#side-balance").textContent = D.fmt(D.USER.balance); bump($("#side-balance")); } catch (e) {}
+            }
+            toast("已给「" + u.name + "」充值 " + D.fmt(amt) + " 点（永久有效）", "success");
+          }).catch((err) => toast((err && err.message) || "充值失败", "error"));
+          return;
+        }
         u.balance = Math.round((u.balance + amt) * 100) / 100;
         const isMe = u.email === D.USER.email;
         if (isMe) D.USER.balance = u.balance;
@@ -1846,12 +1993,12 @@
           id: Date.now(), time: nowTime(), type: "topup", partner: "运营者",
           detail: "充值 · 运营者发放（永久有效）", tokens: "—", pts: amt, status: "成功",
         });
-        renderAdmin();
+        renderOps();
         $("#side-balance").textContent = D.fmt(D.USER.balance);
         if (isMe) bump($("#side-balance")); // 给自己充值 → 余额跳动（rant 18:06:09 E）
         toast("已给「" + u.name + "」充值 " + D.fmt(amt) + " 点（永久有效）", "success");
       },
-      onCancel: () => renderAdmin(),
+      onCancel: () => renderOps(),
     });
   }
 
@@ -2047,7 +2194,11 @@
     dashboard: null,     // GET /api/dashboard
     apiKeys: null,       // GET /api/api-keys
     adminUsers: null,    // GET /api/admin/users
-    adminUsage: null,    // GET /api/admin/usage
+    adminUsage: null,    // GET /api/admin/usage → {users, models, departments}
+    departments: null,   // P2-C GET /api/admin/departments
+    raiseRequests: null, // P2-C GET /api/raise-requests（admin 视角全部）
+    opsRuntime: null,    // P2-C GET /api/ops/runtime
+    opsUsers: null,      // P2-C GET /api/ops/users
     fullKeys: null,      // 生成时返回的完整 key（id → api_key，仅会话内）
   };
 
@@ -2254,12 +2405,20 @@
     $("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); });
     $("#chat-modal").addEventListener("click", (e) => { if (e.target === $("#chat-modal")) closeChat(); });
 
+    // 运营视图 Tabs（P2-C：运行概览 / 成员充值）
+    $$("#ops-tabs .tab").forEach((b) => b.addEventListener("click", () => {
+      $$("#ops-tabs .tab").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      renderOps();
+    }));
+
     // 平台运营者（G1 / US-运营2）：搜索定位用户 + 充值（行内编辑，永久有效点数，产生交易记录）
-    wireSearch($("#ops-search"), renderAdmin);
+    wireSearch($("#ops-search"), renderOps);
     $("#ops-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-ops-topup]");
       if (!b) return;
-      const u = D.OPERATOR_USERS.find((x) => x.id === Number(b.dataset.opsTopup));
+      const src = Live.opsUsers ? Live.opsUsers : D.OPERATOR_USERS;
+      const u = src.find((x) => x.id === Number(b.dataset.opsTopup));
       if (!u) return;
       inlineOpsTopup(u, b);
     });

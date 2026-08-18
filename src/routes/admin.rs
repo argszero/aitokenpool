@@ -102,8 +102,10 @@ pub async fn users(
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     let mut stmt = conn
         .prepare(
-            "SELECT u.id, u.email, u.name, u.role, COALESCE(q.balance, 0), COALESCE(q.gift_balance, 0) \
-             FROM users u LEFT JOIN quotas q ON q.user_id = u.id ORDER BY u.id",
+            "SELECT u.id, u.email, u.name, u.role, COALESCE(q.balance, 0), COALESCE(q.gift_balance, 0), \
+                    u.dept_id, COALESCE(d.name, '') \
+             FROM users u LEFT JOIN quotas q ON q.user_id = u.id \
+             LEFT JOIN departments d ON d.id = u.dept_id ORDER BY u.id",
         )
         .map_err(internal)?;
     let rows = stmt
@@ -115,6 +117,8 @@ pub async fn users(
                 "role": r.get::<_, String>(3)?,
                 "balance": r.get::<_, f64>(4)?,
                 "gift_balance": r.get::<_, f64>(5)?,
+                "dept_id": r.get::<_, Option<i64>>(6)?,
+                "dept_name": r.get::<_, String>(7)?,
             }))
         })
         .map_err(internal)?;
@@ -125,38 +129,165 @@ pub async fn users(
     Ok(Json(out))
 }
 
-/// GET /api/admin/usage：用量报表（每用户本月 tokens/点数/调用次数）
+/// PATCH /api/admin/users/:id：成员改部门 / 移除（P2-C；{dept_id: null} = 移出部门）
+#[derive(Debug, Deserialize)]
+pub struct UserPatch {
+    pub dept_id: Option<i64>,
+}
+
+pub async fn patch_user(
+    State(st): State<AppState>,
+    auth: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(req): Json<UserPatch>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    crate::routes::org::require_admin(&auth)?;
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1)",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !exists {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "用户不存在" })),
+        ));
+    }
+    if let Some(did) = req.dept_id {
+        let dept_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM departments WHERE id = ?1)",
+                [did],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if !dept_exists {
+            return Err((
+                axum::http::StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "部门不存在" })),
+            ));
+        }
+        conn.execute(
+            "UPDATE users SET dept_id = ?1 WHERE id = ?2",
+            params![did, id],
+        )
+        .map_err(internal)?;
+    } else {
+        conn.execute("UPDATE users SET dept_id = NULL WHERE id = ?1", [id])
+            .map_err(internal)?;
+    }
+    let (email, dept_id): (String, Option<i64>) = conn
+        .query_row(
+            "SELECT email, dept_id FROM users WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(internal)?;
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "email": email,
+        "dept_id": dept_id,
+    })))
+}
+
+/// GET /api/admin/usage：用量报表（P2-C 扩展为三组聚合）
+/// 返回 { users: [{id,email,name,dept_id,dept_name,month_tokens,month_cost,month_calls}],
+///         models: [{model,tokens,cost,calls}],
+///         departments: [{id,name,tokens,cost,calls}] }
 pub async fn usage(
     State(st): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<serde_json::Value>>, ApiErr> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     require_admin(&auth)?;
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    // 按成员
     let mut stmt = conn
         .prepare(
-            "SELECT u.id, u.email, u.name, \
+            "SELECT u.id, u.email, u.name, u.dept_id, COALESCE(d.name, ''), \
                     COALESCE(SUM(ur.tokens), 0), COALESCE(SUM(ur.cost), 0), COUNT(ur.id) \
              FROM users u \
              LEFT JOIN usage_records ur ON ur.user_id = u.id \
                  AND strftime('%Y-%m', ur.time) = strftime('%Y-%m', 'now') \
+             LEFT JOIN departments d ON d.id = u.dept_id \
              GROUP BY u.id ORDER BY u.id",
         )
         .map_err(internal)?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(serde_json::json!({
-                "id": r.get::<_, i64>(0)?,
-                "email": r.get::<_, String>(1)?,
-                "name": r.get::<_, String>(2)?,
-                "month_tokens": r.get::<_, f64>(3)?,
-                "month_cost": r.get::<_, f64>(4)?,
-                "month_calls": r.get::<_, i64>(5)?,
-            }))
-        })
-        .map_err(internal)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r.map_err(internal)?);
+    let mut users = Vec::new();
+    {
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "email": r.get::<_, String>(1)?,
+                    "name": r.get::<_, String>(2)?,
+                    "dept_id": r.get::<_, Option<i64>>(3)?,
+                    "dept_name": r.get::<_, String>(4)?,
+                    "month_tokens": r.get::<_, f64>(5)?,
+                    "month_cost": r.get::<_, f64>(6)?,
+                    "month_calls": r.get::<_, i64>(7)?,
+                }))
+            })
+            .map_err(internal)?;
+        for r in rows {
+            users.push(r.map_err(internal)?);
+        }
     }
-    Ok(Json(out))
+    // 按模型
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(model, ''), COALESCE(SUM(tokens), 0), COALESCE(SUM(cost), 0), COUNT(*) \
+             FROM usage_records WHERE strftime('%Y-%m', time) = strftime('%Y-%m', 'now') \
+             GROUP BY model ORDER BY SUM(cost) DESC",
+        )
+        .map_err(internal)?;
+    let mut models = Vec::new();
+    {
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "model": r.get::<_, String>(0)?,
+                    "tokens": r.get::<_, f64>(1)?,
+                    "cost": r.get::<_, f64>(2)?,
+                    "calls": r.get::<_, i64>(3)?,
+                }))
+            })
+            .map_err(internal)?;
+        for r in rows {
+            models.push(r.map_err(internal)?);
+        }
+    }
+    // 按部门
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(d.name, '（未分配）'), COALESCE(SUM(ur.tokens), 0), COALESCE(SUM(ur.cost), 0), COUNT(ur.id) \
+             FROM usage_records ur JOIN users u ON u.id = ur.user_id \
+             LEFT JOIN departments d ON d.id = u.dept_id \
+             WHERE strftime('%Y-%m', ur.time) = strftime('%Y-%m', 'now') \
+             GROUP BY d.id ORDER BY SUM(ur.cost) DESC",
+        )
+        .map_err(internal)?;
+    let mut departments = Vec::new();
+    {
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "name": r.get::<_, String>(0)?,
+                    "tokens": r.get::<_, f64>(1)?,
+                    "cost": r.get::<_, f64>(2)?,
+                    "calls": r.get::<_, i64>(3)?,
+                }))
+            })
+            .map_err(internal)?;
+        for r in rows {
+            departments.push(r.map_err(internal)?);
+        }
+    }
+    Ok(Json(serde_json::json!({
+        "users": users,
+        "models": models,
+        "departments": departments,
+    })))
 }
