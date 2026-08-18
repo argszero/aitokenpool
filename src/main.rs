@@ -17,6 +17,7 @@ mod crypto;
 mod dao;
 mod db;
 mod gateway;
+mod gift;
 mod router;
 mod routes;
 

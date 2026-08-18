@@ -172,7 +172,9 @@ async fn forward(
     // 锁作用域严格限定在同步读区内，绝不在 await 期间持有 MutexGuard
     let (balance, keys) = {
         let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-        let balance = dao::get_balance(&conn, auth.user_id);
+        // P1：懒加载当日赠送（赠送也计入可用余额）；可用余额 = gift + permanent
+        let _ = crate::gift::ensure_daily_gift(&conn, auth.user_id);
+        let balance = dao::get_available_balance(&conn, auth.user_id);
         let keys = dao::find_keys_by_model(&conn, model).map_err(internal)?;
         (balance, keys)
     };
@@ -283,7 +285,9 @@ async fn forward_stream(
     // 余额预检（与 forward 一致，锁作用域严格块内）
     let (balance, keys) = {
         let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-        let balance = dao::get_balance(&conn, auth.user_id);
+        // P1：懒加载当日赠送（赠送也计入可用余额）；可用余额 = gift + permanent
+        let _ = crate::gift::ensure_daily_gift(&conn, auth.user_id);
+        let balance = dao::get_available_balance(&conn, auth.user_id);
         let keys = dao::find_keys_by_model(&conn, model).map_err(internal)?;
         (balance, keys)
     };
@@ -552,6 +556,13 @@ mod tests {
         let p = std::env::temp_dir().join(format!("atp_gw_{}_{}.db", std::process::id(), tag));
         let _ = std::fs::remove_file(&p);
         let conn = crate::db::open(p.to_str().unwrap()).expect("open tmp db");
+        // demo 注册时间拨到赠送窗口外（2020 年）→ 网关测试不触发每日赠送，
+        // 消费扣减断言确定（赠送路径由 gift/routes/billing 测试覆盖）
+        conn.execute(
+            "UPDATE users SET created_at = '2020-01-01 00:00:00' WHERE id = 1",
+            [],
+        )
+        .unwrap();
         let mut cfg = crate::config::Config::load("config/config.example.toml").unwrap();
         cfg.plans.push(crate::config::Plan {
             id: plan_id.to_string(),

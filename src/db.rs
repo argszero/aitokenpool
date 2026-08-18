@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// 打开（或创建）数据库并执行幂等迁移 + dev 种子
 pub fn open(path: &str) -> Result<Connection> {
@@ -79,7 +79,16 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id    INTEGER NOT NULL UNIQUE REFERENCES users(id),
             balance    REAL NOT NULL DEFAULT 0,
+            gift_balance REAL NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS gift_grants (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL REFERENCES users(id),
+            amount     REAL NOT NULL DEFAULT 0,
+            granted_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL DEFAULT 'active'
         );
         CREATE TABLE IF NOT EXISTS transactions (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,6 +136,23 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "available_end TEXT NOT NULL DEFAULT ''",
     )?;
     ensure_column(conn, "keys", "note", "note TEXT NOT NULL DEFAULT ''")?;
+    // v3（P1）：点数账户拆分——gift_balance（当前有效赠送点数）+ gift_grants 明细表
+    ensure_column(
+        conn,
+        "quotas",
+        "gift_balance",
+        "gift_balance REAL NOT NULL DEFAULT 0",
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS gift_grants (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL REFERENCES users(id),
+            amount     REAL NOT NULL DEFAULT 0,
+            granted_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL DEFAULT 'active'
+        );",
+    )?;
     // schema_version：INSERT OR REPLACE 保证幂等
     let v: i64 = conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
@@ -212,6 +238,27 @@ pub fn seed(conn: &Connection) -> Result<()> {
          VALUES ('deepseek', 'deepseek-paygo', 'deepseek-v4-flash', 'on', ?1, 'sk-placeholder-encrypted', 1000, 0)",
         [demo_id],
     )?;
+
+    // 管理员账号（P1）：admin@aitokenpool.local / admin1234，role=admin
+    let admin_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM users WHERE email = ?1",
+            ["admin@aitokenpool.local"],
+            |r| r.get(0),
+        )
+        .ok();
+    if admin_id.is_none() {
+        let hash = hash_password("admin1234")?;
+        conn.execute(
+            "INSERT INTO users (email, password_hash, name, role) VALUES (?1, ?2, '管理员', 'admin')",
+            rusqlite::params!["admin@aitokenpool.local", hash],
+        )?;
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (?1, 0)",
+            [id],
+        )?;
+    }
     Ok(())
 }
 
@@ -391,7 +438,7 @@ mod tests {
         let v: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2, "旧库迁移后版本应为 2");
+        assert_eq!(v, SCHEMA_VERSION, "旧库迁移后版本应为 {SCHEMA_VERSION}");
         drop(conn);
         let _ = std::fs::remove_file(p);
     }

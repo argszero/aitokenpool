@@ -10,6 +10,7 @@ use axum::Json;
 use rusqlite::params;
 use serde::Deserialize;
 
+use crate::dao;
 use crate::routes::{internal, ApiErr, AppState, AuthUser};
 
 /// GET /api/wallet
@@ -18,13 +19,9 @@ pub async fn wallet(
     auth: AuthUser,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    let balance: f64 = conn
-        .query_row(
-            "SELECT balance FROM quotas WHERE user_id = ?1",
-            [auth.user_id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0.0);
+    // P1：懒加载当日赠送（新人每日 1 点，10 天窗口）
+    let _ = crate::gift::ensure_daily_gift(&conn, auth.user_id);
+    let (balance, gift_balance) = dao::get_balances(&conn, auth.user_id);
     let month_use: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(pts), 0) FROM transactions \
@@ -43,6 +40,8 @@ pub async fn wallet(
         .unwrap_or(0.0);
     Ok(Json(serde_json::json!({
         "balance": balance,
+        "gift_balance": gift_balance,
+        "available": balance + gift_balance,
         "month_use": month_use,
         "month_earn": month_earn,
     })))
@@ -77,11 +76,11 @@ pub async fn transactions(
     let page_size = q.page_size.clamp(1, 100);
     let type_filter = match q.r#type.as_str() {
         "" | "all" => None,
-        t @ ("consume" | "earn") => Some(t.to_string()),
+        t @ ("consume" | "earn" | "topup") => Some(t.to_string()),
         _ => {
             return Err((
                 axum::http::StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "type 必须为 consume / earn / all" })),
+                Json(serde_json::json!({ "error": "type 必须为 consume / earn / topup / all" })),
             ))
         }
     };

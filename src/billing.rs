@@ -1,4 +1,4 @@
-//! 计量账本（architecture §4.3/4.4）
+//! 计量账本（architecture §4.3/4.4 + P1 点数规则细化）
 //!
 //! P0-B（rant 2026-08-18T09:55:57）：
 //! - 成本 = prompt_tokens × input_per_m/1e6 + completion_tokens × output_per_m/1e6
@@ -8,6 +8,10 @@
 //! - 分享者（key 属主）得 90%（平台抽成 10%），写 transactions（consume / earn）
 //! - 写 usage_records；更新 keys.used += tokens
 //! - 调用+记账事务性处理：上游失败不入账（settle 只在成功响应后调用）
+//!
+//! P1（rant 2026-08-18T11:03:02）：
+//! - 可用余额 = gift_balance + balance（预检与 settle 一致）
+//! - 扣减顺序：先扣最早到期的赠送点数（gift_grants 按 expires_at ASC），不足再扣永久 balance
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -67,15 +71,17 @@ pub struct SettleParams {
     pub cost: f64,
 }
 
-/// 事务性入账：扣消费者 → 加分享者 90% → 两条 transactions → usage_records → keys.used
-/// 任一步失败整体回滚（调用方只在成功响应后调用，天然满足「失败不入账」）
+/// 事务性入账：扣消费者（先赠送后永久）→ 加分享者 90% → 两条 transactions →
+/// usage_records → keys.used。任一步失败整体回滚（调用方只在成功响应后调用，
+/// 天然满足「失败不入账」）
 pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
     let tx = conn.transaction()?;
 
-    // 消费者扣 balance（余额允许为负——预检已拦截 ≤0 的请求，负余额由后续充值覆盖）
+    // 消费者扣减：先扣最早到期的赠送点数，剩余从永久 balance 扣
+    let remaining = crate::gift::deduct_gift_first(&tx, p.consumer_id, p.pts)?;
     tx.execute(
         "UPDATE quotas SET balance = balance - ?1, updated_at = datetime('now') WHERE user_id = ?2",
-        rusqlite::params![p.pts, p.consumer_id],
+        rusqlite::params![remaining, p.consumer_id],
     )?;
 
     // 分享者加 90%（平台抽成 10%）
@@ -190,11 +196,11 @@ mod tests {
         let (mut conn, p) = tmp_db("settle");
         // 属主用户（user_id=2）与 key
         conn.execute(
-            "INSERT INTO users (id, email, password_hash, name, role) VALUES (2, 'owner@t.local', 'x', '分享者', 'user')",
+            "INSERT INTO users (id, email, password_hash, name, role) VALUES (100, 'owner@t.local', 'x', '分享者', 'user')",
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO quotas (user_id, balance) VALUES (2, 0)", [])
+        conn.execute("INSERT INTO quotas (user_id, balance) VALUES (100, 0)", [])
             .unwrap();
         conn.execute(
             "INSERT INTO keys (id, provider, plan, model, status, owner_id, encrypted_key, quota, used) \
@@ -214,7 +220,7 @@ mod tests {
             consumer_id: 1,
             api_key_id: Some(3),
             key_id: 9,
-            owner_id: 2,
+            owner_id: 100,
             model: "test-model".into(),
             tokens: 150.0,
             pts: 2.0,
@@ -231,7 +237,7 @@ mod tests {
         assert!((bal_c - (12471.0 - 2.0)).abs() < 1e-9);
         // 分享者加 1.8（90%）
         let bal_o: f64 = conn
-            .query_row("SELECT balance FROM quotas WHERE user_id = 2", [], |r| {
+            .query_row("SELECT balance FROM quotas WHERE user_id = 100", [], |r| {
                 r.get(0)
             })
             .unwrap();
@@ -248,9 +254,11 @@ mod tests {
             .unwrap();
         assert_eq!(t_consume, "consume");
         let t_earn: String = conn
-            .query_row("SELECT type FROM transactions WHERE user_id = 2", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT type FROM transactions WHERE user_id = 100",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(t_earn, "earn");
         // usage_records 一条
@@ -293,6 +301,145 @@ mod tests {
             })
             .unwrap();
         assert_eq!(bal, 12471.0, "回滚后余额不变");
+
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn settle_deducts_gift_first_then_permanent() {
+        let (mut conn, p) = tmp_db("settle_gift");
+        // 消费者 user_id=1：赠送 1 点（当天 23:59:59 过期）+ 永久 10 点
+        conn.execute(
+            "INSERT INTO gift_grants (user_id, amount, granted_at, expires_at, status) \
+             VALUES (1, 1, '2026-08-18 10:00:00', '2026-08-18 23:59:59', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE quotas SET gift_balance = 1, balance = 10 WHERE user_id = 1",
+            [],
+        )
+        .unwrap();
+        // 分享者 user_id=2 与 key
+        conn.execute(
+            "INSERT INTO users (id, email, password_hash, name, role) VALUES (100, 'owner2@t.local', 'x', '分享者', 'user')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO quotas (user_id, balance) VALUES (100, 0)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO keys (id, provider, plan, model, status, owner_id, encrypted_key, quota, used) \
+             VALUES (8, 'test', 'test-plan', 'test-model', 'on', 2, 'sk-test', 1000, 0)",
+            [],
+        )
+        .unwrap();
+
+        let params = SettleParams {
+            consumer_id: 1,
+            api_key_id: Some(3),
+            key_id: 8,
+            owner_id: 100,
+            model: "test-model".into(),
+            tokens: 100.0,
+            pts: 3.0,
+            cost: 0.003,
+        };
+        settle(&mut conn, &params).unwrap();
+
+        // 赠送 1 点全部花掉（used）+ 永久扣 2 点
+        let gift: f64 = conn
+            .query_row(
+                "SELECT gift_balance FROM quotas WHERE user_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gift, 0.0, "赠送先扣光");
+        let g_status: String = conn
+            .query_row(
+                "SELECT status FROM gift_grants WHERE user_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(g_status, "used");
+        let bal: f64 = conn
+            .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!((bal - 8.0).abs() < 1e-9, "永久扣 2 点: {bal}");
+        // 分享者照常 90%
+        let owner: f64 = conn
+            .query_row("SELECT balance FROM quotas WHERE user_id = 100", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!((owner - 2.7).abs() < 1e-9, "分享者 3×0.9=2.7: {owner}");
+        // 两条 transactions
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn settle_expired_gift_not_consumed() {
+        let (mut conn, p) = tmp_db("settle_expired");
+        // 一笔已过期（昨天）的赠送：settle 前惰性清理 → 只扣永久
+        conn.execute(
+            "INSERT INTO gift_grants (user_id, amount, granted_at, expires_at, status) \
+             VALUES (1, 1, '2026-08-17 10:00:00', '2026-08-17 23:59:59', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE quotas SET gift_balance = 1, balance = 10 WHERE user_id = 1",
+            [],
+        )
+        .unwrap();
+        let params = SettleParams {
+            consumer_id: 1,
+            api_key_id: None,
+            key_id: 1, // seed 里的 demo key
+            owner_id: 1,
+            model: "m".into(),
+            tokens: 10.0,
+            pts: 2.0,
+            cost: 0.002,
+        };
+        settle(&mut conn, &params).unwrap();
+        let gift: f64 = conn
+            .query_row(
+                "SELECT gift_balance FROM quotas WHERE user_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gift, 0.0, "过期赠送不参与扣减");
+        let g_status: String = conn
+            .query_row(
+                "SELECT status FROM gift_grants WHERE user_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(g_status, "expired", "惰性标记 expired");
+        let bal: f64 = conn
+            .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // 10 - 2（消费）+ 1.8（同属主 90% 分成）= 9.8
+        assert!(
+            (bal - 9.8).abs() < 1e-9,
+            "过期赠送不扣，全部从永久扣: {bal}"
+        );
 
         drop(conn);
         let _ = std::fs::remove_file(p);
