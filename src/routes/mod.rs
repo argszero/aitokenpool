@@ -167,6 +167,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/auth/login", post(login))
         .route("/api/me", get(me))
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))
+        .route("/api/api-keys/:id", axum::routing::delete(api_keys::remove))
         .route("/v1/chat/completions", post(gateway::chat_completions))
         .route("/anthropic/v1/messages", post(gateway::anthropic_messages))
         .route("/api/models", get(gateway::models))
@@ -229,6 +230,23 @@ mod tests {
 
     async fn get(state: AppState, uri: &str, bearer: Option<&str>) -> (StatusCode, String) {
         let mut b = Request::builder().method("GET").uri(uri);
+        if let Some(k) = bearer {
+            b = b.header("authorization", format!("Bearer {k}"));
+        }
+        let resp = router()
+            .with_state(state)
+            .oneshot(b.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    async fn del(state: AppState, uri: &str, bearer: Option<&str>) -> (StatusCode, String) {
+        let mut b = Request::builder().method("DELETE").uri(uri);
         if let Some(k) = bearer {
             b = b.header("authorization", format!("Bearer {k}"));
         }
@@ -334,6 +352,38 @@ mod tests {
     async fn api_keys_without_bearer_401() {
         let (s, _) = get(test_state("nobearer"), "/api/api-keys", None).await;
         assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_key_delete_revokes_own_only() {
+        let st = test_state("keydel");
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        // 生成一个 key → 拿到 id（从列表）
+        let (_, body) = post(st.clone(), "/api/api-keys", "{}", Some(&demo_bearer)).await;
+        assert!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["api_key"].is_string());
+        let (_, body) = get(st.clone(), "/api/api-keys", Some(&demo_bearer)).await;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        let new_id = arr[0]["id"].as_i64().expect("有 id");
+        // 删除
+        let (s, body) = del(
+            st.clone(),
+            &format!("/api/api-keys/{new_id}"),
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "删除应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["status"], "revoked");
+        // 列表不再显示（revoked 过滤）
+        let (_, body) = get(st.clone(), "/api/api-keys", Some(&demo_bearer)).await;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert!(
+            !arr.iter().any(|k| k["id"] == new_id),
+            "撤销后不再出现在列表"
+        );
+        // 再删 → 404（已撤销）
+        let (s, _) = del(st, &format!("/api/api-keys/{new_id}"), Some(&demo_bearer)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
     }
 
     /// 登录并返回 Bearer

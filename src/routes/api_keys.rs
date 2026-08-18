@@ -1,10 +1,9 @@
 //! API Key 管理端点（Bearer 认证）
 //!
-//! P0-A（rant 2026-08-17T22:21:52）：
-//! - POST /api/api-keys：生成（atk_live_ + 24 hex，与 UI 原型一致）
-//! - GET  /api/api-keys：列表（key 脱敏 atk_live_****xxxx）
+//! - P0-A（rant 2026-08-17T22:21:52）：POST 生成（atk_live_ + 24 hex）；GET 列表（脱敏）
+//! - P2-B（rant 2026-08-18T12:02:40）：DELETE /api/api-keys/:id 软删（status → 'revoked'），仅属主
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::Json;
 
 use crate::auth;
@@ -31,4 +30,21 @@ pub async fn list(
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     let keys = crate::dao::list_api_keys(&conn, auth.user_id).map_err(internal)?;
     Ok(Json(keys))
+}
+
+/// DELETE /api/api-keys/:id（软删；非属主 / 不存在 → 404）
+pub async fn remove(
+    State(st): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let ok = crate::dao::revoke_api_key(&conn, auth.user_id, id).map_err(internal)?;
+    if !ok {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "API Key 不存在或已撤销" })),
+        ));
+    }
+    Ok(Json(serde_json::json!({ "id": id, "status": "revoked" })))
 }
