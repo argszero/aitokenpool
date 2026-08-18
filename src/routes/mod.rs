@@ -173,6 +173,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/api-keys/:id", axum::routing::delete(api_keys::remove))
         .route("/v1/chat/completions", post(gateway::chat_completions))
         .route("/anthropic/v1/messages", post(gateway::anthropic_messages))
+        .route("/v1/responses", post(gateway::responses))
         .route("/api/models", get(gateway::models))
         .route("/api/plans", get(gateway::plans))
         // P0-C：共享 / 钱包 / 交易 / 仪表盘

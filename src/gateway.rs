@@ -5,10 +5,18 @@
 //! - POST /anthropic/v1/messages（Anthropic 兼容）
 //! - GET  /api/models（市场页：models 表 + key 可用性）
 //!
+//! P3-A（rant 2026-08-18T16:15:42）：
+//! - POST /v1/responses（OpenAI Responses 兼容，新增）
+//! - 三协议互转：入站 openai_chat / anthropic / responses 可调用只暴露
+//!   其他协议端点的 plan（协议自动转换，见 src/protocol.rs）；出站协议选择
+//!   同协议优先 → anthropic → openai_chat → responses；跨协议才转换（同协议透传零损耗）。
+//! - 流式 SSE 转换留 P3-B：流式请求仅支持同协议透传，跨协议 → 400 明确报错。
+//!
 //! 流程：请求体取 model → 路由选 key（粘性/随机/冷却/3 次切换）→
-//! reqwest 转发到 plan 对应 base_url（openai_chat → {base}/chat/completions；
-//! anthropic → {base}/v1/messages）→ 上游响应原样透传 → 解析 usage → 计量入账。
-//! 上游 key 当前为明文占位（加密留 P0-C）。
+//! 按 plan 可用端点定出站协议（需要时转换请求体）→ reqwest 转发到 plan 对应
+//! base_url（openai_chat → {base}/chat/completions；anthropic → {base}/v1/messages；
+//! responses → {base}/responses）→ 上游响应（需要时转换回入站协议）→
+//! 解析 usage（按上游协议）→ 计量入账。
 
 use axum::body::Body;
 use axum::extract::State;
@@ -38,14 +46,14 @@ fn extract_model(body: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// 解析上游响应中的 usage（openai: prompt/completion_tokens；anthropic: input/output_tokens）
+/// 解析上游响应中的 usage（openai: prompt/completion_tokens；anthropic/responses: input/output_tokens）
 fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64) {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else {
         return (0.0, 0.0);
     };
     let usage = v.get("usage");
     match protocol {
-        "anthropic" => {
+        "anthropic" | "responses" => {
             let input = usage
                 .and_then(|u| u.get("input_tokens"))
                 .and_then(|x| x.as_f64())
@@ -70,15 +78,25 @@ fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64) {
     }
 }
 
-/// 按 plan + 协议解析上游完整 URL
+/// 按 plan + 出站协议解析上游完整 URL（P3-A：新增 responses → {base}/responses）
 fn resolve_endpoint(cfg: &Config, plan_id: &str, protocol: &str) -> Option<String> {
     let plan = cfg.plans.iter().find(|p| p.id == plan_id)?;
     let ep = plan.endpoints.iter().find(|e| e.protocol == protocol)?;
     let base = ep.base_url.trim_end_matches('/');
     Some(match protocol {
         "anthropic" => format!("{base}/v1/messages"),
+        "responses" => format!("{base}/responses"),
         _ => format!("{base}/chat/completions"),
     })
+}
+
+/// 按入站协议 + plan 可用端点定出站协议（P3-A）：
+/// 同协议端点优先；无同协议 → anthropic → openai_chat → responses 优先级选可用；
+/// 全不可用 → None（该 key 不可用，走故障转移）。
+fn resolve_outbound<'a>(cfg: &Config, plan_id: &str, inbound: &'a str) -> Option<&'a str> {
+    let plan = cfg.plans.iter().find(|p| p.id == plan_id)?;
+    let protocols: Vec<String> = plan.endpoints.iter().map(|e| e.protocol.clone()).collect();
+    crate::protocol::determine_forwarding_protocol(&protocols, inbound)
 }
 
 /// 原样透传上游响应
@@ -202,8 +220,16 @@ async fn forward(
             .find(|k| k.id == key_id)
             .expect("pick 返回的 key 必然在候选集");
 
-        // 解析端点；plan 无对应协议端点 → 视为该 key 不可用
-        let Some(url) = resolve_endpoint(&st.cfg, &key.plan, protocol) else {
+        // P3-A：定出站协议（同协议优先；跨协议按 anthropic → openai_chat → responses 降级）
+        let Some(outbound) = resolve_outbound(&st.cfg, &key.plan, protocol) else {
+            // plan 无任何可用协议端点 → 视为该 key 不可用
+            st.router.mark_unhealthy(key_id);
+            continue;
+        };
+        let needs_transform = outbound != protocol;
+
+        // 解析出站端点；无对应协议端点 → 视为该 key 不可用
+        let Some(url) = resolve_endpoint(&st.cfg, &key.plan, outbound) else {
             st.router.mark_unhealthy(key_id);
             continue;
         };
@@ -213,14 +239,30 @@ async fn forward(
             continue;
         };
 
-        // 转发上游（anthropic 用 x-api-key，openai 用 Bearer）
-        let resp = if protocol == "anthropic" {
+        // 跨协议 → 转换请求体（入站协议 → 出站协议）；同协议原样透传
+        let up_body = if needs_transform {
+            match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(v) => {
+                    let transformed = crate::protocol::transform_request(&v, protocol, outbound);
+                    match serde_json::to_string(&transformed) {
+                        Ok(s) => s,
+                        Err(_) => body.clone(),
+                    }
+                }
+                Err(_) => body.clone(),
+            }
+        } else {
+            body.clone()
+        };
+
+        // 转发上游（anthropic 用 x-api-key，openai/responses 用 Bearer）
+        let resp = if outbound == "anthropic" {
             st.http
                 .post(&url)
                 .header("x-api-key", &plain_key)
                 .header("content-type", "application/json")
                 .header("anthropic-version", "2023-06-01")
-                .body(body.clone())
+                .body(up_body)
                 .send()
                 .await
         } else {
@@ -228,7 +270,7 @@ async fn forward(
                 .post(&url)
                 .header("authorization", format!("Bearer {plain_key}"))
                 .header("content-type", "application/json")
-                .body(body.clone())
+                .body(up_body)
                 .send()
                 .await
         };
@@ -245,9 +287,18 @@ async fn forward(
         let bytes = resp.bytes().await.unwrap_or_default().to_vec();
 
         if status.is_success() {
-            // 成功：解析 usage → 计量入账 → 粘性
-            let (input_tokens, output_tokens) = parse_usage(&bytes, protocol);
+            // 成功：解析 usage（按上游出站协议）→ 计量入账 → 粘性
+            let (input_tokens, output_tokens) = parse_usage(&bytes, outbound);
             settle_usage(st, auth, key, model, input_tokens, output_tokens);
+            // 跨协议 → 转换响应体回入站协议
+            if needs_transform {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    let transformed = crate::protocol::transform_response(&v, outbound, protocol);
+                    if let Ok(new_bytes) = serde_json::to_vec(&transformed) {
+                        return Ok(passthrough(status, new_bytes));
+                    }
+                }
+            }
             return Ok(passthrough(status, bytes));
         } else if status == StatusCode::UNAUTHORIZED
             || status == StatusCode::FORBIDDEN
@@ -298,6 +349,19 @@ async fn forward_stream(
         return Err(err_json(
             StatusCode::SERVICE_UNAVAILABLE,
             "该模型暂无可用 key",
+        ));
+    }
+    // P3-A：流式只支持同协议透传（SSE 协议转换留 P3-B）。
+    // 滤掉需要跨协议转换的 key（其 plan 无入站协议端点）——避免随机选 key 抖动。
+    let keys: Vec<dao::KeyRow> = keys
+        .into_iter()
+        .filter(|k| resolve_outbound(&st.cfg, &k.plan, protocol) == Some(protocol))
+        .collect();
+    if keys.is_empty() {
+        // 模型有 key 但均需协议转换 → 明确报错（P3-B 后支持）
+        return Err(err_json(
+            StatusCode::BAD_REQUEST,
+            "流式请求需要协议转换，暂不支持（P3-B 实现）",
         ));
     }
 
@@ -524,6 +588,21 @@ pub async fn anthropic_messages(
     }
 }
 
+/// POST /v1/responses（OpenAI Responses 兼容，P3-A 新增）
+pub async fn responses(
+    State(st): State<AppState>,
+    auth: AuthUser,
+    body: String,
+) -> Result<Response, ApiErr> {
+    let model = extract_model(&body)
+        .ok_or_else(|| err_json(StatusCode::BAD_REQUEST, "请求体缺少 model 字段"))?;
+    if body_streaming(&body) {
+        forward_stream(&st, auth, &model, body.clone(), "responses").await
+    } else {
+        forward(&st, auth, &model, body.clone(), "responses").await
+    }
+}
+
 /// 请求体是否要求流式（stream:true）
 fn body_streaming(body: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(body)
@@ -591,6 +670,11 @@ mod tests {
 
     /// 测试状态：config.example + 追加本地 test plan；db 开库 + seed models + 注入测试 key
     fn test_state(tag: &str, plan_id: &str, base_url: &str) -> AppState {
+        test_state_eps(tag, plan_id, &["openai_chat", "anthropic"], base_url)
+    }
+
+    /// 测试状态（P3-A）：可指定 plan 只暴露部分协议端点（验证协议转换路径）
+    fn test_state_eps(tag: &str, plan_id: &str, protocols: &[&str], base_url: &str) -> AppState {
         let p = std::env::temp_dir().join(format!("atp_gw_{}_{}.db", std::process::id(), tag));
         let _ = std::fs::remove_file(&p);
         let conn = crate::db::open(p.to_str().unwrap()).expect("open tmp db");
@@ -609,16 +693,13 @@ mod tests {
             type_: "paygo".to_string(),
             key_prefix: "sk-".to_string(),
             interactive_only: false,
-            endpoints: vec![
-                crate::config::Endpoint {
-                    protocol: "openai_chat".to_string(),
+            endpoints: protocols
+                .iter()
+                .map(|p| crate::config::Endpoint {
+                    protocol: p.to_string(),
                     base_url: base_url.to_string(),
-                },
-                crate::config::Endpoint {
-                    protocol: "anthropic".to_string(),
-                    base_url: base_url.to_string(),
-                },
-            ],
+                })
+                .collect(),
         });
         crate::db::seed_models(&conn, &cfg).expect("seed models");
         let crypto = crate::crypto::Crypto::new([9u8; 32]);
@@ -675,8 +756,8 @@ mod tests {
         v["api_key"].as_str().unwrap().to_string()
     }
 
-    /// 假上游：返回固定 usage
-    async fn fake_upstream(port: u16) {
+    /// 假上游：返回固定 usage（listener 预绑定避免并行测试端口冲突）
+    async fn fake_upstream(listener: tokio::net::TcpListener) {
         let app = axum::Router::new().route(
             "/chat/completions",
             axum::routing::post(|_body: String| async {
@@ -684,14 +765,58 @@ mod tests {
                     "id": "cmpl-test",
                     "object": "chat.completion",
                     "model": "test-model",
-                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
                     "usage": { "prompt_tokens": 100, "completion_tokens": 50 }
                 }))
             }),
         );
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-            .await
-            .unwrap();
+        axum::serve(listener, app).await.unwrap();
+    }
+
+    /// 假上游：只提供 anthropic 端点（/v1/messages），记录收到的请求体（验证转换）
+    async fn fake_anthropic_upstream(
+        listener: tokio::net::TcpListener,
+        received: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    ) {
+        let app = axum::Router::new().route(
+            "/v1/messages",
+            axum::routing::post(move |body: String| async move {
+                if let Ok(mut r) = received.lock() {
+                    *r = Some(body);
+                }
+                Json(serde_json::json!({
+                    "id": "msg-test",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "test-model",
+                    "content": [{"type": "text", "text": "ok-anthropic"}],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 100, "output_tokens": 50 }
+                }))
+            }),
+        );
+        axum::serve(listener, app).await.unwrap();
+    }
+
+    /// 假上游：只提供 responses 端点（/responses）
+    async fn fake_responses_upstream(listener: tokio::net::TcpListener) {
+        let app = axum::Router::new().route(
+            "/responses",
+            axum::routing::post(|_body: String| async {
+                Json(serde_json::json!({
+                    "id": "resp-test",
+                    "object": "response",
+                    "model": "test-model",
+                    "output": [{
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "ok-responses", "annotations": []}]
+                    }],
+                    "usage": { "input_tokens": 100, "output_tokens": 50, "total_tokens": 150 }
+                }))
+            }),
+        );
         axum::serve(listener, app).await.unwrap();
     }
 
@@ -776,8 +901,7 @@ mod tests {
             .await
             .unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        let up = tokio::spawn(fake_upstream(port));
+        let up = tokio::spawn(fake_upstream(listener));
         let base = format!("http://127.0.0.1:{port}");
 
         let st = test_state("e2e", "test-local", &base);
@@ -873,6 +997,245 @@ mod tests {
         };
         assert_eq!(used_key, used_key2, "粘性：第二次调用复用同一 key");
 
+        up.abort();
+    }
+
+    /// P3-A：openai chat 请求 → 只有 anthropic 端点的 plan → 请求/响应自动转换
+    #[tokio::test]
+    async fn e2e_openai_chat_to_anthropic_conversion() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let recv2 = std::sync::Arc::clone(&received);
+        let up = tokio::spawn(fake_anthropic_upstream(listener, recv2));
+        let base = format!("http://127.0.0.1:{port}");
+
+        // plan 只暴露 anthropic 端点
+        let st = test_state_eps("conv_oa", "test-anth", &["anthropic"], &base);
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, email, password_hash, name, role) VALUES (2, 'ownera@t.local', 'x', '分享者', 'user')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (2, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        insert_key(&st, 400, 2, "test-model", "test-anth");
+        let key = login_key(st.clone()).await;
+
+        let (s, body) = post_raw(
+            st.clone(),
+            "/v1/chat/completions",
+            r#"{"model":"test-model","messages":[{"role":"system","content":"Sys"},{"role":"user","content":"hi"}],"max_tokens":10}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::OK,
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // 响应转换回 openai chat 格式
+        assert_eq!(v["choices"][0]["message"]["content"], "ok-anthropic");
+        assert_eq!(v["choices"][0]["finish_reason"], "stop");
+        // usage 按 anthropic input/output 映射为 prompt/completion
+        assert_eq!(v["usage"]["prompt_tokens"], 100);
+        assert_eq!(v["usage"]["completion_tokens"], 50);
+
+        // 上游收到的是 anthropic 格式请求（system 顶层 + max_tokens 保留 + 无 choices 字段）
+        let upstream = received.lock().unwrap().clone().expect("upstream got body");
+        let uv: serde_json::Value = serde_json::from_str(&upstream).unwrap();
+        assert_eq!(uv["system"], "Sys", "system 提取为顶层字段: {upstream}");
+        assert_eq!(uv["max_tokens"], 10, "max_tokens 保留: {upstream}");
+        assert_eq!(uv["messages"][0]["role"], "user");
+        assert!(
+            uv.get("choices").is_none(),
+            "不是 openai 请求体: {upstream}"
+        );
+
+        // 计量入账：100×10/1e6 + 50×20/1e6 = 0.002 USD × 1000 = 2.0 点
+        let conn = st.db.lock().unwrap();
+        let bal: f64 = conn
+            .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!((bal - (12471.0 - 2.0)).abs() < 1e-9, "consumer={bal}");
+        drop(conn);
+        up.abort();
+    }
+
+    /// P3-A：anthropic 请求 → 只有 openai_chat 端点的 plan → 自动转换（反向）
+    #[tokio::test]
+    async fn e2e_anthropic_to_openai_chat_conversion() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let up = tokio::spawn(fake_upstream(listener));
+        let base = format!("http://127.0.0.1:{port}");
+
+        // plan 只暴露 openai_chat 端点
+        let st = test_state_eps("conv_ao", "test-oc", &["openai_chat"], &base);
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+        }
+        insert_key(&st, 401, 1, "test-model", "test-oc");
+        let key = login_key(st.clone()).await;
+
+        let (s, body) = post_raw(
+            st.clone(),
+            "/anthropic/v1/messages",
+            r#"{"model":"test-model","messages":[{"role":"user","content":"hi"}],"max_tokens":100}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::OK,
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // 响应转换回 anthropic 格式
+        assert_eq!(v["type"], "message");
+        assert_eq!(v["content"][0]["type"], "text");
+        assert_eq!(v["content"][0]["text"], "ok");
+        assert_eq!(v["stop_reason"], "end_turn");
+        assert_eq!(v["usage"]["input_tokens"], 100);
+        assert_eq!(v["usage"]["output_tokens"], 50);
+        up.abort();
+    }
+
+    /// P3-A：/v1/responses 请求 → openai_chat 上游 → responses 格式响应
+    #[tokio::test]
+    async fn e2e_responses_endpoint_conversion() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let up = tokio::spawn(fake_upstream(listener));
+        let base = format!("http://127.0.0.1:{port}");
+
+        // plan 只暴露 openai_chat 端点 → responses 入站走转换
+        let st = test_state_eps("conv_rs", "test-rs", &["openai_chat"], &base);
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+        }
+        insert_key(&st, 402, 1, "test-model", "test-rs");
+        let key = login_key(st.clone()).await;
+
+        let (s, body) = post_raw(
+            st.clone(),
+            "/v1/responses",
+            r#"{"model":"test-model","instructions":"Be brief","input":[{"role":"user","content":"hi"}],"max_output_tokens":100}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::OK,
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["object"], "response");
+        assert_eq!(v["output"][0]["type"], "message");
+        assert_eq!(v["output"][0]["content"][0]["type"], "output_text");
+        assert_eq!(v["output"][0]["content"][0]["text"], "ok");
+        assert_eq!(v["usage"]["input_tokens"], 100);
+        assert_eq!(v["usage"]["output_tokens"], 50);
+        up.abort();
+    }
+
+    /// P3-A：/v1/responses 同协议透传（plan 有 responses 端点）
+    #[tokio::test]
+    async fn e2e_responses_same_protocol_passthrough() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let up = tokio::spawn(fake_responses_upstream(listener));
+        let base = format!("http://127.0.0.1:{port}");
+
+        let st = test_state_eps("passthru_rs", "test-rs2", &["responses"], &base);
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+        }
+        insert_key(&st, 403, 1, "test-model", "test-rs2");
+        let key = login_key(st.clone()).await;
+
+        let (s, body) = post_raw(
+            st.clone(),
+            "/v1/responses",
+            r#"{"model":"test-model","input":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::OK,
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["object"], "response");
+        assert_eq!(v["output"][0]["content"][0]["text"], "ok-responses");
+        // 透传保留原 usage 字段（input/output_tokens）
+        assert_eq!(v["usage"]["input_tokens"], 100);
+        assert_eq!(v["usage"]["output_tokens"], 50);
+        up.abort();
+    }
+
+    /// P3-A：流式 + 跨协议转换 → 400 明确报错（SSE 转换留 P3-B）
+    #[tokio::test]
+    async fn streaming_with_conversion_rejected_400() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let recv2 = std::sync::Arc::clone(&received);
+        let up = tokio::spawn(fake_anthropic_upstream(listener, recv2));
+        let base = format!("http://127.0.0.1:{port}");
+
+        // plan 只暴露 anthropic 端点
+        let st = test_state_eps("conv_sse", "test-anth-s", &["anthropic"], &base);
+        insert_key(&st, 404, 1, "test-model", "test-anth-s");
+        let key = login_key(st.clone()).await;
+
+        let (s, body) = post_raw(
+            st.clone(),
+            "/v1/chat/completions",
+            r#"{"model":"test-model","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::BAD_REQUEST,
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            v["error"]["message"].as_str().unwrap().contains("协议转换"),
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
         up.abort();
     }
 
