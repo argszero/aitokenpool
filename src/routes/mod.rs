@@ -10,6 +10,7 @@
 //! - GET /api/models（市场）
 
 pub mod admin;
+pub mod admin_models;
 pub mod api_keys;
 pub mod ops;
 pub mod org;
@@ -420,6 +421,15 @@ pub fn router() -> Router<AppState> {
             "/api/admin/departments/:id",
             axum::routing::patch(org::patch).delete(org::remove),
         )
+        // rant 2026-08-19T20:40:29：管理员模型信息 CRUD
+        .route(
+            "/api/admin/models",
+            get(admin_models::list).post(admin_models::create),
+        )
+        .route(
+            "/api/admin/models/:id",
+            axum::routing::patch(admin_models::patch).delete(admin_models::remove),
+        )
         .route("/api/raise-requests", post(raise::create).get(raise::list))
         .route(
             "/api/admin/raise-requests/:id/approve",
@@ -746,6 +756,141 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "负数金额应 400: {body}");
+    }
+
+    // --- 管理员模型信息 CRUD（rant 2026-08-19T20:40:29） ---
+
+    #[tokio::test]
+    async fn admin_models_crud_full_cycle() {
+        let st = test_state("admmodels");
+        let admin_bearer = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        // 非 admin → 403
+        let (s, body) = get(st.clone(), "/api/admin/models", Some(&demo_bearer)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "非 admin 应 403: {body}");
+        // 列表：seed 后有数据且含新字段（context_length/vision）
+        let (s, body) = get(st.clone(), "/api/admin/models", Some(&admin_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "列表应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let arr = v.as_array().expect("数组");
+        assert!(arr.len() >= 10, "seed 模型 ≥10: {body}");
+        let dp = arr
+            .iter()
+            .find(|m| m["model"] == "deepseek-v4-pro")
+            .expect("deepseek-v4-pro 存在");
+        assert_eq!(
+            dp["context_length"], 1048576,
+            "seed 写入 context_length: {body}"
+        );
+        assert_eq!(dp["vision"], 0, "无 vision 字段默认 0");
+        assert!(dp["id"].as_i64().is_some(), "含 id");
+        // 新增
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"test","model":"test-model-1","currency":"USD","input_per_m":1.5,"output_per_m":3.0,"context_length":128000,"max_output":16384,"vision":1,"cache_hit_input_per_m":0.1}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "新增应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["model"], "test-model-1");
+        assert_eq!(v["vision"], 1);
+        assert_eq!(
+            v["context_window"], 128000,
+            "context_window 与 context_length 对齐"
+        );
+        let new_id = v["id"].as_i64().unwrap();
+        // 重复 (provider, model) → 409
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"test","model":"test-model-1"}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "重复应 409: {body}");
+        // 非法输入 → 400（负数价格 / 空 model / 非法 vision）
+        let (s, _) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"test","model":"m2","input_per_m":-1}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "负数价格应 400");
+        let (s, _) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"test","model":"  "}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "空 model 应 400");
+        let (s, _) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"test","model":"m3","vision":2}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "vision≠0/1 应 400");
+        // PATCH 部分更新（改价格 + vision）
+        let (s, body) = patch(
+            st.clone(),
+            &format!("/api/admin/models/{new_id}"),
+            r#"{"input_per_m":2.5,"vision":0}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "PATCH 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["input_per_m"], 2.5);
+        assert_eq!(v["vision"], 0);
+        assert_eq!(v["model"], "test-model-1", "未改字段保留");
+        // PATCH 改为已存在 (provider, model) → 409（须同时提供 provider+model 才会撞唯一）
+        let (s, _) = patch(
+            st.clone(),
+            &format!("/api/admin/models/{new_id}"),
+            r#"{"provider":"deepseek","model":"deepseek-v4-pro"}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "改名撞唯一应 409");
+        // 删除
+        let (s, body) = del(
+            st.clone(),
+            &format!("/api/admin/models/{new_id}"),
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "删除应 200: {body}");
+        let (s, _) = del(
+            st.clone(),
+            &format!("/api/admin/models/{new_id}"),
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "重复删除应 404");
+    }
+
+    #[tokio::test]
+    async fn market_models_include_new_fields() {
+        // GET /api/models 响应补 context_length/max_output/vision/cache_hit_input_per_m
+        let st = test_state("mkfields");
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let (s, body) = get(st.clone(), "/api/models", Some(&demo_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "models 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let arr = v.as_array().expect("数组");
+        let dp = arr
+            .iter()
+            .find(|m| m["model"] == "deepseek-v4-pro")
+            .expect("deepseek-v4-pro 存在");
+        assert_eq!(dp["context_length"], 1048576);
+        assert!(dp["max_output"].as_i64().is_some());
+        assert!(dp["vision"].as_i64().is_some());
+        assert_eq!(dp["cache_hit_input_per_m"], 0.003625, "seed 写入缓存命中价");
     }
 
     #[tokio::test]

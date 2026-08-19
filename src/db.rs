@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -213,6 +213,33 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             attempts   INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );",
+    )?;
+    // v7（rant 2026-08-19T20:40:29）：管理员模型信息 CRUD——
+    // models 补 context_length / max_output / vision / cache_hit_input_per_m
+    //（context_window 为 OpenAI 兼容 /v1/models 字段，与 context_length 并列保留）
+    ensure_column(
+        conn,
+        "models",
+        "context_length",
+        "context_length INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "models",
+        "max_output",
+        "max_output INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "models",
+        "vision",
+        "vision INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "models",
+        "cache_hit_input_per_m",
+        "cache_hit_input_per_m REAL NOT NULL DEFAULT 0",
     )?;
     // schema_version：INSERT OR REPLACE 保证幂等
     let v: i64 = conn
@@ -422,13 +449,17 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                 )
             });
         conn.execute(
-            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, context_window, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now')) \
+            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, context_window, context_length, max_output, vision, cache_hit_input_per_m, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now')) \
              ON CONFLICT(provider, model) DO UPDATE SET \
                currency = excluded.currency, \
                input_per_m = excluded.input_per_m, \
                output_per_m = excluded.output_per_m, \
                context_window = excluded.context_window, \
+               context_length = excluded.context_length, \
+               max_output = excluded.max_output, \
+               vision = excluded.vision, \
+               cache_hit_input_per_m = excluded.cache_hit_input_per_m, \
                updated_at = datetime('now')",
             rusqlite::params![
                 provider,
@@ -436,7 +467,11 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                 currency,
                 input,
                 output,
-                m["context_length"].as_i64().unwrap_or(1048576)
+                m["context_length"].as_i64().unwrap_or(1048576),
+                m["context_length"].as_i64().unwrap_or(0),
+                m["max_output"].as_i64().unwrap_or(0),
+                m["vision"].as_i64().unwrap_or(0),
+                m["cache_hit_input_per_m"].as_f64().unwrap_or(0.0),
             ],
         )?;
         n += 1;

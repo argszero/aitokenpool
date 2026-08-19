@@ -1716,7 +1716,121 @@
         : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.dept") + "</p></div>";
     } else if (tab === "org") {
       renderOrg();
+    } else if (tab === "models") {
+      renderAdminModels();
     }
+  }
+
+  /* --- 模型管理（rant 2026-08-19T20:40:29：管理员模型信息 CRUD） --- */
+
+  // 模型搜索过滤 + 表格渲染（数据来自 /api/admin/models；零 mock：加载失败 → 空态 + 重试）
+  function renderAdminModels() {
+    if (!Live.adminModels) {
+      $("#model-body").innerHTML = loadErrorRow(7, T("admin.models.loadFail"), T("err.loadFail"));
+      pulseTbody($("#model-body"));
+      return;
+    }
+    const rawQ = $("#model-search").value || "";
+    const q = rawQ.toLowerCase();
+    const list = Live.adminModels.filter((m) => !q ||
+      (m.provider || "").toLowerCase().includes(q) || (m.model || "").toLowerCase().includes(q));
+    $("#model-body").innerHTML = list.length ? list.map((m, i) =>
+      "<tr data-model-row='" + i + "'><td><strong>" + esc(m.provider) + "</strong></td>" +
+      "<td><code>" + esc(m.model) + "</code></td>" +
+      '<td class="num">' + D.fmt(m.input_per_m || 0) + "</td>" +
+      '<td class="num">' + D.fmt(m.output_per_m || 0) + "</td>" +
+      '<td class="num">' + fmtCtx(m.context_length || m.context_window || 0) + "</td>" +
+      '<td class="num">' + fmtCtx(m.max_output || 0) + "</td>" +
+      "<td>" + (m.vision ? '<span class="badge ok">' + T("admin.models.vision.yes") + "</span>" : '<span class="badge dim">' + T("admin.models.vision.no") + "</span>") + "</td>" +
+      "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-model-edit='" + i + "'>" + T("admin.models.edit") + "</button> " +
+      "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-model-del='" + i + "'>" + T("admin.models.del") + "</button></td></tr>"
+    ).join("") : emptyRow(7, T("admin.models.empty"), T("admin.models.empty.sub"));
+    pulseTbody($("#model-body"));
+  }
+
+  // 上下文数字格式化：1048576 → "1M"；0 → "—"
+  function fmtCtx(n) {
+    if (!n) return "—";
+    if (n >= 1000000) return (n / 1000000).toFixed(n % 1000000 === 0 ? 0 : 1) + "M";
+    if (n >= 1000) return (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1) + "K";
+    return String(n);
+  }
+
+  // 打开模型表单：i=null 新增；i=索引 编辑（预填）
+  function openModelForm(i) {
+    _editingModelId = (i === null) ? null : (Live.adminModels && Live.adminModels[i] ? Live.adminModels[i].id : null);
+    const m = (i === null || !Live.adminModels) ? null : Live.adminModels[i];
+    $("#model-form-title").innerHTML = m ? T("admin.models.form.title.edit") : T("admin.models.form.title.add");
+    $("#model-form-provider").value = m ? m.provider : "";
+    $("#model-form-model").value = m ? m.model : "";
+    $("#model-form-currency").value = m ? m.currency : "USD";
+    $("#model-form-in").value = m ? String(m.input_per_m || 0) : "0";
+    $("#model-form-out").value = m ? String(m.output_per_m || 0) : "0";
+    $("#model-form-ctx").value = m ? String(m.context_length || m.context_window || 0) : "0";
+    $("#model-form-outmax").value = m ? String(m.max_output || 0) : "0";
+    $("#model-form-vision").checked = m ? !!m.vision : false;
+    clearFieldError($("#model-form-provider"));
+    clearFieldError($("#model-form-model"));
+    $("#model-form-card").hidden = false;
+    $("#model-form-provider").focus();
+  }
+
+  // 提交模型表单（新增 POST / 编辑 PATCH）；校验后调真实 API
+  function confirmModel() {
+    const editingId = _editingModelId;
+    const provider = String($("#model-form-provider").value).trim();
+    const model = String($("#model-form-model").value).trim();
+    const input = Number($("#model-form-in").value);
+    const output = Number($("#model-form-out").value);
+    const ctx = Number($("#model-form-ctx").value);
+    const outmax = Number($("#model-form-outmax").value);
+    let firstErr = null;
+    if (!provider) { setFieldError($("#model-form-provider"), T("admin.models.err.provider")); firstErr = firstErr || $("#model-form-provider"); }
+    else clearFieldError($("#model-form-provider"));
+    if (!model) { setFieldError($("#model-form-model"), T("admin.models.err.model")); firstErr = firstErr || $("#model-form-model"); }
+    else clearFieldError($("#model-form-model"));
+    if (input < 0 || output < 0) { toast(T("admin.models.err.price"), "error"); return; }
+    if (firstErr) { firstErr.focus(); return; }
+    const body = {
+      provider, model,
+      currency: $("#model-form-currency").value,
+      input_per_m: input, output_per_m: output,
+      context_length: ctx || 0, max_output: outmax || 0,
+      vision: $("#model-form-vision").checked ? 1 : 0,
+    };
+    const btn = $("#model-confirm");
+    withLoading(btn, () => {
+      const req = editingId ? api.patch("/api/admin/models/" + editingId, body) : api.post("/api/admin/models", body);
+      req.then(async () => {
+        await loadAdmin();
+        $("#model-form-card").hidden = true;
+        toast(editingId ? T("admin.models.saved") : T("admin.models.added"), "success");
+      }).catch((err) => {
+        toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.models.fail"), "error");
+      });
+    });
+  }
+
+  // 编辑中的模型 id 追踪（新增=null；编辑=行 id）
+  let _editingModelId = null;
+
+  // 打开编辑表单时记录 id（入口：表格「编辑」按钮）
+  function editModelRow(i) {
+    if (!Live.adminModels) return;
+    openModelForm(i);
+  }
+
+  // 删除模型（行内二次确认 → DELETE）
+  function deleteModel(i) {
+    if (!Live.adminModels) return;
+    const m = Live.adminModels[i];
+    if (!m) return;
+    api.del("/api/admin/models/" + m.id).then(async () => {
+      await loadAdmin();
+      toast(T("admin.models.deleted", { model: m.model }), "success");
+    }).catch((err) => {
+      toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.models.fail"), "error");
+    });
   }
 
   // P2-B/P2-C：拉取管理员数据（users + usage + departments + raise-requests；登录且 role=admin 时）
@@ -1726,6 +1840,7 @@
     try { await liveLoad("adminUsage", "/api/admin/usage"); } catch (e) { Live.adminUsage = null; }
     try { await liveLoad("departments", "/api/admin/departments"); } catch (e) { Live.departments = null; }
     try { await liveLoad("raiseRequests", "/api/raise-requests"); } catch (e) { Live.raiseRequests = null; }
+    try { await liveLoad("adminModels", "/api/admin/models"); } catch (e) { Live.adminModels = null; }
     renderAdmin();
   }
 
@@ -2177,6 +2292,7 @@
     raiseRequests: null, // P2-C GET /api/raise-requests（admin 视角全部）
     opsRuntime: null,    // P2-C GET /api/ops/runtime
     opsUsers: null,      // P2-C GET /api/ops/users
+    adminModels: null,   // rant 20:40:29 GET /api/admin/models（管理表格数据源）
   };
 
   function loggedIn() { return !!api.getToken() && !isGuest; }
@@ -2751,6 +2867,23 @@
         resetSearch($("#od-search"));
         renderAdmin();
       }
+    });
+
+    // 模型管理（rant 2026-08-19T20:40:29）：搜索 / 添加 / 编辑 / 删除 / 表单
+    wireSearch($("#model-search"), renderAdmin);
+
+    $("#add-model-btn").addEventListener("click", () => openModelForm(null));
+    $("#model-confirm").addEventListener("click", (e) => withLoading(e.currentTarget, confirmModel));
+    $("#model-cancel").addEventListener("click", () => { $("#model-form-card").hidden = true; });
+    $("#model-form-provider").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#model-confirm").click(); } });
+    $("#model-form-model").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#model-confirm").click(); } });
+    $("#model-form-card").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#model-form-card").hidden = true; } });
+
+    $("#model-body").addEventListener("click", (e) => {
+      const em = e.target.closest("[data-model-edit]");
+      if (em) { editModelRow(Number(em.dataset.modelEdit)); return; }
+      const dl = e.target.closest("[data-model-del]");
+      if (dl) { confirmInline(dl, () => deleteModel(Number(dl.dataset.modelDel)), T("admin.models.del.confirm")); return; }
     });
   }
 

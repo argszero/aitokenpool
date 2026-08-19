@@ -158,6 +158,7 @@ pub fn get_model_price(
 pub fn list_models_with_availability(conn: &Connection) -> Result<Vec<serde_json::Value>> {
     let mut stmt = conn.prepare(
         "SELECT m.provider, m.model, m.currency, m.input_per_m, m.output_per_m, m.context_window, \
+                m.context_length, m.max_output, m.vision, m.cache_hit_input_per_m, \
                 (SELECT COUNT(*) FROM keys k WHERE k.model = m.model AND k.status = 'on') AS avail \
          FROM models m ORDER BY m.provider, m.model",
     )?;
@@ -169,7 +170,40 @@ pub fn list_models_with_availability(conn: &Connection) -> Result<Vec<serde_json
             "input_per_m": r.get::<_, f64>(3)?,
             "output_per_m": r.get::<_, f64>(4)?,
             "context_window": r.get::<_, i64>(5)?,
-            "available_keys": r.get::<_, i64>(6)?,
+            "context_length": r.get::<_, i64>(6)?,
+            "max_output": r.get::<_, i64>(7)?,
+            "vision": r.get::<_, i64>(8)?,
+            "cache_hit_input_per_m": r.get::<_, f64>(9)?,
+            "available_keys": r.get::<_, i64>(10)?,
+        }))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// 管理员模型列表（rant 2026-08-19T20:40:29）：全部字段 + id，供 /api/admin/models
+pub fn list_all_models(conn: &Connection) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, provider, model, currency, input_per_m, output_per_m, \
+                context_length, max_output, vision, cache_hit_input_per_m, updated_at \
+         FROM models ORDER BY provider, model",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(serde_json::json!({
+            "id": r.get::<_, i64>(0)?,
+            "provider": r.get::<_, String>(1)?,
+            "model": r.get::<_, String>(2)?,
+            "currency": r.get::<_, String>(3)?,
+            "input_per_m": r.get::<_, f64>(4)?,
+            "output_per_m": r.get::<_, f64>(5)?,
+            "context_length": r.get::<_, i64>(6)?,
+            "max_output": r.get::<_, i64>(7)?,
+            "vision": r.get::<_, i64>(8)?,
+            "cache_hit_input_per_m": r.get::<_, f64>(9)?,
+            "updated_at": r.get::<_, String>(10)?,
         }))
     })?;
     let mut out = Vec::new();

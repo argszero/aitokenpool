@@ -35,6 +35,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 - ✅ **v0.6.1**：**首次启动自动创建初始管理员（rant 2026-08-19T14:35:05）**——空库启动时创建 `admin@aitokenpool.local` + 随机 16 位密码（打印到启动日志，仅首次）+ quotas 账户（balance=0），幂等不重复；新增 `POST /api/auth/change-password` 改密端点（旧密码校验 + argon2 更新）；不再需要手工插库
 - ✅ **v0.6.2**：**用户自助注册 + 邮箱验证（rant 2026-08-19T14:36:19 方案 B）**——`POST /api/auth/register` + `verify` + `resend-code`；6 位数字验证码（10 分钟有效、5 次错误失效、60 秒重发限频）；未验证邮箱不可登录（403）；登录页注册表单 + 验证码页（中英 i18n）；SMTP 发信（`[mail]` 配置，未配置时 dev 模式验证码打日志/响应）
 - ✅ **v0.6.3**：**接入方式 URL 配置化（rant 2026-08-19T20:37:37）**——设置页「接入方式」端点不再硬编码域名：新增 `[server].public_url` 配置（缺省 `http://localhost:8080`）+ `GET /api/config` 下发；前端从配置拼接 `{public_url}/v1`、`{public_url}/anthropic`，取不到配置时回退同源 origin
+- ✅ **v0.6.4**：**管理员模型信息 CRUD（rant 2026-08-19T20:40:29）**——models 表补 context_length / max_output / vision / cache_hit_input_per_m（迁移 v7，幂等）+ seed 从 models.example.json 写入；新增 `GET|POST /api/admin/models` + `PATCH|DELETE /api/admin/models/:id`（admin 权限，唯一冲突 409，删除后按 0 计费）；管理视图「模型管理」tab（搜索/新增/编辑/删除，行内表单 + 二次确认，中英 i18n）；`GET /api/models` 市场列表补新字段（读图/上下文真实值）
 
 `ui/` 已由纯静态原型升级为**对接真实 API**（登录、钱包、市场、共享、交易、设置、管理、运营全部真实数据），由后端 `ServeDir` 静态托管，无需单独部署前端。
 
@@ -109,14 +110,15 @@ open http://localhost:8080/                        # 浏览器访问
 
 ## API 端点（Bearer 认证）
 
-- `GET /healthz` → `{"status":"ok","version":"0.6.3"}`
+- `GET /healthz` → `{"status":"ok","version":"0.6.4"}`
 - `POST /api/auth/login` → `{api_key}`；`POST /api/auth/change-password`（改密）；`POST /api/auth/register|verify|resend-code`（注册+邮箱验证）；`GET /api/me` → `{id,email,name,role}`；`GET /api/config` → `{public_url}`（接入端点 base，rant 2026-08-19T20:37:37）
 - `POST|GET /api/api-keys`（key 脱敏 `atk_live_****xxxx`）；`DELETE /api/api-keys/:id`（撤销）
 - `POST /v1/chat/completions` / `POST /anthropic/v1/messages` / `POST /v1/responses`（网关，三协议互转，非流式 + 流式 SSE 跨协议转换）；`GET /v1/models`（OpenAI 兼容模型列表，认证可选）
-- `GET /api/models`（模型市场）
+- `GET /api/models`（模型市场，含 context_length / max_output / vision / cache_hit_input_per_m）
 - `POST|GET /api/sharings` + `PATCH /api/sharings/:id`（上架 / 列表 / 暂停 / 恢复 / 删除）
 - `GET /api/wallet` / `GET /api/transactions?type=` / `GET /api/dashboard`（钱包 / 交易 / 仪表盘）
 - 管理员：`POST /api/admin/credits` / `GET /api/admin/users` + `PATCH /api/admin/users/:id` / `GET /api/admin/usage`
+- 模型管理（rant 2026-08-19T20:40:29）：`GET|POST /api/admin/models`（列表 / 新增）+ `PATCH|DELETE /api/admin/models/:id`（更新 / 删除；删除后该 model 调用按 0 计费）
 - 部门：`GET|POST /api/admin/departments` + `PATCH|DELETE /api/admin/departments/:id`
 - 加额：`POST|GET /api/raise-requests` + `POST /api/admin/raise-requests/:id/approve|reject`
 - 运营者：`GET /api/ops/runtime` / `POST /api/ops/credits` / `GET /api/ops/users`
