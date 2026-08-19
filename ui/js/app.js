@@ -555,32 +555,43 @@
       stat(T("dash.trades"), T("cnt.trades", { n: (Live.transactions ? (Live.transactions.total || 0) : txs.length) }), T("dash.trades.sub")),
     ].join("");
 
-    const shares = Live.sharings ? sharingsToView(Live.sharings) : D.SHARINGS;
-    const on = shares.filter((s) => s.status === "on");
-    $("#dash-sharings").innerHTML = on.map((s) =>
-      '<div class="mini-item"><div><div class="t">' + esc(s.model) + "</div>" +
-      '<div class="d">' + esc(s.plan || "API") + " · " + T("dash.used", { used: D.fmt(s.used), quota: D.fmt(s.quota), price: D.fmt(s.price) }) + "</div></div>" +
-      '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>" + T("dash.earned") + "</div></div></div>"
-    ).join("") + (on.length ? "" : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("dash.noSharing") + "</p><p class='muted'>" + T("dash.noSharing.sub") + "</p></div>");
-    // 共享收益累计趋势 sparkline（rant 18:06:09 A；无上架 key 时保留空状态，不画图）
-    if (on.length) {
-      const days = lastDayLabels(7);
-      const earn = dailySeries(days, (t) => t.type === "earn");
-      let cum = 0;
-      const cumSeries = earn.map((v) => { cum = Math.round((cum + v) * 100) / 100; return cum; });
-      $("#dash-sharings").insertAdjacentHTML("afterbegin",
-        sparkline(cumSeries, { labels: days, fmt: (v) => "+" + D.fmt(v), stroke: "var(--ok)" }));
+    // 降级原则（rant 2026-08-19T15:48:17）：mock 只用于游客模式；
+    // 登录态加载失败 → 空态 + 重试（loadErrorHtml），不静默 fallback 到 D.SHARINGS
+    const shares = Live.sharings ? sharingsToView(Live.sharings) : (loggedIn() ? null : D.SHARINGS);
+    if (shares) {
+      const on = shares.filter((s) => s.status === "on");
+      $("#dash-sharings").innerHTML = on.map((s) =>
+        '<div class="mini-item"><div><div class="t">' + esc(s.model) + "</div>" +
+        '<div class="d">' + esc(s.plan || "API") + " · " + T("dash.used", { used: D.fmt(s.used), quota: D.fmt(s.quota), price: D.fmt(s.price) }) + "</div></div>" +
+        '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>" + T("dash.earned") + "</div></div></div>"
+      ).join("") + (on.length ? "" : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("dash.noSharing") + "</p><p class='muted'>" + T("dash.noSharing.sub") + "</p></div>");
+      // 共享收益累计趋势 sparkline（rant 18:06:09 A；无上架 key 时保留空状态，不画图）
+      if (on.length) {
+        const days = lastDayLabels(7);
+        const earn = dailySeries(days, (t) => t.type === "earn");
+        let cum = 0;
+        const cumSeries = earn.map((v) => { cum = Math.round((cum + v) * 100) / 100; return cum; });
+        $("#dash-sharings").insertAdjacentHTML("afterbegin",
+          sparkline(cumSeries, { labels: days, fmt: (v) => "+" + D.fmt(v), stroke: "var(--ok)" }));
+      }
+    } else {
+      $("#dash-sharings").innerHTML = loadErrorHtml(T("dash.noSharing"), () => loadDashboard(), T("err.loadFail"));
     }
     renderMonthChanges();
   }
 
-  // P2-B：拉取仪表盘所需数据（wallet + dashboard + 交易数）
+  // P2-B：拉取仪表盘所需数据（wallet + dashboard + sharings + 交易数）
   async function loadDashboard() {
     if (!loggedIn()) return;
     try { await refreshWallet(); } catch (e) { /* 降级 */ }
     try {
       Live.dashboard = await api.get("/api/dashboard");
     } catch (e) { Live.dashboard = null; }
+    // rant 2026-08-19T15:48:17：仪表盘「我的共享」此前从不拉 sharings → 登录态恒显示 D.SHARINGS mock；
+    // 现在拉真实数据；失败置 null → renderDashboard 走空态 + 重试（mock 仅游客）
+    try {
+      Live.sharings = await api.get("/api/sharings");
+    } catch (e) { Live.sharings = null; }
     renderDashboard();
   }
 
@@ -718,8 +729,14 @@
   };
 
   function renderSharing() {
-    // P2-B：登录 → 用后端 /api/sharings；否则 mock
-    const list = Live.sharings ? sharingsToView(Live.sharings) : D.SHARINGS;
+    // P2-B：登录 → 用后端 /api/sharings；否则 mock（游客实际被导航拦截，仅作兜底）
+    const list = Live.sharings ? sharingsToView(Live.sharings) : (loggedIn() ? null : D.SHARINGS);
+    if (!list) {
+      // 降级原则（rant 2026-08-19T15:48:17）：登录态加载失败 → 空态 + 重试，不暴露 mock
+      $("#share-stats").innerHTML = "";
+      $("#share-body").innerHTML = loadErrorHtml(T("share.empty"), () => loadSharing(), T("err.loadFail"));
+      return;
+    }
     const on = list.filter((s) => s.status === "on");
     const totalEarned = list.reduce((a, s) => a + s.earned, 0);
     const totalUsed = list.reduce((a, s) => a + s.used, 0);
@@ -2835,6 +2852,9 @@
     });
     renderNav();
     bindEvents();
+    // 登录态加载失败的空态重试按钮（rant 2026-08-19T15:48:17：loadErrorHtml 的 data-live-retry 委托）
+    bindLiveRetry("dash-sharings", () => loadDashboard());
+    bindLiveRetry("share-body", () => loadSharing());
     renderView("dashboard");
     $("#side-balance").textContent = D.fmt(D.USER.balance);
 
