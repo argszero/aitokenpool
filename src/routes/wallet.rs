@@ -121,6 +121,7 @@ pub async fn transactions(
     let rows: Vec<serde_json::Value> = match &type_filter {
         Some(t) => stmt
             .query_map(params![auth.user_id, t, page_size, offset], |r| {
+                let time: String = r.get(8)?;
                 Ok(serde_json::json!({
                     "id": r.get::<_, i64>(0)?,
                     "counterpart": r.get::<_, String>(1)?,
@@ -130,7 +131,7 @@ pub async fn transactions(
                     "pts": r.get::<_, f64>(5)?,
                     "type": r.get::<_, String>(6)?,
                     "status": r.get::<_, String>(7)?,
-                    "time": r.get::<_, String>(8)?,
+                    "time": crate::dao::utc_iso(&time),
                 }))
             })
             .map_err(internal)?
@@ -138,6 +139,7 @@ pub async fn transactions(
             .map_err(internal)?,
         None => stmt
             .query_map(params![auth.user_id, page_size, offset], |r| {
+                let time: String = r.get(8)?;
                 Ok(serde_json::json!({
                     "id": r.get::<_, i64>(0)?,
                     "counterpart": r.get::<_, String>(1)?,
@@ -147,7 +149,7 @@ pub async fn transactions(
                     "pts": r.get::<_, f64>(5)?,
                     "type": r.get::<_, String>(6)?,
                     "status": r.get::<_, String>(7)?,
-                    "time": r.get::<_, String>(8)?,
+                    "time": crate::dao::utc_iso(&time),
                 }))
             })
             .map_err(internal)?
@@ -197,8 +199,9 @@ pub async fn dashboard(
         .map_err(internal)?;
     let series = stmt
         .query_map([auth.user_id], |r| {
+            let date: String = r.get(0)?;
             Ok(serde_json::json!({
-                "date": r.get::<_, String>(0)?,
+                "date": crate::dao::utc_iso(&date),
                 "pts": r.get::<_, f64>(1)?,
             }))
         })
@@ -337,6 +340,12 @@ mod tests {
         // 时间倒序：最新在前
         let items = v["items"].as_array().unwrap();
         assert!(items[0]["id"].as_i64().unwrap() > items[1]["id"].as_i64().unwrap());
+        // 时区（rant 2026-08-19T20:45:32）：time 返回 UTC ISO 带 Z（前端按 UTC 解析，不再差 8 小时）
+        let t0 = items[0]["time"].as_str().expect("time 为字符串");
+        assert!(
+            t0.ends_with('Z') && t0.contains('T'),
+            "time 应为 UTC ISO 带 Z: {t0}"
+        );
         // type=consume 过滤 → 3 条
         let (_, body) = get(st.clone(), "/api/transactions?type=consume", &key).await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();

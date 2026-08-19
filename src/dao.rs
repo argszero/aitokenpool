@@ -7,6 +7,32 @@ use rusqlite::Connection;
 
 use crate::auth;
 
+/// 把 SQLite UTC 时间字符串转 UTC ISO 带 Z（rant 2026-08-19T20:45:32 全站时区）：
+/// - 'YYYY-MM-DD HH:MM:SS' → 'YYYY-MM-DDTHH:MM:SSZ'
+/// - 'YYYY-MM-DD'（纯日期，如 dashboard series）→ 'YYYY-MM-DDT00:00:00Z'
+/// - 已含 T/Z 原样返回；空串返回空串。
+///
+/// 前端 new Date() 按 UTC 解析，避免把 UTC 当本地时间（差 8 小时）。
+pub fn utc_iso(s: &str) -> String {
+    let s = s.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    if s.contains('T') || s.contains('Z') {
+        return s.to_string();
+    }
+    let is_date = |d: &str| d.len() == 10 && d.as_bytes()[4] == b'-' && d.as_bytes()[7] == b'-';
+    if let Some((date, time)) = s.split_once(' ') {
+        if is_date(date) {
+            return format!("{date}T{time}Z");
+        }
+    }
+    if is_date(s) {
+        return format!("{s}T00:00:00Z");
+    }
+    s.to_string()
+}
+
 /// 按邮箱查用户 → (id, password_hash)
 pub fn find_user_by_email(conn: &Connection, email: &str) -> Option<(i64, String)> {
     conn.query_row(
@@ -55,13 +81,14 @@ pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::
     )?;
     let rows = stmt.query_map([user_id], |r| {
         let raw: String = r.get(1)?;
+        let created_at: String = r.get(4)?;
         Ok(serde_json::json!({
             "id": r.get::<_, i64>(0)?,
             "key": auth::mask_api_key(&raw),
             "full_key": raw, // 属主可见完整值（前端展示仍用脱敏 key，复制时用 full_key）
             "name": r.get::<_, String>(2)?,
             "status": r.get::<_, String>(3)?,
-            "created_at": r.get::<_, String>(4)?,
+            "created_at": utc_iso(&created_at),
         }))
     })?;
     let mut out = Vec::new();
@@ -192,6 +219,7 @@ pub fn list_all_models(conn: &Connection) -> Result<Vec<serde_json::Value>> {
          FROM models ORDER BY provider, model",
     )?;
     let rows = stmt.query_map([], |r| {
+        let updated_at: String = r.get(10)?;
         Ok(serde_json::json!({
             "id": r.get::<_, i64>(0)?,
             "provider": r.get::<_, String>(1)?,
@@ -203,7 +231,7 @@ pub fn list_all_models(conn: &Connection) -> Result<Vec<serde_json::Value>> {
             "max_output": r.get::<_, i64>(7)?,
             "vision": r.get::<_, i64>(8)?,
             "cache_hit_input_per_m": r.get::<_, f64>(9)?,
-            "updated_at": r.get::<_, String>(10)?,
+            "updated_at": utc_iso(&updated_at),
         }))
     })?;
     let mut out = Vec::new();
@@ -372,4 +400,24 @@ pub fn bump_verification_attempt(conn: &Connection, email: &str) -> Result<bool>
 pub fn clear_verification(conn: &Connection, email: &str) -> Result<()> {
     conn.execute("DELETE FROM email_verifications WHERE email = ?1", [email])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utc_iso_converts_sqlite_utc_strings() {
+        // 完整时间戳 → UTC ISO 带 Z
+        assert_eq!(utc_iso("2026-08-19 12:00:00"), "2026-08-19T12:00:00Z");
+        // 纯日期（dashboard series）→ 当天零点 UTC
+        assert_eq!(utc_iso("2026-08-19"), "2026-08-19T00:00:00Z");
+        // 已带 T/Z 原样
+        assert_eq!(utc_iso("2026-08-19T12:00:00Z"), "2026-08-19T12:00:00Z");
+        // 空 / 空白 → 空
+        assert_eq!(utc_iso(""), "");
+        assert_eq!(utc_iso("  "), "");
+        // 非标准原样
+        assert_eq!(utc_iso("just now"), "just now");
+    }
 }
