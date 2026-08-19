@@ -1440,6 +1440,8 @@
   /* --- 设置 --- */
 
   function renderSettings() {
+    // 接入端点卡片：实时从配置/同源 fallback 读取（rant 2026-08-19T20:37:37）
+    applyEndpointUrls();
     const rawQ = $("#ak-search").value || "";
     const q = rawQ.toLowerCase();
     // 零 mock（rant 2026-08-19T15:54:06）：登录态绝不 fallback D.API_KEYS；
@@ -1527,15 +1529,34 @@
   }
 
   /* --- 接入端点（rant 2026-08-17T20:44:18：设置页展示 OpenAI/Anthropic 兼容 base URL） --- */
-  // 原型静态常量：真实值来自部署配置（后端实现时接入 config 的 server.base_url 之类）
-  const API_ENDPOINTS = [
-    { tag: () => T("settings.ep.openai"), url: "https://gateway.aitokenpool.local/v1", desc: "Chat Completions · Cursor / Cline / Roo Code / OpenCode / OpenAI SDK" },
-    { tag: () => T("settings.ep.anthropic"), url: "https://gateway.aitokenpool.local/anthropic", desc: "Messages API · Claude Code / Goose / OpenClaw" },
-  ];
+  // rant 2026-08-19T20:37:37：URL 不再硬编码域名——由配置 public_url 拼接（GET /api/config）；
+  // 取不到配置 → fallback 同源 origin（同源部署天然正确）；渲染时实时读取，不依赖全局常量
+  function endpointBase() {
+    const u = Live.publicUrl ? String(Live.publicUrl).trim() : "";
+    return u ? u.replace(/\/+$/, "") : location.origin;
+  }
+  function apiEndpoints() {
+    const base = endpointBase();
+    return [
+      { tag: () => T("settings.ep.openai"), url: base + "/v1", desc: "Chat Completions · Cursor / Cline / Roo Code / OpenCode / OpenAI SDK" },
+      { tag: () => T("settings.ep.anthropic"), url: base + "/anthropic", desc: "Messages API · Claude Code / Goose / OpenClaw" },
+    ];
+  }
+  // 把动态端点写回设置页「接入方式」卡片（index.html 的 <code data-ep-url="i">）
+  function applyEndpointUrls() {
+    const eps = apiEndpoints();
+    document.querySelectorAll("[data-ep-url]").forEach((el) => {
+      const i = Number(el.getAttribute("data-ep-url"));
+      const ep = eps[i];
+      if (!ep) return;
+      el.textContent = ep.url;
+      el.setAttribute("data-endpoint", ep.url);
+    });
+  }
 
   // 复制端点 URL（复用 copyKey 的降级逻辑：clipboard API → execCommand → 提示 Ctrl+C）
   function copyEndpoint(i) {
-    const ep = API_ENDPOINTS[i];
+    const ep = apiEndpoints()[i];
     if (!ep) return;
     const btn = document.querySelector('[data-ep-copy="' + i + '"]');
     const flash = (ok) => {
@@ -2103,6 +2124,11 @@
     D.USER.name = (me && me.name) || (me && me.email ? me.email.split("@")[0] : T("common.user"));
     D.USER.email = (me && me.email) || D.USER.email;
     D.USER.role = (me && me.role) || "user";
+    // 服务端配置（rant 2026-08-19T20:37:37）：public_url → 接入端点 base；失败 → 同源 fallback
+    try {
+      const cfg = await api.get("/api/config");
+      if (cfg && cfg.public_url) Live.publicUrl = String(cfg.public_url).trim();
+    } catch (e) { Live.publicUrl = null; }
     try {
       const w = await api.get("/api/wallet");
       D.USER.balance = (w && typeof w.available === "number") ? w.available : (w ? w.balance : 0);
@@ -2137,6 +2163,7 @@
 
   // 各视图真实数据缓存：登录且加载成功后使用；游客 / 失败降级 mock
   const Live = {
+    publicUrl: null,     // GET /api/config → public_url（接入端点 base，rant 2026-08-19T20:37:37）
     models: null,        // GET /api/models 原始数组
     plans: null,         // GET /api/plans 原始数组（上架表单数据源；rant 16:14:21 Bug 1）
     sharings: null,      // GET /api/sharings 原始数组

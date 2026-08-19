@@ -14,8 +14,12 @@ fn default_addr() -> String {
 fn default_db_path() -> String {
     "data/aitokenpool.db".to_string()
 }
+/// 对外可达地址缺省（dev 默认；与 addr 解耦——addr 是监听地址，public_url 是对外地址）
+fn default_public_url() -> String {
+    "http://localhost:8080".to_string()
+}
 
-/// 服务（监听 / 数据库路径 / 主密钥）——config.example.toml 可缺省，走默认值
+/// 服务（监听 / 数据库路径 / 主密钥 / 对外地址）——config.example.toml 可缺省，走默认值
 #[derive(Debug, Clone, Deserialize)]
 pub struct Server {
     #[serde(default = "default_addr")]
@@ -25,6 +29,10 @@ pub struct Server {
     /// 上游 key 主密钥（hex 32 字节；P0-C 起生效；env ATP_MASTER_KEY 优先级更高）
     #[serde(default)]
     pub master_key: String,
+    /// 平台对外网关地址（不含 /v1 等路径），供前端「接入方式」端点展示；
+    /// 生产设置真实域名（如 https://gateway.example.com）；缺省 http://localhost:8080
+    #[serde(default = "default_public_url")]
+    pub public_url: String,
 }
 
 impl Default for Server {
@@ -33,6 +41,7 @@ impl Default for Server {
             addr: default_addr(),
             db_path: default_db_path(),
             master_key: String::new(),
+            public_url: default_public_url(),
         }
     }
 }
@@ -256,6 +265,14 @@ mod tests {
         // server 默认值
         assert_eq!(cfg.server.addr, "0.0.0.0:8080");
         assert_eq!(cfg.server.db_path, "data/aitokenpool.db");
+        // public_url（rant 2026-08-19T20:37:37：接入方式 URL 配置化）
+        assert_eq!(cfg.server.public_url, "https://gateway.example.com");
+    }
+
+    #[test]
+    fn server_public_url_defaults_to_localhost() {
+        // 未配置 public_url 时缺省 http://localhost:8080（dev 默认，与 addr 解耦）
+        assert_eq!(Server::default().public_url, "http://localhost:8080");
     }
 
     #[test]
