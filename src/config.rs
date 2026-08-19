@@ -78,6 +78,56 @@ impl Mail {
     }
 }
 
+// ---- 日志（rant 2026-08-19T20:54:26：文件输出 + 大小滚动 + 自动清理）----
+
+fn default_log_dir() -> String {
+    "logs".to_string()
+}
+fn default_log_level() -> String {
+    "info".to_string()
+}
+fn default_log_file_pattern() -> String {
+    "aitokenpool.{}.log".to_string()
+}
+fn default_log_max_file_size() -> u64 {
+    10_000_000
+}
+fn default_log_max_backups() -> u32 {
+    7
+}
+
+/// 日志配置（[log] 段，随统一数据目录；文件在 <data-dir>/<dir>/，stdout 双写）
+#[derive(Debug, Clone, Deserialize)]
+pub struct Log {
+    /// 相对数据目录的日志目录（默认 "logs"）
+    #[serde(default = "default_log_dir")]
+    pub dir: String,
+    /// trace | debug | info | warn | error（默认 info）
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    /// 滚动文件命名（含 {} 占位符，如 "aitokenpool.{}.log"）
+    #[serde(default = "default_log_file_pattern")]
+    pub file_pattern: String,
+    /// 触发滚动的单文件大小（bytes，默认 10MB）
+    #[serde(default = "default_log_max_file_size")]
+    pub max_file_size: u64,
+    /// 保留的滚动文件数（自动删除更旧，默认 7）
+    #[serde(default = "default_log_max_backups")]
+    pub max_backups: u32,
+}
+
+impl Default for Log {
+    fn default() -> Self {
+        Log {
+            dir: default_log_dir(),
+            level: default_log_level(),
+            file_pattern: default_log_file_pattern(),
+            max_file_size: default_log_max_file_size(),
+            max_backups: default_log_max_backups(),
+        }
+    }
+}
+
 /// 顶层配置
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)] // P0-A 仅用 server；points/providers/plans 由后续 P0 网关/定价阶段消费（parse 测试已校验）
@@ -87,6 +137,9 @@ pub struct Config {
     /// 邮件服务（可选；未配置时注册验证码走 dev 日志模式）
     #[serde(default)]
     pub mail: Mail,
+    /// 日志（rant 2026-08-19T20:54:26：文件输出 + 滚动 + 清理）
+    #[serde(default)]
+    pub log: Log,
     pub points: Points,
     pub providers: Vec<Provider>,
     pub plans: Vec<Plan>,
@@ -267,6 +320,22 @@ mod tests {
         assert_eq!(cfg.server.db_path, "data/aitokenpool.db");
         // public_url（rant 2026-08-19T20:37:37：接入方式 URL 配置化）
         assert_eq!(cfg.server.public_url, "https://gateway.example.com");
+        // 日志（rant 2026-08-19T20:54:26：文件输出 + 滚动 + 清理）
+        assert_eq!(cfg.log.dir, "logs");
+        assert_eq!(cfg.log.level, "info");
+        assert_eq!(cfg.log.file_pattern, "aitokenpool.{}.log");
+        assert_eq!(cfg.log.max_file_size, 10_000_000);
+        assert_eq!(cfg.log.max_backups, 7);
+    }
+
+    #[test]
+    fn log_defaults_when_section_absent() {
+        // 未配置 [log] 段 → 全默认值
+        let d = Log::default();
+        assert_eq!(d.dir, "logs");
+        assert_eq!(d.level, "info");
+        assert_eq!(d.max_file_size, 10_000_000);
+        assert_eq!(d.max_backups, 7);
     }
 
     #[test]
