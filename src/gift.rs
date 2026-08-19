@@ -157,10 +157,20 @@ mod tests {
         id
     }
 
+    /// 相对当前时间的动态时间戳（避免测试硬编码日期跨天后失效）
+    fn ts(conn: &Connection, days: i64) -> String {
+        conn.query_row(
+            "SELECT datetime('now', ?1)",
+            [format!("{days} days")],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn first_gift_granted_with_today_expiry() {
         let (conn, p) = tmp_db("g1");
-        let uid = register(&conn, "u1@t.local", "2026-08-18 10:00:00"); // 今天注册
+        let uid = register(&conn, "u1@t.local", &ts(&conn, 0)); // 今天注册
         let granted = ensure_daily_gift(&conn, uid).unwrap();
         assert!(granted, "注册当天应补发 1 点");
         let (bal, gift): (f64, f64) = conn
@@ -192,7 +202,7 @@ mod tests {
     #[test]
     fn same_day_no_duplicate_gift() {
         let (conn, p) = tmp_db("g2");
-        let uid = register(&conn, "u2@t.local", "2026-08-18 10:00:00");
+        let uid = register(&conn, "u2@t.local", &ts(&conn, 0));
         assert!(ensure_daily_gift(&conn, uid).unwrap());
         assert!(!ensure_daily_gift(&conn, uid).unwrap(), "同天不重复赠送");
         let n: i64 = conn
@@ -211,7 +221,7 @@ mod tests {
     fn outside_window_no_gift() {
         let (conn, p) = tmp_db("g3");
         // 11 天前注册 → 超出 10 天窗口
-        let uid = register(&conn, "u3@t.local", "2026-08-07 09:00:00");
+        let uid = register(&conn, "u3@t.local", &ts(&conn, -11));
         let granted = ensure_daily_gift(&conn, uid).unwrap();
         assert!(!granted, "第 11 天起不再赠送");
         let n: i64 = conn
@@ -229,11 +239,11 @@ mod tests {
     #[test]
     fn expired_gift_cleaned_lazily() {
         let (conn, p) = tmp_db("g4");
-        let uid = register(&conn, "u4@t.local", "2026-08-18 10:00:00");
+        let uid = register(&conn, "u4@t.local", &ts(&conn, 0));
         assert!(ensure_daily_gift(&conn, uid).unwrap());
         // 手工把 expires_at 改成过去 → 惰性清理应标记 expired 并扣 gift_balance
         conn.execute(
-            "UPDATE gift_grants SET expires_at = '2026-08-01 00:00:00' WHERE user_id = ?1",
+            "UPDATE gift_grants SET expires_at = datetime('now', '-3 days') WHERE user_id = ?1",
             [uid],
         )
         .unwrap();
@@ -261,17 +271,17 @@ mod tests {
     #[test]
     fn deduct_gift_first_oldest_expiry() {
         let (conn, p) = tmp_db("g5");
-        let uid = register(&conn, "u5@t.local", "2026-08-18 10:00:00");
+        let uid = register(&conn, "u5@t.local", &ts(&conn, 0));
         // 两笔 active 赠送：今天到期 1 点、明天到期 1 点（最早到期先扣）
         conn.execute(
             "INSERT INTO gift_grants (user_id, amount, granted_at, expires_at, status) \
-             VALUES (?1, 1, '2026-08-18 10:00:00', '2026-08-18 23:59:59', 'active')",
+             VALUES (?1, 1, datetime('now'), strftime('%Y-%m-%d 23:59:59', 'now'), 'active')",
             [uid],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO gift_grants (user_id, amount, granted_at, expires_at, status) \
-             VALUES (?1, 1, '2026-08-18 10:00:00', '2026-08-19 23:59:59', 'active')",
+             VALUES (?1, 1, datetime('now'), strftime('%Y-%m-%d 23:59:59', 'now', '+1 day'), 'active')",
             [uid],
         )
         .unwrap();
@@ -311,10 +321,10 @@ mod tests {
     #[test]
     fn deduct_overflow_falls_to_permanent() {
         let (conn, p) = tmp_db("g6");
-        let uid = register(&conn, "u6@t.local", "2026-08-18 10:00:00");
+        let uid = register(&conn, "u6@t.local", &ts(&conn, 0));
         conn.execute(
             "INSERT INTO gift_grants (user_id, amount, granted_at, expires_at, status) \
-             VALUES (?1, 1, '2026-08-18 10:00:00', '2026-08-18 23:59:59', 'active')",
+             VALUES (?1, 1, datetime('now'), strftime('%Y-%m-%d 23:59:59', 'now'), 'active')",
             [uid],
         )
         .unwrap();

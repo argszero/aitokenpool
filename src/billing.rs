@@ -312,7 +312,7 @@ mod tests {
         // 消费者 user_id=1：赠送 1 点（当天 23:59:59 过期）+ 永久 10 点
         conn.execute(
             "INSERT INTO gift_grants (user_id, amount, granted_at, expires_at, status) \
-             VALUES (1, 1, '2026-08-18 10:00:00', '2026-08-18 23:59:59', 'active')",
+             VALUES (1, 1, datetime('now'), strftime('%Y-%m-%d 23:59:59', 'now'), 'active')",
             [],
         )
         .unwrap();
@@ -394,7 +394,7 @@ mod tests {
         // 一笔已过期（昨天）的赠送：settle 前惰性清理 → 只扣永久
         conn.execute(
             "INSERT INTO gift_grants (user_id, amount, granted_at, expires_at, status) \
-             VALUES (1, 1, '2026-08-17 10:00:00', '2026-08-17 23:59:59', 'active')",
+             VALUES (1, 1, datetime('now', '-1 day'), strftime('%Y-%m-%d 23:59:59', 'now', '-1 day'), 'active')",
             [],
         )
         .unwrap();
