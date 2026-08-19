@@ -11,6 +11,8 @@
 # ============================================================
 [server]
 addr = "0.0.0.0:8080"
+# 数据库路径由统一数据目录决定（rant 2026-08-19T20:53:23）：<ATP_DATA_DIR>/aitokenpool.db。
+# 此处的 db_path 已忽略（保留仅为兼容旧启动方式）。
 db_path = "data/aitokenpool.db"
 # 平台对外网关地址（不含 /v1 等路径）：设置页「接入方式」端点由此拼接（{public_url}/v1、{public_url}/anthropic）。
 # 缺省 http://localhost:8080（dev 默认，与 addr 解耦——addr 是监听地址，public_url 是对外可达地址）。

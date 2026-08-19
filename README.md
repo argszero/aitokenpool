@@ -37,6 +37,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 - ✅ **v0.6.3**：**接入方式 URL 配置化（rant 2026-08-19T20:37:37）**——设置页「接入方式」端点不再硬编码域名：新增 `[server].public_url` 配置（缺省 `http://localhost:8080`）+ `GET /api/config` 下发；前端从配置拼接 `{public_url}/v1`、`{public_url}/anthropic`，取不到配置时回退同源 origin
 - ✅ **v0.6.4**：**管理员模型信息 CRUD（rant 2026-08-19T20:40:29）**——models 表补 context_length / max_output / vision / cache_hit_input_per_m（迁移 v7，幂等）+ seed 从 models.example.json 写入；新增 `GET|POST /api/admin/models` + `PATCH|DELETE /api/admin/models/:id`（admin 权限，唯一冲突 409，删除后按 0 计费）；管理视图「模型管理」tab（搜索/新增/编辑/删除，行内表单 + 二次确认，中英 i18n）；`GET /api/models` 市场列表补新字段（读图/上下文真实值）
 - ✅ **v0.6.5**：**全站时区修复（rant 2026-08-19T20:45:32 BUG）**——后端所有返回 JSON 的时间字段统一转 UTC ISO 带 Z（`2026-08-19T12:00:00Z`；交易/共享/API Key/部门/加额/模型列表全量，`utc_iso()` 序列化）；前端 `timeAgo()` 按 UTC 解析（兼容旧格式视为 UTC）、仪表盘 sparkline 日期按 UTC 转本地归天、绝对时间 title 本地化显示——消费后交易记录不再显示「8小时前」，跨天不错位
+- ✅ **v0.6.6**：**统一数据目录（rant 2026-08-19T20:53:23）**——`ATP_DATA_DIR`（默认 `./data`；`--data-dir` > env > 默认）下放 config.toml（首次自动复制示例）+ aitokenpool.db + logs/，目录自动创建；数据库路径统一由 data-dir 决定（config `db_path` 忽略）；Docker 单卷挂载 `./atp-data:/data`（镜像内置示例配置，首启自动复制）；.gitignore/.dockerignore 补 atp-data/；旧 data/ 迁移说明
 
 `ui/` 已由纯静态原型升级为**对接真实 API**（登录、钱包、市场、共享、交易、设置、管理、运营全部真实数据），由后端 `ServeDir` 静态托管，无需单独部署前端。
 
@@ -45,12 +46,24 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 ### ① 本地运行（cargo）
 
 ```bash
-cp config/config.example.toml config/config.toml   # 首次
-cargo run                                         # http://localhost:8080/
+cargo run                                         # 首次自动建 ./data/ + 复制配置，http://localhost:8080/
 ```
 
+> **统一数据目录**（rant 2026-08-19T20:53:23）：配置 / 数据库 / 日志放在同一个目录，方便 Docker 单卷挂载：
+>
+> ```
+> <ATP_DATA_DIR>/          # 默认 ./data；--data-dir 或 env ATP_DATA_DIR 覆盖
+> ├── config.toml          # 配置（首次启动自动从 config.example.toml 复制）
+> ├── aitokenpool.db       # SQLite 数据库
+> └── logs/                # 运行日志
+> ```
+>
+> 启动：`cargo run -- --data-dir ./my-data`（或 `ATP_DATA_DIR=./my-data cargo run`）。二次启动复用同目录
+> （config/db 不重建，日志追加）。数据库路径统一由 data-dir 决定（config 里 `db_path` 已忽略）。
+> 旧版（v0.6.6 前）`data/aitokenpool.db` 与 `config/config.toml` 迁移：直接拷贝到新数据目录即可。
+
 > ⚠️ **首次启动即应配置主密钥**（用于加密上游 key）：`export ATP_MASTER_KEY=$(openssl rand -hex 32)`
-> （或取消 config/config.toml `[server].master_key` 注释）。未配置时使用随机 dev 密钥，
+> （或取消 <data-dir>/config.toml `[server].master_key` 注释）。未配置时使用随机 dev 密钥，
 > **重启后已上架的 key 密文无法解密 → 全部 503**（rant 2026-08-18T16:14:21 Bug 3）。
 
 > **对外网关地址（`[server].public_url`）**（rant 2026-08-19T20:37:37）：设置页「接入方式」展示的
@@ -74,7 +87,10 @@ open http://localhost:8080/                        # 浏览器访问
 > docker compose up -d
 > ```
 >
-> 未设置时使用 dev 默认值，仅适合本地试用（重启后已加密的上游 key 不可解密）。数据持久化在 `./data/`（SQLite）。
+> 未设置时使用 dev 默认值，仅适合本地试用（重启后已加密的上游 key 不可解密）。数据持久化在统一数据目录
+> `./atp-data/`（挂载到容器 `/data`）：`config.toml`（首次自动复制）+ `aitokenpool.db` + `logs/` 全在其中，
+> 改配置 / 备份 / 迁移只操作这一个目录（rant 2026-08-19T20:53:23）。手动运行：
+> `docker run -p 8080:8080 -v "$PWD/atp-data:/data" -e ATP_MASTER_KEY=$(openssl rand -hex 32) ghcr.io/argszero/aitokenpool:latest`
 
 ### ③ 登录账号
 
@@ -111,7 +127,7 @@ open http://localhost:8080/                        # 浏览器访问
 
 ## API 端点（Bearer 认证）
 
-- `GET /healthz` → `{"status":"ok","version":"0.6.5"}`
+- `GET /healthz` → `{"status":"ok","version":"0.6.6"}`
 - `POST /api/auth/login` → `{api_key}`；`POST /api/auth/change-password`（改密）；`POST /api/auth/register|verify|resend-code`（注册+邮箱验证）；`GET /api/me` → `{id,email,name,role}`；`GET /api/config` → `{public_url}`（接入端点 base，rant 2026-08-19T20:37:37）
 - `POST|GET /api/api-keys`（key 脱敏 `atk_live_****xxxx`）；`DELETE /api/api-keys/:id`（撤销）
 - `POST /v1/chat/completions` / `POST /anthropic/v1/messages` / `POST /v1/responses`（网关，三协议互转，非流式 + 流式 SSE 跨协议转换）；`GET /v1/models`（OpenAI 兼容模型列表，认证可选）
