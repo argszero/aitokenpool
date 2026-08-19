@@ -163,11 +163,51 @@ pub async fn me(
     })))
 }
 
+#[derive(Deserialize)]
+pub struct ChangePasswordReq {
+    pub old_password: String,
+    pub new_password: String,
+}
+
+/// POST /api/auth/change-password：旧密码校验 + 新密码 argon2 更新（rant 2026-08-19T14:35:05，
+/// 初始管理员登录后改密；Bearer 认证，任意已登录用户可改自己的密码）
+pub async fn change_password(
+    State(st): State<AppState>,
+    auth: AuthUser,
+    Json(req): Json<ChangePasswordReq>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    if req.new_password.len() < 8 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "新密码至少 8 位" })),
+        ));
+    }
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let hash: String = conn
+        .query_row(
+            "SELECT password_hash FROM users WHERE id = ?1",
+            [auth.user_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| unauthorized())?;
+    if !crate::auth::verify_password(&hash, &req.old_password) {
+        return Err(unauthorized());
+    }
+    let new_hash = crate::auth::hash_password(&req.new_password).map_err(internal)?;
+    conn.execute(
+        "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+        rusqlite::params![new_hash, auth.user_id],
+    )
+    .map_err(internal)?;
+    Ok(Json(serde_json::json!({ "status": "ok" })))
+}
+
 /// 组装路由：API 路由优先，其余请求回退到 ui/ 静态托管（P2-A）
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/api/auth/login", post(login))
+        .route("/api/auth/change-password", post(change_password))
         .route("/api/me", get(me))
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))
         .route("/api/api-keys/:id", axum::routing::delete(api_keys::remove))
@@ -591,6 +631,69 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "admin me 应 200: {body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["role"], "admin");
+    }
+
+    #[tokio::test]
+    async fn change_password_rotates_and_old_stops_working() {
+        // rant 2026-08-19T14:35:05：初始管理员改密端点——旧密码校验 + argon2 更新
+        let st = test_state("chpw");
+        let bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        // 错误旧密码 → 401
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/change-password",
+            r#"{"old_password":"wrong","new_password":"newpass123"}"#,
+            Some(&bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "旧密码错误应 401: {body}");
+        // 过短新密码 → 400
+        let (s, _) = post(
+            st.clone(),
+            "/api/auth/change-password",
+            r#"{"old_password":"demo1234","new_password":"short"}"#,
+            Some(&bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "新密码不足 8 位应 400");
+        // 正确改密 → 200
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/change-password",
+            r#"{"old_password":"demo1234","new_password":"brandnew99"}"#,
+            Some(&bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "改密应 200: {body}");
+        // 旧密码登录失败、新密码登录成功
+        let (s, _) = post(
+            st.clone(),
+            "/api/auth/login",
+            r#"{"email":"demo@aitokenpool.local","password":"demo1234"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "旧密码应失效");
+        let (s, body) = post(
+            st,
+            "/api/auth/login",
+            r#"{"email":"demo@aitokenpool.local","password":"brandnew99"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "新密码应可登录: {body}");
+    }
+
+    #[tokio::test]
+    async fn change_password_requires_bearer() {
+        let (s, _) = post(
+            test_state("chpw401"),
+            "/api/auth/change-password",
+            r#"{"old_password":"x","new_password":"yyyyyyyy"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "未认证应 401");
     }
 
     /* ---- P2-C：部门管理 / 加额审批 / 运营者 / 用量三组聚合 ---- */
