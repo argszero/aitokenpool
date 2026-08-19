@@ -12,6 +12,10 @@
 [server]
 addr = "0.0.0.0:8080"
 db_path = "data/aitokenpool.db"
+# 平台对外网关地址（不含 /v1 等路径）：设置页「接入方式」端点由此拼接（{public_url}/v1、{public_url}/anthropic）。
+# 缺省 http://localhost:8080（dev 默认，与 addr 解耦——addr 是监听地址，public_url 是对外可达地址）。
+# ⚠️ 生产必须设为真实域名（如 https://pool.example.com），否则前端展示的接入端点是错的。
+public_url = "https://gateway.example.com"
 # 上游 key 主密钥（P0-C 起）：hex 32 字节；env ATP_MASTER_KEY 优先级更高。
 # ⚠️ 生产必须显式配置（env 或此处），否则使用随机 dev 密钥 —— 重启后旧密文不可解，
 #    所有已上架 key 将解密失败（503）。生成：openssl rand -hex 32

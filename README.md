@@ -34,6 +34,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 - ✅ **v0.6.0**：**移除所有 demo 种子数据（rant 2026-08-19T10:41:03）**——首次部署 = 干净空库（只建表），不再预置 demo/admin/ops 假账号、假余额、占位 key；测试改用 `#[cfg(test)]` 专用 `seed_test_users` 辅助（生产构建不含）；UI 登录页/设置页移除演示账号预填与提示
 - ✅ **v0.6.1**：**首次启动自动创建初始管理员（rant 2026-08-19T14:35:05）**——空库启动时创建 `admin@aitokenpool.local` + 随机 16 位密码（打印到启动日志，仅首次）+ quotas 账户（balance=0），幂等不重复；新增 `POST /api/auth/change-password` 改密端点（旧密码校验 + argon2 更新）；不再需要手工插库
 - ✅ **v0.6.2**：**用户自助注册 + 邮箱验证（rant 2026-08-19T14:36:19 方案 B）**——`POST /api/auth/register` + `verify` + `resend-code`；6 位数字验证码（10 分钟有效、5 次错误失效、60 秒重发限频）；未验证邮箱不可登录（403）；登录页注册表单 + 验证码页（中英 i18n）；SMTP 发信（`[mail]` 配置，未配置时 dev 模式验证码打日志/响应）
+- ✅ **v0.6.3**：**接入方式 URL 配置化（rant 2026-08-19T20:37:37）**——设置页「接入方式」端点不再硬编码域名：新增 `[server].public_url` 配置（缺省 `http://localhost:8080`）+ `GET /api/config` 下发；前端从配置拼接 `{public_url}/v1`、`{public_url}/anthropic`，取不到配置时回退同源 origin
 
 `ui/` 已由纯静态原型升级为**对接真实 API**（登录、钱包、市场、共享、交易、设置、管理、运营全部真实数据），由后端 `ServeDir` 静态托管，无需单独部署前端。
 
@@ -49,6 +50,11 @@ cargo run                                         # http://localhost:8080/
 > ⚠️ **首次启动即应配置主密钥**（用于加密上游 key）：`export ATP_MASTER_KEY=$(openssl rand -hex 32)`
 > （或取消 config/config.toml `[server].master_key` 注释）。未配置时使用随机 dev 密钥，
 > **重启后已上架的 key 密文无法解密 → 全部 503**（rant 2026-08-18T16:14:21 Bug 3）。
+
+> **对外网关地址（`[server].public_url`）**（rant 2026-08-19T20:37:37）：设置页「接入方式」展示的
+> OpenAI/Anthropic 兼容端点由它拼接（`{public_url}/v1`、`{public_url}/anthropic`）。
+> 缺省 `http://localhost:8080`（本地 dev 正确）；**生产必须设为真实域名**（如 `https://pool.example.com`），
+> 否则用户拿到的 Base URL 是错的。改配置重启后设置页 URL 自动更新。
 
 ### ② Docker 部署
 
@@ -103,8 +109,8 @@ open http://localhost:8080/                        # 浏览器访问
 
 ## API 端点（Bearer 认证）
 
-- `GET /healthz` → `{"status":"ok","version":"0.6.2"}`
-- `POST /api/auth/login` → `{api_key}`；`POST /api/auth/change-password`（改密）；`POST /api/auth/register|verify|resend-code`（注册+邮箱验证）；`GET /api/me` → `{id,email,name,role}`
+- `GET /healthz` → `{"status":"ok","version":"0.6.3"}`
+- `POST /api/auth/login` → `{api_key}`；`POST /api/auth/change-password`（改密）；`POST /api/auth/register|verify|resend-code`（注册+邮箱验证）；`GET /api/me` → `{id,email,name,role}`；`GET /api/config` → `{public_url}`（接入端点 base，rant 2026-08-19T20:37:37）
 - `POST|GET /api/api-keys`（key 脱敏 `atk_live_****xxxx`）；`DELETE /api/api-keys/:id`（撤销）
 - `POST /v1/chat/completions` / `POST /anthropic/v1/messages` / `POST /v1/responses`（网关，三协议互转，非流式 + 流式 SSE 跨协议转换）；`GET /v1/models`（OpenAI 兼容模型列表，认证可选）
 - `GET /api/models`（模型市场）

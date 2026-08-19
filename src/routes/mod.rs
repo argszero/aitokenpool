@@ -332,6 +332,15 @@ pub async fn me(
     })))
 }
 
+/// GET /api/config：前端需要的服务端配置（rant 2026-08-19T20:37:37：接入方式 URL 配置化）。
+/// 返回 public_url（平台对外网关地址，不含 /v1 等路径），前端据此拼接入端点；
+/// 未认证也可访问（public_url 非敏感信息），后续其它前端配置项可复用本端点。
+pub async fn config(State(st): State<AppState>) -> Result<Json<serde_json::Value>, ApiErr> {
+    Ok(Json(serde_json::json!({
+        "public_url": st.cfg.server.public_url,
+    })))
+}
+
 #[derive(Deserialize)]
 pub struct ChangePasswordReq {
     pub old_password: String,
@@ -381,6 +390,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/auth/verify", post(verify))
         .route("/api/auth/resend-code", post(resend_code))
         .route("/api/me", get(me))
+        .route("/api/config", get(config))
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))
         .route("/api/api-keys/:id", axum::routing::delete(api_keys::remove))
         .route("/v1/chat/completions", post(gateway::chat_completions))
@@ -818,6 +828,20 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "admin me 应 200: {body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["role"], "admin");
+    }
+
+    #[tokio::test]
+    async fn config_returns_public_url() {
+        // rant 2026-08-19T20:37:37：接入方式 URL 配置化——GET /api/config 返回 public_url
+        // （config.example.toml 配了示例真实值 → 返回该值；未认证也可访问）
+        let st = test_state("cfg");
+        let (s, body) = get(st.clone(), "/api/config", None).await;
+        assert_eq!(s, StatusCode::OK, "config 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            v["public_url"], "https://gateway.example.com",
+            "返回 example 配置值: {body}"
+        );
     }
 
     #[tokio::test]
