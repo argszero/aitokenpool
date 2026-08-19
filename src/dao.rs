@@ -156,7 +156,7 @@ pub fn get_model_price(
 /// 市场页：models 表 + key 可用性（可用 key 数）
 pub fn list_models_with_availability(conn: &Connection) -> Result<Vec<serde_json::Value>> {
     let mut stmt = conn.prepare(
-        "SELECT m.provider, m.model, m.currency, m.input_per_m, m.output_per_m, \
+        "SELECT m.provider, m.model, m.currency, m.input_per_m, m.output_per_m, m.context_window, \
                 (SELECT COUNT(*) FROM keys k WHERE k.model = m.model AND k.status = 'on') AS avail \
          FROM models m ORDER BY m.provider, m.model",
     )?;
@@ -167,7 +167,8 @@ pub fn list_models_with_availability(conn: &Connection) -> Result<Vec<serde_json
             "currency": r.get::<_, String>(2)?,
             "input_per_m": r.get::<_, f64>(3)?,
             "output_per_m": r.get::<_, f64>(4)?,
-            "available_keys": r.get::<_, i64>(5)?,
+            "context_window": r.get::<_, i64>(5)?,
+            "available_keys": r.get::<_, i64>(6)?,
         }))
     })?;
     let mut out = Vec::new();

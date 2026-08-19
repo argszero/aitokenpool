@@ -1456,6 +1456,7 @@ mod tests {
         assert!(first.get("model").is_some());
         assert!(first.get("input_per_m").is_some());
         assert!(first.get("output_per_m").is_some());
+        assert!(first.get("context_window").is_some());
         assert!(first.get("available_keys").is_some());
         // 无认证 → 401
         let resp2 = router()

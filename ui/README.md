@@ -62,7 +62,7 @@ python3 -m http.server 8000 --directory ui
 ui/
 ├── index.html        # 入口（登录页 + 应用外壳 + 全部视图）
 ├── css/style.css     # 设计系统（深色主题 · 强调色 #4ecdc4 · 响应式预留 · v1.15 视觉美化）
-├── js/data.js        # 内嵌 mock 数据（模型价格、交易、共享、成员等）
+├── js/data.js        # 内嵌数据（仅游客市场 MARKET + 上架表单兜底 MODELS/PLANS/PROVIDERS/PROVIDER_LABELS；登录态 mock 已清零 v1.22）
 ├── js/app.js         # 交互逻辑（导航、筛选、表单、分页、Toast；v1.15 内联 SVG 图标 + 空状态组件）
 └── README.md         # 本文件
 ```
@@ -289,7 +289,18 @@ ui/
 - 市场模型带 `multi` 标记：表示该模型配置多个上游 key → 标注「多 key · 自动故障转移」（见 `docs/architecture.md` v0.2 路由策略）；消费模拟（聊天 Mock）按 输出参考价 × 0.19M tokens 计费，扣减小数点数并产生 consume 交易（US-6）
 - 上架需提交 API Key（password 输入）：平台加密托管、仅用于代理调用；共享列表只展示脱敏值（如 sk-****1234，前 3 后 4），不展示明文
 - 删除 = 彻底下架（key 从平台移除，不可恢复）；暂停 = 临时不接单，可恢复
-- 全部数据为前端常量（mock），无后端、无真实调用
+- 登录态数据全部来自后端 API（`ui/js/api.js`）；`data.js` 内嵌数据仅限游客市场浏览与上架表单兜底（见 v1.22 约定），无后端依赖的纯静态浏览不再成立
+
+## 登录态零 mock 约定（v1.22，rant 2026-08-19T15:54:06 系统性清理）
+
+- **铁律**：登录态（`loggedIn()`）任何视图**不得渲染 `data.js` 的 `D.*` mock 数据**；mock 仅限游客模式（`GUEST_VIEWS = ["marketplace"]`，且市场模型列表登录态用 `GET /api/models` 真实数据）；
+- **统一降级模式**：登录态 `Live.x ? view(Live.x) : loadError(空态+重试)`——绝不 fallback 到 `D.*`；失败渲染 `loadErrorHtml`（div 容器）或 `loadErrorRow`（tbody 容器，`<tr><td class="empty-cell">` 包裹，避免 div 直接进 tbody 被浏览器提升到表外破坏布局与重试委托）；重试按钮 `data-live-retry` 由 `bindLiveRetry` 委托（DOMContentLoaded 一次性绑定，容器级）；
+- **已清零路径**（原 10 处 mock 泄漏）：仪表盘统计（`D.TRANSACTIONS` 聚合）→ 登录用 `/api/wallet` + `/api/dashboard`，未就绪显示 0；月度聚合/sparkline → 登录用 `Live.dashboard.series`，未就绪净 0 空行；交易页/CSV 导出 → 登录失败空态；API Key 设置 → 登录失败空态（生成/改名/删除已走真实 API）；管理视图成员 → 登录失败空态；用量报表 → 登录失败空态；部门管理（CRUD 已真实 API，移除本地 push/splice）；运营者（runtime/users）→ 登录失败空态；加额申请（提交/审批已真实 API）；上架表单（登录已 `POST /api/sharings`，游客无上架权限移除 mock 分支）；
+- **`data.js` 保留对象**：`MODELS`（上架表单定价兜底）、`PLANS`（上架表单兜底，登录用 `/api/plans` 单一真源）、`PROVIDERS` / `PROVIDER_LABELS`（厂商枚举/显示名）、`MARKET`（游客市场浏览；`multi`/`success` 虚构字段已移除——登录态 `multi = available_keys >= 2` 真实计算，成功率后端暂无字段不再展示）、`USER`（会话存储：登录后由 `/api/me` + `/api/wallet` 覆盖，初始值不渲染）；
+- **已删除对象**：`TRANSACTIONS` / `SHARINGS` / `API_KEYS` / `EMPLOYEES` / `DEPARTMENTS` / `USAGE_MODEL` / `USAGE_EMP` / `OPERATOR_USERS` / `RAISE_REQUESTS`；
+- **市场行**：登录态 `ctx` 来自 `/api/models` 新增的 `context_window` 字段（dao `list_models_with_availability` 已补）；厂商筛选下拉按数据源重建（登录=`/api/models` 真实厂商、游客=`D.PROVIDERS`）；
+- **兼容防护**：残留的游客分支读取 `D.TRANSACTIONS || []` / `D.SHARINGS || []`（对象已删，防止登录页首帧空引用）；聊天模拟（`sendChat`）为 P2-D 候选（chat-modal 流式网关），不再写 `D.TRANSACTIONS`；
+- **验收**：干净库登录 → 仪表盘/市场/共享/交易/设置/管理/运营全部为真实数据或空态，无 mock 数字（如 32,800/100,000、+1,611、51,200/80,000）；`grep -n "D\.[A-Z_]" ui/js/app.js` 仅剩游客/表单兜底与会话存储引用。
 
 ## 界面国际化 i18n 约定（v1.21.1，rant 2026-08-18T20:49:22 + 21:40:10 去中英混排）
 
