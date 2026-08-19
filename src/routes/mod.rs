@@ -602,6 +602,20 @@ mod tests {
                 .all(|k| k["key"].as_str().unwrap().contains("****")),
             "key 全部脱敏"
         );
+        // 属主可见完整 key（rant 2026-08-19T18:06:25：复制 key 需随时可用）
+        assert!(
+            arr.iter().any(|k| k["full_key"] == new_key),
+            "列表含新生成 key 的完整值 full_key"
+        );
+        assert!(
+            arr.iter().all(|k| {
+                k["full_key"]
+                    .as_str()
+                    .map(|fk| fk.starts_with("atk_live_"))
+                    .unwrap_or(false)
+            }),
+            "full_key 均为真实完整 key"
+        );
         // 无效 Bearer → 401
         let (s, _) = get(
             st,
@@ -628,6 +642,7 @@ mod tests {
         let (_, body) = get(st.clone(), "/api/api-keys", Some(&demo_bearer)).await;
         let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
         let new_id = arr[0]["id"].as_i64().expect("有 id");
+        assert!(arr[0]["full_key"].is_string(), "撤销前列表返回属主完整 key");
         // 删除
         let (s, body) = del(
             st.clone(),
