@@ -1,6 +1,6 @@
 [package]
 name = "aitokenpool"
-version = "0.6.6"
+version = "0.6.7"
 edition = "2021"
 description = "AI Token 共享池 — 企业 key 池 + 公共共享市场"
 license = "MIT"
@@ -39,7 +39,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.11", features = ["v4"] }
 log = "0.4"
-env_logger = "0.11"
+log4rs = "1"
 thiserror = "2.0"
 anyhow = "1.0"
 argon2 = "0.5"

@@ -77,20 +77,77 @@ fn ensure_config(data_dir: &std::path::Path) -> anyhow::Result<std::path::PathBu
     let example = "config/config.example.toml";
     if !std::path::Path::new(example).exists() {
         // 运行目录没有示例（如已安装的二进制）→ 生成最小可用配置
-        log::warn!("示例配置 {example} 不存在，生成最小配置 {target:?}");
+        // 注意：日志系统尚未初始化，用 eprintln 而非 log::warn
+        eprintln!("示例配置 {example} 不存在，生成最小配置 {target:?}");
         let min = "[server]\naddr = \"0.0.0.0:8080\"\ndb_path = \"aitokenpool.db\"\n";
         std::fs::write(&target, min)?;
         return Ok(target);
     }
     std::fs::copy(example, &target)
         .map_err(|e| anyhow::anyhow!("复制示例配置到 {target:?} 失败: {e}"))?;
-    log::info!("首次启动：已从 {example} 复制配置到 {target:?}");
+    eprintln!("首次启动：已从 {example} 复制配置到 {target:?}");
     Ok(target)
+}
+
+/// 解析日志级别字符串 → LevelFilter（非法值报错）
+fn parse_log_level(s: &str) -> anyhow::Result<log::LevelFilter> {
+    match s.trim().to_lowercase().as_str() {
+        "trace" => Ok(log::LevelFilter::Trace),
+        "debug" => Ok(log::LevelFilter::Debug),
+        "info" => Ok(log::LevelFilter::Info),
+        "warn" => Ok(log::LevelFilter::Warn),
+        "error" => Ok(log::LevelFilter::Error),
+        "off" => Ok(log::LevelFilter::Off),
+        other => Err(anyhow::anyhow!(
+            "非法日志级别: {other}（允许 trace|debug|info|warn|error|off）"
+        )),
+    }
+}
+
+/// 初始化日志（rant 2026-08-19T20:54:26：文件输出 + 大小滚动 + 自动清理 + stdout 双写）。
+/// 文件：<data-dir>/<log.dir>/aitokenpool.log，按 max_file_size 滚动，保留 max_backups 份。
+fn init_logging(data_dir: &std::path::Path, cfg: &config::Log) -> anyhow::Result<()> {
+    use log4rs::append::console::ConsoleAppender;
+    use log4rs::append::rolling_file::policy::compound::roll::fixed_window::FixedWindowRoller;
+    use log4rs::append::rolling_file::policy::compound::trigger::size::SizeTrigger;
+    use log4rs::append::rolling_file::policy::compound::CompoundPolicy;
+    use log4rs::append::rolling_file::RollingFileAppender;
+    use log4rs::config::{Appender, Config as L4Config, Root};
+
+    let level = parse_log_level(&cfg.level)?;
+    let log_dir = data_dir.join(&cfg.dir);
+    std::fs::create_dir_all(&log_dir)?;
+
+    // 滚动策略：大小触发 + 固定窗口（保留 max_backups 份，自动删除更旧）
+    let pattern = log_dir.join(&cfg.file_pattern);
+    let roller = FixedWindowRoller::builder()
+        .build(&pattern.to_string_lossy(), cfg.max_backups)
+        .map_err(|e| anyhow::anyhow!("构建日志滚动器失败: {e}"))?;
+    let policy = CompoundPolicy::new(
+        Box::new(SizeTrigger::new(cfg.max_file_size)),
+        Box::new(roller),
+    );
+    let file = RollingFileAppender::builder()
+        .build(log_dir.join("aitokenpool.log"), Box::new(policy))
+        .map_err(|e| anyhow::anyhow!("构建日志文件 appender 失败: {e}"))?;
+    let console = ConsoleAppender::builder().build();
+
+    let lcfg = L4Config::builder()
+        .appender(Appender::builder().build("file", Box::new(file)))
+        .appender(Appender::builder().build("console", Box::new(console)))
+        .build(
+            Root::builder()
+                .appender("file")
+                .appender("console")
+                .build(level),
+        )
+        .map_err(|e| anyhow::anyhow!("构建日志配置失败: {e}"))?;
+    log4rs::init_config(lcfg).map_err(|e| anyhow::anyhow!("初始化日志系统失败: {e}"))?;
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
     let args = Args::parse();
 
     // 统一数据目录（rant 2026-08-19T20:53:23）：config/db/logs 同目录，方便 Docker 单 volume 挂载
@@ -109,6 +166,8 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     };
+    // 日志系统（rant 2026-08-19T20:54:26）：文件 + 滚动 + 双写；配置加载后才能初始化
+    init_logging(&data_dir, &cfg.log)?;
     // 数据库路径统一由 data-dir 决定（配置里 db_path 忽略；config.example 的 data/ 前缀也失效）
     cfg.server.db_path = data_dir
         .join("aitokenpool.db")
@@ -149,4 +208,20 @@ async fn main() -> anyhow::Result<()> {
     log::info!("AITokenPool 服务已启动: http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_log_level_maps_strings() {
+        assert_eq!(parse_log_level("info").unwrap(), log::LevelFilter::Info);
+        assert_eq!(parse_log_level("DEBUG").unwrap(), log::LevelFilter::Debug);
+        assert_eq!(parse_log_level("warn").unwrap(), log::LevelFilter::Warn);
+        assert_eq!(parse_log_level("trace").unwrap(), log::LevelFilter::Trace);
+        assert_eq!(parse_log_level("error").unwrap(), log::LevelFilter::Error);
+        assert_eq!(parse_log_level("off").unwrap(), log::LevelFilter::Off);
+        assert!(parse_log_level("verbose").is_err(), "非法级别应报错");
+    }
 }
