@@ -1,4 +1,4 @@
-# AITokenPool — Docker Compose 一键部署（v0.3.3）
+# AITokenPool — Docker Compose 一键部署（v0.6.6）
 #
 # 快速开始：
 #   docker compose up -d --build
@@ -8,19 +8,23 @@
 #   生成：openssl rand -hex 32
 #   注入：export ATP_MASTER_KEY=$(openssl rand -hex 32) && docker compose up -d
 #   未设置时使用示例默认值（dev 模式，重启后已加密的上游 key 不可解密，仅用于本地试用）。
+#
+# 统一数据目录（rant 2026-08-19T20:53:23）：只挂载一个 /data 卷，
+# config.toml（首次启动自动从内置示例复制）+ aitokenpool.db + logs/ 全在 ./atp-data/ 下。
 services:
   aitokenpool:
     build: .
-    image: aitokenpool:0.3.3
+    image: aitokenpool:0.6.6
     ports:
       - "8080:8080"
     volumes:
-      # SQLite 数据持久化（config.example.toml 中 db_path = "data/aitokenpool.db"，
-      # 容器内 WORKDIR=/，相对路径解析为 /data/aitokenpool.db）
-      - ./data:/data
+      # 统一数据目录：config / db / logs 全在这里（服务端 --data-dir /data）
+      - ./atp-data:/data
     environment:
       # 主密钥（32 字节 hex；env 优先于 config [server].master_key）
       - ATP_MASTER_KEY=${ATP_MASTER_KEY:-dev-master-key-请替换}
+      # 统一数据目录（与 Dockerfile CMD --data-dir /data 一致）
+      - ATP_DATA_DIR=/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
       interval: 10s

@@ -35,9 +35,57 @@ use clap::Parser;
     about = "AI Token 共享池 — 企业 key 池 + 公共共享市场"
 )]
 struct Args {
-    /// 配置文件路径（默认 config/config.toml）
-    #[arg(long, default_value = "config/config.toml")]
-    config: String,
+    /// 统一数据目录（rant 2026-08-19T20:53:23）：config.toml + aitokenpool.db + logs/ 都在其下。
+    /// 优先级：--data-dir > env ATP_DATA_DIR > 默认 ./data
+    #[arg(long, env = "ATP_DATA_DIR", default_value = "./data")]
+    data_dir: String,
+    /// 配置文件路径（可选；缺省 <data-dir>/config.toml）
+    #[arg(long)]
+    config: Option<String>,
+}
+
+/// 解析数据目录（绝对化 + 去除尾部斜杠），并自动创建目录结构
+fn resolve_data_dir(dir: &str) -> anyhow::Result<std::path::PathBuf> {
+    let p = std::path::Path::new(dir);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(p)
+    };
+    std::fs::create_dir_all(&abs)?;
+    std::fs::create_dir_all(abs.join("logs"))?;
+    Ok(abs)
+}
+
+/// 配置路径：--config 显式指定 → 用之（不自动复制）；否则 <data-dir>/config.toml（不存在则首次复制）
+fn config_path(
+    data_dir: &std::path::Path,
+    explicit: Option<&str>,
+) -> anyhow::Result<std::path::PathBuf> {
+    match explicit {
+        Some(p) => Ok(std::path::PathBuf::from(p)),
+        None => ensure_config(data_dir),
+    }
+}
+
+/// 首次启动：<data-dir>/config.toml 不存在 → 从仓库内置示例复制（rant 2026-08-19T20:53:23）
+fn ensure_config(data_dir: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    let target = data_dir.join("config.toml");
+    if target.exists() {
+        return Ok(target);
+    }
+    let example = "config/config.example.toml";
+    if !std::path::Path::new(example).exists() {
+        // 运行目录没有示例（如已安装的二进制）→ 生成最小可用配置
+        log::warn!("示例配置 {example} 不存在，生成最小配置 {target:?}");
+        let min = "[server]\naddr = \"0.0.0.0:8080\"\ndb_path = \"aitokenpool.db\"\n";
+        std::fs::write(&target, min)?;
+        return Ok(target);
+    }
+    std::fs::copy(example, &target)
+        .map_err(|e| anyhow::anyhow!("复制示例配置到 {target:?} 失败: {e}"))?;
+    log::info!("首次启动：已从 {example} 复制配置到 {target:?}");
+    Ok(target)
 }
 
 #[tokio::main]
@@ -45,15 +93,27 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let args = Args::parse();
 
-    let cfg = match config::Config::load(&args.config) {
+    // 统一数据目录（rant 2026-08-19T20:53:23）：config/db/logs 同目录，方便 Docker 单 volume 挂载
+    let data_dir = resolve_data_dir(&args.data_dir)?;
+    let cfg_path = config_path(&data_dir, args.config.as_deref())?;
+
+    let mut cfg = match config::Config::load(cfg_path.to_str().unwrap_or("config.toml")) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("加载配置失败: {e}");
-            eprintln!("提示: 请先复制示例配置:");
-            eprintln!("  cp config/config.example.toml config/config.toml");
+            eprintln!("提示: 请先复制示例配置到数据目录:");
+            eprintln!(
+                "  cp config/config.example.toml {}/config.toml",
+                data_dir.display()
+            );
             std::process::exit(1);
         }
     };
+    // 数据库路径统一由 data-dir 决定（配置里 db_path 忽略；config.example 的 data/ 前缀也失效）
+    cfg.server.db_path = data_dir
+        .join("aitokenpool.db")
+        .to_string_lossy()
+        .into_owned();
 
     let addr = cfg.server.addr.clone();
     let db_path = cfg.server.db_path.clone();

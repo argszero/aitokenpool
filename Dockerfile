@@ -1,14 +1,15 @@
-# AITokenPool — multi-stage release image (v0.3.3)
+# AITokenPool — multi-stage release image (v0.6.6)
 #
-# Build: docker build -t aitokenpool:0.3.3 .
-# Run:   docker run -p 8080:8080 -v "$PWD/data:/data" \
+# Build: docker build -t aitokenpool:0.6.6 .
+# Run:   docker run -p 8080:8080 -v "$PWD/atp-data:/data" \
 #          -e ATP_MASTER_KEY="$(openssl rand -hex 32)" \
-#          aitokenpool:0.3.3
+#          aitokenpool:0.6.6
 #
 # Notes:
-#   - runtime WORKDIR is / so the relative paths in config.example.toml work:
-#       db_path = "data/aitokenpool.db"  -> /data/aitokenpool.db (mounted volume)
-#       ServeDir "ui"                    -> /ui (copied below)
+#   - unified data dir (rant 2026-08-19T20:53:23): ATP_DATA_DIR=/data holds
+#     config.toml + aitokenpool.db + logs/ — mount ONE volume.
+#   - first start copies /config/config.example.toml → /data/config.toml
+#     if missing (main.rs ensure_config).
 #   - master_key comes from env ATP_MASTER_KEY (32-byte hex), crypto reads env first.
 
 # ---------- builder ----------
@@ -34,12 +35,14 @@ RUN apt-get update \
 WORKDIR /
 COPY --from=builder /build/target/release/aitokenpool /usr/local/bin/aitokenpool
 COPY ui /ui
-COPY config/config.example.toml /etc/aitokenpool/config.toml
+# 内置示例配置：首次启动时由 main.rs 复制到 /data/config.toml（若不存在）
+COPY config/config.example.toml /config/config.example.toml
 
-RUN mkdir -p /data /etc/aitokenpool \
-    && chown -R 10001:10001 /data /etc/aitokenpool
+RUN mkdir -p /data /config \
+    && chown -R 10001:10001 /data
 
 USER 10001
+ENV ATP_DATA_DIR=/data
 EXPOSE 8080
 VOLUME ["/data"]
-CMD ["aitokenpool", "--config", "/etc/aitokenpool/config.toml"]
+CMD ["aitokenpool", "--data-dir", "/data"]
