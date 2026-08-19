@@ -301,3 +301,13 @@ ui/
 - **后端错误映射**：`api.js` 抛错前过 `I18n.mapErr()`——en 模式下已知中文错误（「该模型暂无可用 key」「点数余额不足」「需要管理员权限」等 15 组）映射为英文，未知原样返回；zh 模式原样透传；
 - **单语原则（v1.21.1 去混排）**：zh 词典值一律纯中文（仅保留 API/Key/Plan/tokens/CSV 等专有名词、键盘快捷键与占位符），不再内联英文注释；`index.html` 已移除全部 `<span class="en">` 静态小字（55 处）；`.en` CSS 样式已删除；en 词典保持纯英文；
 - 冒烟测试：node 无 DOM 桩跑 i18n.js（t/setLang/mapErr/fmtNum/fmtRelTime 断言，见开发记录）；Key 一致性扫描（app.js+index.html 引用的 496 键全部存在于 ZH/EN）。
+
+## 仪表盘「我的共享」数据源与降级约定（v1.21.2，rant 2026-08-19T15:48:17 BUG）
+
+- **数据源**：登录后 `loadDashboard()` 拉取 `/api/wallet` + `/api/dashboard` + **`/api/sharings`**（此前漏拉 sharings → 仪表盘「我的共享」恒显示 `D.SHARINGS` mock，如 GLM/deepseek 假行）；`Live.sharings` 拉取成功后 `renderDashboard()` 用真实数据渲染「厂商 · Plan / 已用 / 额度 / 累计收益」；
+- **降级原则**：**mock 只用于游客模式**——`Live.x ? view(Live.x) : D.x` 的 fallback 在登录态一律不得暴露 mock：
+  - 登录态 `Live.sharings` 为空数组（`[]`，上架 0 条）→ 空态「还没有上架的 key」；
+  - 登录态拉取失败（`null`）→ `loadErrorHtml(空态文案, 重试函数, err.loadFail)`：空态 + 「重试」按钮（`data-live-retry` 委托，`bindLiveRetry` 在 DOMContentLoaded 一次性绑定 `#dash-sharings` / `#share-body`），不白屏、不显示 mock；
+  - 游客模式（`loggedIn()` 为假）→ 继续用 `D.SHARINGS` mock 浏览（不变）；
+- **覆盖范围**：仪表盘 `renderDashboard()` 与共享管理 `renderSharing()` 两处 `Live.sharings` 消费点均按此约定（共享页为登录态专属视图，原 mock fallback 只在拉取失败时暴露，同属本 bug 类）；
+- **冒烟测试注意**：登录态断言「我的共享」不得含 `glm-5.2` / `deepseek-v4-flash` 行；干净库（上架 0 条）应见空态文案；stub `api.get("/api/sharings")` 抛错时断言出现 `[data-live-retry]` 按钮且点击后重新调用 `loadDashboard()`。
