@@ -346,7 +346,14 @@
   }
 
   // 自动单价：单价是模型×厂商的客观属性，由平台按模型定价自动计算（输出 1M tokens 折算点数）
+  // 零 mock（rant 2026-08-19T15:54:06）：登录态优先用 /api/models 真实价格（同 modelsToView 折算，
+  // 锚定 USD × points_per_unit）；仅游客/表单兜底读 data.js
   function autoPrice(model) {
+    const live = Live.models && Live.models.find((x) => x.model === model);
+    if (live) {
+      const mult = live.currency === "CNY" ? 1000 / 7.2 : 1000;
+      return Math.round(live.output_per_m * mult * 100) / 100;
+    }
     const m = D.MODELS.find((x) => x.model === model);
     if (m && typeof m.out === "number") return m.out;
     // 兜底：取同厂商相近模型的输出价；仍无则用固定默认价
@@ -367,10 +374,11 @@
   function showPriceHint(model) {
     const el = $("#sf-price-view");
     if (!el) return;
-    const m = D.MODELS.find((x) => x.model === model);
     if (!model) { el.textContent = T("share.form.priceAuto"); return; }
-    if (m && typeof m.out === "number") {
-      el.textContent = T("share.price.auto", { n: D.fmt(m.out) });
+    // 零 mock：登录态价格来自 /api/models（autoPrice 内部优先），data.js 仅表单兜底
+    const known = (Live.models && Live.models.some((x) => x.model === model)) || D.MODELS.some((x) => x.model === model);
+    if (known) {
+      el.textContent = T("share.price.auto", { n: D.fmt(autoPrice(model)) });
     } else {
       el.textContent = T("share.price.default", { n: D.fmt(autoPrice(model)) });
     }
@@ -539,25 +547,32 @@
   /* --- 仪表盘 --- */
 
   function renderDashboard() {
-    // P2-B：登录 → 用 /api/wallet（month_use/month_earn）+ /api/dashboard（month/series）；否则 mock 聚合
-    let txs = D.TRANSACTIONS;
-    let monthUse = txs.filter((t) => t.type === "consume").reduce((a, t) => a + Math.abs(t.pts), 0);
-    let monthEarn = txs.filter((t) => t.type === "earn").reduce((a, t) => a + t.pts, 0);
-    if (Live.wallet) {
-      monthUse = Live.wallet.month_use || 0;
-      monthEarn = Live.wallet.month_earn || 0;
+    // 零 mock（rant 2026-08-19T15:54:06）：登录态绝不读取 D.TRANSACTIONS ——
+    // 登录 → /api/wallet（month_use/month_earn）+ /api/dashboard；未就绪显示 0（随后异步刷新）
+    let monthUse = 0, monthEarn = 0, tradeCount = 0;
+    if (loggedIn()) {
+      if (Live.wallet) {
+        monthUse = Live.wallet.month_use || 0;
+        monthEarn = Live.wallet.month_earn || 0;
+      }
+      tradeCount = Live.transactions ? (Live.transactions.total || 0) : 0;
+    } else {
+      const txs = D.TRANSACTIONS || [];
+      monthUse = txs.filter((t) => t.type === "consume").reduce((a, t) => a + Math.abs(t.pts), 0);
+      monthEarn = txs.filter((t) => t.type === "earn").reduce((a, t) => a + t.pts, 0);
+      tradeCount = txs.length;
     }
 
     $("#dash-stats").innerHTML = [
       stat(T("dash.balance"), D.fmt(D.USER.balance), "", "accent"),
       stat(T("dash.usage"), D.fmt(monthUse) + " " + T("common.points"), T("dash.usage.sub")),
       stat(T("dash.earnings"), "+" + D.fmt(monthEarn) + " " + T("common.points"), T("dash.earnings.sub")),
-      stat(T("dash.trades"), T("cnt.trades", { n: (Live.transactions ? (Live.transactions.total || 0) : txs.length) }), T("dash.trades.sub")),
+      stat(T("dash.trades"), T("cnt.trades", { n: tradeCount }), T("dash.trades.sub")),
     ].join("");
 
-    // 降级原则（rant 2026-08-19T15:48:17）：mock 只用于游客模式；
+    // 降级原则（rant 2026-08-19T15:48:17 / 15:54:06）：mock 只用于游客模式；
     // 登录态加载失败 → 空态 + 重试（loadErrorHtml），不静默 fallback 到 D.SHARINGS
-    const shares = Live.sharings ? sharingsToView(Live.sharings) : (loggedIn() ? null : D.SHARINGS);
+    const shares = Live.sharings ? sharingsToView(Live.sharings) : (loggedIn() ? null : (D.SHARINGS || []));
     if (shares) {
       const on = shares.filter((s) => s.status === "on");
       $("#dash-sharings").innerHTML = on.map((s) =>
@@ -566,7 +581,8 @@
         '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>" + T("dash.earned") + "</div></div></div>"
       ).join("") + (on.length ? "" : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("dash.noSharing") + "</p><p class='muted'>" + T("dash.noSharing.sub") + "</p></div>");
       // 共享收益累计趋势 sparkline（rant 18:06:09 A；无上架 key 时保留空状态，不画图）
-      if (on.length) {
+      // 零 mock：仅游客用 D.TRANSACTIONS 演示；登录态后端无按日 earn 序列 → 不画假趋势
+      if (on.length && !loggedIn()) {
         const days = lastDayLabels(7);
         const earn = dailySeries(days, (t) => t.type === "earn");
         let cum = 0;
@@ -575,7 +591,7 @@
           sparkline(cumSeries, { labels: days, fmt: (v) => "+" + D.fmt(v), stroke: "var(--ok)" }));
       }
     } else {
-      $("#dash-sharings").innerHTML = loadErrorHtml(T("dash.noSharing"), () => loadDashboard(), T("err.loadFail"));
+      $("#dash-sharings").innerHTML = loadErrorHtml(T("dash.loadFail"), () => loadDashboard(), T("err.loadFail"));
     }
     renderMonthChanges();
   }
@@ -587,6 +603,10 @@
     try {
       Live.dashboard = await api.get("/api/dashboard");
     } catch (e) { Live.dashboard = null; }
+    // 交易数统计（dash.trades）：拉 1 条取 total（零 mock，rant 2026-08-19T15:54:06）
+    try {
+      Live.transactions = await api.get("/api/transactions?page=1&page_size=1");
+    } catch (e) { Live.transactions = null; }
     // rant 2026-08-19T15:48:17：仪表盘「我的共享」此前从不拉 sharings → 登录态恒显示 D.SHARINGS mock；
     // 现在拉真实数据；失败置 null → renderDashboard 走空态 + 重试（mock 仅游客）
     try {
@@ -622,7 +642,7 @@
   function renderRecent() {
     const wrap = $("#mk-recent-chips");
     const chips = getRecentIds().map((id) => {
-      const m = D.MARKET.find((x) => x.id === id);
+      const m = (Live.models ? modelsToView(Live.models) : D.MARKET).find((x) => x.id === id);
       return m ? '<button type="button" class="chip" data-recent-model="' + id + '" title="' + esc(m.provider) + " · " + T("mk.recent.use") + '">' + esc(m.model) + "</button>" : null;
     }).filter(Boolean);
     wrap.innerHTML = chips.join("");
@@ -631,13 +651,16 @@
 
   // 市场行展开详情（rant 20:39:30 F：max tokens / 1M tokens ≈ N 点换算 / 多 key 故障转移说明）
   function mkDetailHtml(m) {
-    const md = D.MODELS.find((x) => x.model === m.model);
-    const maxTok = md && md.max ? D.fmt(md.max) : T("mk.detail.unpublished");
+    // 零 mock（rant 2026-08-19T15:54:06）：live 行 max/success 后端暂无 → 显示「—」；
+    // 仅游客行可查 data.js MODELS（mock 仅游客）
+    const md = (!m.live) ? D.MODELS.find((x) => x.model === m.model) : null;
+    const maxTok = (md && md.max) ? D.fmt(md.max) : T("mk.detail.unpublished");
+    const succ = m.success == null ? "—" : m.success;
     const items = [
       [T("mk.detail.max"), maxTok],
       [T("mk.detail.price"), T("mk.detail.priceVal", { out: D.fmt(m.out), in: D.fmt(m.in) })],
       [T("mk.detail.ctx"), T("mk.detail.ctxVal", { n: D.ctxFmt(m.ctx) })],
-      [T("mk.detail.avail"), m.avail ? T("mk.detail.availOn", { p: m.success }) : T("mk.detail.availOff", { p: m.success })],
+      [T("mk.detail.avail"), m.avail ? T("mk.detail.availOn", { p: succ }) : T("mk.detail.availOff", { p: succ })],
     ];
     if (m.multi) items.push([T("mk.detail.route"), T("mk.detail.routeVal")]);
     return '<div class="mk-detail-grid">' + items.map(([k, v]) =>
@@ -650,8 +673,27 @@
     const prov = $("#mk-provider").value;
     const sort = $("#mk-sort").value;
 
-    // P2-B：登录 → 用后端 /api/models；游客 / 未加载成功 → mock 列表（游客提示登录）
-    let list = Live.models ? modelsToView(Live.models) : D.MARKET;
+    // 厂商筛选下拉：登录态用 /api/models 真实厂商；游客用 data.js（零 mock，rant 15:54:06）
+    const provEl = $("#mk-provider");
+    if (provEl && provEl.dataset.provSource !== (Live.models ? "live" : "mock")) {
+      const providers = Live.models ? [...new Set(Live.models.map((m) => m.provider))] : D.PROVIDERS;
+      provEl.dataset.provSource = Live.models ? "live" : "mock";
+      const cur = provEl.value;
+      provEl.innerHTML = '<option value="">' + T("mk.provider.all") + "</option>" +
+        providers.map((p) => '<option value="' + p + '">' + p + "</option>").join("");
+      if (cur && providers.includes(cur)) provEl.value = cur;
+    }
+
+    // P2-B：登录 → /api/models 真实列表；游客 → data.js mock（mock 仅游客，rant 15:54:06）；
+    // 登录态加载失败 → 空态 + 重试（loadErrorRow），绝不 fallback D.MARKET
+    let list = Live.models ? modelsToView(Live.models) : (loggedIn() ? null : D.MARKET);
+    if (!list) {
+      $("#mk-count").textContent = T("cnt.on", { n: 0 });
+      $("#mk-body").innerHTML = loadErrorRow(7, T("mk.loadFail"), T("err.loadFail"));
+      pulseTbody($("#mk-body"));
+      renderRecent();
+      return;
+    }
     list = list.filter((m) =>
       (!q || m.model.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q)) &&
       (!prov || m.provider === prov)
@@ -676,7 +718,8 @@
       "<td data-label='可用性'>" + (m.avail ? '<span class="badge ok">' + T("mk.avail") + "</span>" : '<span class="badge warn">' + T("mk.busy") + "</span>") +
       (m.multi ? ' <span class="badge ok" title="' + T("mk.multi") + '">' + T("mk.multi") + "</span>" : "") + "</td>" +
       "<td data-label='操作'><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">" + T("mk.use") + "</button>" +
-      "<div class='muted' style='margin-top:4px;font-size:12px'>" + T("mk.success", { p: m.success }) + "</div></td></tr>" +
+      // 零 mock：成功率后端暂无字段 → 仅当有真实值时展示（multi/success 已从 data.js 移除）
+      (m.success != null ? "<div class='muted' style='margin-top:4px;font-size:12px'>" + T("mk.success", { p: m.success }) + "</div>" : "") + "</td></tr>" +
       (mkExpanded === m.id ? '<tr class="mk-detail"><td colspan="7">' + mkDetailHtml(m) + "</td></tr>" : "")
     ).join("") : emptyRow(7, T("mk.empty"), T("mk.empty.sub"),
       '<button type="button" class="btn btn-ghost" data-mk-clear-filters>' + T("mk.clearFilters") + "</button>"));
@@ -684,12 +727,12 @@
     renderRecent(); // 最近使用 chips（rant 20:46:57 D）
   }
 
-  // P2-B：拉取市场真实模型（登录时）；失败保持 mock 不打断浏览
+  // P2-B：拉取市场真实模型（登录时）；失败 → 空态 + 重试（不 mock，rant 15:54:06）
   async function loadMarketplace() {
     if (!loggedIn()) return;
     try {
       await liveLoad("models", "/api/models");
-    } catch (e) { /* 降级 mock：不打扰用户 */ }
+    } catch (e) { Live.models = null; /* 登录态降级空态 */ }
     renderMarketplace();
   }
 
@@ -729,12 +772,12 @@
   };
 
   function renderSharing() {
-    // P2-B：登录 → 用后端 /api/sharings；否则 mock（游客实际被导航拦截，仅作兜底）
-    const list = Live.sharings ? sharingsToView(Live.sharings) : (loggedIn() ? null : D.SHARINGS);
+    // 零 mock（rant 2026-08-19T15:54:06）：登录态绝不 fallback D.SHARINGS；
+    // 加载失败 → 空态 + 重试（loadErrorRow，tbody 内合法）
+    const list = Live.sharings ? sharingsToView(Live.sharings) : null;
     if (!list) {
-      // 降级原则（rant 2026-08-19T15:48:17）：登录态加载失败 → 空态 + 重试，不暴露 mock
       $("#share-stats").innerHTML = "";
-      $("#share-body").innerHTML = loadErrorHtml(T("share.empty"), () => loadSharing(), T("err.loadFail"));
+      $("#share-body").innerHTML = loadErrorRow(8, T("share.loadFail"), T("err.loadFail"));
       return;
     }
     const on = list.filter((s) => s.status === "on");
@@ -760,7 +803,9 @@
       const fillModels = () => {
         const plan = plans.find((pl) => pl.id === selPlan.value);
         const p = plan ? plan.provider : selP.value;
-        selM.innerHTML = '<option value="">' + T("share.select.model") + "</option>" + D.MODELS.filter((m) => !p || m.provider === p)
+        // 零 mock（rant 15:54:06）：模型下拉登录态用 /api/models（Live.models），游客/兜底 data.js
+        const modelSrc = Live.models ? Live.models : D.MODELS;
+        selM.innerHTML = '<option value="">' + T("share.select.model") + "</option>" + modelSrc.filter((m) => !p || m.provider === p)
           .map((m) => '<option value="' + m.model + '">' + m.model + "</option>").join("");
         showPriceHint(selM.value);
       };
@@ -800,54 +845,43 @@
     if (!loggedIn()) return;
     try {
       await liveLoad("sharings", "/api/sharings");
-    } catch (e) { /* 降级 mock */ }
+    } catch (e) { Live.sharings = null; /* 登录态降级空态 */ }
     try {
       // Bug 1 修复：上架表单 Plan 数据源改真实后端（config [[plans]] 单一真源）
       await liveLoad("plans", "/api/plans");
-    } catch (e) { Live.plans = null; /* 降级 data.js 对齐清单 */ }
+    } catch (e) { Live.plans = null; /* 表单兜底 data.js 对齐清单 */ }
+    try {
+      // 零 mock（rant 15:54:06）：上架表单模型下拉 + 定价用真实模型表
+      await liveLoad("models", "/api/models");
+    } catch (e) { Live.models = null; /* 表单兜底 data.js */ }
     renderSharing();
   }
 
   async function deleteSharing(i) {
-    const s = (Live.sharings ? sharingsToView(Live.sharings) : D.SHARINGS)[i];
-    if (!s) return;
-    if (Live.sharings && s.id) {
-      try {
-        await api.patch("/api/sharings/" + s.id, { status: "off" }); // 软删
-        await loadSharing();
-        toast(T("share.del.ok", { model: s.model }), "success");
-        return;
-      } catch (err) {
-        toast((err && err.message) ? I18n.mapErr(err.message) : T("share.del.fail"), "error");
-        return;
-      }
+    if (!Live.sharings) return;
+    const s = sharingsToView(Live.sharings)[i];
+    if (!s || !s.id) return;
+    try {
+      await api.patch("/api/sharings/" + s.id, { status: "off" }); // 软删
+      await loadSharing();
+      toast(T("share.del.ok", { model: s.model }), "success");
+    } catch (err) {
+      toast((err && err.message) ? I18n.mapErr(err.message) : T("share.del.fail"), "error");
     }
-    D.SHARINGS.splice(i, 1);
-    renderSharing();
-    if (activeView === "dashboard") renderDashboard();
-    toast(T("share.del.ok", { model: s.model }), "success");
   }
 
   async function toggleSharing(i) {
-    const s = (Live.sharings ? sharingsToView(Live.sharings) : D.SHARINGS)[i];
-    if (!s) return;
-    if (Live.sharings && s.id) {
-      const next = s.status === "on" ? "paused" : "on";
-      try {
-        await api.patch("/api/sharings/" + s.id, { status: next });
-        await loadSharing();
-        toast(next === "paused" ? T("share.toggle.paused", { model: s.model }) : T("share.toggle.resumed", { model: s.model }), "success");
-        return;
-      } catch (err) {
-        toast((err && err.message) ? I18n.mapErr(err.message) : T("share.op.fail"), "error");
-        return;
-      }
+    if (!Live.sharings) return;
+    const s = sharingsToView(Live.sharings)[i];
+    if (!s || !s.id) return;
+    const next = s.status === "on" ? "paused" : "on";
+    try {
+      await api.patch("/api/sharings/" + s.id, { status: next });
+      await loadSharing();
+      toast(next === "paused" ? T("share.toggle.paused", { model: s.model }) : T("share.toggle.resumed", { model: s.model }), "success");
+    } catch (err) {
+      toast((err && err.message) ? I18n.mapErr(err.message) : T("share.op.fail"), "error");
     }
-    if (s.status === "on") { s.status = "paused"; toast(T("share.toggle.paused", { model: s.model }), "success"); }
-    else if (s.status === "paused") { s.status = "on"; toast(T("share.toggle.resumed", { model: s.model }), "success"); }
-    else { s.status = "on"; s.quota = 50000; s.used = 0; toast(T("share.toggle.relisted", { model: s.model }), "success"); }
-    renderSharing();
-    if (activeView === "dashboard") renderDashboard();
   }
 
   /* --- 本月点数变化（rant 10:45:27：近 1 月按类型汇总收支，取代静态"点数来源"分组） --- */
@@ -917,9 +951,10 @@
   }
 
   // 按天聚合交易点数（filter 可选：只统计某类型），返回与 days 等长的序列
+  // 仅游客演示用（rant 15:54:06：登录态不读取 D.TRANSACTIONS）
   function dailySeries(days, filter) {
     const map = {};
-    D.TRANSACTIONS.forEach((t) => {
+    (D.TRANSACTIONS || []).forEach((t) => {
       if (filter && !filter(t)) return;
       const day = String(t.time || "").slice(0, 5);
       map[day] = (map[day] || 0) + t.pts;
@@ -943,16 +978,24 @@
       const series = Live.dashboard.series || [];
       sparkData = series.map((s) => s.pts || 0);
       sparkLabels = series.map((s) => String(s.date || "").slice(5));
-    } else {
+    } else if (!loggedIn()) {
+      // 游客演示：data.js 内嵌交易聚合（mock 仅游客，rant 15:54:06）
+      const txs = D.TRANSACTIONS || [];
       const sums = {};
-      D.TRANSACTIONS.forEach((t) => { sums[t.type] = (sums[t.type] || 0) + t.pts; });
-      net = D.TRANSACTIONS.reduce((a, t) => a + t.pts, 0);
+      txs.forEach((t) => { sums[t.type] = (sums[t.type] || 0) + t.pts; });
+      net = txs.reduce((a, t) => a + t.pts, 0);
       rowsHtml = MONTH_TYPE_LABELS
         .filter(([k]) => sums[k])
         .map(([k, label]) => monthChangeItem(label(), sums[k], false)).join("");
       const days = lastDayLabels(7);
       sparkData = dailySeries(days);
       sparkLabels = days;
+    } else {
+      // 登录态但 /api/dashboard 未就绪：净 0 + 空行（绝不读取 mock）
+      net = 0;
+      rowsHtml = "";
+      sparkData = [];
+      sparkLabels = [];
     }
     const html = monthChangeItem(T("dash.net"), net, true) +
       (rowsHtml ? rowsHtml : '<p class="muted">' + T("dash.noChange") + "</p>");
@@ -1004,11 +1047,8 @@
       }
     }
     clearFieldError($("#topup-custom"));
+    // 充值为模拟支付（演示；真实支付后续接入）——仅更新会话余额，不写 D.TRANSACTIONS（rant 15:54:06 已删）
     D.USER.balance = Math.round((D.USER.balance + amt) * 100) / 100;
-    D.TRANSACTIONS.unshift({
-      id: Date.now(), time: nowTime(), type: "topup", partner: "—",
-      detail: "充值 · 模拟支付（演示，真实支付后续接入）", tokens: "—", pts: +amt, status: "成功",
-    });
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     renderWallet();
     bump($("#side-balance")); // 余额跳动（rant 18:06:09 E）
@@ -1044,27 +1084,14 @@
     else clearFieldError($("#raise-reason"));
     if (firstErr) { firstErr.focus(); return; }
     // 加额申请默认需管理员审批（原「需审批」开关随组织设置表单移除，见 rant 10:59:23）
-    // P2-C：登录 → POST /api/raise-requests 真实提交；游客 → 本地 mock
-    if (loggedIn()) {
-      api.post("/api/raise-requests", { amount: amt, reason }).then(() => {
-        closeRaise();
-        toast(T("wallet.raise.ok", { amt: D.fmt(amt) }), "success");
-      }).catch((err) => {
-        const msg = (err && err.message) ? I18n.mapErr(err.message) : T("wallet.raise.fail");
-        if (err && err.status === 409) {
-          closeRaise();
-          toast(msg, "error");
-        } else {
-          toast(msg, "error");
-        }
-      });
-      return;
-    }
-    D.RAISE_REQUESTS.unshift({
-      id: Date.now(), user: D.USER.name, email: D.USER.email, amount: amt, reason, status: "pending", time: nowTime(),
+    // P2-C：真实提交 POST /api/raise-requests（钱包页仅登录可达，零 mock rant 15:54:06）
+    api.post("/api/raise-requests", { amount: amt, reason }).then(() => {
+      closeRaise();
+      toast(T("wallet.raise.ok", { amt: D.fmt(amt) }), "success");
+    }).catch((err) => {
+      const msg = (err && err.message) ? I18n.mapErr(err.message) : T("wallet.raise.fail");
+      toast(msg, "error");
     });
-    closeRaise();
-    toast(T("wallet.raise.ok", { amt: D.fmt(amt) }), "success");
   }
 
   /* --- 管理员：加额申请审批（US-20） --- */
@@ -1075,14 +1102,16 @@
     rejected: { text: () => T("admin.raise.status.rejected"), cls: "dim" },
   };
 
-  function renderRaiseRequests(demo) {
+  function renderRaiseRequests() {
     const el = $("#raise-requests");
     if (!el) return;
-    const demoTag = demo ? '<p class="muted" style="font-size:12px;margin-bottom:6px">' + T("admin.raise.demo") + "</p>" : "";
-    // P2-C：登录 → /api/raise-requests 真实列表（admin 视角全部）
-    const list = Live.raiseRequests ? Live.raiseRequests : D.RAISE_REQUESTS;
-    const live = !!Live.raiseRequests;
-    el.innerHTML = demoTag + (list.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
+    // 零 mock（rant 15:54:06）：登录态绝不 fallback D.RAISE_REQUESTS；失败 → 空态 + 重试
+    const list = Live.raiseRequests;
+    if (!list) {
+      el.innerHTML = loadErrorHtml(T("admin.raise.loadFail"), null, T("err.loadFail"));
+      return;
+    }
+    el.innerHTML = (list.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
       list.map((r, i) =>
         "<tr><td data-label='成员'><strong>" + esc(r.name || r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
         '<td class="num" data-label="申请点数">+' + D.fmt(r.amount) + " " + T("common.points") + "</td>" +
@@ -1091,51 +1120,29 @@
         "<td data-label='操作'>" + (r.status === "pending"
           ? "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-raise-approve='" + i + "'>" + T("admin.raise.approve") + "</button> " +
             "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>" + T("admin.raise.reject") + "</button>"
-          : '<span class="muted" style="font-size:12px">' + (live ? esc((r.created_at || "").slice(5, 16)) : timeCell(r.time)) + "</span>") + "</td></tr>"
+          : '<span class="muted" style="font-size:12px">' + esc((r.created_at || "").slice(5, 16)) + "</span>") + "</td></tr>"
       ).join("") + "</tbody></table></div>"
       : emptyState(T("admin.raise.empty"), T("admin.raise.empty.sub")));
   }
 
   function approveRaise(i) {
-    const list = Live.raiseRequests ? Live.raiseRequests : D.RAISE_REQUESTS;
+    const list = Live.raiseRequests || [];
     const r = list[i];
     if (!r || r.status !== "pending") return;
-    if (Live.raiseRequests) {
-      api.post("/api/admin/raise-requests/" + r.id + "/approve", {}).then(async () => {
-        await loadAdmin();
-        toast(T("admin.raise.approve.ok", { name: r.name || r.email, amt: D.fmt(r.amount) }), "success");
-      }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.raise.approve.fail"), "error"));
-      return;
-    }
-    r.status = "approved";
-    // 批准 → 成员余额 + 申请点数（演示：若为当前登录用户则同步 D.USER.balance）
-    if (r.email === D.USER.email) {
-      D.USER.balance = Math.round((D.USER.balance + r.amount) * 100) / 100;
-      D.TRANSACTIONS.unshift({
-        id: Date.now(), time: nowTime(), type: "topup", partner: "管理员",
-        detail: "加额 · 管理员批准申请（" + r.reason + "）", tokens: "—", pts: +r.amount, status: "成功",
-      });
-      $("#side-balance").textContent = D.fmt(D.USER.balance);
-      bump($("#side-balance")); // 批准加额 → 余额跳动（rant 18:06:09 E）
-    }
-    renderRaiseRequests();
-    toast(T("admin.raise.approve.ok", { name: r.user, amt: D.fmt(r.amount) }), "success");
+    api.post("/api/admin/raise-requests/" + r.id + "/approve", {}).then(async () => {
+      await loadAdmin();
+      toast(T("admin.raise.approve.ok", { name: r.name || r.email, amt: D.fmt(r.amount) }), "success");
+    }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.raise.approve.fail"), "error"));
   }
 
   function rejectRaise(i) {
-    const list = Live.raiseRequests ? Live.raiseRequests : D.RAISE_REQUESTS;
+    const list = Live.raiseRequests || [];
     const r = list[i];
     if (!r || r.status !== "pending") return;
-    if (Live.raiseRequests) {
-      api.post("/api/admin/raise-requests/" + r.id + "/reject", {}).then(async () => {
-        await loadAdmin();
-        toast(T("admin.raise.reject.ok", { name: r.name || r.email }), "success");
-      }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.raise.reject.fail"), "error"));
-      return;
-    }
-    r.status = "rejected";
-    renderRaiseRequests();
-    toast(T("admin.raise.reject.ok", { name: r.user }), "success");
+    api.post("/api/admin/raise-requests/" + r.id + "/reject", {}).then(async () => {
+      await loadAdmin();
+      toast(T("admin.raise.reject.ok", { name: r.name || r.email }), "success");
+    }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.raise.reject.fail"), "error"));
   }
 
   /* --- 交易记录 --- */
@@ -1178,12 +1185,14 @@
 
   function renderTransactions() {
     $$("#tx-tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.txTab === txTab));
-    // P2-B：登录 → 后端分页数据（tab 切 type 参数）；否则 mock
-    let list = Live.transactions ? txsToView(Live.transactions.items || []) : D.TRANSACTIONS;
-    if (!Live.transactions) {
-      if (txTab === "consume") list = list.filter((t) => t.type === "consume");
-      else if (txTab === "earn") list = list.filter((t) => t.type === "earn");
+    // 零 mock（rant 2026-08-19T15:54:06）：登录态绝不 fallback D.TRANSACTIONS；
+    // 加载失败 → 空态 + 重试；游客不可达（导航拦截）
+    if (loggedIn() && !Live.transactions) {
+      renderTxSummary([]);
+      $("#tx-table").innerHTML = loadErrorHtml(T("tx.loadFail"), null, T("err.loadFail"));
+      return;
     }
+    let list = Live.transactions ? txsToView(Live.transactions.items || []) : [];
     // 交易汇总条：与 tab + 列筛选联动，与表格可见行一致（rant 20:39:30 B）
     renderTxSummary(filterRows(list, TX_COLUMNS, txTable.filters));
     buildDataTable({
@@ -1201,18 +1210,15 @@
     const type = txTab === "all" ? "" : txTab;
     try {
       await liveLoad("transactions", "/api/transactions?type=" + type + "&page=1&page_size=100");
-    } catch (e) { Live.transactions = null; /* 降级 mock */ }
+    } catch (e) { Live.transactions = null; /* 登录态降级空态 */ }
     renderTransactions();
   }
 
   // 交易记录导出 CSV（rant 20:46:57 E：Blob + a[download]，UTF-8 BOM，文件名 aitokenpool-transactions-YYYYMMDD.csv；导出当前筛选可见行）
   function exportTxCsv() {
-    // P2-B：登录用后端数据
-    let list = Live.transactions ? txsToView(Live.transactions.items || []) : D.TRANSACTIONS;
-    if (!Live.transactions) {
-      if (txTab === "consume") list = list.filter((t) => t.type === "consume");
-      else if (txTab === "earn") list = list.filter((t) => t.type === "earn");
-    }
+    // 零 mock（rant 15:54:06）：登录态用后端数据，失败直接提示
+    if (loggedIn() && !Live.transactions) { toast(T("tx.export.none"), "info"); return; }
+    let list = Live.transactions ? txsToView(Live.transactions.items || []) : [];
     list = filterRows(list, TX_COLUMNS, txTable.filters); // 与表格可见行一致（含列筛选）
     if (!list.length) { toast(T("tx.export.none"), "info"); return; }
     const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -1433,16 +1439,16 @@
 
   /* --- 设置 --- */
 
-  // API Key 脱敏展示：atk_live_****xxxx（复制时给完整 id）
-  function maskAtk(id) {
-    if (!id) return "—";
-    if (id.startsWith("atk_live_")) return "atk_live_****" + id.slice(-4);
-    return maskKey(id);
-  }
-
   function renderSettings() {
     const rawQ = $("#ak-search").value || "";
     const q = rawQ.toLowerCase();
+    // 零 mock（rant 2026-08-19T15:54:06）：登录态绝不 fallback D.API_KEYS；
+    // 加载失败 → 空态 + 重试；设置页仅登录可达
+    if (loggedIn() && !Live.apiKeys) {
+      $("#api-keys").innerHTML = loadErrorRow(6, T("settings.ak.loadFail"), T("err.loadFail"));
+      pulseTbody($("#api-keys"));
+      return;
+    }
     // P2-B：登录 → 后端 /api/api-keys（key 已脱敏；完整 key 仅生成时可得）
     let list;
     if (Live.apiKeys) {
@@ -1456,12 +1462,12 @@
         status: k.status || "active",
       }));
     } else {
-      list = D.API_KEYS.map((k) => ({ ...k, fullKey: k.id, last: T("settings.ak.last.never") }));
+      list = [];
     }
     list = list.filter((k) => !q || k.name.toLowerCase().includes(q));
     $("#api-keys").innerHTML = list.length ? list.map((k, i) =>
       "<tr><td data-label='名字'><strong>" + hl(k.name, rawQ) + "</strong></td>" +
-      "<td data-label='Key'><code>" + esc(Live.apiKeys ? k.key : maskAtk(k.id)) + "</code></td>" +
+      "<td data-label='Key'><code>" + esc(Live.apiKeys ? k.key : "") + "</code></td>" +
       "<td data-label='创建时间'>" + esc(k.created) + "</td>" +
       "<td data-label='最近使用'>" + timeCell(k.last) + "</td>" +
       "<td data-label='状态'>" + (k.status === "active" ? '<span class="badge ok">' + T("settings.ak.status.active") + "</span>" : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
@@ -1485,10 +1491,11 @@
   // 一键复制完整 key；file:// 下 clipboard API 受限 → 降级：临时 textarea 选中 + execCommand("copy")，仍失败则提示 Ctrl+C
   // 复制反馈（rant 15:50:05 B.10：复制后按钮短暂变「已复制」态）
   function copyKey(i) {
-    const src = Live.apiKeys ? Live.apiKeys.map((k) => ({ ...k, fullKey: Live.fullKeys ? Live.fullKeys[k.id] : null })) : D.API_KEYS.map((k) => ({ ...k, fullKey: k.id }));
+    if (!Live.apiKeys) return;
+    const src = Live.apiKeys.map((k) => ({ ...k, fullKey: Live.fullKeys ? Live.fullKeys[k.id] : null }));
     const k = src[i];
     if (!k) return;
-    const full = k.fullKey || (Live.apiKeys ? null : k.id);
+    const full = k.fullKey;
     if (!full) {
       toast(T("settings.ak.copy.once"), "info");
       return;
@@ -1575,35 +1582,27 @@
   function commitNewKey() {
     const raw = String($("#ak-new-name").value).trim();
     const name = raw || T("common.unnamed");
-    if (loggedIn()) {
-      // P2-B：真实生成（POST /api/api-keys）
-      const btn = $("#ak-new-ok");
-      withLoading(btn, () => {
-        api.post("/api/api-keys", { name }).then(async (r) => {
-          // 完整 key 只在生成时返回一次：重新拉列表拿真实 id 关联
-          Live.fullKeys = Live.fullKeys || {};
-          await liveLoad("apiKeys", "/api/api-keys");
-          const fresh = Live.apiKeys && Live.apiKeys[0]; // id DESC 最新一条
-          if (fresh) Live.fullKeys[fresh.id] = r.api_key;
-          renderSettings();
-          closeNewKeyInline();
-          toast(T("settings.ak.gen.ok", { name: name }), "success");
-        }).catch((err) => {
-          toast((err && err.message) ? I18n.mapErr(err.message) : T("settings.ak.gen.fail"), "error");
-        });
+    // P2-B：真实生成（POST /api/api-keys；设置页仅登录可达，零 mock rant 15:54:06）
+    const btn = $("#ak-new-ok");
+    withLoading(btn, () => {
+      api.post("/api/api-keys", { name }).then(async (r) => {
+        // 完整 key 只在生成时返回一次：重新拉列表拿真实 id 关联
+        Live.fullKeys = Live.fullKeys || {};
+        await liveLoad("apiKeys", "/api/api-keys");
+        const fresh = Live.apiKeys && Live.apiKeys[0]; // id DESC 最新一条
+        if (fresh) Live.fullKeys[fresh.id] = r.api_key;
+        renderSettings();
+        closeNewKeyInline();
+        toast(T("settings.ak.gen.ok", { name: name }), "success");
+      }).catch((err) => {
+        toast((err && err.message) ? I18n.mapErr(err.message) : T("settings.ak.gen.fail"), "error");
       });
-      return;
-    }
-    const id = "atk_live_" + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
-    D.API_KEYS.unshift({ id, name, created: "2026-08-14", last: T("settings.ak.last.never"), status: "active" });
-    renderSettings();
-    closeNewKeyInline();
-    toast(T("settings.ak.gen.ok.mock", { name: name }), "success");
+    });
   }
 
   // API Key 改名：行内编辑（替代原生输入弹窗）
   function renameKey(i) {
-    const k = D.API_KEYS[i];
+    const k = Live.apiKeys ? Live.apiKeys[i] : null;
     if (!k) return;
     const row = document.querySelector('#api-keys tr:nth-child(' + (i + 1) + ')');
     const cell = row ? row.children[0] : null;
@@ -1619,22 +1618,16 @@
   }
 
   function deleteKey(i) {
-    const src = Live.apiKeys ? Live.apiKeys : D.API_KEYS;
-    const k = src[i];
+    if (!Live.apiKeys) return;
+    const k = Live.apiKeys[i];
     if (!k) return;
-    if (Live.apiKeys && k.id) {
-      // P2-B：真实软删（DELETE /api/api-keys/:id）
-      api.del("/api/api-keys/" + k.id).then(async () => {
-        await loadApiKeys();
-        toast(T("settings.ak.deleted", { name: k.name || T("common.unnamed") }), "success");
-      }).catch((err) => {
-        toast((err && err.message) ? I18n.mapErr(err.message) : T("settings.ak.del.fail"), "error");
-      });
-      return;
-    }
-    D.API_KEYS.splice(i, 1);
-    renderSettings();
-    toast(T("settings.ak.deleted", { name: k.name }), "success");
+    // P2-B：真实软删（DELETE /api/api-keys/:id）
+    api.del("/api/api-keys/" + k.id).then(async () => {
+      await loadApiKeys();
+      toast(T("settings.ak.deleted", { name: k.name || T("common.unnamed") }), "success");
+    }).catch((err) => {
+      toast((err && err.message) ? I18n.mapErr(err.message) : T("settings.ak.del.fail"), "error");
+    });
   }
 
   /* --- 管理员角色视图 --- */
@@ -1644,90 +1637,67 @@
     $$(".admin-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.adminPane !== tab));
 
     if (tab === "employees") {
-      // P2-B/P2-C：登录 → /api/admin/users（真实成员）+ /api/raise-requests（真实加额申请）；否则 mock
-      if (Live.adminUsers) {
-        const users = Live.adminUsers;
-        const depts = Live.departments || [];
-        const total = users.reduce((a, u) => a + (u.balance || 0), 0);
-        $("#emp-stats").innerHTML = [
-          stat(T("admin.emp.stats.members"), T("cnt.members", { n: users.length }), T("admin.emp.stats.members.sub.real")),
-          stat(T("admin.emp.stats.total"), D.fmt(total) + " " + T("common.points"), T("admin.emp.stats.total.sub")),
-          stat(T("admin.emp.stats.admins"), T("cnt.members", { n: users.filter((u) => u.role === "admin").length }), T("admin.emp.stats.admins.sub")),
-          stat(T("admin.emp.stats.deps"), T("cnt.depts", { n: depts.length }), T("admin.emp.stats.deps.sub")),
-        ].join("");
-        $("#emp-body").innerHTML = users.map((u, i) =>
-          "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + esc(u.name || u.email) + "</strong>" +
-          "<div class='muted' style='font-size:12px'>" + esc(u.email) + (u.role === "admin" ? T("admin.emp.role.admin") : u.role === "ops" ? T("admin.emp.role.ops") : "") + "</div></td>" +
-          "<td data-label='角色'>" + (u.role === "admin" ? '<span class="badge ok">admin</span>' : u.role === "ops" ? '<span class="badge warn">ops</span>' : '<span class="badge dim">user</span>') + "</td>" +
-          "<td data-label='部门'>" + (u.dept_name ? esc(u.dept_name) : '<span class="muted">' + T("common.unassigned") + "</span>") + "</td>" +
-          '<td class="num" data-label="永久点数">' + D.fmt(u.balance || 0) + "</td>" +
-          '<td class="num" data-label="赠送点数">' + D.fmt(u.gift_balance || 0) + "</td>" +
-          '<td class="num" data-label="可用">' + D.fmt((u.balance || 0) + (u.gift_balance || 0)) + "</td>" +
-          "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>" + T("admin.emp.dept.change") + "</button> " +
-          "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>" + T("admin.emp.topup") + "</button></td></tr>"
-        ).join("");
+      // 零 mock（rant 2026-08-19T15:54:06）：管理视图仅登录可达，绝不 fallback D.EMPLOYEES；
+      // 加载失败 → 空态 + 重试
+      if (!Live.adminUsers) {
+        $("#emp-stats").innerHTML = "";
+        $("#emp-body").innerHTML = loadErrorRow(7, T("admin.emp.loadFail"), T("err.loadFail"));
         pulseTbody($("#emp-body"));
-        renderRaiseRequests(false);
         return;
       }
-      const total = D.EMPLOYEES.reduce((a, e) => a + e.quota, 0);
-      const used = D.EMPLOYEES.reduce((a, e) => a + e.used, 0);
-      const unassigned = D.EMPLOYEES.filter((e) => !e.dept).length;
+      // P2-B/P2-C：/api/admin/users（真实成员）+ /api/raise-requests（真实加额申请）
+      const users = Live.adminUsers;
+      const depts = Live.departments || [];
+      const total = users.reduce((a, u) => a + (u.balance || 0), 0);
       $("#emp-stats").innerHTML = [
-        stat(T("admin.emp.stats.members"), T("cnt.members", { n: D.EMPLOYEES.length }), T("admin.emp.stats.members.sub.mock", { d: D.DEPARTMENTS.length, n: unassigned })),
-        stat(T("admin.emp.stats.quota"), D.fmt(total) + " " + T("common.points"), T("admin.emp.stats.quota.sub")),
-        stat(T("admin.emp.stats.used"), D.fmt(used) + " " + T("common.points"), T("admin.emp.stats.used.sub", { p: Math.round((used / total) * 100) })),
-        stat(T("admin.emp.stats.remain"), D.fmt(total - used) + " " + T("common.points"), T("admin.emp.stats.remain.sub")),
+        stat(T("admin.emp.stats.members"), T("cnt.members", { n: users.length }), T("admin.emp.stats.members.sub.real")),
+        stat(T("admin.emp.stats.total"), D.fmt(total) + " " + T("common.points"), T("admin.emp.stats.total.sub")),
+        stat(T("admin.emp.stats.admins"), T("cnt.members", { n: users.filter((u) => u.role === "admin").length }), T("admin.emp.stats.admins.sub")),
+        stat(T("admin.emp.stats.deps"), T("cnt.depts", { n: depts.length }), T("admin.emp.stats.deps.sub")),
       ].join("");
-      $("#emp-body").innerHTML = D.EMPLOYEES.map((e, i) =>
-        "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + esc(e.name) + "</strong></td>" +
-        "<td data-label='部门'>" + (e.dept ? esc(e.dept) : '<span class="muted">' + T("common.unassigned") + "</span>") + "</td>" +
-        '<td class="num" data-label="配额 / 已用">' + D.fmt(e.used) + " / " + D.fmt(e.quota) + "</td>" +
-        '<td class="num" data-label="剩余">' + D.fmt(e.quota - e.used) + "</td>" +
-        "<td data-label='状态'>" + (e.used / e.quota > 0.9 ? '<span class="badge warn">' + T("admin.emp.status.near") + "</span>" : '<span class="badge ok">' + T("admin.emp.status.normal") + "</span>") + "</td>" +
+      $("#emp-body").innerHTML = users.map((u, i) =>
+        "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + esc(u.name || u.email) + "</strong>" +
+        "<div class='muted' style='font-size:12px'>" + esc(u.email) + (u.role === "admin" ? T("admin.emp.role.admin") : u.role === "ops" ? T("admin.emp.role.ops") : "") + "</div></td>" +
+        "<td data-label='角色'>" + (u.role === "admin" ? '<span class="badge ok">admin</span>' : u.role === "ops" ? '<span class="badge warn">ops</span>' : '<span class="badge dim">user</span>') + "</td>" +
+        "<td data-label='部门'>" + (u.dept_name ? esc(u.dept_name) : '<span class="muted">' + T("common.unassigned") + "</span>") + "</td>" +
+        '<td class="num" data-label="永久点数">' + D.fmt(u.balance || 0) + "</td>" +
+        '<td class="num" data-label="赠送点数">' + D.fmt(u.gift_balance || 0) + "</td>" +
+        '<td class="num" data-label="可用">' + D.fmt((u.balance || 0) + (u.gift_balance || 0)) + "</td>" +
         "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>" + T("admin.emp.dept.change") + "</button> " +
         "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>" + T("admin.emp.topup") + "</button></td></tr>"
       ).join("");
       pulseTbody($("#emp-body"));
-      renderRaiseRequests(false);
+      renderRaiseRequests();
     } else if (tab === "usage") {
-      // P2-C：登录 → /api/admin/usage（{users, models, departments} 三组聚合）
-      if (Live.adminUsage) {
-        const u = Live.adminUsage;
-        const users = u.users || [], models = u.models || [], depts = u.departments || [];
-        // 按模型（barRow 用 cost 归一）
-        const maxMC = Math.max(1, ...models.map((m) => m.cost || 0));
-        $("#usage-model").innerHTML = models.length
-          ? models.map((m) => barRow(m.model, m.cost, maxMC, T("admin.usage.unit.yuan"))).join("")
-          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.model") + "</p></div>";
-        // 按成员（barRow 用 tokens 归一）
-        const maxUT = Math.max(1, ...users.map((x) => x.month_tokens || 0));
-        $("#usage-emp").innerHTML = users.length
-          ? users.map((x) =>
-              '<div class="mini-item"><div><div class="t">' + esc(x.name || x.email) + (x.dept_name ? '<span class="muted" style="font-size:11px"> · ' + esc(x.dept_name) + "</span>" : "") + "</div>" +
-              '<div class="d">' + T("admin.usage.emp.row", { tokens: D.fmt(x.month_tokens || 0), cost: D.fmt(x.month_cost || 0) }) + "</div></div>" +
-              '<div class="r"><span class="pts">' + T("cnt.calls", { n: x.month_calls || 0 }) + "</span><div class='d'>" + T("admin.usage.emp.calls") + "</div></div></div>"
-            ).join("") + barRow(T("admin.usage.total"), users.reduce((a, x) => a + (x.month_tokens || 0), 0), maxUT, T("admin.usage.unit.tokens"))
-          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.emp") + "</p></div>";
-        // 按部门（barRow 用 cost 归一）
-        const maxDC = Math.max(1, ...depts.map((d) => d.cost || 0));
-        $("#usage-dept").innerHTML = depts.length
-          ? depts.map((d) => barRow(d.name, d.cost, maxDC, T("admin.usage.unit.yuan"))).join("")
-          : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.dept") + "</p></div>";
+      // 零 mock（rant 15:54:06）：用量报表仅登录可达，绝不 fallback D.USAGE_MODEL/D.USAGE_EMP
+      if (!Live.adminUsage) {
+        $("#usage-model").innerHTML = loadErrorHtml(T("admin.usage.loadFail"), null, T("err.loadFail"));
+        $("#usage-emp").innerHTML = "";
+        $("#usage-dept").innerHTML = "";
         return;
       }
-      const maxM = Math.max(...D.USAGE_MODEL.map((u) => u.pts));
-      const maxE = Math.max(...D.USAGE_EMP.map((u) => u.pts));
-      const deptMock = [
-        { name: "研发", pts: 32250 },
-        { name: "产品", pts: 3200 },
-        { name: "市场", pts: 9800 },
-        { name: "设计", pts: 2100 },
-      ];
-      const maxD = Math.max(...deptMock.map((u) => u.pts));
-      $("#usage-model").innerHTML = D.USAGE_MODEL.map((u) => barRow(u.name, u.pts, maxM, T("admin.usage.unit.points"))).join("");
-      $("#usage-emp").innerHTML = D.USAGE_EMP.map((u) => barRow(u.name, u.pts, maxE, T("admin.usage.unit.points"))).join("");
-      $("#usage-dept").innerHTML = deptMock.map((u) => barRow(u.name, u.pts, maxD, T("admin.usage.unit.points"))).join("");
+      // P2-C：/api/admin/usage（{users, models, departments} 三组聚合）
+      const u = Live.adminUsage;
+      const users = u.users || [], models = u.models || [], depts = u.departments || [];
+      // 按模型（barRow 用 cost 归一）
+      const maxMC = Math.max(1, ...models.map((m) => m.cost || 0));
+      $("#usage-model").innerHTML = models.length
+        ? models.map((m) => barRow(m.model, m.cost, maxMC, T("admin.usage.unit.yuan"))).join("")
+        : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.model") + "</p></div>";
+      // 按成员（barRow 用 tokens 归一）
+      const maxUT = Math.max(1, ...users.map((x) => x.month_tokens || 0));
+      $("#usage-emp").innerHTML = users.length
+        ? users.map((x) =>
+            '<div class="mini-item"><div><div class="t">' + esc(x.name || x.email) + (x.dept_name ? '<span class="muted" style="font-size:11px"> · ' + esc(x.dept_name) + "</span>" : "") + "</div>" +
+            '<div class="d">' + T("admin.usage.emp.row", { tokens: D.fmt(x.month_tokens || 0), cost: D.fmt(x.month_cost || 0) }) + "</div></div>" +
+            '<div class="r"><span class="pts">' + T("cnt.calls", { n: x.month_calls || 0 }) + "</span><div class='d'>" + T("admin.usage.emp.calls") + "</div></div></div>"
+          ).join("") + barRow(T("admin.usage.total"), users.reduce((a, x) => a + (x.month_tokens || 0), 0), maxUT, T("admin.usage.unit.tokens"))
+        : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.emp") + "</p></div>";
+      // 按部门（barRow 用 cost 归一）
+      const maxDC = Math.max(1, ...depts.map((d) => d.cost || 0));
+      $("#usage-dept").innerHTML = depts.length
+        ? depts.map((d) => barRow(d.name, d.cost, maxDC, T("admin.usage.unit.yuan"))).join("")
+        : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.dept") + "</p></div>";
     } else if (tab === "org") {
       renderOrg();
     }
@@ -1745,20 +1715,20 @@
 
   /* --- 组织管理：部门列表 + 部门 CRUD + 每月点数分配 --- */
 
-  // 成员改部门：行内下拉（选项来自 DEPARTMENTS + "未分配"），确认后更新并联动部门统计
+  // 成员改部门：行内下拉（选项来自后端部门 + "未分配"），确认后真实 PATCH（零 mock rant 15:54:06）
   function editEmpDept(i) {
-    const liveEmp = Live.adminUsers ? Live.adminUsers[i] : null;
-    const emp = liveEmp || D.EMPLOYEES[i];
+    if (!Live.adminUsers || !Live.departments) { renderAdmin(); return; }
+    const emp = Live.adminUsers[i];
     const row = document.querySelector('[data-emp-row="' + i + '"]');
     if (!emp || !row) return;
     const cell = row.children[2]; // 部门列（live 布局：成员/角色/部门/…）
-    const depts = Live.departments || D.DEPARTMENTS;
+    const depts = Live.departments;
     const sel = document.createElement("select");
     sel.className = "input";
     sel.style.cssText = "padding:4px 8px;font-size:12px;width:auto";
-    const cur = liveEmp ? (liveEmp.dept_id == null ? "" : liveEmp.dept_id) : (emp.dept || "");
+    const cur = emp.dept_id == null ? "" : emp.dept_id;
     sel.innerHTML = '<option value="">' + T("common.unassigned") + "</option>" +
-      depts.map((d) => '<option value="' + (liveEmp ? d.id : d.name) + '"' + (String(cur) === String(liveEmp ? d.id : d.name) ? " selected" : "") + ">" + esc(d.name) + "</option>").join("");
+      depts.map((d) => '<option value="' + d.id + '"' + (String(cur) === String(d.id) ? " selected" : "") + ">" + esc(d.name) + "</option>").join("");
     const ok = document.createElement("button");
     ok.className = "btn btn-primary";
     ok.style.cssText = "padding:4px 10px;font-size:12px";
@@ -1775,53 +1745,40 @@
     sel.focus();
     const done = () => {
       const v = sel.value;
-      if (liveEmp) {
-        api.patch("/api/admin/users/" + liveEmp.id, { dept_id: v === "" ? null : Number(v) }).then(async () => {
-          await loadAdmin();
-          const deptName = v === "" ? T("common.unassigned") : (depts.find((d) => String(d.id) === v) || {}).name;
-          toast(T("admin.emp.dept.ok", { name: liveEmp.name || liveEmp.email, dept: deptName }), "success");
-        }).catch((err) => {
-          toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.emp.dept.fail"), "error");
-          renderAdmin();
-        });
-        return;
-      }
-      if (v !== emp.dept) {
-        emp.dept = v;
+      api.patch("/api/admin/users/" + emp.id, { dept_id: v === "" ? null : Number(v) }).then(async () => {
+        await loadAdmin();
+        const deptName = v === "" ? T("common.unassigned") : (depts.find((d) => String(d.id) === v) || {}).name;
+        toast(T("admin.emp.dept.ok", { name: emp.name || emp.email, dept: deptName }), "success");
+      }).catch((err) => {
+        toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.emp.dept.fail"), "error");
         renderAdmin();
-        toast(T("admin.emp.dept.ok", { name: emp.name, dept: v ? v : T("common.unassigned") }), "success");
-      } else {
-        renderAdmin();
-      }
+      });
     };
     ok.addEventListener("click", done);
     cancel.addEventListener("click", () => renderAdmin());
     sel.addEventListener("change", () => ok.focus());
   }
 
-  // 部门已用/成员数由 EMPLOYEES 实时汇总，部门改名/删改后自动联动
-  function deptMemberCount(name) {
-    return D.EMPLOYEES.filter((e) => e.dept === name).length;
-  }
-
-  function deptUsed(d) {
-    return D.EMPLOYEES.filter((e) => e.dept === d.name).reduce((a, e) => a + e.used, 0);
-  }
-
   function renderOrg() {
     const rawQ = $("#od-search").value || "";
     const q = rawQ.toLowerCase();
-    // P2-C：登录 → /api/admin/departments 真实数据（含 member_count / month_cost / remaining）
-    const src = Live.departments ? Live.departments : D.DEPARTMENTS;
+    // 零 mock（rant 15:54:06）：部门管理仅登录可达，绝不 fallback D.DEPARTMENTS；
+    // 加载失败 → 空态 + 重试
+    const src = Live.departments;
+    if (!src) {
+      $("#dept-stats").innerHTML = "";
+      $("#dept-body").innerHTML = loadErrorRow(7, T("admin.org.loadFail"), T("err.loadFail"));
+      pulseTbody($("#dept-body"));
+      return;
+    }
     const list = src.filter((d) => !q || d.name.toLowerCase().includes(q));
-    const live = !!Live.departments;
 
     const demoNote = $("#dept-demo-note");
-    if (demoNote) demoNote.innerHTML = live ? "" : '<p class="muted" style="font-size:12px;margin-bottom:6px">' + T("admin.org.demo") + "</p>";
+    if (demoNote) demoNote.innerHTML = "";
 
     const totalQuota = src.reduce((a, d) => a + (d.quota || 0), 0);
-    const totalUsed = src.reduce((a, d) => a + (live ? (d.month_cost || 0) : deptUsed(d)), 0);
-    const unassigned = live ? (Live.adminUsers || []).filter((u) => !u.dept_id).length : D.EMPLOYEES.filter((e) => !e.dept).length;
+    const totalUsed = src.reduce((a, d) => a + (d.month_cost || 0), 0);
+    const unassigned = (Live.adminUsers || []).filter((u) => !u.dept_id).length;
     $("#dept-stats").innerHTML = [
       stat(T("admin.org.stats.depts"), T("cnt.depts", { n: src.length }), unassigned ? T("admin.org.stats.depts.sub", { n: unassigned }) : T("admin.org.stats.depts.sub2")),
       stat(T("admin.org.stats.monthly"), D.fmt(totalQuota) + " " + T("common.points"), T("admin.org.stats.monthly.sub")),
@@ -1830,8 +1787,8 @@
     ].join("");
 
     $("#dept-body").innerHTML = list.length ? list.map((d, i) => {
-      const used = live ? (d.month_cost || 0) : deptUsed(d);
-      const members = live ? (d.member_count || 0) : deptMemberCount(d.name);
+      const used = d.month_cost || 0;
+      const members = d.member_count || 0;
       const pct = d.quota > 0 ? used / d.quota : 0;
       const st = pct >= 1 ? '<span class="badge danger">' + T("common.exhausted") + "</span>" : pct > 0.9 ? '<span class="badge warn">' + T("common.nearLimit") + "</span>" : '<span class="badge ok">' + T("common.normal") + "</span>";
       return "<tr><td data-label='部门'><strong>" + hl(d.name, rawQ) + "</strong></td>" +
@@ -1853,7 +1810,7 @@
 
   function openDeptForm(i) {
     deptEditIndex = (i == null ? null : i);
-    const src = Live.departments ? Live.departments : D.DEPARTMENTS;
+    const src = Live.departments || [];
     const d = (i == null ? null : src[i]);
     $("#dept-form-title").innerHTML = d
       ? T("admin.org.edit.title")
@@ -1876,56 +1833,35 @@
     if (!rawQ || !Number.isInteger(quota) || quota <= 0) { setFieldError($("#dept-form-quota"), T("admin.org.err.quota")); firstErr = firstErr || $("#dept-form-quota"); }
     else clearFieldError($("#dept-form-quota"));
     if (firstErr) { firstErr.focus(); return; }
-    const live = !!Live.departments;
-    const src = live ? Live.departments : D.DEPARTMENTS;
+    // 零 mock（rant 15:54:06）：部门 CRUD 全走真实 API（admin 仅登录可达）
+    const src = Live.departments || [];
     if (deptEditIndex == null) {
       if (src.some((d) => d.name === name)) { setFieldError($("#dept-form-name"), T("admin.org.err.dup", { name: name })); $("#dept-form-name").focus(); return; }
-      if (live) {
-        api.post("/api/admin/departments", { name, quota }).then(async () => {
-          await loadAdmin();
-          $("#dept-form-card").hidden = true;
-          toast(T("admin.org.add.ok", { name: name, quota: D.fmt(quota) }), "success");
-        }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.org.add.fail"), "error"));
-        return;
-      }
-      D.DEPARTMENTS.push({ id: Date.now(), name, quota });
-      toast(T("admin.org.add.ok", { name: name, quota: D.fmt(quota) }), "success");
+      api.post("/api/admin/departments", { name, quota }).then(async () => {
+        await loadAdmin();
+        $("#dept-form-card").hidden = true;
+        toast(T("admin.org.add.ok", { name: name, quota: D.fmt(quota) }), "success");
+      }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.org.add.fail"), "error"));
     } else {
       const d = src[deptEditIndex];
       if (!d) return;
       if (name !== d.name && src.some((x) => x.name === name)) { setFieldError($("#dept-form-name"), T("admin.org.err.dup", { name: name })); $("#dept-form-name").focus(); return; }
-      if (live) {
-        api.patch("/api/admin/departments/" + d.id, { name, quota }).then(async () => {
-          await loadAdmin();
-          $("#dept-form-card").hidden = true;
-          toast(T("admin.org.edit.ok", { name: name, quota: D.fmt(quota) }), "success");
-        }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.org.edit.fail"), "error"));
-        return;
-      }
-      const old = d.name;
-      d.name = name;
-      d.quota = quota;
-      if (name !== old) D.EMPLOYEES.forEach((e) => { if (e.dept === old) e.dept = name; }); // 成员部门联动改名
-      toast(T("admin.org.edit.ok", { name: name, quota: D.fmt(quota) }), "success");
+      api.patch("/api/admin/departments/" + d.id, { name, quota }).then(async () => {
+        await loadAdmin();
+        $("#dept-form-card").hidden = true;
+        toast(T("admin.org.edit.ok", { name: name, quota: D.fmt(quota) }), "success");
+      }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.org.edit.fail"), "error"));
     }
-    renderAdmin();
-    $("#dept-form-card").hidden = true;
   }
 
   function deleteDept(i) {
-    const src = Live.departments ? Live.departments : D.DEPARTMENTS;
+    const src = Live.departments || [];
     const d = src[i];
     if (!d) return;
-    if (Live.departments) {
-      api.del("/api/admin/departments/" + d.id).then(async () => {
-        await loadAdmin();
-        toast(T("admin.org.del.ok", { name: d.name }), "success");
-      }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.org.del.fail"), "error"));
-      return;
-    }
-    D.DEPARTMENTS.splice(i, 1);
-    renderAdmin();
-    toast(T("admin.org.del.ok", { name: d.name }), "success");
+    api.del("/api/admin/departments/" + d.id).then(async () => {
+      await loadAdmin();
+      toast(T("admin.org.del.ok", { name: d.name }), "success");
+    }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.org.del.fail"), "error"));
   }
 
   function barRow(name, pts, max, unit) {
@@ -1941,40 +1877,34 @@
     $$(".ops-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.opsPane !== tab));
 
     if (tab === "runtime") {
-      // P2-C：登录 → /api/ops/runtime 真实聚合；否则演示
-      if (Live.opsRuntime) {
-        const rt = Live.opsRuntime;
-        $("#ops-stats").innerHTML = [
-          stat(T("ops.stats.status"), '<span class="badge ok">' + T("common.online") + "</span>", T("ops.stats.status.sub")),
-          stat(T("ops.stats.users"), T("cnt.people", { n: rt.users }), T("ops.stats.users.sub")),
-          stat(T("ops.stats.keys"), T("cnt.keys", { n: rt.active_keys }), T("ops.stats.keys.sub.on")),
-          stat(T("ops.stats.calls"), T("cnt.calls", { n: rt.month_calls }), T("ops.stats.calls.sub")),
-          stat(T("ops.stats.in"), "+" + D.fmt(rt.month_in) + " " + T("common.points"), T("ops.stats.in.sub")),
-          stat(T("ops.stats.out"), "-" + D.fmt(rt.month_out) + " " + T("common.points"), T("ops.stats.out.sub")),
-        ].join("");
-        const note = $("#ops-demo-note");
-        if (note) note.innerHTML = "";
+      // 零 mock（rant 15:54:06）：运营视图仅登录+role=ops 可达，绝不 fallback D.TRANSACTIONS/D.SHARINGS；
+      // 加载失败 → 空态 + 重试
+      const note = $("#ops-demo-note");
+      if (note) note.innerHTML = "";
+      if (!Live.opsRuntime) {
+        $("#ops-stats").innerHTML = loadErrorHtml(T("ops.loadFail"), null, T("err.loadFail"));
         return;
       }
-      const note = $("#ops-demo-note");
-      if (note) note.innerHTML = '<p class="muted" style="font-size:12px;margin-bottom:6px">' + T("ops.demo") + "</p>";
-      const txs = D.TRANSACTIONS;
-      const flowIn = txs.filter((t) => t.pts > 0).reduce((a, t) => a + t.pts, 0);
-      const flowOut = txs.filter((t) => t.pts < 0).reduce((a, t) => a + Math.abs(t.pts), 0);
-      const onKeys = D.SHARINGS.filter((s2) => s2.status === "on").length;
+      // P2-C：/api/ops/runtime 真实聚合
+      const rt = Live.opsRuntime;
       $("#ops-stats").innerHTML = [
         stat(T("ops.stats.status"), '<span class="badge ok">' + T("common.online") + "</span>", T("ops.stats.status.sub")),
-        stat(T("ops.stats.users"), T("cnt.people", { n: D.OPERATOR_USERS.length }), T("ops.stats.users.sub.mock")),
-        stat(T("ops.stats.keys"), T("cnt.keys", { n: onKeys }), T("ops.stats.keys.sub.mock", { n: D.SHARINGS.length })),
-        stat(T("ops.stats.trades"), T("cnt.trades", { n: txs.length }), T("ops.stats.trades.sub")),
-        stat(T("ops.stats.in"), "+" + D.fmt(flowIn) + " " + T("common.points"), T("ops.stats.in.sub.mock")),
-        stat(T("ops.stats.out"), "-" + D.fmt(flowOut) + " " + T("common.points"), T("ops.stats.out.sub.mock")),
+        stat(T("ops.stats.users"), T("cnt.people", { n: rt.users }), T("ops.stats.users.sub")),
+        stat(T("ops.stats.keys"), T("cnt.keys", { n: rt.active_keys }), T("ops.stats.keys.sub.on")),
+        stat(T("ops.stats.calls"), T("cnt.calls", { n: rt.month_calls }), T("ops.stats.calls.sub")),
+        stat(T("ops.stats.in"), "+" + D.fmt(rt.month_in) + " " + T("common.points"), T("ops.stats.in.sub")),
+        stat(T("ops.stats.out"), "-" + D.fmt(rt.month_out) + " " + T("common.points"), T("ops.stats.out.sub")),
       ].join("");
       return;
     }
 
-    // tab === "users"：成员充值
-    const src = Live.opsUsers ? Live.opsUsers : D.OPERATOR_USERS;
+    // tab === "users"：成员充值（零 mock，rant 15:54:06）
+    if (!Live.opsUsers) {
+      $("#ops-body").innerHTML = loadErrorRow(4, T("ops.loadFail"), T("err.loadFail"));
+      pulseTbody($("#ops-body"));
+      return;
+    }
+    const src = Live.opsUsers;
     const rawQ = $("#ops-search").value || "";
     const q = rawQ.toLowerCase();
     const list = src.filter((u) => !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
@@ -2011,28 +1941,16 @@
       },
       onSubmit: (raw) => {
         const amt = Math.round(Number(raw) * 100) / 100;
-        if (Live.opsUsers) {
-          api.post("/api/ops/credits", { user_id: u.id, amount: amt }).then(async () => {
-            await loadOps();
-            renderOps();
-            if (u.email === D.USER.email) {
-              try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance; $("#side-balance").textContent = D.fmt(D.USER.balance); bump($("#side-balance")); } catch (e) {}
-            }
-            toast(T("ops.users.topup.ok", { name: u.name, amt: D.fmt(amt) }), "success");
-          }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("ops.users.topup.fail"), "error"));
-          return;
-        }
-        u.balance = Math.round((u.balance + amt) * 100) / 100;
-        const isMe = u.email === D.USER.email;
-        if (isMe) D.USER.balance = u.balance;
-        D.TRANSACTIONS.unshift({
-          id: Date.now(), time: nowTime(), type: "topup", partner: "运营者",
-          detail: "充值 · 运营者发放（永久有效）", tokens: "—", pts: amt, status: "成功",
-        });
-        renderOps();
-        $("#side-balance").textContent = D.fmt(D.USER.balance);
-        if (isMe) bump($("#side-balance")); // 给自己充值 → 余额跳动（rant 18:06:09 E）
-        toast(T("ops.users.topup.ok", { name: u.name, amt: D.fmt(amt) }), "success");
+        if (!Live.opsUsers) { toast(T("ops.users.topup.fail"), "error"); return; }
+        // P2-C：真实充值（POST /api/ops/credits；零 mock rant 15:54:06）
+        api.post("/api/ops/credits", { user_id: u.id, amount: amt }).then(async () => {
+          await loadOps();
+          renderOps();
+          if (u.email === D.USER.email) {
+            try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance; $("#side-balance").textContent = D.fmt(D.USER.balance); bump($("#side-balance")); } catch (e) {}
+          }
+          toast(T("ops.users.topup.ok", { name: u.name, amt: D.fmt(amt) }), "success");
+        }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("ops.users.topup.fail"), "error"));
       },
       onCancel: () => renderOps(),
     });
@@ -2082,7 +2000,9 @@
   }
 
   function openChat(id) {
-    const m = D.MARKET.find((x) => x.id === id);
+    // 零 mock（rant 15:54:06）：登录态绝不回退 D.MARKET
+    if (loggedIn() && !Live.models) { toast(T("err.loadFail"), "error"); return; }
+    const m = (Live.models ? modelsToView(Live.models) : D.MARKET).find((x) => x.id === id);
     if (!m) return;
     if (!m.avail) { toast(T("chat.busy"), "error"); return; }
     markRecentUsed(id); // 记录最近使用（rant 20:46:57 D：去重 + 置顶，最多 5 个）
@@ -2104,7 +2024,9 @@
 
   // P2-B：真实消费链路 —— POST /v1/chat/completions（最小占位请求，stream=false）
   async function consumeModel(id) {
-    const src = Live.models ? modelsToView(Live.models) : D.MARKET;
+    // 零 mock（rant 15:54:06）：登录态绝不回退 D.MARKET
+    if (loggedIn() && !Live.models) { toast(T("err.loadFail"), "error"); return; }
+    const src = Live.models ? modelsToView(Live.models) : [];
     const m = src.find((x) => x.id === id);
     if (!m) return;
     if (!m.avail) { toast(T("chat.busy"), "error"); return; }
@@ -2144,10 +2066,7 @@
       return;
     }
     D.USER.balance = Math.round((D.USER.balance - cost) * 100) / 100;
-    D.TRANSACTIONS.unshift({
-      id: Date.now(), time: nowTime(), type: "consume", partner: m.model,
-      detail: "消费 · 聊天模拟（shared key）", tokens: "0.19M", pts: -cost, status: "成功",
-    });
+    // 聊天为模拟交互（P2-D 候选：chat-modal 流式网关）；D.TRANSACTIONS 已移除（rant 15:54:06），不写明细
     const log = $("#chat-log");
     if (log.querySelector(".chat-tip")) log.innerHTML = "";
     log.innerHTML +=
@@ -2264,12 +2183,16 @@
     });
   }
 
-  // 后端 models → 视图行（点数按 points_per_unit=1000、锚定 USD 折算；上下文/成功率从 mock 同名模型兜底）
+  // tbody 容器专用降级行：<tr><td> 内嵌 loadErrorHtml（div 直接进 tbody 会被浏览器提升到表外，破坏布局与重试委托）
+  function loadErrorRow(colspan, emptyLabel, retryLabel) {
+    return '<tr><td class="empty-cell" colspan="' + colspan + '">' + loadErrorHtml(emptyLabel, null, retryLabel) + "</td></tr>";
+  }
+
+  // 后端 models → 视图行（点数按 points_per_unit=1000、锚定 USD 折算；ctx 来自 models.context_window；
+  // multi=available_keys>=2 真实计算；success 后端暂无字段 → null，视图不渲染假成功率）
+  // 零 mock（rant 2026-08-19T15:54:06）：不读 data.js MARKET 兜底
   function modelsToView(list) {
-    const mockById = {};
-    D.MARKET.forEach((m) => { mockById[m.model] = m; });
     return list.map((m, i) => {
-      const mock = mockById[m.model] || {};
       const cny = m.currency === "CNY";
       const mult = cny ? 1000 / 7.2 : 1000;
       return {
@@ -2278,10 +2201,11 @@
         model: m.model,
         in: Math.round(m.input_per_m * mult * 100) / 100,
         out: Math.round(m.output_per_m * mult * 100) / 100,
-        ctx: mock.ctx || 0,
+        ctx: m.context_window || 0,
         avail: m.available_keys > 0,
-        multi: mock.multi || false,
-        success: mock.success || 99,
+        multi: (m.available_keys || 0) >= 2,
+        success: null,
+        live: true,
       };
     });
   }
@@ -2516,13 +2440,10 @@
     });
 
     // 市场筛选（搜索防抖 ~150ms + 高亮 + 清空按钮，rant 18:06:09 D）
+    // 厂商下拉在 renderMarketplace 内按数据源重建（登录=Live.models / 游客=data.js，零 mock rant 15:54:06）
     wireSearch($("#mk-search"), renderMarketplace);
     $("#mk-provider").addEventListener("change", renderMarketplace);
     $("#mk-sort").addEventListener("change", renderMarketplace);
-    if (!$("#mk-provider").dataset.init) {
-      $("#mk-provider").innerHTML = '<option value="">' + T("mk.provider.all") + "</option>" + D.PROVIDERS.map((p) => '<option value="' + p + '">' + p + "</option>").join("");
-      $("#mk-provider").dataset.init = "1";
-    }
 
     // 市场页：使用 / 消费（G4：聊天 Mock 扣小数点数并产生 consume 交易；游客需先登录 US-1）
     $("#mk-body").addEventListener("click", (e) => {
@@ -2578,7 +2499,7 @@
     $("#ops-body").addEventListener("click", (e) => {
       const b = e.target.closest("[data-ops-topup]");
       if (!b) return;
-      const src = Live.opsUsers ? Live.opsUsers : D.OPERATOR_USERS;
+      const src = Live.opsUsers || [];
       const u = src.find((x) => x.id === Number(b.dataset.opsTopup));
       if (!u) return;
       inlineOpsTopup(u, b);
@@ -2648,21 +2569,18 @@
           const label = provLabel(plan.provider) + " · " + plan.name;
           toast(T("share.list.ok", { label: label, model: model, price: D.fmt(price) }), "success");
         };
-        if (loggedIn()) {
-          // P2-B：真实上架
-          api.post("/api/sharings", payload).then(async () => {
-            await loadSharing();
-            if (activeView === "dashboard") renderDashboard();
-            afterOk();
-          }).catch((err) => {
-            toast((err && err.message) ? I18n.mapErr(err.message) : T("share.list.fail"), "error");
-          });
+        if (!loggedIn()) {
+          toast(T("chat.login.need"), "error");
           return;
         }
-        D.SHARINGS.unshift({ id: Date.now(), provider: plan.provider, plan: plan.name, model, quota, used: 0, price, earned: 0, status: "on", key, note, available });
-        renderSharing();
-        if (activeView === "dashboard") renderDashboard();
-        afterOk();
+        // P2-B：真实上架（共享管理仅登录可达，零 mock rant 15:54:06）
+        api.post("/api/sharings", payload).then(async () => {
+          await loadSharing();
+          if (activeView === "dashboard") renderDashboard();
+          afterOk();
+        }).catch((err) => {
+          toast((err && err.message) ? I18n.mapErr(err.message) : T("share.list.fail"), "error");
+        });
       };
       withLoading(submitBtn, done);
     });
@@ -2751,41 +2669,14 @@
     }));
 
     // 成员充值（管理台）：行内编辑（替代原生输入弹窗，Enter 确认 / Esc 取消）
+    // 零 mock（rant 15:54:06）：仅真实成员（/api/admin/users）→ POST /api/admin/credits
     $("#emp-body").addEventListener("click", (e) => {
       const dd = e.target.closest("[data-emp-dept]");
       if (dd) { editEmpDept(Number(dd.dataset.empDept)); return; }
       const b = e.target.closest("[data-emp-topup]");
       if (!b) return;
-      // P2-B：真实成员（/api/admin/users）→ POST /api/admin/credits
       const liveEmp = Live.adminUsers ? Live.adminUsers[Number(b.dataset.empTopup)] : null;
-      if (liveEmp) {
-        const row = b.closest("tr");
-        if (!row) return;
-        const cell = row.children[row.children.length - 1];
-        inlineForm(cell, {
-          value: "5000",
-          placeholder: T("admin.emp.topup.ph"),
-          type: "number",
-          width: "120px",
-          validate: (raw) => {
-            const amt = Number(raw);
-            return (!raw || !Number.isInteger(amt) || amt <= 0) ? T("admin.emp.topup.err") : null;
-          },
-          onSubmit: (raw) => {
-            const amt = Number(raw);
-            api.post("/api/admin/credits", { user_id: liveEmp.id, amount: amt, note: "admin recharge" })
-              .then(async () => {
-                await loadAdmin();
-                toast(T("admin.emp.topup.ok", { name: liveEmp.name || liveEmp.email, amt: D.fmt(amt) }), "success");
-              })
-              .catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.emp.topup.fail"), "error"));
-          },
-          onCancel: () => renderAdmin(),
-        });
-        return;
-      }
-      const emp = D.EMPLOYEES[Number(b.dataset.empTopup)];
-      if (!emp) return;
+      if (!liveEmp) return;
       const row = b.closest("tr");
       if (!row) return;
       const cell = row.children[row.children.length - 1];
@@ -2800,9 +2691,12 @@
         },
         onSubmit: (raw) => {
           const amt = Number(raw);
-          emp.quota += amt;
-          renderAdmin();
-          toast(T("admin.emp.topup.ok", { name: emp.name, amt: D.fmt(amt) }), "success");
+          api.post("/api/admin/credits", { user_id: liveEmp.id, amount: amt, note: "admin recharge" })
+            .then(async () => {
+              await loadAdmin();
+              toast(T("admin.emp.topup.ok", { name: liveEmp.name || liveEmp.email, amt: D.fmt(amt) }), "success");
+            })
+            .catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.emp.topup.fail"), "error"));
         },
         onCancel: () => renderAdmin(),
       });
@@ -2852,9 +2746,20 @@
     });
     renderNav();
     bindEvents();
-    // 登录态加载失败的空态重试按钮（rant 2026-08-19T15:48:17：loadErrorHtml 的 data-live-retry 委托）
+    // 登录态加载失败的空态重试按钮（rant 2026-08-19T15:48:17 / 15:54:06：各视图 loadError* 的 data-live-retry 委托）
     bindLiveRetry("dash-sharings", () => loadDashboard());
     bindLiveRetry("share-body", () => loadSharing());
+    bindLiveRetry("mk-body", () => loadMarketplace());
+    bindLiveRetry("tx-table", () => loadTransactions());
+    bindLiveRetry("api-keys", () => loadApiKeys());
+    bindLiveRetry("emp-body", () => loadAdmin());
+    bindLiveRetry("dept-body", () => loadAdmin());
+    bindLiveRetry("usage-model", () => loadAdmin());
+    bindLiveRetry("usage-emp", () => loadAdmin());
+    bindLiveRetry("usage-dept", () => loadAdmin());
+    bindLiveRetry("raise-requests", () => loadAdmin());
+    bindLiveRetry("ops-stats", () => loadOps());
+    bindLiveRetry("ops-body", () => loadOps());
     renderView("dashboard");
     $("#side-balance").textContent = D.fmt(D.USER.balance);
 
