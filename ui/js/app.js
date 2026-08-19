@@ -1454,7 +1454,7 @@
     if (Live.apiKeys) {
       list = Live.apiKeys.map((k) => ({
         id: k.id,
-        fullKey: Live.fullKeys ? Live.fullKeys[k.id] : null,
+        fullKey: k.full_key || null,
         name: k.name || T("common.unnamed"),
         key: k.key,
         created: String(k.created_at || "").slice(0, 10),
@@ -1492,14 +1492,12 @@
   // 复制反馈（rant 15:50:05 B.10：复制后按钮短暂变「已复制」态）
   function copyKey(i) {
     if (!Live.apiKeys) return;
-    const src = Live.apiKeys.map((k) => ({ ...k, fullKey: Live.fullKeys ? Live.fullKeys[k.id] : null }));
+    const src = Live.apiKeys.map((k) => ({ ...k, fullKey: k.full_key || null }));
     const k = src[i];
     if (!k) return;
-    const full = k.fullKey;
-    if (!full) {
-      toast(T("settings.ak.copy.once"), "info");
-      return;
-    }
+    // rant 2026-08-19T18:06:25：任意时候都可复制完整 key（列表 full_key 属主可见）；
+    // 防御性兜底：full_key 缺失时退化为复制脱敏 key，绝不提示「仅生成时展示一次」
+    const full = k.fullKey || k.key || "";
     const btn = document.querySelector('[data-key-copy="' + i + '"]');
     const flash = (ok) => {
       if (!btn) return;
@@ -1585,12 +1583,9 @@
     // P2-B：真实生成（POST /api/api-keys；设置页仅登录可达，零 mock rant 15:54:06）
     const btn = $("#ak-new-ok");
     withLoading(btn, () => {
-      api.post("/api/api-keys", { name }).then(async (r) => {
-        // 完整 key 只在生成时返回一次：重新拉列表拿真实 id 关联
-        Live.fullKeys = Live.fullKeys || {};
+      api.post("/api/api-keys", { name }).then(async () => {
+        // 完整 key 由列表接口随行返回（full_key），无需会话缓存
         await liveLoad("apiKeys", "/api/api-keys");
-        const fresh = Live.apiKeys && Live.apiKeys[0]; // id DESC 最新一条
-        if (fresh) Live.fullKeys[fresh.id] = r.api_key;
         renderSettings();
         closeNewKeyInline();
         toast(T("settings.ak.gen.ok", { name: name }), "success");
@@ -2155,7 +2150,6 @@
     raiseRequests: null, // P2-C GET /api/raise-requests（admin 视角全部）
     opsRuntime: null,    // P2-C GET /api/ops/runtime
     opsUsers: null,      // P2-C GET /api/ops/users
-    fullKeys: null,      // 生成时返回的完整 key（id → api_key，仅会话内）
   };
 
   function loggedIn() { return !!api.getToken() && !isGuest; }

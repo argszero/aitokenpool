@@ -58,6 +58,7 @@ pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::
         Ok(serde_json::json!({
             "id": r.get::<_, i64>(0)?,
             "key": auth::mask_api_key(&raw),
+            "full_key": raw, // 属主可见完整值（前端展示仍用脱敏 key，复制时用 full_key）
             "name": r.get::<_, String>(2)?,
             "status": r.get::<_, String>(3)?,
             "created_at": r.get::<_, String>(4)?,
