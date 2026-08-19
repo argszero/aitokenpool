@@ -962,6 +962,14 @@
     return days.map((d) => Math.round((map[d] || 0) * 100) / 100);
   }
 
+  // UTC 日期串（'YYYY-MM-DDT00:00:00Z'）→ 本地 MM-DD（rant 2026-08-19T20:45:32 跨天不错位）
+  function localMD(dateStr) {
+    const p2 = (x) => String(x).padStart(2, "0");
+    const d = new Date(String(dateStr).includes("T") ? dateStr : String(dateStr).replace(" ", "T") + "Z");
+    if (isNaN(d.getTime())) return String(dateStr || "").slice(5);
+    return p2(d.getMonth() + 1) + "-" + p2(d.getDate());
+  }
+
   function renderMonthChanges() {
     let rowsHtml = "";
     let net = 0;
@@ -977,7 +985,7 @@
         .map(([k, label]) => monthChangeItem(label(), sums[k], false)).join("");
       const series = Live.dashboard.series || [];
       sparkData = series.map((s) => s.pts || 0);
-      sparkLabels = series.map((s) => String(s.date || "").slice(5));
+      sparkLabels = series.map((s) => localMD(String(s.date || "")));
     } else if (!loggedIn()) {
       // 游客演示：data.js 内嵌交易聚合（mock 仅游客，rant 15:54:06）
       const txs = D.TRANSACTIONS || [];
@@ -2098,36 +2106,67 @@
   }
 
   // 相对时间（rant 16:57:17 B）：刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD
-  // 支持 "MM-DD HH:mm"（默认今年）与 "YYYY-MM-DD[ HH:mm]" 两种格式；非标准格式原样返回
+  // 时区（rant 2026-08-19T20:45:32）：后端返回 UTC ISO 带 Z（'YYYY-MM-DDTHH:MM:SSZ'），
+  // 按 UTC 解析；旧格式 'YYYY-MM-DD HH:MM:SS' 同样视为 UTC（补 Z）；
+  // 游客 mock 的 'MM-DD HH:mm'（本地时间）保持按本地解析；非标准格式原样返回
   function timeAgo(s) {
     if (!s) return "";
     const p2 = (x) => String(x).padStart(2, "0");
     const full = String(s);
-    const m = full.match(/^(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/) || full.match(/^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}))?$/);
-    if (!m) return full;
-    const isFull = m[1].length === 4; // "YYYY-MM-DD" vs "MM-DD HH:mm"（分组语义不同）
-    const MM = isFull ? +m[2] : +m[1];
-    const DD = isFull ? +m[3] : +m[2];
-    const HH = isFull ? +(m[4] || 0) : +m[3];
-    const mm = isFull ? +(m[5] || 0) : +m[4];
-    const now = new Date();
-    const y = isFull ? +m[1] : now.getFullYear();
-    const d = new Date(y, MM - 1, DD, HH, mm);
-    if (isNaN(d.getTime())) return full;
-    const min = Math.floor((now - d) / 60000);
-    if (min < 1) return T("time.justNow");
-    if (min < 60) return T("time.minAgo", { n: min });
-    if (min < 60 * 24) return T("time.hourAgo", { n: Math.floor(min / 60) });
-    const dayDiff = Math.floor(
-      (new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(y, MM - 1, DD)) / 86400000);
-    if (dayDiff === 1) return T("time.yesterday");
-    return p2(MM) + "-" + p2(DD); // MM-DD
+    // UTC ISO（'YYYY-MM-DDTHH:MM:SSZ'，可含秒/毫秒）
+    let m = full.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?Z$/);
+    let utc = false;
+    if (m) {
+      utc = true;
+    } else {
+      // 旧后端格式 'YYYY-MM-DD[ HH:MM[:SS]]' → 视为 UTC
+      m = full.match(/^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2})(?::\d{2})?)?$/);
+      if (m) utc = true;
+    }
+    if (m) {
+      const Y = +m[1], MM = +m[2], DD = +m[3], HH = +(m[4] || 0), mm = +(m[5] || 0);
+      const d = utc ? new Date(Date.UTC(Y, MM - 1, DD, HH, mm)) : null;
+      if (d && !isNaN(d.getTime())) {
+        const min = Math.floor((Date.now() - d.getTime()) / 60000);
+        if (min < 1) return T("time.justNow");
+        if (min < 60) return T("time.minAgo", { n: min });
+        if (min < 60 * 24) return T("time.hourAgo", { n: Math.floor(min / 60) });
+        const nowU = new Date();
+        const utcToday = Date.UTC(nowU.getUTCFullYear(), nowU.getUTCMonth(), nowU.getUTCDate());
+        const dayDiff = Math.floor((utcToday - Date.UTC(Y, MM - 1, DD)) / 86400000);
+        if (dayDiff === 1) return T("time.yesterday");
+        return p2(MM) + "-" + p2(DD);
+      }
+    }
+    // 游客 mock：'MM-DD HH:mm' 按本地时间解析（默认今年）
+    m = full.match(/^(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
+    if (m) {
+      const now = new Date();
+      const d = new Date(now.getFullYear(), +m[1] - 1, +m[2], +m[3], +m[4]);
+      if (isNaN(d.getTime())) return full;
+      const min = Math.floor((now - d) / 60000);
+      if (min < 1) return T("time.justNow");
+      if (min < 60) return T("time.minAgo", { n: min });
+      if (min < 60 * 24) return T("time.hourAgo", { n: Math.floor(min / 60) });
+      const dayDiff = Math.floor(
+        (new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(now.getFullYear(), +m[1] - 1, +m[2])) / 86400000);
+      if (dayDiff === 1) return T("time.yesterday");
+      return p2(+m[1]) + "-" + p2(+m[2]);
+    }
+    return full;
   }
 
-  // 时间单元格：相对时间展示 + title 悬停显示完整绝对时间
+  // 时间单元格：相对时间展示 + title 悬停显示本地化绝对时间（rant 2026-08-19T20:45:32）
   function timeCell(s) {
     if (!s) return "";
-    return '<span class="timeago" title="' + esc(String(s)) + '">' + esc(timeAgo(s)) + "</span>";
+    const t = String(s);
+    const iso = /^(\d{4})-(\d{2})-(\d{2})[T ]/.test(t);
+    let title = t;
+    if (iso) {
+      const d = new Date(iso && t.includes("T") ? t : t.replace(" ", "T") + "Z");
+      if (!isNaN(d.getTime())) title = d.toLocaleString();
+    }
+    return '<span class="timeago" title="' + esc(title) + '">' + esc(timeAgo(s)) + "</span>";
   }
 
   function openChat(id) {

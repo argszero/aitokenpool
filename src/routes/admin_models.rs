@@ -95,7 +95,7 @@ fn row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
         "max_output": r.get::<_, i64>(7)?,
         "vision": r.get::<_, i64>(8)?,
         "cache_hit_input_per_m": r.get::<_, f64>(9)?,
-        "updated_at": r.get::<_, String>(10)?,
+        "updated_at": crate::dao::utc_iso(&r.get::<_, String>(10)?),
         "context_window": r.get::<_, i64>(11)?,
     }))
 }

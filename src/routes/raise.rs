@@ -110,7 +110,7 @@ pub async fn list(
             "amount": r.get::<_, f64>(4)?,
             "reason": r.get::<_, String>(5)?,
             "status": r.get::<_, String>(6)?,
-            "created_at": r.get::<_, String>(7)?,
+            "created_at": crate::dao::utc_iso(&r.get::<_, String>(7)?),
         }))
     };
     let mut stmt = conn.prepare(&sql).map_err(internal)?;
