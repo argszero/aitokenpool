@@ -33,8 +33,40 @@
     </form>
     <div class="login-divider"><span data-i18n="login.or">或</span></div>
     <button type="button" class="btn btn-ghost btn-block" id="guest-browse-btn" data-i18n="login.guest">先逛逛市场</button>
-    <p class="login-foot" data-i18n="login.foot">还没有账号？<a href="#">注册</a> · <a href="#">找回密码</a></p>
-    <p class="login-tip" data-i18n="login.tip">已对接后端 API · 登录后进入真实数据界面 · 管理员账号登录可见「管理视图」</p>  </div>
+    <p class="login-foot" data-i18n="login.foot">还没有账号？<a href="#" id="reg-link" data-i18n="login.register">注册</a> · <a href="#">找回密码</a></p>
+    <p class="login-tip" data-i18n="login.tip">已对接后端 API · 登录后进入真实数据界面 · 管理员账号登录可见「管理视图」</p>
+    <!-- 注册表单（rant 2026-08-19T14:36:19：自助注册入口，默认隐藏） -->
+    <form id="register-form" class="login-form hidden" novalidate>
+      <label><span data-i18n="register.name">昵称（可选）</span>
+        <input type="text" id="reg-name" placeholder="" data-i18n-ph="register.name.ph">
+      </label>
+      <label><span data-i18n="login.email">邮箱</span>
+        <input type="email" id="reg-email" placeholder="you@company.com">
+      </label>
+      <label><span data-i18n="register.password">密码</span>
+        <input type="password" id="reg-pass" placeholder="••••••••">
+      </label>
+      <label><span data-i18n="register.confirm">确认密码</span>
+        <input type="password" id="reg-pass2" placeholder="••••••••">
+      </label>
+      <div id="reg-error" class="field-error" hidden></div>
+      <button type="submit" class="btn btn-primary btn-block" data-i18n="register.submit">注册</button>
+      <p class="login-foot"><a href="#" id="reg-back" data-i18n="register.back">返回登录</a></p>
+    </form>
+    <!-- 验证码页（注册后） -->
+    <form id="verify-form" class="login-form hidden" novalidate>
+      <p class="login-tip" data-i18n="verify.hint">验证码已发送到邮箱，请输入 6 位验证码（10 分钟内有效）</p>
+      <label><span data-i18n="login.email">邮箱</span>
+        <input type="email" id="verify-email" readonly>
+      </label>
+      <label><span data-i18n="verify.code">验证码</span>
+        <input type="text" id="verify-code" maxlength="6" inputmode="numeric" placeholder="000000">
+      </label>
+      <div id="verify-error" class="field-error" hidden></div>
+      <button type="submit" class="btn btn-primary btn-block" data-i18n="verify.submit">验证并激活</button>
+      <p class="login-foot"><button type="button" class="linklike" id="resend-btn" data-i18n="verify.resend">重新发送</button> · <a href="#" id="verify-back" data-i18n="register.back">返回登录</a></p>
+    </form>
+  </div>
 </div>
 
 <!-- ======================= 应用外壳 ======================= -->

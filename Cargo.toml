@@ -1,6 +1,6 @@
 [package]
 name = "aitokenpool"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 description = "AI Token 共享池 — 企业 key 池 + 公共共享市场"
 license = "MIT"
@@ -47,3 +47,6 @@ sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
 clap = { version = "4", features = ["derive"] }
+
+# 注册邮箱验证码发信（rant 2026-08-19T14:36:19：方案 B 完整验证码）
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls", "hostname", "pool"] }

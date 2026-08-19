@@ -233,3 +233,107 @@ pub fn verify_user_password(conn: &Connection, email: &str, pw: &str) -> Result<
         Err(anyhow!("口令错误"))
     }
 }
+
+/* ---- 注册 / 邮箱验证（rant 2026-08-19T14:36:19 方案 B）---- */
+
+/// 邮箱是否已注册（含未验证用户）
+pub fn email_taken(conn: &Connection, email: &str) -> bool {
+    conn.query_row("SELECT 1 FROM users WHERE email = ?1", [email], |_| Ok(()))
+        .is_ok()
+}
+
+/// 创建未验证用户（role='user'，verified=0）→ 返回 user_id；不建 quotas（验证通过后建）
+pub fn create_unverified_user(
+    conn: &Connection,
+    email: &str,
+    name: &str,
+    password_hash: &str,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, role, verified) VALUES (?1, ?2, ?3, 'user', 0)",
+        rusqlite::params![email, password_hash, name],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 用户是否已验证（users.verified == 1）
+pub fn user_verified(conn: &Connection, user_id: i64) -> bool {
+    conn.query_row("SELECT verified FROM users WHERE id = ?1", [user_id], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map(|v| v == 1)
+    .unwrap_or(false)
+}
+
+/// 验证通过后激活用户 + 建 quotas 账户（balance=0, gift_balance=0）
+pub fn activate_user(conn: &Connection, email: &str) -> Result<()> {
+    conn.execute("UPDATE users SET verified = 1 WHERE email = ?1", [email])?;
+    let id: i64 = conn.query_row("SELECT id FROM users WHERE email = ?1", [email], |r| {
+        r.get(0)
+    })?;
+    conn.execute(
+        "INSERT OR IGNORE INTO quotas (user_id, balance, gift_balance) VALUES (?1, 0, 0)",
+        [id],
+    )?;
+    Ok(())
+}
+
+/// 存储验证码（6 位数字的 sha256 hex）；同一邮箱重复注册/重发 → 覆盖旧码
+pub fn store_verification_code(
+    conn: &Connection,
+    email: &str,
+    code_hash: &str,
+    expires_at: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO email_verifications (email, code_hash, expires_at, attempts) \
+         VALUES (?1, ?2, ?3, 0)",
+        rusqlite::params![email, code_hash, expires_at],
+    )?;
+    Ok(())
+}
+
+/// 取验证记录 → Some((code_hash, attempts))；过期或不存在 → None
+pub fn find_valid_verification(conn: &Connection, email: &str) -> Option<(String, i64)> {
+    conn.query_row(
+        "SELECT code_hash, attempts FROM email_verifications \
+         WHERE email = ?1 AND expires_at > datetime('now')",
+        [email],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
+}
+
+/// 最近一次发送时间距现在是否 < 60 秒（重发限频）
+pub fn resend_too_soon(conn: &Connection, email: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM email_verifications WHERE email = ?1 AND created_at > datetime('now', '-60 seconds')",
+        [email],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// 校验失败计数 +1；返回失败后是否已达上限（≥5 → 删除记录）
+pub fn bump_verification_attempt(conn: &Connection, email: &str) -> Result<bool> {
+    conn.execute(
+        "UPDATE email_verifications SET attempts = attempts + 1 WHERE email = ?1",
+        [email],
+    )?;
+    let attempts: i64 = conn.query_row(
+        "SELECT attempts FROM email_verifications WHERE email = ?1",
+        [email],
+        |r| r.get(0),
+    )?;
+    if attempts >= 5 {
+        conn.execute("DELETE FROM email_verifications WHERE email = ?1", [email])?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// 验证成功后删除验证码记录
+pub fn clear_verification(conn: &Connection, email: &str) -> Result<()> {
+    conn.execute("DELETE FROM email_verifications WHERE email = ?1", [email])?;
+    Ok(())
+}
