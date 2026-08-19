@@ -37,12 +37,47 @@ impl Default for Server {
     }
 }
 
+/// 邮件服务（注册验证码，rant 2026-08-19T14:36:19 方案 B）。
+/// 未配置（smtp_host 为空）时进入 dev 模式：验证码打印到日志/响应，便于本地测试；
+/// 生产部署必须配置 SMTP，否则注册验证码不真正送达（安全风险由部署方承担）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Mail {
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    #[serde(default)]
+    pub smtp_user: String,
+    #[serde(default)]
+    pub smtp_password: String,
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub from_name: String,
+    #[serde(default)]
+    pub verify_subject: String,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+
+impl Mail {
+    /// 是否配置了真实 SMTP（生产模式）
+    pub fn configured(&self) -> bool {
+        !self.smtp_host.is_empty()
+    }
+}
+
 /// 顶层配置
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)] // P0-A 仅用 server；points/providers/plans 由后续 P0 网关/定价阶段消费（parse 测试已校验）
 pub struct Config {
     #[serde(default)]
     pub server: Server,
+    /// 邮件服务（可选；未配置时注册验证码走 dev 日志模式）
+    #[serde(default)]
+    pub mail: Mail,
     pub points: Points,
     pub providers: Vec<Provider>,
     pub plans: Vec<Plan>,

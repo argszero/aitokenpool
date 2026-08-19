@@ -2374,6 +2374,130 @@
       toast(T("logout.done"), "info");
     });
 
+    /* ---- 注册 / 邮箱验证（rant 2026-08-19T14:36:19：自助注册）---- */
+    const regLink = $("#reg-link");
+    const regBack = $("#reg-back");
+    const verifyBack = $("#verify-back");
+    const loginFormEl = $("#login-form");
+    const registerFormEl = $("#register-form");
+    const verifyFormEl = $("#verify-form");
+
+    function showAuthForm(which) {
+      // which: "login" | "register" | "verify"
+      loginFormEl.classList.toggle("hidden", which !== "login");
+      registerFormEl.classList.toggle("hidden", which !== "register");
+      verifyFormEl.classList.toggle("hidden", which !== "verify");
+    }
+
+    if (regLink) {
+      regLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        showAuthForm("register");
+        $("#reg-email").focus();
+      });
+    }
+    if (regBack) {
+      regBack.addEventListener("click", (e) => {
+        e.preventDefault();
+        showAuthForm("login");
+      });
+    }
+    if (verifyBack) {
+      verifyBack.addEventListener("click", (e) => {
+        e.preventDefault();
+        showAuthForm("login");
+      });
+    }
+
+    // 注册提交
+    registerFormEl.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = $("#reg-email").value.trim();
+      const name = $("#reg-name").value.trim();
+      const pw = $("#reg-pass").value;
+      const pw2 = $("#reg-pass2").value;
+      let firstErr = null;
+      const errEl = $("#reg-error");
+      const showErr = (msg) => { errEl.textContent = msg; errEl.hidden = false; };
+      const hideErr = () => { errEl.hidden = true; errEl.textContent = ""; };
+      if (!email) { setFieldError($("#reg-email"), T("login.err.email")); firstErr = firstErr || $("#reg-email"); }
+      else clearFieldError($("#reg-email"));
+      if (!pw) { setFieldError($("#reg-pass"), T("register.err.pass")); firstErr = firstErr || $("#reg-pass"); }
+      else clearFieldError($("#reg-pass"));
+      if (pw !== pw2) { setFieldError($("#reg-pass2"), T("register.err.confirm")); firstErr = firstErr || $("#reg-pass2"); }
+      else clearFieldError($("#reg-pass2"));
+      if (firstErr) { firstErr.focus(); return; }
+      hideErr();
+      const btn = registerFormEl.querySelector('button[type="submit"]');
+      if (btn) { btn.disabled = true; }
+      try {
+        const r = await api.post("/api/auth/register", { name, email, password: pw });
+        // 成功 → 切到验证码页（dev 模式响应带 dev_code，提示到控制台/日志）
+        $("#verify-email").value = email;
+        showAuthForm("verify");
+        if (r.dev_code) {
+          toast(T("verify.devCode") + ": " + r.dev_code, "info");
+        } else {
+          toast(T("verify.sent"), "success");
+        }
+        $("#verify-code").focus();
+      } catch (err) {
+        if (err && err.status === 409) {
+          setFieldError($("#reg-email"), T("register.err.taken"));
+        } else {
+          const m = (err && err.message) ? I18n.mapErr(err.message) : T("register.err.fail");
+          showErr(m);
+        }
+      } finally {
+        if (btn) { btn.disabled = false; }
+      }
+    });
+
+    // 验证提交
+    verifyFormEl.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = $("#verify-email").value.trim();
+      const code = $("#verify-code").value.trim();
+      const errEl = $("#verify-error");
+      const showErr = (msg) => { errEl.textContent = msg; errEl.hidden = false; };
+      const hideErr = () => { errEl.hidden = true; errEl.textContent = ""; };
+      if (!code) { setFieldError($("#verify-code"), T("verify.err.code")); $("#verify-code").focus(); return; }
+      clearFieldError($("#verify-code"));
+      hideErr();
+      const btn = verifyFormEl.querySelector('button[type="submit"]');
+      if (btn) { btn.disabled = true; }
+      try {
+        await api.post("/api/auth/verify", { email, code });
+        toast(T("verify.ok"), "success");
+        showAuthForm("login");
+        $("#login-email").value = email;
+        $("#login-email").focus();
+      } catch (err) {
+        const m = (err && err.message) ? I18n.mapErr(err.message) : T("verify.err.fail");
+        showErr(m);
+      } finally {
+        if (btn) { btn.disabled = false; }
+      }
+    });
+
+    // 重发验证码
+    $("#resend-btn").addEventListener("click", async () => {
+      const email = $("#verify-email").value.trim();
+      if (!email) return;
+      const b = $("#resend-btn");
+      b.disabled = true;
+      try {
+        const r = await api.post("/api/auth/resend-code", { email });
+        if (r.dev_code) { toast(T("verify.devCode") + ": " + r.dev_code, "info"); }
+        else { toast(T("verify.sent"), "success"); }
+      } catch (err) {
+        const m = (err && err.message) ? I18n.mapErr(err.message) : T("verify.err.fail");
+        toast(m, "error");
+      } finally {
+        setTimeout(() => { b.disabled = false; }, 1000);
+      }
+    });
+
     // 市场筛选（搜索防抖 ~150ms + 高亮 + 清空按钮，rant 18:06:09 D）
     wireSearch($("#mk-search"), renderMarketplace);
     $("#mk-provider").addEventListener("change", renderMarketplace);

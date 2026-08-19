@@ -18,6 +18,20 @@ db_path = "data/aitokenpool.db"
 # master_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 # ============================================================
+# 0.1 邮件服务（注册验证码，rant 2026-08-19T14:36:19 方案 B）
+#     未配置时进入 dev 模式：验证码打印到日志/响应（便于本地测试）。
+#     ⚠️ 生产部署必须配置 SMTP（STARTTLS，默认 587），否则验证码邮件不会真正送达。
+# ============================================================
+# [mail]
+# smtp_host = "smtp.example.com"
+# smtp_port = 587
+# smtp_user = "noreply@example.com"
+# smtp_password = "your-smtp-password"
+# from = "noreply@example.com"
+# from_name = "AITokenPool"
+# verify_subject = "AITokenPool 邮箱验证码"
+
+# ============================================================
 # 1. 点数规则（账本层的锚）
 # ============================================================
 [points]

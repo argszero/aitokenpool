@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -195,6 +195,24 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "models",
         "context_window",
         "context_window INTEGER NOT NULL DEFAULT 1048576",
+    )?;
+    // v6（rant 2026-08-19T14:36:19）：注册邮箱验证——users.verified + email_verifications 表。
+    // 注意：verified 默认 1（存量用户视为已信任，升级不锁号；新注册显式写 0 待验证）
+    ensure_column(
+        conn,
+        "users",
+        "verified",
+        "verified INTEGER NOT NULL DEFAULT 1",
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS email_verifications (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            email      TEXT NOT NULL UNIQUE,
+            code_hash  TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            attempts   INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
     )?;
     // schema_version：INSERT OR REPLACE 保证幂等
     let v: i64 = conn

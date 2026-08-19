@@ -222,6 +222,17 @@ select.th-filter:disabled { opacity: .55; cursor: not-allowed; }
 select.input.input-error { border-color: var(--danger); }
 select.input.input-error:focus { border-color: var(--danger); }
 select.input option { background: var(--bg-card); }
+/* 登录卡内链接式按钮（注册/重发验证码，rant 2026-08-19T14:36:19） */
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent, #2a9d8f);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+.linklike:hover { opacity: 0.85; }
 
 .card {
   background: var(--bg-card);

@@ -33,6 +33,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 - ✅ **v0.5.2（bugfix）**：修复 3 个时间敏感测试——测试硬编码日期（2026-08-18）跨天后导致赠送过期断言失败，改为 SQLite 动态日期（`datetime('now')` / `strftime('%Y-%m-%d 23:59:59', 'now')`），测试不再随日期推移周期失败
 - ✅ **v0.6.0**：**移除所有 demo 种子数据（rant 2026-08-19T10:41:03）**——首次部署 = 干净空库（只建表），不再预置 demo/admin/ops 假账号、假余额、占位 key；测试改用 `#[cfg(test)]` 专用 `seed_test_users` 辅助（生产构建不含）；UI 登录页/设置页移除演示账号预填与提示
 - ✅ **v0.6.1**：**首次启动自动创建初始管理员（rant 2026-08-19T14:35:05）**——空库启动时创建 `admin@aitokenpool.local` + 随机 16 位密码（打印到启动日志，仅首次）+ quotas 账户（balance=0），幂等不重复；新增 `POST /api/auth/change-password` 改密端点（旧密码校验 + argon2 更新）；不再需要手工插库
+- ✅ **v0.6.2**：**用户自助注册 + 邮箱验证（rant 2026-08-19T14:36:19 方案 B）**——`POST /api/auth/register` + `verify` + `resend-code`；6 位数字验证码（10 分钟有效、5 次错误失效、60 秒重发限频）；未验证邮箱不可登录（403）；登录页注册表单 + 验证码页（中英 i18n）；SMTP 发信（`[mail]` 配置，未配置时 dev 模式验证码打日志/响应）
 
 `ui/` 已由纯静态原型升级为**对接真实 API**（登录、钱包、市场、共享、交易、设置、管理、运营全部真实数据），由后端 `ServeDir` 静态托管，无需单独部署前端。
 
@@ -85,13 +86,25 @@ open http://localhost:8080/                        # 浏览器访问
 >   "INSERT INTO users (email, password_hash, name, role) VALUES ('admin@example.com', '<argon2-hash>', '管理员', 'admin');
 >    INSERT INTO quotas (user_id, balance) VALUES (1, 0);"
 > ```
->
+
+### ④ 注册账号（普通用户自助注册，v0.6.2）
+
+除内置管理员外，普通用户**自助注册**（登录页底部「注册」）：
+
+1. 点击登录页「注册」→ 填昵称（可选）/ 邮箱 / 密码（≥8 位）→ 提交
+2. 邮箱收到 **6 位验证码**（10 分钟有效）→ 输入验证码完成激活
+3. 激活后回登录页用新账号登录（首次进钱包自动获得每日赠送 1 点）
+
+> **邮件服务配置**（生产必配）：`config/config.example.toml` 的 `[mail]` 段
+> （smtp_host / smtp_port / smtp_user / smtp_password / from / from_name）。
+> **未配置 SMTP 时为 dev 模式**：验证码直接打印到服务端日志（并随注册响应返回 `dev_code`），仅适合本地试用。
+
 > 后续账号通过注册/邀请流程创建（当前版本未提供注册端点，可直接操作 SQLite）。
 
 ## API 端点（Bearer 认证）
 
-- `GET /healthz` → `{"status":"ok","version":"0.6.1"}`
-- `POST /api/auth/login` → `{api_key}`；`POST /api/auth/change-password`（改密）；`GET /api/me` → `{id,email,name,role}`
+- `GET /healthz` → `{"status":"ok","version":"0.6.2"}`
+- `POST /api/auth/login` → `{api_key}`；`POST /api/auth/change-password`（改密）；`POST /api/auth/register|verify|resend-code`（注册+邮箱验证）；`GET /api/me` → `{id,email,name,role}`
 - `POST|GET /api/api-keys`（key 脱敏 `atk_live_****xxxx`）；`DELETE /api/api-keys/:id`（撤销）
 - `POST /v1/chat/completions` / `POST /anthropic/v1/messages` / `POST /v1/responses`（网关，三协议互转，非流式 + 流式 SSE 跨协议转换）；`GET /v1/models`（OpenAI 兼容模型列表，认证可选）
 - `GET /api/models`（模型市场）

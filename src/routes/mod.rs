@@ -127,7 +127,7 @@ pub struct LoginReq {
     pub password: String,
 }
 
-/// POST /api/auth/login：email+password → 200 {api_key} / 401
+/// POST /api/auth/login：email+password → 200 {api_key} / 401 / 403（未验证邮箱）
 pub async fn login(
     State(st): State<AppState>,
     Json(req): Json<LoginReq>,
@@ -135,11 +135,180 @@ pub async fn login(
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     let user_id =
         dao::verify_user_password(&conn, &req.email, &req.password).map_err(|_| unauthorized())?;
+    if !dao::user_verified(&conn, user_id) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "邮箱未验证，请先输入验证码完成验证" })),
+        ));
+    }
     let api_key = dao::get_or_create_api_key(&conn, user_id).map_err(internal)?;
     Ok(Json(serde_json::json!({
         "api_key": api_key,
         "user_id": user_id,
     })))
+}
+
+#[derive(Deserialize)]
+pub struct RegisterReq {
+    #[serde(default)]
+    pub name: String,
+    pub email: String,
+    pub password: String,
+}
+
+/// 生成 6 位数字验证码
+fn gen_verification_code() -> String {
+    use rand::Rng;
+    format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32))
+}
+
+/// 发送验证码（dev 模式打日志；SMTP 模式发信），返回是否 dev 模式 + 验证码
+fn send_code(st: &AppState, email: &str) -> Result<(bool, String), ApiErr> {
+    let code = gen_verification_code();
+    let hash = sha2_hex(&code);
+    let expires_at = "+10 minutes".to_string();
+    {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        dao::store_verification_code(&conn, email, &hash, &expires_at).map_err(internal)?;
+    }
+    // 过期时间用 SQLite 表达式写入（datetime('now', '+10 minutes')）
+    {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        conn.execute(
+            "UPDATE email_verifications SET expires_at = datetime('now', '+10 minutes') WHERE email = ?1",
+            [email],
+        )
+        .map_err(internal)?;
+    }
+    let dev = !st.cfg.mail.configured();
+    crate::mail::send_verification_code(&st.cfg.mail, email, &code).map_err(internal)?;
+    Ok((dev, code))
+}
+
+fn sha2_hex(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(s.as_bytes());
+    hex::encode(h.finalize())
+}
+
+/// POST /api/auth/register：body {name?, email, password}。校验失败 400（邮箱格式 / 密码长度）、
+/// email 已注册 409；成功创建未验证用户并发 6 位验证码（10 分钟有效）→ 201
+/// {id, email, name, role, verified}，dev 模式（未配置 SMTP）附 dev_code 便于本地测试。
+pub async fn register(
+    State(st): State<AppState>,
+    Json(req): Json<RegisterReq>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiErr> {
+    let email = req.email.trim().to_lowercase();
+    // 邮箱格式
+    let valid = email.contains('@')
+        && email.split('@').count() == 2
+        && !email.split('@').next().unwrap_or("").is_empty()
+        && email.split('@').nth(1).unwrap_or("").contains('.');
+    if !valid {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "邮箱格式不正确" })),
+        ));
+    }
+    if req.password.len() < 8 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "密码至少 8 位" })),
+        ));
+    }
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    if dao::email_taken(&conn, &email) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "该邮箱已注册" })),
+        ));
+    }
+    let name = if req.name.trim().is_empty() {
+        email.split('@').next().unwrap_or("用户").to_string()
+    } else {
+        req.name.trim().to_string()
+    };
+    let hash = crate::auth::hash_password(&req.password).map_err(internal)?;
+    let user_id = dao::create_unverified_user(&conn, &email, &name, &hash).map_err(internal)?;
+    drop(conn);
+    let (dev, code) = send_code(&st, &email)?;
+    let mut v = serde_json::json!({
+        "id": user_id,
+        "email": email,
+        "name": name,
+        "role": "user",
+        "verified": false,
+    });
+    if dev {
+        // dev 模式：验证码直接返回响应便于本地测试（生产配置 SMTP 后不返回）
+        v["dev_code"] = serde_json::json!(code);
+    }
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+#[derive(Deserialize)]
+pub struct VerifyReq {
+    pub email: String,
+    pub code: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResendReq {
+    pub email: String,
+}
+
+/// POST /api/auth/verify：{email, code} → 校验 6 位验证码 → 激活用户 + 建 quotas → 200
+/// 错误码累计 5 次失效；过期 → 400 需重发
+pub async fn verify(
+    State(st): State<AppState>,
+    Json(req): Json<VerifyReq>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    let email = req.email.trim().to_lowercase();
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let Some((hash, _attempts)) = dao::find_valid_verification(&conn, &email) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "验证码不存在或已过期，请重新获取" })),
+        ));
+    };
+    if sha2_hex(req.code.trim()) != hash {
+        if dao::bump_verification_attempt(&conn, &email).map_err(internal)? {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "验证码错误次数过多，请重新获取" })),
+            ));
+        }
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "验证码错误" })),
+        ));
+    }
+    dao::activate_user(&conn, &email).map_err(internal)?;
+    dao::clear_verification(&conn, &email).map_err(internal)?;
+    Ok(Json(serde_json::json!({ "status": "ok", "email": email })))
+}
+
+/// POST /api/auth/resend-code：{email} → 60 秒限频 → 重新生成并发送验证码
+pub async fn resend_code(
+    State(st): State<AppState>,
+    Json(req): Json<ResendReq>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    let email = req.email.trim().to_lowercase();
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    if dao::resend_too_soon(&conn, &email) {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "error": "请求过于频繁，请 60 秒后重试" })),
+        ));
+    }
+    drop(conn);
+    let (dev, code) = send_code(&st, &email)?;
+    let mut v = serde_json::json!({ "status": "ok", "email": email });
+    if dev {
+        v["dev_code"] = serde_json::json!(code);
+    }
+    Ok(Json(v))
 }
 
 /// GET /api/me：当前登录用户信息（P2-A 前端会话）→ {id, email, name, role}
@@ -208,6 +377,9 @@ pub fn router() -> Router<AppState> {
         .route("/healthz", get(healthz))
         .route("/api/auth/login", post(login))
         .route("/api/auth/change-password", post(change_password))
+        .route("/api/auth/register", post(register))
+        .route("/api/auth/verify", post(verify))
+        .route("/api/auth/resend-code", post(resend_code))
         .route("/api/me", get(me))
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))
         .route("/api/api-keys/:id", axum::routing::delete(api_keys::remove))
@@ -694,6 +866,209 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::UNAUTHORIZED, "未认证应 401");
+    }
+
+    /* ---- 注册 / 邮箱验证（rant 2026-08-19T14:36:19 方案 B）---- */
+
+    #[tokio::test]
+    async fn register_verify_login_full_flow() {
+        // 注册（dev 模式：响应带 dev_code）→ 验证 → 登录 → 每日赠送 1 点
+        let st = test_state("reg");
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"name":"新用户","email":"newbie@example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "注册应 201: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["email"], "newbie@example.com");
+        assert_eq!(v["role"], "user");
+        assert_eq!(v["verified"], false);
+        let code = v["dev_code"].as_str().expect("dev 模式返回验证码");
+        // 未验证登录 → 403
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/login",
+            r#"{"email":"newbie@example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "未验证登录应 403: {body}");
+        // 验证
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/verify",
+            &format!(r#"{{"email":"newbie@example.com","code":"{code}"}}"#),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "验证应 200: {body}");
+        // 验证后登录 → 200
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/login",
+            r#"{"email":"newbie@example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "验证后登录应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let bearer = v["api_key"].as_str().unwrap().to_string();
+        // 钱包：余额 0 + 每日赠送 1 点生效（P1 懒加载）
+        let (s, body) = get(st.clone(), "/api/wallet", Some(&bearer)).await;
+        assert_eq!(s, StatusCode::OK, "wallet 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["balance"], 0.0, "永久余额 0: {body}");
+        assert_eq!(v["gift_balance"], 1.0, "每日赠送 1 点: {body}");
+    }
+
+    #[tokio::test]
+    async fn register_duplicate_409() {
+        let st = test_state("regdup");
+        post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"email":"dup@example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        let (s, body) = post(
+            st,
+            "/api/auth/register",
+            r#"{"email":"dup@example.com","password":"other123"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "重复邮箱应 409: {body}");
+    }
+
+    #[tokio::test]
+    async fn register_invalid_input_400() {
+        let st = test_state("reg400");
+        // 非法邮箱
+        let (s, _) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"email":"not-an-email","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "非法邮箱应 400");
+        // 弱密码
+        let (s, _) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"email":"ok@example.com","password":"short"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "弱密码应 400");
+    }
+
+    #[tokio::test]
+    async fn verify_wrong_code_expires_and_attempt_limit() {
+        let st = test_state("regverr");
+        let (_, body) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"email":"verr@example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let code = v["dev_code"].as_str().unwrap();
+        // 错误码 ×4 → 400
+        for _ in 0..4 {
+            let (s, _) = post(
+                st.clone(),
+                "/api/auth/verify",
+                r#"{"email":"verr@example.com","code":"000000"}"#,
+                None,
+            )
+            .await;
+            assert_eq!(s, StatusCode::BAD_REQUEST);
+        }
+        // 第 5 次错误 → 达到上限，记录删除
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/verify",
+            r#"{"email":"verr@example.com","code":"000000"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "第 5 次错误应 400: {body}");
+        assert!(body.contains("次数过多"), "提示次数过多: {body}");
+        // 重发 → 新码 → 验证成功
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/resend-code",
+            r#"{"email":"verr@example.com"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "重发应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let code2 = v["dev_code"].as_str().unwrap();
+        assert_ne!(code, code2, "重发生成新码");
+        let (s, _) = post(
+            st.clone(),
+            "/api/auth/verify",
+            &format!(r#"{{"email":"verr@example.com","code":"{code2}"}}"#),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "新码验证应 200");
+        // 过期场景：直接改 expires_at 为过去
+        let (_, body) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"email":"expired@example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let code3 = v["dev_code"].as_str().unwrap();
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "UPDATE email_verifications SET expires_at = datetime('now', '-1 minute') WHERE email = 'expired@example.com'",
+                [],
+            )
+            .unwrap();
+        }
+        let (s, body) = post(
+            st,
+            "/api/auth/verify",
+            &format!(r#"{{"email":"expired@example.com","code":"{code3}"}}"#),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "过期应 400: {body}");
+        assert!(body.contains("过期"), "提示过期: {body}");
+    }
+
+    #[tokio::test]
+    async fn resend_code_rate_limited() {
+        let st = test_state("regrl");
+        let (_, body) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"email":"rl@example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        assert!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["dev_code"].is_string());
+        // 60 秒内重发 → 429
+        let (s, body) = post(
+            st,
+            "/api/auth/resend-code",
+            r#"{"email":"rl@example.com"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "限频应 429: {body}");
     }
 
     /* ---- P2-C：部门管理 / 加额审批 / 运营者 / 用量三组聚合 ---- */
