@@ -763,6 +763,7 @@ mod tests {
         let p = std::env::temp_dir().join(format!("atp_gw_{}_{}.db", std::process::id(), tag));
         let _ = std::fs::remove_file(&p);
         let conn = crate::db::open(p.to_str().unwrap()).expect("open tmp db");
+        crate::db::seed_test_users(&conn).expect("seed test users");
         // demo 注册时间拨到赠送窗口外（2020 年）→ 网关测试不触发每日赠送，
         // 消费扣减断言确定（赠送路径由 gift/routes/billing 测试覆盖）
         conn.execute(

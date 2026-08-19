@@ -4,14 +4,18 @@
 //! - POST /api/auth/login：email+password → argon2 校验 → 返回该用户有效 API Key（无则生成）
 //! - Bearer <api_key> 认证：查 api_keys 表 → 注入用户身份；无效 401
 
+// 仅测试使用（hash_password 为 cfg(test)；生产仅需 verify）
+#[cfg(test)]
 use anyhow::{anyhow, Result};
-use argon2::password_hash::{
-    rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
-};
+#[cfg(test)]
+use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+use argon2::password_hash::{PasswordHash, PasswordVerifier};
 use argon2::Argon2;
 use rand::RngCore;
 
 /// argon2 口令哈希（OWASP 默认参数：m=19MiB, t=2, p=1）
+/// v0.6.0 起仅测试使用（生产空库不种账号，注册端点未实现前无生产调用点）
+#[cfg(test)]
 pub fn hash_password(pw: &str) -> Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     Ok(Argon2::default()

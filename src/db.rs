@@ -12,7 +12,7 @@ use rusqlite::Connection;
 
 pub const SCHEMA_VERSION: i64 = 5;
 
-/// 打开（或创建）数据库并执行幂等迁移 + dev 种子
+/// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
     if let Some(dir) = std::path::Path::new(path).parent() {
         if !dir.as_os_str().is_empty() {
@@ -22,7 +22,6 @@ pub fn open(path: &str) -> Result<Connection> {
     }
     let conn = Connection::open(path).with_context(|| format!("打开数据库失败: {}", path))?;
     migrate(&conn)?;
-    seed(&conn)?;
     Ok(conn)
 }
 
@@ -249,8 +248,10 @@ pub fn migrate_key_encryption(conn: &Connection, crypto: &crate::crypto::Crypto)
     Ok(n)
 }
 
-/// dev 种子：demo 用户（demo@aitokenpool.local / demo1234，argon2）+ 点数账户 + 示例上游 key
-pub fn seed(conn: &Connection) -> Result<()> {
+/// 测试专用：自建测试用户（demo/admin/ops + 配额 + 占位 key），复刻旧 seed() 行为。
+/// 生产 open() 不再种任何数据（rant 2026-08-19T10:41:03：移除所有 demo 种子数据，一律生产标准）。
+#[cfg(test)]
+pub(crate) fn seed_test_users(conn: &Connection) -> Result<()> {
     use crate::auth::hash_password;
 
     let demo_id: Option<i64> = conn
@@ -276,9 +277,7 @@ pub fn seed(conn: &Connection) -> Result<()> {
         "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (?1, 12471)",
         [demo_id],
     )?;
-    // 示例上游 key（不真实可用的占位：占位密钥 + deepseek paygo plan）
-    // 幂等：仅当 keys 表为空时插入一次（否则每次启动都会新增一条脏占位 key，
-    // 干扰路由随机选择；rant 2026-08-18T16:14:21 Bug 2）
+    // 示例上游 key（占位密钥 + deepseek paygo plan；仅 keys 表为空时插入一次）
     let key_count: i64 = conn.query_row("SELECT COUNT(*) FROM keys", [], |r| r.get(0))?;
     if key_count == 0 {
         conn.execute(
@@ -288,7 +287,7 @@ pub fn seed(conn: &Connection) -> Result<()> {
         )?;
     }
 
-    // 管理员账号（P1）：admin@aitokenpool.local / admin1234，role=admin
+    // 管理员账号：admin@aitokenpool.local / admin1234，role=admin
     let admin_id: Option<i64> = conn
         .query_row(
             "SELECT id FROM users WHERE email = ?1",
@@ -309,7 +308,7 @@ pub fn seed(conn: &Connection) -> Result<()> {
         )?;
     }
 
-    // 运营者账号（P2-C）：ops@aitokenpool.local / ops1234，role=ops
+    // 运营者账号：ops@aitokenpool.local / ops1234，role=ops
     let ops_id: Option<i64> = conn
         .query_row(
             "SELECT id FROM users WHERE email = ?1",
@@ -423,46 +422,47 @@ mod tests {
     }
 
     #[test]
-    fn seed_demo_user_and_quota() {
-        let (conn, p) = tmp_db("seed");
-        let u: i64 = conn
+    fn empty_db_has_no_seeded_users() {
+        // rant 2026-08-19T10:41:03：生产标准空库——migrate 后无任何种子用户/配额/占位 key
+        let (conn, p) = tmp_db("empty");
+        let users: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(users, 0, "空库无用户");
+        let keys: i64 = conn
+            .query_row("SELECT COUNT(*) FROM keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(keys, 0, "空库无占位 key");
+        let quotas: i64 = conn
+            .query_row("SELECT COUNT(*) FROM quotas", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(quotas, 0, "空库无配额");
+        let demo: i64 = conn
             .query_row(
-                "SELECT id FROM users WHERE email = 'demo@aitokenpool.local'",
+                "SELECT COUNT(*) FROM users WHERE email = 'demo@aitokenpool.local'",
                 [],
                 |r| r.get(0),
             )
-            .expect("demo 用户已种子");
-        let bal: f64 = conn
-            .query_row("SELECT balance FROM quotas WHERE user_id = ?1", [u], |r| {
-                r.get(0)
-            })
-            .expect("demo 点数账户已种子");
-        assert_eq!(bal, 12471.0);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM keys WHERE owner_id = ?1", [u], |r| {
-                r.get(0)
-            })
             .unwrap();
-        assert!(n >= 1, "示例上游 key 已种子");
+        assert_eq!(demo, 0, "无 demo 账号");
         drop(conn);
         let _ = std::fs::remove_file(p);
     }
 
     #[test]
-    fn seed_placeholder_key_is_idempotent() {
-        // rant 2026-08-18T16:14:21 Bug 2：占位 key 只允许在 keys 表为空时插入一次，
-        // 连续 seed（模拟多次启动）keys 数量不增长。
-        let p = std::env::temp_dir().join(format!("atp_test_seed_idem_{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&p);
-        let conn = Connection::open(&p).expect("open raw db");
-        migrate(&conn).expect("migrate");
-        seed(&conn).expect("seed 1st");
-        seed(&conn).expect("seed 2nd");
-        seed(&conn).expect("seed 3rd");
-        let after: i64 = conn
+    fn seed_test_users_is_idempotent() {
+        // 测试辅助函数多次调用不重复插入（幂等性验证）
+        let (conn, p) = tmp_db("testseed");
+        seed_test_users(&conn).expect("seed 1st");
+        seed_test_users(&conn).expect("seed 2nd");
+        let users: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(users, 3, "demo/admin/ops 各一个，共 3 用户");
+        let keys: i64 = conn
             .query_row("SELECT COUNT(*) FROM keys", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(after, 1, "连续 seed 3 次 keys 仍只有 1 条占位 key");
+        assert_eq!(keys, 1, "占位 key 只插一次");
         drop(conn);
         let _ = std::fs::remove_file(p);
     }
@@ -544,6 +544,8 @@ mod tests {
     fn key_encryption_migration_encrypts_plaintext() {
         let crypto = crate::crypto::Crypto::new([11u8; 32]);
         let (conn, p) = tmp_db("kenc");
+        // 需要一个属主用户（FK）；生产空库无种子，这里用测试辅助建 demo（id=1）
+        seed_test_users(&conn).expect("seed test users");
         // 手工插入明文占位 key（模拟 v1 遗留）
         conn.execute(
             "INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key) VALUES ('t','p','m','on',1,'sk-placeholder-encrypted')",

@@ -229,6 +229,7 @@ mod tests {
         let p = std::env::temp_dir().join(format!("atp_wallet_{}_{}.db", std::process::id(), tag));
         let _ = std::fs::remove_file(&p);
         let conn = crate::db::open(p.to_str().unwrap()).expect("open tmp db");
+        crate::db::seed_test_users(&conn).expect("seed test users");
         let cfg = crate::config::Config::load("config/config.example.toml").unwrap();
         crate::db::seed_models(&conn, &cfg).expect("seed models");
         let crypto = crate::crypto::Crypto::new([17u8; 32]);

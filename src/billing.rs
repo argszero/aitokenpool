@@ -157,6 +157,7 @@ mod tests {
         let p = std::env::temp_dir().join(format!("atp_bill_{}_{}.db", std::process::id(), tag));
         let _ = std::fs::remove_file(&p);
         let conn = db::open(p.to_str().unwrap()).expect("open tmp db");
+        db::seed_test_users(&conn).expect("seed test users");
         (conn, p)
     }
 

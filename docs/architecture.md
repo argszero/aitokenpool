@@ -113,7 +113,7 @@
 ### 4.6 管理台
 - 企业：key 管理、员工点数、用量报表
 - 公共：市场浏览、钱包（点数余额）、交易记录
-- **管理员 API（P1 已实现，`src/routes/admin.rs`）**：角色经 `AuthUser.role` 判定（Bearer key 关联 users.role），非 admin → 403；种子账号 `admin@aitokenpool.local / admin1234`（demo 账号 `demo@aitokenpool.local / demo1234`，余额 12471）
+- **管理员 API（P1 已实现，`src/routes/admin.rs`）**：角色经 `AuthUser.role` 判定（Bearer key 关联 users.role），非 admin → 403；**v0.6.0 起生产库不预置任何种子账号**（首次部署 = 干净空库，测试用 demo/admin/ops 账号仅存在于 `#[cfg(test)]` 的 `seed_test_users`）
 - role=ops 端点（平台运营者）留 P2，暂与 admin 合并权限位
 
 ## 5. 数据库设计（实表，`src/db.rs` 迁移 v3）
