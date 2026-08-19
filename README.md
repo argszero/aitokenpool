@@ -32,6 +32,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 - ✅ **发布（v0.5.1）**：GitHub Actions Docker 发布——`main` push / `v*` tag 自动构建推送 GHCR 镜像 `ghcr.io/argszero/aitokenpool`（buildx + gha 缓存）
 - ✅ **v0.5.2（bugfix）**：修复 3 个时间敏感测试——测试硬编码日期（2026-08-18）跨天后导致赠送过期断言失败，改为 SQLite 动态日期（`datetime('now')` / `strftime('%Y-%m-%d 23:59:59', 'now')`），测试不再随日期推移周期失败
 - ✅ **v0.6.0**：**移除所有 demo 种子数据（rant 2026-08-19T10:41:03）**——首次部署 = 干净空库（只建表），不再预置 demo/admin/ops 假账号、假余额、占位 key；测试改用 `#[cfg(test)]` 专用 `seed_test_users` 辅助（生产构建不含）；UI 登录页/设置页移除演示账号预填与提示
+- ✅ **v0.6.1**：**首次启动自动创建初始管理员（rant 2026-08-19T14:35:05）**——空库启动时创建 `admin@aitokenpool.local` + 随机 16 位密码（打印到启动日志，仅首次）+ quotas 账户（balance=0），幂等不重复；新增 `POST /api/auth/change-password` 改密端点（旧密码校验 + argon2 更新）；不再需要手工插库
 
 `ui/` 已由纯静态原型升级为**对接真实 API**（登录、钱包、市场、共享、交易、设置、管理、运营全部真实数据），由后端 `ServeDir` 静态托管，无需单独部署前端。
 
@@ -68,22 +69,29 @@ open http://localhost:8080/                        # 浏览器访问
 
 ### ③ 登录账号
 
-首次部署为**干净空库**（只建表，不预置任何账号）。首个管理员需手动创建：
+首次启动（空库）**自动创建初始管理员账号**（rant 2026-08-19T14:35:05，开源项目惯例）：
 
-```bash
-# 先启动一次服务生成数据目录与表结构，然后：
-# 密码哈希由程序生成（argon2）；示例仅为占位
-sqlite3 data/aitokenpool.db \
-  "INSERT INTO users (email, password_hash, name, role) VALUES ('admin@example.com', '<argon2-hash>', '管理员', 'admin');
-   INSERT INTO quotas (user_id, balance) VALUES (1, 0);"
-```
+1. 启动服务，查看**启动日志**中的初始管理员凭据（仅首次打印）：
+   - 账号：`admin@aitokenpool.local`
+   - 密码：随机生成的 16 位字母数字（标注「初始管理员密码，请立即修改」）
+2. 用该账号登录（登录页邮箱 + 日志中的密码）
+3. 登录后**立即修改密码**：`POST /api/auth/change-password`（旧密码 + 新密码，Bearer 认证）
 
+> 初始管理员只创建一次（users 表为空时）；已有用户后重启不会重复创建。
+> 若日志丢失，也可直接操作 SQLite 手动建号（备选方案）：
+>
+> ```bash
+> sqlite3 data/aitokenpool.db \
+>   "INSERT INTO users (email, password_hash, name, role) VALUES ('admin@example.com', '<argon2-hash>', '管理员', 'admin');
+>    INSERT INTO quotas (user_id, balance) VALUES (1, 0);"
+> ```
+>
 > 后续账号通过注册/邀请流程创建（当前版本未提供注册端点，可直接操作 SQLite）。
 
 ## API 端点（Bearer 认证）
 
-- `GET /healthz` → `{"status":"ok","version":"0.6.0"}`
-- `POST /api/auth/login` → `{api_key}`；`GET /api/me` → `{id,email,name,role}`
+- `GET /healthz` → `{"status":"ok","version":"0.6.1"}`
+- `POST /api/auth/login` → `{api_key}`；`POST /api/auth/change-password`（改密）；`GET /api/me` → `{id,email,name,role}`
 - `POST|GET /api/api-keys`（key 脱敏 `atk_live_****xxxx`）；`DELETE /api/api-keys/:id`（撤销）
 - `POST /v1/chat/completions` / `POST /anthropic/v1/messages` / `POST /v1/responses`（网关，三协议互转，非流式 + 流式 SSE 跨协议转换）；`GET /v1/models`（OpenAI 兼容模型列表，认证可选）
 - `GET /api/models`（模型市场）

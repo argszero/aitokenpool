@@ -248,6 +248,37 @@ pub fn migrate_key_encryption(conn: &Connection, crypto: &crate::crypto::Crypto)
     Ok(n)
 }
 
+/// 首次启动自动创建初始管理员（rant 2026-08-19T14:35:05：开源项目惯例——安装完应有默认管理员）。
+/// - 仅当 users 表为空时创建：`admin@aitokenpool.local` + 随机 16 位字母数字密码（非硬编码）
+///   + 其 quotas 账户（balance=0）；不创建 demo/ops 账号、不种余额、不种占位 key。
+/// - 幂等：已有用户则跳过（重启不重复），返回 `None`；创建成功返回明文密码
+///   （由调用方打印到启动日志，仅首次、明确标注「初始管理员密码，请立即修改」）。
+pub fn bootstrap_admin(conn: &Connection) -> Result<Option<String>> {
+    use rand::distributions::Alphanumeric;
+    use rand::Rng;
+
+    let users: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
+    if users > 0 {
+        return Ok(None);
+    }
+    let pw: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(16)
+        .map(char::from)
+        .collect();
+    let hash = crate::auth::hash_password(&pw)?;
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, role) VALUES (?1, ?2, '管理员', 'admin')",
+        rusqlite::params!["admin@aitokenpool.local", hash],
+    )?;
+    let id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (?1, 0)",
+        [id],
+    )?;
+    Ok(Some(pw))
+}
+
 /// 测试专用：自建测试用户（demo/admin/ops + 配额 + 占位 key），复刻旧 seed() 行为。
 /// 生产 open() 不再种任何数据（rant 2026-08-19T10:41:03：移除所有 demo 种子数据，一律生产标准）。
 #[cfg(test)]
@@ -463,6 +494,74 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM keys", [], |r| r.get(0))
             .unwrap();
         assert_eq!(keys, 1, "占位 key 只插一次");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn bootstrap_admin_creates_on_empty_db_and_is_idempotent() {
+        // rant 2026-08-19T14:35:05：空库首次启动 → 初始管理员 + 随机密码 + quotas(0)
+        let (conn, p) = tmp_db("bootadmin");
+        let pw = bootstrap_admin(&conn)
+            .expect("bootstrap 1st")
+            .expect("有密码");
+        assert_eq!(pw.len(), 16, "密码 16 位字母数字");
+        assert!(
+            pw.chars().all(|c| c.is_ascii_alphanumeric()),
+            "密码为字母数字"
+        );
+        let (email, role, hash): (String, String, String) = conn
+            .query_row(
+                "SELECT email, role, password_hash FROM users WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(email, "admin@aitokenpool.local");
+        assert_eq!(role, "admin");
+        assert!(crate::auth::verify_password(&hash, &pw), "密码与日志一致");
+        assert!(
+            !crate::auth::verify_password(&hash, "wrong-password"),
+            "错误密码不匹配"
+        );
+        let (balance,): (f64,) = conn
+            .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+                Ok((r.get(0)?,))
+            })
+            .unwrap();
+        assert_eq!(balance, 0.0, "初始管理员余额为 0");
+        // 幂等：再启动不重复创建、不再返回密码
+        assert!(bootstrap_admin(&conn).expect("bootstrap 2nd").is_none());
+        let users: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(users, 1, "仅一个初始管理员");
+        let keys: i64 = conn
+            .query_row("SELECT COUNT(*) FROM keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(keys, 0, "不种占位 key");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn bootstrap_admin_skips_when_users_exist() {
+        // 已有用户（测试库）→ bootstrap 跳过，不重复创建
+        let (conn, p) = tmp_db("bootskip");
+        seed_test_users(&conn).expect("seed test users");
+        assert!(bootstrap_admin(&conn).expect("bootstrap").is_none());
+        let users: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(users, 3, "已有用户不受影响");
+        let admin: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM users WHERE email = 'admin@aitokenpool.local'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(admin, 1, "测试库自带 admin 仍在（非 bootstrap 创建）");
         drop(conn);
         let _ = std::fs::remove_file(p);
     }

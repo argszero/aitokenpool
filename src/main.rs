@@ -60,6 +60,17 @@ async fn main() -> anyhow::Result<()> {
     let conn = db::open(&db_path)?;
     db::seed_models(&conn, &cfg)?;
 
+    // 首次启动自动创建初始管理员（rant 2026-08-19T14:35:05）：仅空库时创建，
+    // 密码随机生成、仅此一次打印到启动日志，提示立即修改
+    if let Some(pw) = db::bootstrap_admin(&conn)? {
+        log::warn!("============================================================");
+        log::warn!("⚠️ 初始管理员账号已自动创建（仅首次启动）");
+        log::warn!("⚠️ 账号: admin@aitokenpool.local");
+        log::warn!("⚠️ 初始管理员密码: {pw}");
+        log::warn!("⚠️ 请立即登录并修改密码（POST /api/auth/change-password）");
+        log::warn!("============================================================");
+    }
+
     // P0-C：主密钥 + 旧明文 key 加密迁移
     let crypto = crypto::Crypto::from_config(&cfg.server.master_key);
     let migrated = db::migrate_key_encryption(&conn, &crypto)?;
