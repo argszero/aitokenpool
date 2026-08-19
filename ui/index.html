@@ -421,6 +421,7 @@
         <button class="tab active" data-admin-tab="employees" data-i18n="admin.tab.employees">成员管理</button>
         <button class="tab" data-admin-tab="usage" data-i18n="admin.tab.usage">用量报表</button>
         <button class="tab" data-admin-tab="org" data-i18n="admin.tab.org">组织管理</button>
+        <button class="tab" data-admin-tab="models" data-i18n="admin.tab.models">模型管理</button>
       </div>
 
       <div class="admin-pane" data-admin-pane="employees">
@@ -490,6 +491,67 @@
             <div class="form-row">
               <button type="button" class="btn btn-primary" id="dept-confirm" data-i18n="admin.org.form.confirm">确认</button>
               <button type="button" class="btn btn-ghost" id="dept-cancel" data-i18n="admin.org.form.cancel">取消</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="admin-pane hidden" data-admin-pane="models">
+        <div class="toolbar">
+          <span class="search-box">
+            <input id="model-search" class="input" data-i18n-ph="admin.models.search.ph" placeholder="搜索模型…">
+            <button type="button" class="search-clear" hidden aria-label="清空搜索" title="清空搜索">×</button>
+          </span>
+          <button class="btn btn-primary" id="add-model-btn" data-i18n="admin.models.add">添加模型</button>
+        </div>
+        <div class="card">
+          <h3 data-i18n="admin.models.list">模型列表</h3>
+          <p class="muted" data-i18n="admin.models.sub">厂商 / 模型 / 价格 / 上下文 / 读图——增删改查即时生效；模型删除后该 model 的调用按 0 计费。</p>
+          <div class="table-wrap compact">
+            <table class="table">
+              <thead><tr><th data-i18n="admin.models.col.provider">厂商</th><th data-i18n="admin.models.col.model">模型</th><th class="num" data-i18n="admin.models.col.in">输入价</th><th class="num" data-i18n="admin.models.col.out">输出价</th><th class="num" data-i18n="admin.models.col.ctx">上下文</th><th class="num" data-i18n="admin.models.col.outmax">最大输出</th><th data-i18n="admin.models.col.vision">读图</th><th></th></tr></thead>
+              <tbody id="model-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <!-- 模型添加/编辑：行内展开表单（复用部门表单模式） -->
+        <div class="card" id="model-form-card" hidden>
+          <h3 id="model-form-title">添加模型</h3>
+          <div class="form">
+            <div class="form-row">
+              <label><span data-i18n="admin.models.form.provider">厂商</span>
+                <input id="model-form-provider" class="input" data-i18n-ph="admin.models.form.provider.ph" placeholder="如：deepseek">
+              </label>
+              <label><span data-i18n="admin.models.form.model">模型名</span>
+                <input id="model-form-model" class="input" data-i18n-ph="admin.models.form.model.ph" placeholder="如：deepseek-v4-pro">
+              </label>
+            </div>
+            <div class="form-row">
+              <label><span data-i18n="admin.models.form.currency">币种</span>
+                <select id="model-form-currency" class="input">
+                  <option value="USD">USD</option>
+                  <option value="CNY">CNY</option>
+                </select>
+              </label>
+              <label><span data-i18n="admin.models.form.in">输入价（/百万 token）</span>
+                <input id="model-form-in" type="number" min="0" step="0.001" class="input" value="0" data-i18n-ph="admin.models.form.in.ph" placeholder="0.435">
+              </label>
+              <label><span data-i18n="admin.models.form.out">输出价（/百万 token）</span>
+                <input id="model-form-out" type="number" min="0" step="0.001" class="input" value="0" data-i18n-ph="admin.models.form.out.ph" placeholder="0.87">
+              </label>
+            </div>
+            <div class="form-row">
+              <label><span data-i18n="admin.models.form.ctx">上下文窗口</span>
+                <input id="model-form-ctx" type="number" min="0" step="1" class="input" value="0" placeholder="1048576">
+              </label>
+              <label><span data-i18n="admin.models.form.outmax">最大输出</span>
+                <input id="model-form-outmax" type="number" min="0" step="1" class="input" value="0" placeholder="384000">
+              </label>
+              <label class="checkbox"><input type="checkbox" id="model-form-vision"> <span data-i18n="admin.models.form.vision">支持读图（vision）</span></label>
+            </div>
+            <div class="form-row">
+              <button type="button" class="btn btn-primary" id="model-confirm" data-i18n="admin.models.form.confirm">确认</button>
+              <button type="button" class="btn btn-ghost" id="model-cancel" data-i18n="admin.models.form.cancel">取消</button>
             </div>
           </div>
         </div>
