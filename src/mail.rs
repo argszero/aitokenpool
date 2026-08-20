@@ -1,7 +1,13 @@
 //! 邮件发信（注册验证码，rant 2026-08-19T14:36:19 方案 B）
 //!
-//! - 配置了 SMTP（config [mail].smtp_host 非空）→ 真实发信（STARTTLS，默认 587）
+//! - 配置了 SMTP（config [mail].smtp_host 非空）→ 真实发信
 //! - 未配置 → dev 模式：验证码打印到日志（便于本地测试；生产必须配置 SMTP）
+//!
+//! ⚠️ TLS 模式与端口（2026-08-20 实测踩坑）：本实现用 `SmtpTransport::relay`
+//! （implicit TLS，连接后立即 TLS 握手），**必须配 465 端口**（smtp.gmail.com:465）。
+//! 配 587（STARTTLS 端口）会直接对 587 做 TLS 握手 → Gmail 返回明文 →
+//! rustls 报 InvalidContentType。若要用 587 STARTTLS 需改用
+//! `SmtpTransport::builder_dangerous(...).tls(Tls::Opportunistic(...))`。
 
 use anyhow::{Context, Result};
 
@@ -43,6 +49,7 @@ pub fn send_verification_code(cfg: &Mail, to: &str, code: &str) -> Result<()> {
         )
         .to(to.parse().context("收件邮箱格式非法")?)
         .subject(subject)
+        .header(lettre::message::header::ContentType::TEXT_PLAIN)
         .body(body)
         .context("构建邮件失败")?;
 
@@ -57,7 +64,10 @@ pub fn send_verification_code(cfg: &Mail, to: &str, code: &str) -> Result<()> {
         .build();
     mailer
         .send(&email)
-        .with_context(|| format!("发送验证码到 {to} 失败"))?;
+        .map_err(|e| {
+            log::error!("SMTP 发送验证码到 {to} 失败: {e:?}");
+            anyhow::anyhow!("发送验证码到 {to} 失败: {e}")
+        })?;
     log::info!("验证码邮件已发送: {to}");
     Ok(())
 }
