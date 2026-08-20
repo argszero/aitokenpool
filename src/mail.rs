@@ -62,12 +62,10 @@ pub fn send_verification_code(cfg: &Mail, to: &str, code: &str) -> Result<()> {
         .port(cfg.smtp_port)
         .credentials(creds)
         .build();
-    mailer
-        .send(&email)
-        .map_err(|e| {
-            log::error!("SMTP 发送验证码到 {to} 失败: {e:?}");
-            anyhow::anyhow!("发送验证码到 {to} 失败: {e}")
-        })?;
+    mailer.send(&email).map_err(|e| {
+        log::error!("SMTP 发送验证码到 {to} 失败: {e:?}");
+        anyhow::anyhow!("发送验证码到 {to} 失败: {e}")
+    })?;
     log::info!("验证码邮件已发送: {to}");
     Ok(())
 }
