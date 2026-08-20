@@ -93,7 +93,7 @@
 
 ### 4.3 计量引擎（P0-B 已实现，`src/billing.rs`）
 - 每次调用记录：用户、模型、输入/输出 token、成本（`usage_records`）
-- **点数计算**：`成本 = 输入token×input_per_m/1e6 + 输出token×output_per_m/1e6`（models 表单价，config.toml `[[models]]` 唯一真源）→ 折算到锚定货币（USD/CNY，`CNY_PER_USD=7.2`）→ × `points_per_unit`（默认 1000 点/USD）
+- **点数计算**：`成本 = 输入token×input_per_m/1e6 + 输出token×output_per_m/1e6`（models 表单价，config.toml `[[models]]` 唯一真源）→ 折算到锚定货币 CNY（USD 价按 `CNY_PER_USD=7.2`）→ × `points_per_unit`（1 点 = 1 CNY；点数可为小数，最多保留 5 位，`billing::round5`）
 - **入账（事务性）**：`settle` 在成功响应后调用——扣消费者 → 加分享者 90% → 两条 transactions（consume/earn）→ usage_records → keys.used；任一步失败整体回滚（失败不入账）
 
 ### 4.4 账本层（P1 点数规则已落地）

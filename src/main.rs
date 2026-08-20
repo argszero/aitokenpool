@@ -7,8 +7,8 @@
 //!
 //! P0-A（rant 2026-08-17T22:21:52）：服务骨架 + 配置加载 + SQLite 数据层 + 认证。
 //! P0-B（rant 2026-08-18T09:55:57）：网关转发 + 路由故障转移 + 计量账本闭环。
-//! 启动：cargo run -- --config config/config.toml（默认 config/config.toml，
-//! 不存在时提示复制 config.example.toml）。
+//! 配置：<ATP_DATA_DIR>/config.toml（首次启动自动从 config/config.example.toml 复制；
+//! 也可 --config 显式指定其它路径）。
 
 mod auth;
 mod billing;

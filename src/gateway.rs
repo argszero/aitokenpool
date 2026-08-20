@@ -1165,14 +1165,14 @@ mod tests {
                     r.get(0)
                 })
                 .unwrap();
-            // pts = 100×10/1e6 + 50×20/1e6 = 0.002 USD × 1000 = 2.0
-            assert!((bal_c - (12471.0 - 2.0)).abs() < 1e-9, "consumer={bal_c}");
+            // pts = (100×10 + 50×20)/1e6 USD = 0.002 USD × 7.2 CNY锚定 = 0.0144 点（1 点 = 1 CNY）
+            assert!((bal_c - (12471.0 - 0.0144)).abs() < 1e-9, "consumer={bal_c}");
             let bal_o: f64 = conn
                 .query_row("SELECT balance FROM quotas WHERE user_id = 2", [], |r| {
                     r.get(0)
                 })
                 .unwrap();
-            assert!((bal_o - 1.8).abs() < 1e-9, "owner={bal_o}");
+            assert!((bal_o - 0.01296).abs() < 1e-9, "owner={bal_o}");
             let n_tx: i64 = conn
                 .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
                 .unwrap();
@@ -1268,9 +1268,9 @@ mod tests {
         };
         assert_eq!(cached, 900.0, "usage_records 记录缓存命中 token");
         assert_eq!(tokens, 1050.0);
-        // cost = 100×10/1e6 + 900×2/1e6 + 50×20/1e6 = (1000+1800+1000)/1e6 = 0.0038 USD
-        assert!((cost - 0.0038).abs() < 1e-9, "cost={cost}");
-        // 消费者扣 0.0038 × 1000 点 = 3.8；属主得 3.42（90%）
+        // cost = 100×10/1e6 + 900×2/1e6 + 50×20/1e6 = 0.0038 USD → CNY 锚定 ×7.2 = 0.02736
+        assert!((cost - 0.02736).abs() < 1e-9, "cost={cost}");
+        // 消费者扣 0.02736 点；属主得 round5(0.02736×0.9) = round5(0.024624) = 0.02462（90%）
         let (bal_c, bal_o): (f64, f64) = {
             let conn = st.db.lock().unwrap();
             let c = conn
@@ -1285,8 +1285,8 @@ mod tests {
                 .unwrap();
             (c, o)
         };
-        assert!((bal_c - (12471.0 - 3.8)).abs() < 1e-9, "consumer={bal_c}");
-        assert!((bal_o - 3.42).abs() < 1e-9, "owner={bal_o}");
+        assert!((bal_c - (12471.0 - 0.02736)).abs() < 1e-9, "consumer={bal_c}");
+        assert!((bal_o - 0.02462).abs() < 1e-9, "owner={bal_o}");
 
         up.abort();
     }
@@ -1354,14 +1354,14 @@ mod tests {
             "不是 openai 请求体: {upstream}"
         );
 
-        // 计量入账：100×10/1e6 + 50×20/1e6 = 0.002 USD × 1000 = 2.0 点
+        // 计量入账：100×10/1e6 + 50×20/1e6 = 0.002 USD × 7.2 = 0.0144 点（1 点 = 1 CNY）
         let conn = st.db.lock().unwrap();
         let bal: f64 = conn
             .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
                 r.get(0)
             })
             .unwrap();
-        assert!((bal - (12471.0 - 2.0)).abs() < 1e-9, "consumer={bal}");
+        assert!((bal - (12471.0 - 0.0144)).abs() < 1e-9, "consumer={bal}");
         drop(conn);
         up.abort();
     }
@@ -1549,14 +1549,14 @@ mod tests {
             !text.contains("event: message_start"),
             "不应透传 anthropic 事件"
         );
-        // 入账：80×10/1e6 + 30×20/1e6 = 0.0014 USD × 1000 = 1.4 点
+        // 入账：80×10/1e6 + 30×20/1e6 = 0.0014 USD × 7.2 = 0.01008 点
         let conn = st.db.lock().unwrap();
         let bal: f64 = conn
             .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
                 r.get(0)
             })
             .unwrap();
-        assert!((bal - (12471.0 - 1.4)).abs() < 1e-9, "consumer={bal}");
+        assert!((bal - (12471.0 - 0.01008)).abs() < 1e-9, "consumer={bal}");
         drop(conn);
         up.abort();
     }
@@ -1820,14 +1820,14 @@ mod tests {
             text.contains("\"content\":\"hel\"") && text.contains("\"content\":\"lo\""),
             "chunk 逐块透传"
         );
-        // 计量：100×10/1e6 + 50×20/1e6 = 0.002 USD × 1000 = 2.0 点
+        // 计量：100×10/1e6 + 50×20/1e6 = 0.002 USD × 7.2 = 0.0144 点
         let conn = st.db.lock().unwrap();
         let bal: f64 = conn
             .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
                 r.get(0)
             })
             .unwrap();
-        assert!((bal - (12471.0 - 2.0)).abs() < 1e-9, "consumer={bal}");
+        assert!((bal - (12471.0 - 0.0144)).abs() < 1e-9, "consumer={bal}");
         let n_ur: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |r| r.get(0))
             .unwrap();
@@ -1881,14 +1881,14 @@ mod tests {
             text.contains("event: message_stop"),
             "anthropic 事件原样透传"
         );
-        // 80×10/1e6 + 30×20/1e6 = 0.0014 USD × 1000 = 1.4 点
+        // 80×10/1e6 + 30×20/1e6 = 0.0014 USD × 7.2 = 0.01008 点
         let conn = st.db.lock().unwrap();
         let bal: f64 = conn
             .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
                 r.get(0)
             })
             .unwrap();
-        assert!((bal - (12471.0 - 1.4)).abs() < 1e-9, "consumer={bal}");
+        assert!((bal - (12471.0 - 0.01008)).abs() < 1e-9, "consumer={bal}");
         drop(conn);
         up.abort();
     }
