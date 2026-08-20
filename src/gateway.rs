@@ -756,7 +756,7 @@ pub async fn models(
 }
 
 /// GET /api/plans（上架表单数据源：config [[plans]] 单一真源，需认证）
-/// 返回 id / provider / name（config 无 name 时按 type 推导显示名）/ type / key_prefix / endpoints。
+/// 返回 id / provider / name（config 无 name 时按 type 推导显示名）/ type / endpoints。
 pub async fn plans(
     State(st): State<AppState>,
     _auth: AuthUser,
@@ -781,7 +781,6 @@ pub async fn plans(
                 "provider": p.provider,
                 "name": name,
                 "type": p.type_,
-                "key_prefix": p.key_prefix,
                 "interactive_only": p.interactive_only,
                 "endpoints": p.endpoints.iter().map(|e| serde_json::json!({
                     "protocol": e.protocol,
@@ -887,7 +886,6 @@ mod tests {
             provider: "test".to_string(),
             name: String::new(),
             type_: "paygo".to_string(),
-            key_prefix: "sk-".to_string(),
             interactive_only: false,
             endpoints: protocols
                 .iter()
@@ -1716,14 +1714,14 @@ mod tests {
         );
         assert!(ids.contains(&"zhipu-coding"));
         assert!(ids.contains(&"zhipu-paygo"));
-        // 字段结构：id / provider / name / type / key_prefix / endpoints
+        // 字段结构：id / provider / name / type / endpoints
         let dp = arr
             .iter()
             .find(|p| p.get("id") == Some(&serde_json::json!("deepseek-paygo")))
             .unwrap();
         assert_eq!(dp["provider"], "deepseek");
         assert_eq!(dp["type"], "paygo");
-        assert_eq!(dp["key_prefix"], "sk-");
+
         assert_eq!(dp["name"], "API（按量）");
         assert!(dp["endpoints"].is_array() && !dp["endpoints"].as_array().unwrap().is_empty());
         // 无认证 → 401

@@ -106,15 +106,13 @@ country = "CN"
 
 # ============================================================
 # 3. Plan 端点（plans）
-#    每个 plan = 一个可被路由到的上游端点（协议 + base_url + key 前缀约定）。
+#    每个 plan = 一个可被路由到的上游端点（协议 + base_url）。
 # ============================================================
 
 [[plans]]
 id = "deepseek-paygo"
 provider = "deepseek"
 type = "paygo"                 # paygo | token | coding
-# key 前缀：用于区分 plan 专属 key 与普通按量 key（错配会 401）
-key_prefix = "sk-"
 endpoints = [
   { protocol = "openai_chat", base_url = "https://api.deepseek.com" },
   { protocol = "anthropic",   base_url = "https://api.deepseek.com/anthropic" },
@@ -125,7 +123,6 @@ endpoints = [
 id = "zhipu-coding"
 provider = "zhipu"
 type = "coding"
-key_prefix = ""                 # 智谱不强制前缀，用专属 Key
 endpoints = [
   { protocol = "openai_chat", base_url = "https://open.bigmodel.cn/api/coding/paas/v4" },
   { protocol = "anthropic",   base_url = "https://open.bigmodel.cn/api/anthropic" },
@@ -135,7 +132,6 @@ endpoints = [
 id = "aliyun-token-plan"
 provider = "aliyun-bailian"
 type = "token"
-key_prefix = "sk-sp-"           # 专属前缀，普通 sk- 会 401
 # 注意：仅限交互式编程工具，禁止自动化批量调用（合规约束）
 interactive_only = true
 endpoints = [
@@ -147,7 +143,6 @@ endpoints = [
 id = "ark-coding"
 provider = "bytedance-ark"
 type = "coding"
-key_prefix = ""
 endpoints = [
   { protocol = "openai_chat", base_url = "https://ark.cn-beijing.volces.com/api/coding/v3" },
   { protocol = "anthropic",   base_url = "https://ark.cn-beijing.volces.com/api/coding" },
@@ -157,7 +152,6 @@ endpoints = [
 id = "ark-agent"
 provider = "bytedance-ark"
 type = "token"
-key_prefix = ""
 endpoints = [
   { protocol = "openai_chat", base_url = "https://ark.cn-beijing.volces.com/api/plan/v3" },
   { protocol = "anthropic",   base_url = "https://ark.cn-beijing.volces.com/api/plan" },
@@ -167,7 +161,6 @@ endpoints = [
 id = "kimi-code"
 provider = "moonshot"
 type = "coding"
-key_prefix = ""                 # 专属 Key，与开放平台 api.moonshot.cn 不通用
 endpoints = [
   { protocol = "openai_chat", base_url = "https://api.kimi.com/coding/v1" },
   { protocol = "anthropic",   base_url = "https://api.kimi.com/coding/" },
@@ -177,7 +170,6 @@ endpoints = [
 id = "minimax-coding"
 provider = "minimax"
 type = "coding"
-key_prefix = "sk-cp-"           # Coding Plan 专属 Key
 endpoints = [
   # 国内站（国际站用 api.minimax.io）
   { protocol = "openai_chat", base_url = "https://api.minimaxi.com/v1" },
@@ -191,7 +183,6 @@ endpoints = [
 id = "zhipu-paygo"
 provider = "zhipu"
 type = "paygo"
-key_prefix = "sk-"              # 普通按量 Key
 endpoints = [
   { protocol = "openai_chat", base_url = "https://open.bigmodel.cn/api/paas/v4" },
   { protocol = "anthropic",   base_url = "https://open.bigmodel.cn/api/anthropic" },
@@ -201,7 +192,6 @@ endpoints = [
 id = "aliyun-bailian-paygo"
 provider = "aliyun-bailian"
 type = "paygo"
-key_prefix = "sk-"              # 普通按量 Key
 endpoints = [
   { protocol = "openai_chat", base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1" },
 ]
@@ -210,7 +200,6 @@ endpoints = [
 id = "ark-paygo"
 provider = "bytedance-ark"
 type = "paygo"
-key_prefix = "sk-"              # 普通按量 Key
 endpoints = [
   { protocol = "openai_chat", base_url = "https://ark.cn-beijing.volces.com/api/v3" },
 ]
@@ -219,7 +208,6 @@ endpoints = [
 id = "moonshot-paygo"
 provider = "moonshot"
 type = "paygo"
-key_prefix = "sk-"              # 普通按量 Key
 endpoints = [
   { protocol = "openai_chat", base_url = "https://api.moonshot.cn/v1" },
 ]
@@ -228,7 +216,6 @@ endpoints = [
 id = "minimax-paygo"
 provider = "minimax"
 type = "paygo"
-key_prefix = "sk-"              # 普通按量 Key
 endpoints = [
   { protocol = "openai_chat", base_url = "https://api.minimaxi.com/v1" },
 ]
