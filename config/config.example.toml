@@ -72,7 +72,7 @@ symbol = "P"
 # —— 协议枚举约定（网关层适配器）——
 #   openai_chat  = OpenAI Chat Completions（POST /chat/completions）
 #   anthropic    = Anthropic Messages（POST /v1/messages）
-#   responses    = OpenAI Responses（POST /responses）— P0 后置
+#   responses    = OpenAI Responses（POST /responses）
 
 [[providers]]
 id = "deepseek"
@@ -116,7 +116,7 @@ type = "paygo"                 # paygo | token | coding
 endpoints = [
   { protocol = "openai_chat", base_url = "https://api.deepseek.com" },
   { protocol = "anthropic",   base_url = "https://api.deepseek.com/anthropic" },
-  { protocol = "responses",   base_url = "https://api.deepseek.com" },   # P0 后置
+  { protocol = "responses",   base_url = "https://api.deepseek.com" }
 ]
 
 [[plans]]
