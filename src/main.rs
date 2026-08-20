@@ -68,26 +68,34 @@ fn config_path(
     }
 }
 
-/// 首次启动：<data-dir>/config.toml 不存在 → 从仓库内置示例复制（rant 2026-08-19T20:53:23）
+/// 首次启动：<data-dir>/config.toml 不存在 → 从仓库内置示例复制（rant 2026-08-19T20:53:23）；
+/// 无示例文件（如独立二进制分发）→ 写入编译期内嵌的完整默认配置（rant 2026-08-20：开箱即用）。
 fn ensure_config(data_dir: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
     let target = data_dir.join("config.toml");
     if target.exists() {
         return Ok(target);
     }
     let example = "config/config.example.toml";
-    if !std::path::Path::new(example).exists() {
-        // 运行目录没有示例（如已安装的二进制）→ 生成最小可用配置
+    let content = if std::path::Path::new(example).exists() {
+        // 源码仓库 / Docker 镜像内置示例：带注释可读，直接复制
+        std::fs::read_to_string(example)
+            .map_err(|e| anyhow::anyhow!("读取示例配置 {example} 失败: {e}"))?
+    } else {
+        // 独立二进制分发（运行目录无示例）→ 用编译期内嵌的完整默认配置，
+        // 含 providers / plans / models 全量模板，首次启动即开箱即用
         // 注意：日志系统尚未初始化，用 eprintln 而非 log::warn
-        eprintln!("示例配置 {example} 不存在，生成最小配置 {target:?}");
-        let min = "[server]\naddr = \"0.0.0.0:8080\"\ndb_path = \"aitokenpool.db\"\n";
-        std::fs::write(&target, min)?;
-        return Ok(target);
-    }
-    std::fs::copy(example, &target)
-        .map_err(|e| anyhow::anyhow!("复制示例配置到 {target:?} 失败: {e}"))?;
-    eprintln!("首次启动：已从 {example} 复制配置到 {target:?}");
+        eprintln!("示例配置 {example} 不存在，使用编译期内嵌默认配置");
+        DEFAULT_CONFIG.to_string()
+    };
+    std::fs::write(&target, content)
+        .map_err(|e| anyhow::anyhow!("写入配置到 {target:?} 失败: {e}"))?;
+    eprintln!("首次启动：已生成配置 {target:?}");
     Ok(target)
 }
+
+/// 编译期内嵌的完整默认配置（2026-08-20：任何安装方式首次启动即开箱即用——
+/// 含 providers / plans / models 全量模板，用户按需改 master_key / public_url / 上游 key 即可）
+const DEFAULT_CONFIG: &str = include_str!("../config/config.example.toml");
 
 /// 解析日志级别字符串 → LevelFilter（非法值报错）
 fn parse_log_level(s: &str) -> anyhow::Result<log::LevelFilter> {
@@ -223,5 +231,38 @@ mod tests {
         assert_eq!(parse_log_level("error").unwrap(), log::LevelFilter::Error);
         assert_eq!(parse_log_level("off").unwrap(), log::LevelFilter::Off);
         assert!(parse_log_level("verbose").is_err(), "非法级别应报错");
+    }
+
+    #[test]
+    fn embedded_default_config_is_complete() {
+        // 内嵌默认配置必须可解析且含全量模板（providers/plans/models），
+        // 保证独立二进制分发首次启动即开箱即用（rant 2026-08-20）
+        let cfg: crate::config::Config =
+            toml::from_str(DEFAULT_CONFIG).expect("内嵌默认配置应能解析");
+        assert!(cfg.providers.len() >= 6, "providers 模板");
+        assert!(cfg.plans.len() >= 7, "plans 模板");
+        assert!(cfg.models.len() >= 10, "models 模板");
+    }
+
+    #[test]
+    fn ensure_config_writes_default_when_no_example() {
+        // 无 config/config.example.toml 文件（模拟独立二进制分发）→ 写入内嵌完整配置
+        let dir = std::env::temp_dir().join(format!("atp_ec_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 用临时 cwd 隔离，避免读到仓库里的 config/config.example.toml
+        let path = {
+            // 构造一个 data_dir，并临时把 cwd 切到空目录（仓库内跑测试时工作区有 example）
+            let old = std::env::current_dir().unwrap();
+            std::env::set_current_dir(&dir).unwrap();
+            let r = ensure_config(std::path::Path::new(&dir));
+            std::env::set_current_dir(old).unwrap();
+            r.unwrap()
+        };
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[[providers]]"), "内嵌默认应含 providers");
+        assert!(content.contains("[[plans]]"), "内嵌默认应含 plans");
+        assert!(content.contains("[[models]]"), "内嵌默认应含 models");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
