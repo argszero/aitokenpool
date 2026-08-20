@@ -17,7 +17,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 
 ## 状态
 
-后端 + 前端已全部实现，当前版本 **v0.7.0**（缓存命中/未命中分开计费）：
+后端 + 前端已全部实现，当前版本 **v0.7.1**（config.toml 模型目录唯一真源）：
 
 - ✅ **P0-A（v0.2.0）**：后端骨架 + TOML 配置（`Config::validate`：points_per_unit>0 / plan→provider 存在 / endpoints≥1 / protocol 枚举）+ SQLite 数据层（幂等迁移，**生产空库不种任何种子数据**）+ 认证（argon2 + Bearer API Key）+ API Key 端点
 - ✅ **P0-B（v0.2.1）**：网关转发（OpenAI Chat Completions + Anthropic Messages）+ 路由故障转移（粘性 / 健康冷却 / 3 次切换上限）+ 计量账本（点数计算、90/10 分成、事务性 settle）
@@ -35,11 +35,12 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 - ✅ **v0.6.1**：**首次启动自动创建初始管理员（rant 2026-08-19T14:35:05）**——空库启动时创建 `admin@aitokenpool.local` + 随机 16 位密码（打印到启动日志，仅首次）+ quotas 账户（balance=0），幂等不重复；新增 `POST /api/auth/change-password` 改密端点（旧密码校验 + argon2 更新）；不再需要手工插库
 - ✅ **v0.6.2**：**用户自助注册 + 邮箱验证（rant 2026-08-19T14:36:19 方案 B）**——`POST /api/auth/register` + `verify` + `resend-code`；6 位数字验证码（10 分钟有效、5 次错误失效、60 秒重发限频）；未验证邮箱不可登录（403）；登录页注册表单 + 验证码页（中英 i18n）；SMTP 发信（`[mail]` 配置，未配置时 dev 模式验证码打日志/响应）
 - ✅ **v0.6.3**：**接入方式 URL 配置化（rant 2026-08-19T20:37:37）**——设置页「接入方式」端点不再硬编码域名：新增 `[server].public_url` 配置（缺省 `http://localhost:8080`）+ `GET /api/config` 下发；前端从配置拼接 `{public_url}/v1`、`{public_url}/anthropic`，取不到配置时回退同源 origin
-- ✅ **v0.6.4**：**管理员模型信息 CRUD（rant 2026-08-19T20:40:29）**——models 表补 context_length / max_output / vision / cache_hit_input_per_m（迁移 v7，幂等）+ seed 从 models.example.json 写入；新增 `GET|POST /api/admin/models` + `PATCH|DELETE /api/admin/models/:id`（admin 权限，唯一冲突 409，删除后按 0 计费）；管理视图「模型管理」tab（搜索/新增/编辑/删除，行内表单 + 二次确认，中英 i18n）；`GET /api/models` 市场列表补新字段（读图/上下文真实值）
+- ✅ **v0.6.4**：**管理员模型信息 CRUD（rant 2026-08-19T20:40:29）**——models 表补 context_length / max_output / vision / cache_hit_input_per_m（迁移 v7，幂等）+ seed 从 config `[[models]]` 写入（v0.7.1 起）；新增 `GET|POST /api/admin/models` + `PATCH|DELETE /api/admin/models/:id`（admin 权限，唯一冲突 409，删除后按 0 计费）；管理视图「模型管理」tab（搜索/新增/编辑/删除，行内表单 + 二次确认，中英 i18n）；`GET /api/models` 市场列表补新字段（读图/上下文真实值）
 - ✅ **v0.6.5**：**全站时区修复（rant 2026-08-19T20:45:32 BUG）**——后端所有返回 JSON 的时间字段统一转 UTC ISO 带 Z（`2026-08-19T12:00:00Z`；交易/共享/API Key/部门/加额/模型列表全量，`utc_iso()` 序列化）；前端 `timeAgo()` 按 UTC 解析（兼容旧格式视为 UTC）、仪表盘 sparkline 日期按 UTC 转本地归天、绝对时间 title 本地化显示——消费后交易记录不再显示「8小时前」，跨天不错位
 - ✅ **v0.6.6**：**统一数据目录（rant 2026-08-19T20:53:23）**——`ATP_DATA_DIR`（默认 `./data`；`--data-dir` > env > 默认）下放 config.toml（首次自动复制示例）+ aitokenpool.db + logs/，目录自动创建；数据库路径统一由 data-dir 决定（config `db_path` 忽略）；Docker 单卷挂载 `./atp-data:/data`（镜像内置示例配置，首启自动复制）；.gitignore/.dockerignore 补 atp-data/；旧 data/ 迁移说明
 - ✅ **v0.6.7**：**日志系统（rant 2026-08-19T20:54:26）**——log4rs 替换 env_logger：日志落盘 `<data-dir>/logs/aitokenpool.log` + stdout 双写；按大小滚动（`[log].max_file_size`，默认 10MB）+ `max_backups`（默认 7）自动清理旧日志；`[log]` 配置段（dir / level / file_pattern）；Docker 日志随统一目录持久化
 - ✅ **v0.7.0**：**缓存命中/未命中分开计费（rant 2026-08-20T10:17:27）**——usage 解析拆分缓存 token（openai `prompt_tokens_details.cached_tokens` / anthropic `cache_read_input_tokens` / responses `input_tokens_details.cached_tokens`）；计费 = 未命中 × input_per_m + 命中 × cache_hit_input_per_m（缺省 0 = 命中免费）；usage_records 新增 `cached_tokens` 列（迁移 v8）；DeepSeek 官方 CNY 定价（deepseek-v4-flash 1.5/0.05/4.5、deepseek-v4-pro 4.5/0.15/13.5，空闲价）；管理端模型表单可配缓存命中输入价；流式（SSE 转换 + 透传）同拆
+- ✅ **v0.7.1**：**简化模型配置（rant 2026-08-20T10:27:13）**——模型（厂商/价格/上下文/读图等）全部在 config.toml `[[models]]` 段定义（唯一真源），启动 upsert 进 DB；**移除 data/models.example.json 与 price_overrides 双层机制**（不再有「json 聚合源 + 官方价覆盖」设想）；10 个模型迁入 config（DeepSeek 官方 CNY 价 flash 1.5/0.05/4.5、pro 4.5/0.15/13.5）；data.js 游客兜底价对齐 config
 
 `ui/` 已由纯静态原型升级为**对接真实 API**（登录、钱包、市场、共享、交易、设置、管理、运营全部真实数据），由后端 `ServeDir` 静态托管，无需单独部署前端。
 
@@ -133,7 +134,7 @@ open http://localhost:8080/                        # 浏览器访问
 
 ## API 端点（Bearer 认证）
 
-- `GET /healthz` → `{"status":"ok","version":"0.7.0"}`
+- `GET /healthz` → `{"status":"ok","version":"0.7.1"}`
 - `POST /api/auth/login` → `{api_key}`；`POST /api/auth/change-password`（改密）；`POST /api/auth/register|verify|resend-code`（注册+邮箱验证）；`GET /api/me` → `{id,email,name,role}`；`GET /api/config` → `{public_url}`（接入端点 base，rant 2026-08-19T20:37:37）
 - `POST|GET /api/api-keys`（key 脱敏 `atk_live_****xxxx`）；`DELETE /api/api-keys/:id`（撤销）
 - `POST /v1/chat/completions` / `POST /anthropic/v1/messages` / `POST /v1/responses`（网关，三协议互转，非流式 + 流式 SSE 跨协议转换）；`GET /v1/models`（OpenAI 兼容模型列表，认证可选）

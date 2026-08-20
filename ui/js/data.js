@@ -13,10 +13,10 @@
   const USD = (usd) => Math.round(usd * 7.2);
   const CNY = (cny) => Math.round(cny);
 
-  // 模型价格（来自 data/models.example.json，折算为点数 / 1M tokens）——上架表单定价兜底
+  // 模型价格（对齐 config.toml [[models]] 官方价，折算为点数 / 1M tokens）——上架表单定价兜底
   const MODELS = [
-    { provider: "deepseek", model: "deepseek-v4-pro",  in: USD(0.435), out: USD(0.87),  ctx: 1048576, max: 384000, tag: "推理" },
-    { provider: "deepseek", model: "deepseek-v4-flash", in: USD(0.14),  out: USD(0.28),  ctx: 1048576, max: 384000, tag: "通用" },
+    { provider: "deepseek", model: "deepseek-v4-pro",  in: CNY(4.5),   out: CNY(13.5),  ctx: 1048576, max: 384000, tag: "推理" },
+    { provider: "deepseek", model: "deepseek-v4-flash", in: CNY(1.5),   out: CNY(4.5),   ctx: 1048576, max: 384000, tag: "通用" },
     { provider: "zhipu",    model: "glm-5.2",          in: CNY(8.0),   out: CNY(28.0),  ctx: 1048576, max: null,   tag: "通用" },
     { provider: "openai",   model: "gpt-5.5-pro",      in: USD(30.0),  out: USD(180.0), ctx: 1050000, max: null,   tag: "旗舰" },
     { provider: "anthropic",model: "claude-opus-4.7",   in: USD(5.0),   out: USD(25.0),  ctx: 1000000, max: null,   tag: "旗舰" },

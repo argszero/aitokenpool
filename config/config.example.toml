@@ -1,10 +1,9 @@
 # AITokenPool 配置文件示例
 #
-# 设计约定（2026-08-13）：
+# 设计约定（2026-08-13 / 2026-08-20 简化）：
 #   - 本文件是「人手工维护」的配置：providers / plans / 点数规则，需要加注释、经常 review。
-#   - 模型价格大表（几百个模型的输入/输出单价）放在 data/models.json，
-#     由脚本从 OpenRouter/litellm 同步生成，本文件只放「官方价覆盖」。
-#   - 分层理由见 docs/plan-api-matrix.md 与架构讨论。
+#   - 模型（厂商/名称/价格/上下文/读图等）全部在下方 [[models]] 段定义（唯一真源，
+#     2026-08-20 rant：不再有 data/models.json 聚合源 + price_overrides 覆盖的双层机制）。
 
 # ============================================================
 # 0. 服务（监听地址 / 数据库路径）— P0-A 起可配
@@ -243,34 +242,119 @@ endpoints = [
 ]
 
 # ============================================================
-# 4. 官方价覆盖（可选）
-#    覆盖 data/models.json 里聚合源（OpenRouter/litellm）的价格，
-#    以官方价为准。单位：每百万 token，货币按 model 各自 currency。
+# 4. 模型目录（rant 2026-08-20T10:27:13：config 唯一真源）
+#    模型（厂商/名称/价格/上下文/读图等）全部在此定义；启动时 upsert 进 DB。
+#    单位：每百万 tokens（currency 对应币种）；input_per_m = 缓存未命中输入价，
+#    cache_hit_input_per_m = 缓存命中输入价（缺省 0 = 命中免费）。
+#    DeepSeek 为官方价（2026-08-20 浏览器核实，空闲时段；高峰 9-12/14-18 北京时翻倍）。
 # ============================================================
 
-[[price_overrides]]
-provider = "deepseek"
-model = "deepseek-v4-pro"
-currency = "CNY"
-input_per_m = 4.5
-output_per_m = 13.5
-cache_hit_input_per_m = 0.15
-source = "DeepSeek 官方定价 2026-08-20（CNY，空闲价；命中/未命中区分）"
-
-[[price_overrides]]
+[[models]]
 provider = "deepseek"
 model = "deepseek-v4-flash"
 currency = "CNY"
 input_per_m = 1.5
-output_per_m = 4.5
 cache_hit_input_per_m = 0.05
-source = "DeepSeek 官方定价 2026-08-20（CNY，空闲价；命中/未命中区分）"
+output_per_m = 4.5
+context_length = 1048576
+max_output = 384000
+vision = false
 
-[[price_overrides]]
+[[models]]
+provider = "deepseek"
+model = "deepseek-v4-pro"
+currency = "CNY"
+input_per_m = 4.5
+cache_hit_input_per_m = 0.15
+output_per_m = 13.5
+context_length = 1048576
+max_output = 384000
+vision = false
+
+[[models]]
 provider = "zhipu"
 model = "glm-5.2"
 currency = "CNY"
 input_per_m = 8.0
-output_per_m = 28.0
 cache_hit_input_per_m = 2.0
-source = "官方定价页 2026-08-13"
+output_per_m = 28.0
+context_length = 1048576
+max_output = 0
+vision = false
+
+[[models]]
+provider = "openai"
+model = "gpt-5.5-pro"
+currency = "USD"
+input_per_m = 30.0
+cache_hit_input_per_m = 0.0
+output_per_m = 180.0
+context_length = 1050000
+max_output = 0
+vision = false
+
+[[models]]
+provider = "anthropic"
+model = "claude-opus-4.7"
+currency = "USD"
+input_per_m = 5.0
+cache_hit_input_per_m = 0.5
+output_per_m = 25.0
+context_length = 1000000
+max_output = 0
+vision = false
+
+[[models]]
+provider = "google"
+model = "gemini-3.1-pro"
+currency = "USD"
+input_per_m = 2.0
+cache_hit_input_per_m = 0.0
+output_per_m = 12.0
+context_length = 1048576
+max_output = 0
+vision = false
+
+[[models]]
+provider = "xai"
+model = "grok-4.6"
+currency = "USD"
+input_per_m = 2.0
+cache_hit_input_per_m = 0.0
+output_per_m = 6.0
+context_length = 500000
+max_output = 0
+vision = false
+
+[[models]]
+provider = "moonshot"
+model = "kimi-k3"
+currency = "CNY"
+input_per_m = 20.0
+cache_hit_input_per_m = 2.0
+output_per_m = 100.0
+context_length = 1048576
+max_output = 0
+vision = false
+
+[[models]]
+provider = "bytedance-ark"
+model = "doubao-seed-2.1-pro"
+currency = "CNY"
+input_per_m = 6.0
+cache_hit_input_per_m = 1.2
+output_per_m = 30.0
+context_length = 262144
+max_output = 0
+vision = false
+
+[[models]]
+provider = "minimax"
+model = "minimax-m3"
+currency = "USD"
+input_per_m = 0.3
+cache_hit_input_per_m = 0.0
+output_per_m = 1.2
+context_length = 1048576
+max_output = 0
+vision = false
