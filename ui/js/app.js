@@ -2511,10 +2511,9 @@
       toast(T("logout.done"), "info");
     });
 
-    /* ---- 注册 / 邮箱验证（rant 2026-08-19T14:36:19：自助注册）---- */
-    const regLink = $("#reg-link");
-    const regBack = $("#reg-back");
-    const verifyBack = $("#verify-back");
+    /* ---- 注册 / 邮箱验证（rant 2026-08-19T14:36:19：自助注册）----
+       ⚠️ 事件委托（rant 2026-08-20：i18n applyStatic 用 innerHTML 重建 login-foot
+       节点，直接绑定会丢失 listener；委托到 document 免疫） */
     const loginFormEl = $("#login-form");
     const registerFormEl = $("#register-form");
     const verifyFormEl = $("#verify-form");
@@ -2526,25 +2525,19 @@
       verifyFormEl.classList.toggle("hidden", which !== "verify");
     }
 
-    if (regLink) {
-      regLink.addEventListener("click", (e) => {
+    document.addEventListener("click", (e) => {
+      const t = e.target.closest ? e.target.closest("a,button") : null;
+      if (!t) return;
+      if (t.id === "reg-link") {
         e.preventDefault();
         showAuthForm("register");
-        $("#reg-email").focus();
-      });
-    }
-    if (regBack) {
-      regBack.addEventListener("click", (e) => {
+        const el = $("#reg-email");
+        if (el) el.focus();
+      } else if (t.id === "reg-back" || t.id === "verify-back") {
         e.preventDefault();
         showAuthForm("login");
-      });
-    }
-    if (verifyBack) {
-      verifyBack.addEventListener("click", (e) => {
-        e.preventDefault();
-        showAuthForm("login");
-      });
-    }
+      }
+    });
 
     // 注册提交
     registerFormEl.addEventListener("submit", async (e) => {
