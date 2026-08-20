@@ -2405,13 +2405,6 @@
       };
     });
   }
-        avail: m.available_keys > 0,
-        multi: (m.available_keys || 0) >= 2,
-        success: null,
-        live: true,
-      };
-    });
-  }
 
   // 后端 sharings → 视图行（字段对齐 mock：earned=earn、price 用 autoPrice、time 占位）
   function sharingsToView(list) {
