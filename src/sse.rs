@@ -19,17 +19,17 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::io;
 
-/// 流内 usage 提取槽：(input_tokens, output_tokens)
-pub type UsageSlot = std::sync::Arc<std::sync::Mutex<Option<(f64, f64)>>>;
+/// 流内 usage 提取槽：(input_tokens, cached_tokens, output_tokens)
+pub type UsageSlot = std::sync::Arc<std::sync::Mutex<Option<(f64, f64, f64)>>>;
 
 /// 新建空 usage 槽
 pub fn usage_slot() -> UsageSlot {
     std::sync::Arc::new(std::sync::Mutex::new(None))
 }
 
-fn record_usage(slot: &UsageSlot, input: f64, output: f64) {
+fn record_usage(slot: &UsageSlot, input: f64, cached: f64, output: f64) {
     if let Ok(mut s) = slot.lock() {
-        *s = Some((input, output));
+        *s = Some((input, cached, output));
     }
 }
 
@@ -253,9 +253,14 @@ pub fn openai_sse_to_anthropic<E: std::error::Error + Send + 'static>(
                                         if let Some((_, ref mut pending_usage)) = pending_message_delta {
                                             *pending_usage = Some(usage_json.clone());
                                         }
-                                        // 计量：openai 原样 usage → (prompt, completion)
+                                        // 计量：openai 原样 usage → (prompt, cached, completion)
                                         if let Some(u) = &chunk.usage {
-                                            record_usage(&usage, u.prompt_tokens as f64, u.completion_tokens as f64);
+                                            record_usage(
+                                                &usage,
+                                                u.prompt_tokens as f64,
+                                                extract_cache_read_tokens(u).unwrap_or(0) as f64,
+                                                u.completion_tokens as f64,
+                                            );
                                         }
                                     }
 
@@ -645,11 +650,15 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                         Ok(v) => v,
                         Err(_) => continue,
                     };
-                    // 计量：openai usage 字段 → (prompt, completion)
+                    // 计量：openai usage 字段 → (prompt, cached, completion)
                     if let Some(u) = v.get("usage") {
                         let input = u.get("prompt_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                        let cached = u
+                            .pointer("/prompt_tokens_details/cached_tokens")
+                            .and_then(|x| x.as_f64())
+                            .unwrap_or(0.0);
                         let output = u.get("completion_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                        record_usage(&usage, input, output);
+                        record_usage(&usage, input, cached, output);
                     }
 
                     let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
@@ -819,6 +828,7 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
         let mut msg_id = String::new();
         let mut model = String::new();
         let mut input_tokens: f64 = 0.0;
+        let mut cached_tokens: f64 = 0.0;
         let mut output_tokens: f64 = 0.0;
         let mut role_emitted = false;
         let mut tools: HashMap<u32, OpenaiToolState> = HashMap::new();
@@ -862,6 +872,7 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
                                         model = msg.get("model").and_then(|x| x.as_str()).unwrap_or("").to_string();
                                         if let Some(u) = msg.get("usage") {
                                             input_tokens = u.get("input_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                                            cached_tokens = u.get("cache_read_input_tokens").and_then(|x| x.as_f64()).unwrap_or(cached_tokens);
                                         }
                                     }
                                 }
@@ -943,8 +954,9 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
                                 "message_delta" => {
                                     if let Some(u) = v.get("usage") {
                                         output_tokens = u.get("output_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                                        cached_tokens = u.get("cache_read_input_tokens").and_then(|x| x.as_f64()).unwrap_or(cached_tokens);
                                     }
-                                    record_usage(&usage, input_tokens, output_tokens);
+                                    record_usage(&usage, input_tokens, cached_tokens, output_tokens);
                                     let stop_reason = v.get("delta").and_then(|d| d.get("stop_reason")).and_then(|s| s.as_str());
                                     let finish = match stop_reason {
                                         Some("max_tokens") => "length",
@@ -968,7 +980,7 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
                                 }
                                 "message_stop" => {
                                     if !finished {
-                                        record_usage(&usage, input_tokens, output_tokens);
+                                        record_usage(&usage, input_tokens, cached_tokens, output_tokens);
                                         let data = json!({
                                             "id": format!("chatcmpl-{msg_id}"),
                                             "object": "chat.completion.chunk",
@@ -1004,7 +1016,7 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
         }
         // 上游无 message_stop 直接断流 → 补 finish + [DONE]
         if !finished {
-            record_usage(&usage, input_tokens, output_tokens);
+            record_usage(&usage, input_tokens, cached_tokens, output_tokens);
             let data = json!({
                 "id": format!("chatcmpl-{msg_id}"),
                 "object": "chat.completion.chunk",
@@ -1167,8 +1179,12 @@ pub fn responses_sse_to_openai_chat<E: std::error::Error + Send + 'static>(
                                 "response.completed" => {
                                     if let Some(u) = v.get("response").and_then(|r| r.get("usage")) {
                                         let input = u.get("input_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                                        let cached = u
+                                            .pointer("/input_tokens_details/cached_tokens")
+                                            .and_then(|x| x.as_f64())
+                                            .unwrap_or(0.0);
                                         let output = u.get("output_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                                        record_usage(&usage, input, output);
+                                        record_usage(&usage, input, cached, output);
                                     }
                                     if !finished {
                                         let data = json!({
@@ -1262,7 +1278,7 @@ mod tests {
             "stop_reason: {out}"
         );
         assert!(out.contains("event: message_stop"), "message_stop: {out}");
-        let Some((i, o)) = *slot.lock().unwrap() else {
+        let Some((i, _c, o)) = *slot.lock().unwrap() else {
             panic!("usage missing");
         };
         assert_eq!((i, o), (100.0, 50.0), "usage recorded");
@@ -1288,7 +1304,7 @@ mod tests {
             out.contains("event: response.completed"),
             "completed: {out}"
         );
-        let Some((i, o)) = *slot.lock().unwrap() else {
+        let Some((i, _c, o)) = *slot.lock().unwrap() else {
             panic!("usage missing");
         };
         assert_eq!((i, o), (7.0, 3.0), "usage recorded");
@@ -1312,7 +1328,7 @@ mod tests {
         assert!(out.contains("\"content\":\"llo\""), "text2: {out}");
         assert!(out.contains("\"finish_reason\":\"stop\""), "finish: {out}");
         assert!(out.contains("data: [DONE]"), "done: {out}");
-        let Some((i, o)) = *slot.lock().unwrap() else {
+        let Some((i, _c, o)) = *slot.lock().unwrap() else {
             panic!("usage missing");
         };
         assert_eq!((i, o), (9.0, 4.0), "usage recorded");
@@ -1356,7 +1372,7 @@ mod tests {
         assert!(out.contains("\"content\":\"OK\""), "text: {out}");
         assert!(out.contains("\"finish_reason\":\"stop\""), "finish: {out}");
         assert!(out.contains("data: [DONE]"), "done: {out}");
-        let Some((i, o)) = *slot.lock().unwrap() else {
+        let Some((i, _c, o)) = *slot.lock().unwrap() else {
             panic!("usage missing");
         };
         assert_eq!((i, o), (12.0, 6.0), "usage recorded");
@@ -1381,7 +1397,7 @@ mod tests {
             out.contains("event: response.completed"),
             "completed: {out}"
         );
-        let Some((i, o)) = *slot.lock().unwrap() else {
+        let Some((i, _c, o)) = *slot.lock().unwrap() else {
             panic!("usage missing");
         };
         assert_eq!((i, o), (5.0, 2.0), "usage recorded");
@@ -1414,7 +1430,7 @@ mod tests {
         ]);
         let out = collect(anthropic_sse_to_openai(chunks, slot.clone()));
         assert!(out.contains("data: [DONE]"), "done: {out}");
-        let Some((i, o)) = *slot.lock().unwrap() else {
+        let Some((i, _c, o)) = *slot.lock().unwrap() else {
             panic!("usage missing");
         };
         assert_eq!((i, o), (3.0, 0.0), "usage recorded");

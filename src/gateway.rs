@@ -46,34 +46,61 @@ fn extract_model(body: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// 解析上游响应中的 usage（openai: prompt/completion_tokens；anthropic/responses: input/output_tokens）
-fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64) {
+/// 解析上游响应中的 usage → (uncached_input_tokens, cached_tokens, output_tokens)
+///（rant 2026-08-20T10:17:27：输入区分「缓存命中/未命中」——
+///  openai_chat → usage.prompt_tokens_details.cached_tokens（prompt_tokens 含命中，需减除）；
+///  anthropic  → usage.cache_read_input_tokens（input_tokens 已不含命中，不减）；
+///  responses  → usage.input_tokens_details.cached_tokens（input_tokens 含命中，需减除））
+fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64, f64) {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return (0.0, 0.0);
+        return (0.0, 0.0, 0.0);
     };
     let usage = v.get("usage");
     match protocol {
-        "anthropic" | "responses" => {
+        "anthropic" => {
             let input = usage
                 .and_then(|u| u.get("input_tokens"))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
+            let cached = usage
+                .and_then(|u| u.get("cache_read_input_tokens"))
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0);
             let output = usage
                 .and_then(|u| u.get("output_tokens"))
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0);
-            (input, output)
+            (input, cached, output)
+        }
+        "responses" => {
+            let total_input = usage
+                .and_then(|u| u.get("input_tokens"))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
+            let cached = usage
+                .and_then(|u| u.pointer("/input_tokens_details/cached_tokens"))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
+            let output = usage
+                .and_then(|u| u.get("output_tokens"))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
+            (total_input - cached, cached, output)
         }
         _ => {
-            let input = usage
+            let total_input = usage
                 .and_then(|u| u.get("prompt_tokens"))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
+            let cached = usage
+                .and_then(|u| u.pointer("/prompt_tokens_details/cached_tokens"))
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0);
             let output = usage
                 .and_then(|u| u.get("completion_tokens"))
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0);
-            (input, output)
+            (total_input - cached, cached, output)
         }
     }
 }
@@ -126,13 +153,14 @@ fn settle_usage(
     key: &dao::KeyRow,
     model: &str,
     input_tokens: f64,
+    cached_tokens: f64,
     output_tokens: f64,
 ) {
-    let tokens = input_tokens + output_tokens;
+    // 锁作用域严格限定在同步区内（绝不在 await 期间持有 MutexGuard）
+    let tokens = input_tokens + cached_tokens + output_tokens;
     if tokens <= 0.0 {
         return;
     }
-    // 锁作用域严格限定在同步区内（绝不在 await 期间持有 MutexGuard）
     let mut conn = match st.db.lock() {
         Ok(c) => c,
         Err(e) => {
@@ -142,18 +170,27 @@ fn settle_usage(
     };
     let price = dao::get_model_price(&conn, &key.provider, model);
     let (pts, cost) = match price {
-        Some((i_per_m, o_per_m, currency)) => {
+        Some((i_per_m, o_per_m, cache_hit_per_m, currency)) => {
             let pts = billing::calc_points(
                 input_tokens,
+                cached_tokens,
                 output_tokens,
                 i_per_m,
+                cache_hit_per_m,
                 o_per_m,
                 st.cfg.points.points_per_unit,
                 &currency,
                 &st.cfg.points.anchor_currency,
             );
             let cost = billing::to_anchor(
-                billing::raw_cost(input_tokens, output_tokens, i_per_m, o_per_m),
+                billing::raw_cost(
+                    input_tokens,
+                    cached_tokens,
+                    output_tokens,
+                    i_per_m,
+                    cache_hit_per_m,
+                    o_per_m,
+                ),
                 &currency,
                 &st.cfg.points.anchor_currency,
             );
@@ -168,6 +205,7 @@ fn settle_usage(
         owner_id: key.owner_id,
         model: model.to_string(),
         tokens,
+        cached_tokens,
         pts,
         cost,
     };
@@ -288,8 +326,16 @@ async fn forward(
 
         if status.is_success() {
             // 成功：解析 usage（按上游出站协议）→ 计量入账 → 粘性
-            let (input_tokens, output_tokens) = parse_usage(&bytes, outbound);
-            settle_usage(st, auth, key, model, input_tokens, output_tokens);
+            let (input_tokens, cached_tokens, output_tokens) = parse_usage(&bytes, outbound);
+            settle_usage(
+                st,
+                auth,
+                key,
+                model,
+                input_tokens,
+                cached_tokens,
+                output_tokens,
+            );
             // 跨协议 → 转换响应体回入站协议
             if needs_transform {
                 if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -489,11 +535,11 @@ async fn forward_stream(
             };
             let slot_final = usage_slot.clone();
             let finalize = futures_util::stream::once(async move {
-                let (input, output) = slot_final
+                let (input, cached, output) = slot_final
                     .lock()
-                    .map(|s| s.unwrap_or((0.0, 0.0)))
-                    .unwrap_or((0.0, 0.0));
-                settle_usage(&st, auth, &key, &model, input, output);
+                    .map(|s| s.unwrap_or((0.0, 0.0, 0.0)))
+                    .unwrap_or((0.0, 0.0, 0.0));
+                settle_usage(&st, auth, &key, &model, input, cached, output);
                 Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::new())
             });
             (converted, Box::pin(finalize))
@@ -510,11 +556,11 @@ async fn forward_stream(
                 item.map_err(|e| -> std::io::Error { std::io::Error::other(e) })
             });
             let finalize = futures_util::stream::once(async move {
-                let (input, output) = {
+                let (input, cached, output) = {
                     let mut cap = capture.lock().expect("usage capture lock");
                     cap.finish()
                 };
-                settle_usage(&st, auth, &key, &model, input, output);
+                settle_usage(&st, auth, &key, &model, input, cached, output);
                 Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::new())
             });
             (Box::pin(fwd), Box::pin(finalize))
@@ -540,6 +586,7 @@ struct UsageCapture {
     protocol: String,
     tail: Vec<u8>,
     input_tokens: f64,
+    cached_tokens: f64,
 }
 
 impl UsageCapture {
@@ -548,14 +595,17 @@ impl UsageCapture {
             protocol: protocol.to_string(),
             tail: Vec::new(),
             input_tokens: 0.0,
+            cached_tokens: 0.0,
         }
     }
 
     fn push(&mut self, chunk: &[u8]) {
-        // anthropic：message_start 事件携带 input_tokens（在流头部，尾部缓冲会丢）
+        // anthropic：message_start 事件携带 input_tokens / cache_read_input_tokens
+        //（在流头部，尾部缓冲会丢）
         if self.protocol == "anthropic" && self.input_tokens == 0.0 {
-            if let Some(v) = parse_anthropic_input(chunk) {
-                self.input_tokens = v;
+            if let Some((input, cached)) = parse_anthropic_usage(chunk) {
+                self.input_tokens = input;
+                self.cached_tokens = cached;
             }
         }
         self.tail.extend_from_slice(chunk);
@@ -564,10 +614,11 @@ impl UsageCapture {
         }
     }
 
-    /// 流尾解析 usage → (input_tokens, output_tokens)
-    fn finish(&mut self) -> (f64, f64) {
+    /// 流尾解析 usage → (input_tokens, cached_tokens, output_tokens)
+    fn finish(&mut self) -> (f64, f64, f64) {
         let text = String::from_utf8_lossy(&self.tail);
         let mut input = self.input_tokens;
+        let mut cached = self.cached_tokens;
         let mut output = 0.0;
         for line in text.lines() {
             let Some(data) = line.trim_start().strip_prefix("data:") else {
@@ -583,6 +634,10 @@ impl UsageCapture {
                         .get("input_tokens")
                         .and_then(|x| x.as_f64())
                         .unwrap_or(input);
+                    cached = u
+                        .get("cache_read_input_tokens")
+                        .and_then(|x| x.as_f64())
+                        .unwrap_or(cached);
                     output = u
                         .get("output_tokens")
                         .and_then(|x| x.as_f64())
@@ -594,18 +649,22 @@ impl UsageCapture {
                     .get("prompt_tokens")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(0.0);
+                cached = u
+                    .pointer("/prompt_tokens_details/cached_tokens")
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(0.0);
                 output = u
                     .get("completion_tokens")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(0.0);
             }
         }
-        (input, output)
+        (input, cached, output)
     }
 }
 
-/// 从 anthropic 流式 chunk 提取 input_tokens（message_start 事件）
-fn parse_anthropic_input(chunk: &[u8]) -> Option<f64> {
+/// 从 anthropic 流式 chunk 提取 message_start 的 usage → (input_tokens, cache_read_input_tokens)
+fn parse_anthropic_usage(chunk: &[u8]) -> Option<(f64, f64)> {
     let text = String::from_utf8_lossy(chunk);
     for line in text.lines() {
         let Some(data) = line.trim_start().strip_prefix("data:") else {
@@ -613,9 +672,15 @@ fn parse_anthropic_input(chunk: &[u8]) -> Option<f64> {
         };
         let v: serde_json::Value = serde_json::from_str(data.trim()).ok()?;
         if v.get("type").and_then(|t| t.as_str()) == Some("message_start") {
-            if let Some(tokens) = v.pointer("/message/usage/input_tokens") {
-                return tokens.as_f64();
-            }
+            let input = v
+                .pointer("/message/usage/input_tokens")
+                .and_then(|t| t.as_f64())
+                .unwrap_or(0.0);
+            let cached = v
+                .pointer("/message/usage/cache_read_input_tokens")
+                .and_then(|t| t.as_f64())
+                .unwrap_or(0.0);
+            return Some((input, cached));
         }
     }
     None
@@ -752,6 +817,46 @@ mod tests {
     use axum::http::Request;
     use std::sync::Arc;
     use tower::util::ServiceExt;
+
+    // ── parse_usage：缓存命中/未命中拆分（rant 2026-08-20T10:17:27）──
+
+    #[test]
+    fn parse_usage_openai_splits_cached_tokens() {
+        let body = br#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":900}}}"#;
+        let (input, cached, output) = parse_usage(body, "openai_chat");
+        assert_eq!(input, 100.0, "未命中 = prompt - cached");
+        assert_eq!(cached, 900.0);
+        assert_eq!(output, 50.0);
+    }
+
+    #[test]
+    fn parse_usage_anthropic_cache_read() {
+        // anthropic input_tokens 已不含命中，原样返回
+        let body =
+            br#"{"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":900}}"#;
+        let (input, cached, output) = parse_usage(body, "anthropic");
+        assert_eq!(input, 100.0);
+        assert_eq!(cached, 900.0);
+        assert_eq!(output, 50.0);
+    }
+
+    #[test]
+    fn parse_usage_responses_input_tokens_details() {
+        let body = br#"{"usage":{"input_tokens":1000,"output_tokens":50,"input_tokens_details":{"cached_tokens":700}}}"#;
+        let (input, cached, output) = parse_usage(body, "responses");
+        assert_eq!(input, 300.0, "未命中 = input_tokens - cached");
+        assert_eq!(cached, 700.0);
+        assert_eq!(output, 50.0);
+    }
+
+    #[test]
+    fn parse_usage_missing_cache_defaults_zero() {
+        let body = br#"{"usage":{"prompt_tokens":100,"completion_tokens":10}}"#;
+        let (input, cached, output) = parse_usage(body, "openai_chat");
+        assert_eq!(input, 100.0);
+        assert_eq!(cached, 0.0);
+        assert_eq!(output, 10.0);
+    }
 
     /// 测试状态：config.example + 追加本地 test plan；db 开库 + seed models + 注入测试 key
     fn test_state(tag: &str, plan_id: &str, base_url: &str) -> AppState {
@@ -921,6 +1026,27 @@ mod tests {
         .unwrap();
     }
 
+    /// 假上游：openai usage 带缓存命中拆分（cached_tokens=900 / prompt_tokens=1000）
+    async fn fake_upstream_cached(listener: tokio::net::TcpListener) {
+        let app = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(|_body: String| async {
+                Json(serde_json::json!({
+                    "id": "cmpl-cached",
+                    "object": "chat.completion",
+                    "model": "test-model",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 50,
+                        "prompt_tokens_details": {"cached_tokens": 900}
+                    }
+                }))
+            }),
+        );
+        axum::serve(listener, app).await.unwrap();
+    }
+
     #[tokio::test]
     async fn no_bearer_401() {
         let st = test_state("noauth", "test-plan", "http://127.0.0.1:9");
@@ -1082,6 +1208,85 @@ mod tests {
             .unwrap()
         };
         assert_eq!(used_key, used_key2, "粘性：第二次调用复用同一 key");
+
+        up.abort();
+    }
+
+    /// rant 2026-08-20T10:17:27：缓存命中/未命中分开计费。
+    /// 假上游返回 cached_tokens=900 → usage_records.cached_tokens=900 且按「未命中×价 + 命中×命中价」扣点
+    #[tokio::test]
+    async fn e2e_cache_hit_billing_split() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let up = tokio::spawn(fake_upstream_cached(listener));
+        let base = format!("http://127.0.0.1:{port}");
+
+        let st = test_state("e2ecache", "test-local", &base);
+        {
+            let conn = st.db.lock().unwrap();
+            // 未命中价 10 USD/M、命中价 2 USD/M、输出 20 USD/M
+            conn.execute(
+                "INSERT OR REPLACE INTO models (provider, model, currency, input_per_m, output_per_m, cache_hit_input_per_m) \
+                 VALUES ('test', 'test-model', 'USD', 10.0, 20.0, 2.0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, email, password_hash, name, role) VALUES (2, 'owner@t.local', 'x', '分享者', 'user')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (2, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        insert_key(&st, 300, 2, "test-model", "test-local");
+        insert_key(&st, 301, 2, "test-model", "test-local");
+
+        let key = login_key(st.clone()).await;
+        let (s, _) = post_raw(
+            st.clone(),
+            "/v1/chat/completions",
+            r#"{"model":"test-model","messages":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+
+        let (cached, tokens, cost): (f64, f64, f64) = {
+            let conn = st.db.lock().unwrap();
+            conn.query_row(
+                "SELECT cached_tokens, tokens, cost FROM usage_records ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(cached, 900.0, "usage_records 记录缓存命中 token");
+        assert_eq!(tokens, 1050.0);
+        // cost = 100×10/1e6 + 900×2/1e6 + 50×20/1e6 = (1000+1800+1000)/1e6 = 0.0038 USD
+        assert!((cost - 0.0038).abs() < 1e-9, "cost={cost}");
+        // 消费者扣 0.0038 × 1000 点 = 3.8；属主得 3.42（90%）
+        let (bal_c, bal_o): (f64, f64) = {
+            let conn = st.db.lock().unwrap();
+            let c = conn
+                .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let o = conn
+                .query_row("SELECT balance FROM quotas WHERE user_id = 2", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            (c, o)
+        };
+        assert!((bal_c - (12471.0 - 3.8)).abs() < 1e-9, "consumer={bal_c}");
+        assert!((bal_o - 3.42).abs() < 1e-9, "owner={bal_o}");
 
         up.abort();
     }
@@ -1749,7 +1954,7 @@ mod tests {
         cap.push(br#"data: {"usage":{"prompt_tokens":10,"completion_tokens":5},"choices":[]}"#);
         cap.push(b"\n\n");
         cap.push(br#"data: [DONE]"#);
-        let (i, o) = cap.finish();
+        let (i, _c, o) = cap.finish();
         assert_eq!(i, 10.0);
         assert_eq!(o, 5.0);
 
@@ -1764,7 +1969,7 @@ data: {"type":"message_start","message":{"usage":{"input_tokens":80,"output_toke
             br#"event: message_delta
 data: {"type":"message_delta","usage":{"output_tokens":30}}"#,
         );
-        let (i, o) = cap.finish();
+        let (i, _c, o) = cap.finish();
         assert_eq!(i, 80.0, "message_start 的 input_tokens 提前捕获");
         assert_eq!(o, 30.0, "message_delta 的 output_tokens 流尾解析");
     }

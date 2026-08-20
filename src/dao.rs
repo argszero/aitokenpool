@@ -167,16 +167,16 @@ pub fn get_available_balance(conn: &Connection, user_id: i64) -> f64 {
     permanent + gift
 }
 
-/// 模型单价（按 provider+model）→ (input_per_m, output_per_m, currency)
+/// 模型单价（按 provider+model）→ (input_per_m, output_per_m, cache_hit_input_per_m, currency)
 pub fn get_model_price(
     conn: &Connection,
     provider: &str,
     model: &str,
-) -> Option<(f64, f64, String)> {
+) -> Option<(f64, f64, f64, String)> {
     conn.query_row(
-        "SELECT input_per_m, output_per_m, currency FROM models WHERE provider = ?1 AND model = ?2",
+        "SELECT input_per_m, output_per_m, cache_hit_input_per_m, currency FROM models WHERE provider = ?1 AND model = ?2",
         rusqlite::params![provider, model],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )
     .ok()
 }

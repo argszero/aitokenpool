@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -108,6 +108,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             key_id     INTEGER,
             model      TEXT NOT NULL DEFAULT '',
             tokens     REAL NOT NULL DEFAULT 0,
+            cached_tokens REAL NOT NULL DEFAULT 0,
             cost       REAL NOT NULL DEFAULT 0,
             time       TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -240,6 +241,14 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "models",
         "cache_hit_input_per_m",
         "cache_hit_input_per_m REAL NOT NULL DEFAULT 0",
+    )?;
+    // v8（rant 2026-08-20T10:17:27）：计费区分缓存命中/未命中——
+    // usage_records 补 cached_tokens（缓存命中输入 token 数，settle 时写入）
+    ensure_column(
+        conn,
+        "usage_records",
+        "cached_tokens",
+        "cached_tokens REAL NOT NULL DEFAULT 0",
     )?;
     // schema_version：INSERT OR REPLACE 保证幂等
     let v: i64 = conn
@@ -629,18 +638,19 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
             .unwrap();
         assert!(cnt >= 5, "models 已从 example 文件 seed，cnt={cnt}");
-        // deepseek-v4-pro 被 price_overrides 覆盖为官方价（0.435 / 0.87 USD）
-        let (input, output, currency): (f64, f64, String) = conn
+        // deepseek-v4-pro 被 price_overrides 覆盖为官方价（4.5 / 13.5 CNY，缓存命中 0.15）
+        let (input, output, cache_hit, currency): (f64, f64, f64, String) = conn
             .query_row(
-                "SELECT input_per_m, output_per_m, currency FROM models \
+                "SELECT input_per_m, output_per_m, cache_hit_input_per_m, currency FROM models \
                  WHERE provider = 'deepseek' AND model = 'deepseek-v4-pro'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert!((input - 0.435).abs() < 1e-9, "input={input}");
-        assert!((output - 0.87).abs() < 1e-9, "output={output}");
-        assert_eq!(currency, "USD");
+        assert!((input - 4.5).abs() < 1e-9, "input={input}");
+        assert!((output - 13.5).abs() < 1e-9, "output={output}");
+        assert!((cache_hit - 0.15).abs() < 1e-9, "cache_hit={cache_hit}");
+        assert_eq!(currency, "CNY");
         // 幂等：重复 seed 不报错且不产生重复行
         seed_models(&conn, &cfg).expect("二次 seed");
         let cnt2: i64 = conn
