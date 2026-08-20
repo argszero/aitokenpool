@@ -544,6 +544,17 @@
               </label>
             </div>
             <div class="form-row">
+              <label><span data-i18n="admin.models.form.peak.in">高峰输入价（/百万 token）</span>
+                <input id="model-form-peak-in" type="number" min="0" step="0.001" class="input" value="0" data-i18n-ph="admin.models.form.peak.in.ph" placeholder="0（缺省=不启用高峰计费）">
+              </label>
+              <label><span data-i18n="admin.models.form.peak.cachehit">高峰缓存命中输入价（/百万 token）</span>
+                <input id="model-form-peak-cachehit" type="number" min="0" step="0.001" class="input" value="0" data-i18n-ph="admin.models.form.peak.cachehit.ph" placeholder="0.1">
+              </label>
+              <label><span data-i18n="admin.models.form.peak.out">高峰输出价（/百万 token）</span>
+                <input id="model-form-peak-out" type="number" min="0" step="0.001" class="input" value="0" data-i18n-ph="admin.models.form.peak.out.ph" placeholder="0（缺省=不启用）">
+              </label>
+            </div>
+            <div class="form-row">
               <label><span data-i18n="admin.models.form.ctx">上下文窗口</span>
                 <input id="model-form-ctx" type="number" min="0" step="1" class="input" value="0" placeholder="1048576">
               </label>

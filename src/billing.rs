@@ -73,6 +73,48 @@ pub fn calc_points(
     to_anchor(cost, model_currency, anchor) * points_per_unit as f64
 }
 
+/// 北京时间高峰时段判定（rant 2026-08-20T11:58:40：DeepSeek 高峰 9:00-12:00、14:00-18:00，
+/// 周一至周日，其余为空闲时段）。固定 Asia/Shanghai（UTC+8，无夏令时），不依赖服务器时区。
+pub fn is_peak_hour(utc: &chrono::DateTime<chrono::Utc>) -> bool {
+    use chrono::Timelike;
+    let sh = utc.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).expect("+08:00 合法"));
+    let h = sh.hour();
+    (9..12).contains(&h) || (14..18).contains(&h)
+}
+
+/// 按是否高峰挑选生效价格：高峰时段命中且配置了高峰价（> 0）→ 用高峰价；
+/// 高峰价缺省 0 → 沿用空闲价（不启用高峰计费的模型行为不变）。
+pub fn effective_prices(
+    peak: bool,
+    input_per_m: f64,
+    cache_hit_input_per_m: f64,
+    output_per_m: f64,
+    peak_input_per_m: f64,
+    peak_cache_hit_input_per_m: f64,
+    peak_output_per_m: f64,
+) -> (f64, f64, f64) {
+    if !peak {
+        return (input_per_m, cache_hit_input_per_m, output_per_m);
+    }
+    (
+        if peak_input_per_m > 0.0 {
+            peak_input_per_m
+        } else {
+            input_per_m
+        },
+        if peak_cache_hit_input_per_m > 0.0 {
+            peak_cache_hit_input_per_m
+        } else {
+            cache_hit_input_per_m
+        },
+        if peak_output_per_m > 0.0 {
+            peak_output_per_m
+        } else {
+            output_per_m
+        },
+    )
+}
+
 /// 入账参数
 pub struct SettleParams {
     /// 消费者（调用者）user_id
@@ -228,6 +270,121 @@ mod tests {
         let pts_zero = calc_points(100.0, 900.0, 500.0, 1.5, 0.0, 4.5, 1000, "CNY", "USD");
         let expect_zero = (150.0 + 2250.0) / 1e6 / 7.2 * 1000.0;
         assert!((pts_zero - expect_zero).abs() < 1e-9, "pts_zero={pts_zero}");
+    }
+
+    #[test]
+    fn is_peak_hour_beijing_boundaries() {
+        // rant 2026-08-20T11:58:40：高峰 = 北京时 9:00-12:00、14:00-18:00（周一至周日）。
+        // 边界测试：8:59 vs 9:00、11:59 vs 12:00、13:59 vs 14:00、17:59 vs 18:00（北京时 = UTC+8）
+        fn beijing(h: u32, mi: u32) -> chrono::DateTime<chrono::Utc> {
+            use chrono::TimeZone;
+            let dt = chrono::FixedOffset::east_opt(8 * 3600)
+                .unwrap()
+                .with_ymd_and_hms(2026, 8, 20, h, mi, 0)
+                .unwrap();
+            dt.with_timezone(&chrono::Utc)
+        }
+        // 9:00 高峰开始
+        assert!(is_peak_hour(&beijing(9, 0)), "北京 9:00 应高峰");
+        assert!(!is_peak_hour(&beijing(8, 59)), "北京 8:59 应空闲");
+        // 12:00 高峰结束
+        assert!(!is_peak_hour(&beijing(12, 0)), "北京 12:00 应空闲");
+        assert!(is_peak_hour(&beijing(11, 59)), "北京 11:59 应高峰");
+        // 14:00 第二段高峰开始
+        assert!(is_peak_hour(&beijing(14, 0)), "北京 14:00 应高峰");
+        assert!(!is_peak_hour(&beijing(13, 59)), "北京 13:59 应空闲");
+        // 18:00 第二段高峰结束
+        assert!(!is_peak_hour(&beijing(18, 0)), "北京 18:00 应空闲");
+        assert!(is_peak_hour(&beijing(17, 59)), "北京 17:59 应高峰");
+        // 周日同样高峰（周一至周日全覆盖）
+        use chrono::TimeZone;
+        let sun = chrono::FixedOffset::east_opt(8 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 8, 23, 10, 0, 0)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(is_peak_hour(&sun), "周日 10:00 应高峰（含周末）");
+        // 夜间空闲
+        assert!(!is_peak_hour(&beijing(0, 0)), "北京 0:00 应空闲");
+        assert!(!is_peak_hour(&beijing(23, 0)), "北京 23:00 应空闲");
+    }
+
+    #[test]
+    fn effective_prices_selects_peak_or_falls_back() {
+        // 空闲时段 → 一律空闲价
+        assert_eq!(
+            effective_prices(false, 1.5, 0.05, 4.5, 3.0, 0.10, 9.0),
+            (1.5, 0.05, 4.5)
+        );
+        // 高峰时段 + 全量高峰价 → 用高峰价
+        assert_eq!(
+            effective_prices(true, 1.5, 0.05, 4.5, 3.0, 0.10, 9.0),
+            (3.0, 0.10, 9.0)
+        );
+        // 高峰时段 + 高峰价缺省 0 → 沿用空闲价（不启用高峰计费的模型行为不变）
+        assert_eq!(
+            effective_prices(true, 1.5, 0.05, 4.5, 0.0, 0.0, 0.0),
+            (1.5, 0.05, 4.5)
+        );
+        // 高峰时段 + 部分缺省 → 缺省项沿用空闲价
+        assert_eq!(
+            effective_prices(true, 1.5, 0.05, 4.5, 3.0, 0.0, 9.0),
+            (3.0, 0.05, 9.0)
+        );
+    }
+
+    #[test]
+    fn calc_points_uses_peak_price_in_peak_hour() {
+        // 高峰 1M 输入 × 3.0 CNY/M = 3.0 CNY → USD 锚定 ÷7.2 ×1000 = 416.67 点；空闲 1.5 → 208.33 点
+        let peak = effective_prices(true, 1.5, 0.05, 4.5, 3.0, 0.10, 9.0);
+        let off = effective_prices(false, 1.5, 0.05, 4.5, 3.0, 0.10, 9.0);
+        let pts_peak = calc_points(
+            1_000_000.0,
+            0.0,
+            0.0,
+            peak.0,
+            peak.1,
+            peak.2,
+            1000,
+            "CNY",
+            "USD",
+        );
+        let pts_off = calc_points(
+            1_000_000.0,
+            0.0,
+            0.0,
+            off.0,
+            off.1,
+            off.2,
+            1000,
+            "CNY",
+            "USD",
+        );
+        assert!(
+            (pts_peak - 3.0 / 7.2 * 1000.0).abs() < 1e-9,
+            "高峰 1M 输入 = 416.67 点: {pts_peak}"
+        );
+        assert!(
+            (pts_off - 1.5 / 7.2 * 1000.0).abs() < 1e-9,
+            "空闲 1M 输入 = 208.33 点: {pts_off}"
+        );
+        // 未配置高峰价 → 高峰/空闲点数一致
+        let no_peak = effective_prices(true, 1.5, 0.05, 4.5, 0.0, 0.0, 0.0);
+        let pts_no = calc_points(
+            1_000_000.0,
+            0.0,
+            0.0,
+            no_peak.0,
+            no_peak.1,
+            no_peak.2,
+            1000,
+            "CNY",
+            "USD",
+        );
+        assert!(
+            (pts_no - 1.5 / 7.2 * 1000.0).abs() < 1e-9,
+            "未配置高峰价 → 208.33 点: {pts_no}"
+        );
     }
 
     #[test]

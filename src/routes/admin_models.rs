@@ -2,7 +2,8 @@
 //!
 //! - GET    /api/admin/models：全部模型列表（含 id / 所有字段，供管理表格）
 //! - POST   /api/admin/models：新增 {provider, model, currency, input_per_m, output_per_m,
-//!   context_length?, max_output?, vision?, cache_hit_input_per_m?}
+//!   context_length?, max_output?, vision?, cache_hit_input_per_m?, peak_input_per_m?,
+//!   peak_output_per_m?, peak_cache_hit_input_per_m?}
 //!   校验：provider/model 非空、价格 ≥ 0、currency ∈ {USD, CNY}、(provider, model) 唯一冲突 409
 //! - PATCH  /api/admin/models/:id：部分更新（任意字段）
 //! - DELETE /api/admin/models/:id：直接删除（模型删除后该 model 的调用无价格行 → 0 计费，README 说明）
@@ -37,6 +38,13 @@ pub struct ModelCreate {
     pub vision: i64,
     #[serde(default)]
     pub cache_hit_input_per_m: f64,
+    /// 高峰时段价（rant 2026-08-20T11:58:40；缺省 0 = 不启用高峰计费）
+    #[serde(default)]
+    pub peak_input_per_m: f64,
+    #[serde(default)]
+    pub peak_output_per_m: f64,
+    #[serde(default)]
+    pub peak_cache_hit_input_per_m: f64,
 }
 
 fn default_currency() -> String {
@@ -55,6 +63,9 @@ pub struct ModelPatch {
     pub max_output: Option<i64>,
     pub vision: Option<i64>,
     pub cache_hit_input_per_m: Option<f64>,
+    pub peak_input_per_m: Option<f64>,
+    pub peak_output_per_m: Option<f64>,
+    pub peak_cache_hit_input_per_m: Option<f64>,
 }
 
 /// 校验通用字段：价格 ≥ 0、vision ∈ {0,1}、currency 枚举
@@ -63,6 +74,9 @@ fn validate_common(
     input_per_m: f64,
     output_per_m: f64,
     vision: i64,
+    peak_input_per_m: f64,
+    peak_output_per_m: f64,
+    peak_cache_hit_input_per_m: f64,
 ) -> Result<(), ApiErr> {
     if !(currency == "USD" || currency == "CNY") {
         return Err((
@@ -70,7 +84,12 @@ fn validate_common(
             Json(serde_json::json!({ "error": "currency 仅支持 USD | CNY" })),
         ));
     }
-    if input_per_m < 0.0 || output_per_m < 0.0 {
+    if input_per_m < 0.0
+        || output_per_m < 0.0
+        || peak_input_per_m < 0.0
+        || peak_output_per_m < 0.0
+        || peak_cache_hit_input_per_m < 0.0
+    {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "价格不能为负数" })),
@@ -98,13 +117,18 @@ fn row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
         "max_output": r.get::<_, i64>(7)?,
         "vision": r.get::<_, i64>(8)?,
         "cache_hit_input_per_m": r.get::<_, f64>(9)?,
-        "updated_at": crate::dao::utc_iso(&r.get::<_, String>(10)?),
-        "context_window": r.get::<_, i64>(11)?,
+        "peak_input_per_m": r.get::<_, f64>(10)?,
+        "peak_output_per_m": r.get::<_, f64>(11)?,
+        "peak_cache_hit_input_per_m": r.get::<_, f64>(12)?,
+        "updated_at": crate::dao::utc_iso(&r.get::<_, String>(13)?),
+        "context_window": r.get::<_, i64>(14)?,
     }))
 }
 
 const ROW_SELECT: &str = "SELECT id, provider, model, currency, input_per_m, output_per_m, \
-                context_length, max_output, vision, cache_hit_input_per_m, updated_at, context_window \
+                context_length, max_output, vision, cache_hit_input_per_m, \
+                peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, \
+                updated_at, context_window \
          FROM models ";
 
 /// GET /api/admin/models：全部模型（管理表格数据源）
@@ -133,7 +157,15 @@ pub async fn create(
             Json(serde_json::json!({ "error": "provider 与 model 不能为空" })),
         ));
     }
-    validate_common(&req.currency, req.input_per_m, req.output_per_m, req.vision)?;
+    validate_common(
+        &req.currency,
+        req.input_per_m,
+        req.output_per_m,
+        req.vision,
+        req.peak_input_per_m,
+        req.peak_output_per_m,
+        req.peak_cache_hit_input_per_m,
+    )?;
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     let dup: bool = conn
         .query_row(
@@ -151,8 +183,10 @@ pub async fn create(
     let id: i64 = conn
         .query_row(
             "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, \
-                    context_length, max_output, vision, cache_hit_input_per_m, context_window, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now')) \
+                    context_length, max_output, vision, cache_hit_input_per_m, \
+                    peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, \
+                    context_window, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now')) \
              RETURNING id",
             params![
                 provider,
@@ -164,6 +198,9 @@ pub async fn create(
                 req.max_output,
                 req.vision,
                 req.cache_hit_input_per_m,
+                req.peak_input_per_m,
+                req.peak_output_per_m,
+                req.peak_cache_hit_input_per_m,
                 // OpenAI 兼容 context_window 与 context_length 对齐（/v1/models 用）
                 req.context_length,
             ],
@@ -199,10 +236,24 @@ pub async fn patch(
         ));
     }
     // 部分更新：先取当前值，合并后校验 + 写回（简单且避免逐列拼接 SQL）
-    let cur: (String, String, String, f64, f64, i64, i64, i64, f64) = conn
+    let cur: (
+        String,
+        String,
+        String,
+        f64,
+        f64,
+        i64,
+        i64,
+        i64,
+        f64,
+        f64,
+        f64,
+        f64,
+    ) = conn
         .query_row(
             "SELECT provider, model, currency, input_per_m, output_per_m, \
-                    context_length, max_output, vision, cache_hit_input_per_m \
+                    context_length, max_output, vision, cache_hit_input_per_m, \
+                    peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m \
              FROM models WHERE id = ?1",
             [id],
             |r| {
@@ -216,6 +267,9 @@ pub async fn patch(
                     r.get(6)?,
                     r.get(7)?,
                     r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                    r.get(11)?,
                 ))
             },
         )
@@ -229,13 +283,24 @@ pub async fn patch(
     let max_output = req.max_output.unwrap_or(cur.6);
     let vision = req.vision.unwrap_or(cur.7);
     let cache_hit_input_per_m = req.cache_hit_input_per_m.unwrap_or(cur.8);
+    let peak_input_per_m = req.peak_input_per_m.unwrap_or(cur.9);
+    let peak_output_per_m = req.peak_output_per_m.unwrap_or(cur.10);
+    let peak_cache_hit_input_per_m = req.peak_cache_hit_input_per_m.unwrap_or(cur.11);
     if provider.is_empty() || model.is_empty() {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "provider 与 model 不能为空" })),
         ));
     }
-    validate_common(&currency, input_per_m, output_per_m, vision)?;
+    validate_common(
+        &currency,
+        input_per_m,
+        output_per_m,
+        vision,
+        peak_input_per_m,
+        peak_output_per_m,
+        peak_cache_hit_input_per_m,
+    )?;
     // 改名时检查 (provider, model) 唯一（排除自身）
     let dup: bool = conn
         .query_row(
@@ -253,8 +318,9 @@ pub async fn patch(
     conn.execute(
         "UPDATE models SET provider = ?1, model = ?2, currency = ?3, input_per_m = ?4, \
                 output_per_m = ?5, context_length = ?6, max_output = ?7, vision = ?8, \
-                cache_hit_input_per_m = ?9, context_window = ?6, updated_at = datetime('now') \
-         WHERE id = ?10",
+                cache_hit_input_per_m = ?9, peak_input_per_m = ?10, peak_output_per_m = ?11, \
+                peak_cache_hit_input_per_m = ?12, context_window = ?6, updated_at = datetime('now') \
+         WHERE id = ?13",
         params![
             provider,
             model,
@@ -265,6 +331,9 @@ pub async fn patch(
             max_output,
             vision,
             cache_hit_input_per_m,
+            peak_input_per_m,
+            peak_output_per_m,
+            peak_cache_hit_input_per_m,
             id,
         ],
     )

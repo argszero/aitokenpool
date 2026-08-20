@@ -662,6 +662,8 @@
       [T("mk.detail.ctx"), T("mk.detail.ctxVal", { n: D.ctxFmt(m.ctx) })],
       [T("mk.detail.avail"), m.avail ? T("mk.detail.availOn", { p: succ }) : T("mk.detail.availOff", { p: succ })],
     ];
+    // 高峰时段价（rant 2026-08-20T11:58:40：DeepSeek 高峰 9-12/14-18 北京时翻倍）
+    if (m.peak) items.push([T("mk.detail.peak"), T("mk.detail.peakVal", { out: D.fmt(m.peakOut), in: D.fmt(m.peakIn) })]);
     if (m.multi) items.push([T("mk.detail.route"), T("mk.detail.routeVal")]);
     return '<div class="mk-detail-grid">' + items.map(([k, v]) =>
       '<div class="mkd-item"><span class="mkd-label">' + esc(k) + '</span><span class="mkd-val">' + esc(v) + "</span></div>").join("") + "</div>";
@@ -713,7 +715,9 @@
       "<tr><td data-label='厂商'>" +
       '<button type="button" class="row-expand" data-mk-expand="' + m.id + '" title="' + (mkExpanded === m.id ? T("mk.collapse") : T("mk.expand")) + '">' + (mkExpanded === m.id ? "−" : "+") + "</button>" +
       hl(m.provider, rawQ) + "</td><td data-label='模型'><strong>" + hl(m.model, rawQ) + "</strong></td>" +
-      '<td class="num" data-label="输入价 /1M">' + D.fmt(m.in) + " " + T("common.points") + "</td>" + '<td class="num" data-label="输出价 /1M">' + D.fmt(m.out) + " " + T("common.points") + "</td>" +
+      '<td class="num" data-label="输入价 /1M">' + D.fmt(m.in) + " " + T("common.points") +
+      (m.peak ? ' <span class="badge warn" title="' + esc(T("mk.peak.title", { n: m.peakMult })) + '">' + esc(T("mk.peak.badge", { n: m.peakMult })) + "</span>" : "") + "</td>" +
+      '<td class="num" data-label="输出价 /1M">' + D.fmt(m.out) + " " + T("common.points") + "</td>" +
       '<td class="num" data-label="上下文">' + D.ctxFmt(m.ctx) + "</td>" +
       "<td data-label='可用性'>" + (m.avail ? '<span class="badge ok">' + T("mk.avail") + "</span>" : '<span class="badge warn">' + T("mk.busy") + "</span>") +
       (m.multi ? ' <span class="badge ok" title="' + T("mk.multi") + '">' + T("mk.multi") + "</span>" : "") + "</td>" +
@@ -1775,6 +1779,9 @@
     $("#model-form-in").value = m ? String(m.input_per_m || 0) : "0";
     $("#model-form-cachehit").value = m ? String(m.cache_hit_input_per_m || 0) : "0";
     $("#model-form-out").value = m ? String(m.output_per_m || 0) : "0";
+    $("#model-form-peak-in").value = m ? String(m.peak_input_per_m || 0) : "0";
+    $("#model-form-peak-cachehit").value = m ? String(m.peak_cache_hit_input_per_m || 0) : "0";
+    $("#model-form-peak-out").value = m ? String(m.peak_output_per_m || 0) : "0";
     $("#model-form-ctx").value = m ? String(m.context_length || m.context_window || 0) : "0";
     $("#model-form-outmax").value = m ? String(m.max_output || 0) : "0";
     $("#model-form-vision").checked = m ? !!m.vision : false;
@@ -1792,6 +1799,9 @@
     const input = Number($("#model-form-in").value);
     const cachehit = Number($("#model-form-cachehit").value);
     const output = Number($("#model-form-out").value);
+    const peakIn = Number($("#model-form-peak-in").value);
+    const peakCache = Number($("#model-form-peak-cachehit").value);
+    const peakOut = Number($("#model-form-peak-out").value);
     const ctx = Number($("#model-form-ctx").value);
     const outmax = Number($("#model-form-outmax").value);
     let firstErr = null;
@@ -1799,13 +1809,15 @@
     else clearFieldError($("#model-form-provider"));
     if (!model) { setFieldError($("#model-form-model"), T("admin.models.err.model")); firstErr = firstErr || $("#model-form-model"); }
     else clearFieldError($("#model-form-model"));
-    if (input < 0 || cachehit < 0 || output < 0) { toast(T("admin.models.err.price"), "error"); return; }
+    if (input < 0 || cachehit < 0 || output < 0 || peakIn < 0 || peakCache < 0 || peakOut < 0) { toast(T("admin.models.err.price"), "error"); return; }
     if (firstErr) { firstErr.focus(); return; }
     const body = {
       provider, model,
       currency: $("#model-form-currency").value,
       input_per_m: input, output_per_m: output,
       cache_hit_input_per_m: cachehit,
+      peak_input_per_m: peakIn, peak_output_per_m: peakOut,
+      peak_cache_hit_input_per_m: peakCache,
       context_length: ctx || 0, max_output: outmax || 0,
       vision: $("#model-form-vision").checked ? 1 : 0,
     };
@@ -2368,18 +2380,24 @@
   }
 
   // 后端 models → 视图行（点数按 points_per_unit=1000、锚定 USD 折算；ctx 来自 models.context_window；
-  // multi=available_keys>=2 真实计算；success 后端暂无字段 → null，视图不渲染假成功率）
+  // multi=available_keys>=2 真实计算；success 后端暂无字段 → null，视图不渲染假成功率；
+  // peak 高峰时段价（rant 2026-08-20T11:58:40）：peak_input_per_m>0 → 启用高峰计费，展示 ×N 标注）
   // 零 mock（rant 2026-08-19T15:54:06）：不读 data.js MARKET 兜底
   function modelsToView(list) {
     return list.map((m, i) => {
       const cny = m.currency === "CNY";
       const mult = cny ? 1000 / 7.2 : 1000;
+      const peak = (m.peak_input_per_m || 0) > 0;
       return {
         id: i,
         provider: m.provider,
         model: m.model,
         in: Math.round(m.input_per_m * mult * 100) / 100,
         out: Math.round(m.output_per_m * mult * 100) / 100,
+        peak: peak,
+        peakIn: peak ? Math.round(m.peak_input_per_m * mult * 100) / 100 : 0,
+        peakOut: peak ? Math.round(m.peak_output_per_m * mult * 100) / 100 : 0,
+        peakMult: peak && (m.input_per_m || 0) > 0 ? Math.round((m.peak_input_per_m / m.input_per_m) * 10) / 10 : 0,
         ctx: m.context_window || 0,
         avail: m.available_keys > 0,
         multi: (m.available_keys || 0) >= 2,

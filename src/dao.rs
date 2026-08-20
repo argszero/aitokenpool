@@ -167,16 +167,30 @@ pub fn get_available_balance(conn: &Connection, user_id: i64) -> f64 {
     permanent + gift
 }
 
-/// 模型单价（按 provider+model）→ (input_per_m, output_per_m, cache_hit_input_per_m, currency)
+/// 模型单价（按 provider+model）→ (input_per_m, output_per_m, cache_hit_input_per_m,
+/// peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, currency)
+/// 高峰价缺省 0 = 不启用高峰计费（billing::effective_prices 处理回落）
 pub fn get_model_price(
     conn: &Connection,
     provider: &str,
     model: &str,
-) -> Option<(f64, f64, f64, String)> {
+) -> Option<(f64, f64, f64, f64, f64, f64, String)> {
     conn.query_row(
-        "SELECT input_per_m, output_per_m, cache_hit_input_per_m, currency FROM models WHERE provider = ?1 AND model = ?2",
+        "SELECT input_per_m, output_per_m, cache_hit_input_per_m, \
+                peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, currency \
+         FROM models WHERE provider = ?1 AND model = ?2",
         rusqlite::params![provider, model],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        },
     )
     .ok()
 }
@@ -186,6 +200,7 @@ pub fn list_models_with_availability(conn: &Connection) -> Result<Vec<serde_json
     let mut stmt = conn.prepare(
         "SELECT m.provider, m.model, m.currency, m.input_per_m, m.output_per_m, m.context_window, \
                 m.context_length, m.max_output, m.vision, m.cache_hit_input_per_m, \
+                m.peak_input_per_m, m.peak_output_per_m, m.peak_cache_hit_input_per_m, \
                 (SELECT COUNT(*) FROM keys k WHERE k.model = m.model AND k.status = 'on') AS avail \
          FROM models m ORDER BY m.provider, m.model",
     )?;
@@ -201,7 +216,10 @@ pub fn list_models_with_availability(conn: &Connection) -> Result<Vec<serde_json
             "max_output": r.get::<_, i64>(7)?,
             "vision": r.get::<_, i64>(8)?,
             "cache_hit_input_per_m": r.get::<_, f64>(9)?,
-            "available_keys": r.get::<_, i64>(10)?,
+            "peak_input_per_m": r.get::<_, f64>(10)?,
+            "peak_output_per_m": r.get::<_, f64>(11)?,
+            "peak_cache_hit_input_per_m": r.get::<_, f64>(12)?,
+            "available_keys": r.get::<_, i64>(13)?,
         }))
     })?;
     let mut out = Vec::new();
@@ -215,11 +233,12 @@ pub fn list_models_with_availability(conn: &Connection) -> Result<Vec<serde_json
 pub fn list_all_models(conn: &Connection) -> Result<Vec<serde_json::Value>> {
     let mut stmt = conn.prepare(
         "SELECT id, provider, model, currency, input_per_m, output_per_m, \
-                context_length, max_output, vision, cache_hit_input_per_m, updated_at \
+                context_length, max_output, vision, cache_hit_input_per_m, \
+                peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, updated_at \
          FROM models ORDER BY provider, model",
     )?;
     let rows = stmt.query_map([], |r| {
-        let updated_at: String = r.get(10)?;
+        let updated_at: String = r.get(13)?;
         Ok(serde_json::json!({
             "id": r.get::<_, i64>(0)?,
             "provider": r.get::<_, String>(1)?,
@@ -231,6 +250,9 @@ pub fn list_all_models(conn: &Connection) -> Result<Vec<serde_json::Value>> {
             "max_output": r.get::<_, i64>(7)?,
             "vision": r.get::<_, i64>(8)?,
             "cache_hit_input_per_m": r.get::<_, f64>(9)?,
+            "peak_input_per_m": r.get::<_, f64>(10)?,
+            "peak_output_per_m": r.get::<_, f64>(11)?,
+            "peak_cache_hit_input_per_m": r.get::<_, f64>(12)?,
             "updated_at": utc_iso(&updated_at),
         }))
     })?;
