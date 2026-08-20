@@ -18,15 +18,18 @@
   const MODELS = [
     { provider: "deepseek", model: "deepseek-v4-pro",  in: CNY(4.5),   out: CNY(13.5),  ctx: 1048576, max: 384000, tag: "推理" },
     { provider: "deepseek", model: "deepseek-v4-flash", in: CNY(1.5),   out: CNY(4.5),   ctx: 1048576, max: 384000, tag: "通用" },
-    { provider: "zhipu",    model: "glm-5.2",          in: CNY(8.0),   out: CNY(28.0),  ctx: 1048576, max: null,   tag: "通用" },
-    { provider: "openai",   model: "gpt-5.5-pro",      in: USD(30.0),  out: USD(180.0), ctx: 1050000, max: null,   tag: "旗舰" },
-    { provider: "anthropic",model: "claude-opus-4.7",   in: USD(5.0),   out: USD(25.0),  ctx: 1000000, max: null,   tag: "旗舰" },
+    { provider: "zhipu",    model: "glm-5.3",          in: CNY(8.0),   out: CNY(28.0),  ctx: 1048576, max: 131072, tag: "旗舰" },
+    { provider: "openai",   model: "gpt-5.6-sol",      in: USD(5.0),   out: USD(30.0),  ctx: 1050000, max: null,   tag: "旗舰" },
+    { provider: "anthropic",model: "claude-opus-5",     in: USD(5.0),   out: USD(25.0),  ctx: 1000000, max: null,   tag: "旗舰" },
     { provider: "google",   model: "gemini-3.1-pro",   in: USD(2.0),   out: USD(12.0),  ctx: 1048576, max: null,   tag: "多模态" },
+    { provider: "google",   model: "gemini-3.5-flash-lite", in: USD(0.3),  out: USD(2.5),  ctx: 1048576, max: null,   tag: "轻量" },
     { provider: "xai",      model: "grok-4.6",         in: USD(2.0),   out: USD(6.0),   ctx: 500000,  max: null,   tag: "通用" },
     { provider: "moonshot", model: "kimi-k3",          in: CNY(20.0),  out: CNY(100.0), ctx: 1048576, max: null,   tag: "长文" },
-    { provider: "bytedance-ark", model: "doubao-seed-2.1-pro", in: CNY(6.0), out: CNY(30.0), ctx: 262144, max: null, tag: "通用" },
-    { provider: "minimax",  model: "minimax-m3",       in: USD(0.3),   out: USD(1.2),   ctx: 1048576, max: null,   tag: "轻量" },
-    { provider: "aliyun-bailian", model: "qwen3-max",  in: CNY(4.0),   out: CNY(16.0),  ctx: 262144,  max: null,   tag: "通用" },
+    { provider: "bytedance-ark", model: "doubao-seed-evolving", in: CNY(6.0), out: CNY(30.0), ctx: 1048576, max: 262144, tag: "旗舰" },
+    { provider: "minimax",  model: "minimax-m3",       in: CNY(2.1),   out: CNY(8.4),   ctx: 1048576, max: null,   tag: "轻量" },
+    { provider: "aliyun-bailian", model: "qwen3.8-max", in: CNY(12.0),  out: CNY(36.0),  ctx: 1048576, max: null,   tag: "旗舰" },
+    { provider: "aliyun-bailian", model: "qwen3.7-plus", in: CNY(2.0),   out: CNY(8.0),   ctx: 1048576, max: null,   tag: "通用" },
+    { provider: "aliyun-bailian", model: "qwen3.7-flash", in: CNY(0.2),  out: CNY(0.8),   ctx: 1048576, max: null,   tag: "轻量" },
   ];
 
   // 金额/余额格式化：整数原样（千分位）；小数保留最多 5 位（2026-08-20：1 CNY = 1 点，点数可为小数）
