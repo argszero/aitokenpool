@@ -2,7 +2,7 @@
 //!
 //! 设计约定（见 config/config.example.toml 注释）：
 //! - providers / plans / 点数规则是「人手工维护」的配置，需可读、可注释；
-//! - 模型价格大表在 data/models.json，本文件只放「官方价覆盖」price_overrides。
+//! - 模型目录在 config.toml [[models]]（2026-08-20 rant：唯一真源，替代 json + overrides）。
 //!
 //! P0-A（rant 2026-08-17T22:21:52）：服务骨架 + 配置加载
 
@@ -143,8 +143,9 @@ pub struct Config {
     pub points: Points,
     pub providers: Vec<Provider>,
     pub plans: Vec<Plan>,
+    /// 模型目录（rant 2026-08-20T10:27:13：唯一真源，替代 models.json + price_overrides 双层）
     #[serde(default)]
-    pub price_overrides: Vec<PriceOverride>,
+    pub models: Vec<Model>,
 }
 
 /// 点数规则（账本层的锚）
@@ -198,19 +199,26 @@ pub struct Endpoint {
     pub base_url: String,
 }
 
-/// 官方价覆盖（覆盖 data/models.json 聚合源价格）
+/// 模型定义（rant 2026-08-20T10:27:13：config.toml 唯一真源，替代 models.json + price_overrides）
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
-pub struct PriceOverride {
+pub struct Model {
     pub provider: String,
     pub model: String,
     pub currency: String,
+    /// 每百万 tokens（缓存未命中输入价）
     pub input_per_m: f64,
+    /// 缓存命中输入价（缺省 0 = 命中免费）
+    #[serde(default)]
+    pub cache_hit_input_per_m: f64,
+    /// 每百万 tokens 输出价
     pub output_per_m: f64,
     #[serde(default)]
-    pub cache_hit_input_per_m: Option<f64>,
+    pub context_length: i64,
     #[serde(default)]
-    pub source: Option<String>,
+    pub max_output: i64,
+    #[serde(default)]
+    pub vision: bool,
 }
 
 impl Config {
@@ -306,16 +314,27 @@ mod tests {
             .find(|p| p.id == "aliyun-token-plan")
             .expect("aliyun-token-plan 应存在");
         assert!(al.interactive_only);
-        // price_overrides
-        assert!(cfg.price_overrides.len() >= 2);
+        // models（rant 2026-08-20T10:27:13：config 唯一真源，替代 json + overrides）
+        assert!(
+            cfg.models.len() >= 10,
+            "models 应从 config [[models]] 解析，len={}",
+            cfg.models.len()
+        );
         let dv = cfg
-            .price_overrides
+            .models
             .iter()
-            .find(|o| o.model == "deepseek-v4-pro")
+            .find(|m| m.model == "deepseek-v4-pro")
             .unwrap();
         assert_eq!(dv.input_per_m, 4.5);
-        assert_eq!(dv.cache_hit_input_per_m.unwrap(), 0.15);
-        assert!(dv.source.is_some());
+        assert_eq!(dv.cache_hit_input_per_m, 0.15);
+        assert_eq!(dv.currency, "CNY");
+        let flash = cfg
+            .models
+            .iter()
+            .find(|m| m.model == "deepseek-v4-flash")
+            .unwrap();
+        assert_eq!(flash.input_per_m, 1.5);
+        assert_eq!(flash.cache_hit_input_per_m, 0.05);
         // server 默认值
         assert_eq!(cfg.server.addr, "0.0.0.0:8080");
         assert_eq!(cfg.server.db_path, "data/aitokenpool.db");

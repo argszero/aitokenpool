@@ -416,47 +416,11 @@ pub(crate) fn seed_test_users(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// models 表种子（启动时 upsert）：data/models.example.json 价格大表 +
-/// config.price_overrides 官方价覆盖（覆盖同名模型）。文件缺失时仅告警不报错。
+/// models 表种子（启动时 upsert）：config.toml [[models]] 唯一真源
+///（rant 2026-08-20T10:27:13：移除 models.json + price_overrides 双层机制）
 pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()> {
-    let path = "data/models.example.json";
-    let raw = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("models 种子文件缺失（{path}），跳过：{e}");
-            return Ok(());
-        }
-    };
-    let v: serde_json::Value =
-        serde_json::from_str(&raw).with_context(|| format!("解析 {path} 失败"))?;
-    let models = v["models"].as_array().cloned().unwrap_or_default();
-
-    // 官方价覆盖：(provider, model) → (input_per_m, output_per_m, currency)
-    let mut overrides = std::collections::HashMap::new();
-    for o in &cfg.price_overrides {
-        overrides.insert(
-            (o.provider.clone(), o.model.clone()),
-            (o.input_per_m, o.output_per_m, o.currency.clone()),
-        );
-    }
-
     let mut n = 0u32;
-    for m in models {
-        let provider = m["provider"].as_str().unwrap_or("").to_string();
-        let model = m["model"].as_str().unwrap_or("").to_string();
-        if provider.is_empty() || model.is_empty() {
-            continue;
-        }
-        let (input, output, currency) = overrides
-            .get(&(provider.clone(), model.clone()))
-            .cloned()
-            .unwrap_or_else(|| {
-                (
-                    m["input_per_m"].as_f64().unwrap_or(0.0),
-                    m["output_per_m"].as_f64().unwrap_or(0.0),
-                    m["currency"].as_str().unwrap_or("USD").to_string(),
-                )
-            });
+    for m in &cfg.models {
         conn.execute(
             "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, context_window, context_length, max_output, vision, cache_hit_input_per_m, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now')) \
@@ -471,21 +435,21 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                cache_hit_input_per_m = excluded.cache_hit_input_per_m, \
                updated_at = datetime('now')",
             rusqlite::params![
-                provider,
-                model,
-                currency,
-                input,
-                output,
-                m["context_length"].as_i64().unwrap_or(1048576),
-                m["context_length"].as_i64().unwrap_or(0),
-                m["max_output"].as_i64().unwrap_or(0),
-                m["vision"].as_i64().unwrap_or(0),
-                m["cache_hit_input_per_m"].as_f64().unwrap_or(0.0),
+                m.provider,
+                m.model,
+                m.currency,
+                m.input_per_m,
+                m.output_per_m,
+                m.context_length,
+                m.context_length,
+                m.max_output,
+                m.vision as i64,
+                m.cache_hit_input_per_m,
             ],
         )?;
         n += 1;
     }
-    log::info!("models seed：{n} 行 upsert（来源 {path} + price_overrides）");
+    log::info!("models seed：{n} 行 upsert（来源 config.toml [[models]]）");
     Ok(())
 }
 
@@ -629,16 +593,16 @@ mod tests {
     }
 
     #[test]
-    fn seed_models_upserts_from_example_and_overrides() {
+    fn seed_models_upserts_from_config_models() {
         let (conn, p) = tmp_db("models");
         let cfg = crate::config::Config::load("config/config.example.toml").unwrap();
         seed_models(&conn, &cfg).expect("seed models");
-        // example 文件里的模型已入库
+        // config.toml [[models]] 的模型已入库
         let cnt: i64 = conn
             .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
             .unwrap();
-        assert!(cnt >= 5, "models 已从 example 文件 seed，cnt={cnt}");
-        // deepseek-v4-pro 被 price_overrides 覆盖为官方价（4.5 / 13.5 CNY，缓存命中 0.15）
+        assert!(cnt >= 10, "models 已从 config [[models]] seed，cnt={cnt}");
+        // deepseek-v4-pro = config 官方 CNY 价（4.5 / 13.5 / 缓存命中 0.15）
         let (input, output, cache_hit, currency): (f64, f64, f64, String) = conn
             .query_row(
                 "SELECT input_per_m, output_per_m, cache_hit_input_per_m, currency FROM models \
@@ -651,6 +615,17 @@ mod tests {
         assert!((output - 13.5).abs() < 1e-9, "output={output}");
         assert!((cache_hit - 0.15).abs() < 1e-9, "cache_hit={cache_hit}");
         assert_eq!(currency, "CNY");
+        // flash 也在（config 直接定义）
+        let (fi, fh): (f64, f64) = conn
+            .query_row(
+                "SELECT input_per_m, cache_hit_input_per_m FROM models \
+                 WHERE provider = 'deepseek' AND model = 'deepseek-v4-flash'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!((fi - 1.5).abs() < 1e-9, "flash input={fi}");
+        assert!((fh - 0.05).abs() < 1e-9, "flash cache_hit={fh}");
         // 幂等：重复 seed 不报错且不产生重复行
         seed_models(&conn, &cfg).expect("二次 seed");
         let cnt2: i64 = conn
