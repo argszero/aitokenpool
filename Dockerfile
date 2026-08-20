@@ -23,6 +23,8 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY ui ./ui
+# main.rs include_str!("../config/config.example.toml") 需要编译期存在该文件（a39e809 内嵌默认配置）
+COPY config ./config
 RUN cargo build --release --locked
 
 # ---------- runtime ----------
