@@ -384,7 +384,7 @@
     }
   }
 
-  // Plan 提示：按量/订阅 + key 前缀 + 专属端点说明（来自 PLANS；登录后为 /api/plans）
+  // Plan 提示：按量/订阅 + 专属端点说明（来自 PLANS；登录后为 /api/plans）
   function showPlanHint(planId) {
     const el = $("#sf-plan-hint");
     if (!el) return;
@@ -392,7 +392,6 @@
     const pl = plans.find((x) => x.id === planId);
     if (!pl) { el.textContent = ""; return; }
     el.textContent = (pl.type === "paygo" ? T("share.plan.paygo") : T("share.plan.sub")) +
-      (pl.keyPrefix ? T("share.plan.keyPrefix", { prefix: pl.keyPrefix }) : "") +
       (pl.note ? T("share.plan.note", { note: pl.note }) : "");
   }
 

@@ -183,8 +183,6 @@ pub struct Plan {
     /// paygo | token | coding
     #[serde(rename = "type")]
     pub type_: String,
-    /// key 前缀约定（错配会 401）
-    pub key_prefix: String,
     #[serde(default)]
     pub interactive_only: bool,
     pub endpoints: Vec<Endpoint>,
@@ -300,7 +298,6 @@ mod tests {
             .expect("deepseek-paygo 应存在");
         assert_eq!(dp.provider, "deepseek");
         assert_eq!(dp.type_, "paygo");
-        assert_eq!(dp.key_prefix, "sk-");
         assert_eq!(dp.endpoints.len(), 3);
         assert_eq!(dp.endpoints[0].protocol, "openai_chat");
         assert_eq!(dp.endpoints[0].base_url, "https://api.deepseek.com");
