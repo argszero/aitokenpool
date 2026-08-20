@@ -416,8 +416,10 @@ pub(crate) fn seed_test_users(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// models 表种子（启动时 upsert）：config.toml [[models]] 唯一真源
+/// models 表种子（启动时同步）：config.toml [[models]] 唯一真源
 ///（rant 2026-08-20T10:27:13：移除 models.json + price_overrides 双层机制）
+///（rant 2026-08-20T11:58:33：upsert 之外同步删除 config 已移除的模型，避免市场幽灵模型）
+/// 语义：config 全量权威——启动后 models 表 = config [[models]]（admin 运行时增改在下次启动被 config 覆盖/清掉）
 pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()> {
     let mut n = 0u32;
     for m in &cfg.models {
@@ -449,7 +451,34 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
         )?;
         n += 1;
     }
-    log::info!("models seed：{n} 行 upsert（来源 config.toml [[models]]）");
+    // 同步删除 config 中已移除的模型（模型行无外键引用，usage_records/transactions 均按 model 字符串记）
+    let mut removed = 0u32;
+    let stale: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT provider, model FROM models")
+            .context("prepare models scan")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut v = Vec::new();
+        for row in rows {
+            let (p, m) = row?;
+            if !cfg
+                .models
+                .iter()
+                .any(|cm| cm.provider == p && cm.model == m)
+            {
+                v.push((p, m));
+            }
+        }
+        v
+    };
+    for (p, m) in &stale {
+        conn.execute(
+            "DELETE FROM models WHERE provider = ?1 AND model = ?2",
+            rusqlite::params![p, m],
+        )?;
+        removed += 1;
+    }
+    log::info!("models seed：{n} 行 upsert（来源 config.toml [[models]]），删除 {removed} 行 config 已移除模型");
     Ok(())
 }
 
@@ -632,6 +661,40 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
             .unwrap();
         assert_eq!(cnt, cnt2, "upsert 不产生重复行");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn seed_models_deletes_config_removed_rows() {
+        // rant 2026-08-20T11:58:33：seed 只 upsert 不删除 → config 移除的模型残留 DB（市场幽灵模型）
+        let (conn, p) = tmp_db("models_sync");
+        let cfg = crate::config::Config::load("config/config.example.toml").unwrap();
+        seed_models(&conn, &cfg).expect("seed models");
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
+            .unwrap();
+        // 模拟历史残留：手工插入 config 中不存在的模型（旧版本遗留 / 曾手写 DB）
+        conn.execute(
+            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m) \
+             VALUES ('ghost-provider', 'ghost-model', 'USD', 1.0, 1.0)",
+            [],
+        )
+        .unwrap();
+        // 再 seed：ghost 行应被同步删除，数量回到 config 集合大小
+        seed_models(&conn, &cfg).expect("二次 seed 应清理 ghost 行");
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, before, "config 已移除模型应被删除（无幽灵行）");
+        let ghost: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM models WHERE provider = 'ghost-provider' AND model = 'ghost-model'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ghost, 0, "ghost 模型行已删除");
         drop(conn);
         let _ = std::fs::remove_file(p);
     }
