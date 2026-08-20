@@ -213,6 +213,16 @@ pub struct Model {
     pub cache_hit_input_per_m: f64,
     /// 每百万 tokens 输出价
     pub output_per_m: f64,
+    /// 高峰时段输入价（rant 2026-08-20T11:58:40：DeepSeek 高峰 9-12/14-18 北京时翻倍；
+    /// 缺省 0 = 不启用高峰计费，沿用 input_per_m）
+    #[serde(default)]
+    pub peak_input_per_m: f64,
+    /// 高峰时段缓存命中输入价（缺省 0）
+    #[serde(default)]
+    pub peak_cache_hit_input_per_m: f64,
+    /// 高峰时段输出价（缺省 0）
+    #[serde(default)]
+    pub peak_output_per_m: f64,
     #[serde(default)]
     pub context_length: i64,
     #[serde(default)]
@@ -328,6 +338,10 @@ mod tests {
         assert_eq!(dv.input_per_m, 4.5);
         assert_eq!(dv.cache_hit_input_per_m, 0.15);
         assert_eq!(dv.currency, "CNY");
+        // 高峰价（rant 2026-08-20T11:58:40）：pro 9.0 / 0.30 / 27.0
+        assert_eq!(dv.peak_input_per_m, 9.0);
+        assert_eq!(dv.peak_cache_hit_input_per_m, 0.30);
+        assert_eq!(dv.peak_output_per_m, 27.0);
         let flash = cfg
             .models
             .iter()
@@ -335,6 +349,11 @@ mod tests {
             .unwrap();
         assert_eq!(flash.input_per_m, 1.5);
         assert_eq!(flash.cache_hit_input_per_m, 0.05);
+        assert_eq!(flash.peak_input_per_m, 3.0);
+        assert_eq!(flash.peak_output_per_m, 9.0);
+        // 未配置高峰价的模型 → 缺省 0（不启用高峰计费）
+        let zhipu = cfg.models.iter().find(|m| m.provider == "zhipu").unwrap();
+        assert_eq!(zhipu.peak_input_per_m, 0.0, "无高峰价字段 → 缺省 0");
         // server 默认值
         assert_eq!(cfg.server.addr, "0.0.0.0:8080");
         assert_eq!(cfg.server.db_path, "data/aitokenpool.db");

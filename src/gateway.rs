@@ -170,27 +170,32 @@ fn settle_usage(
     };
     let price = dao::get_model_price(&conn, &key.provider, model);
     let (pts, cost) = match price {
-        Some((i_per_m, o_per_m, cache_hit_per_m, currency)) => {
+        Some((i_per_m, o_per_m, cache_hit_per_m, p_in, p_out, p_cache, currency)) => {
+            // rant 2026-08-20T11:58:40：DeepSeek 高峰时段（北京 9-12/14-18）价格翻倍——
+            // 按当前北京时间选高峰/空闲价；未配置高峰价的模型不受影响
+            let peak = billing::is_peak_hour(&chrono::Utc::now());
+            let (i2, c2, o2) = billing::effective_prices(
+                peak,
+                i_per_m,
+                cache_hit_per_m,
+                o_per_m,
+                p_in,
+                p_cache,
+                p_out,
+            );
             let pts = billing::calc_points(
                 input_tokens,
                 cached_tokens,
                 output_tokens,
-                i_per_m,
-                cache_hit_per_m,
-                o_per_m,
+                i2,
+                c2,
+                o2,
                 st.cfg.points.points_per_unit,
                 &currency,
                 &st.cfg.points.anchor_currency,
             );
             let cost = billing::to_anchor(
-                billing::raw_cost(
-                    input_tokens,
-                    cached_tokens,
-                    output_tokens,
-                    i_per_m,
-                    cache_hit_per_m,
-                    o_per_m,
-                ),
+                billing::raw_cost(input_tokens, cached_tokens, output_tokens, i2, c2, o2),
                 &currency,
                 &st.cfg.points.anchor_currency,
             );

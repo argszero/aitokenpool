@@ -246,7 +246,11 @@ endpoints = [
 #    模型（厂商/名称/价格/上下文/读图等）全部在此定义；启动时 upsert 进 DB。
 #    单位：每百万 tokens（currency 对应币种）；input_per_m = 缓存未命中输入价，
 #    cache_hit_input_per_m = 缓存命中输入价（缺省 0 = 命中免费）。
-#    DeepSeek 为官方价（2026-08-20 浏览器核实，空闲时段；高峰 9-12/14-18 北京时翻倍）。
+#    高峰时段价（rant 2026-08-20T11:58:40）：peak_input_per_m / peak_output_per_m /
+#    peak_cache_hit_input_per_m 三个可选字段，缺省 0 = 不启用高峰计费（沿用空闲价）。
+#    命中高峰时段（北京时间 9-12、14-18，周一至周日）时按高峰价扣点。
+#    DeepSeek 为官方价（2026-08-20 浏览器核实）：空闲价即高峰价的一半，
+#    高峰 9-12/14-18 北京时翻倍（flash 3.0/0.10/9.0，pro 9.0/0.30/27.0 元/M）。
 # ============================================================
 
 [[models]]
@@ -256,6 +260,10 @@ currency = "CNY"
 input_per_m = 1.5
 cache_hit_input_per_m = 0.05
 output_per_m = 4.5
+# 高峰时段价（北京 9-12 / 14-18 翻倍；官方价）
+peak_input_per_m = 3.0
+peak_cache_hit_input_per_m = 0.10
+peak_output_per_m = 9.0
 context_length = 1048576
 max_output = 384000
 vision = false
@@ -267,6 +275,10 @@ currency = "CNY"
 input_per_m = 4.5
 cache_hit_input_per_m = 0.15
 output_per_m = 13.5
+# 高峰时段价（北京 9-12 / 14-18 翻倍；官方价）
+peak_input_per_m = 9.0
+peak_cache_hit_input_per_m = 0.30
+peak_output_per_m = 27.0
 context_length = 1048576
 max_output = 384000
 vision = false

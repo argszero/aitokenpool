@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -250,6 +250,26 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "cached_tokens",
         "cached_tokens REAL NOT NULL DEFAULT 0",
     )?;
+    // v9（rant 2026-08-20T11:58:40）：DeepSeek 高峰时段（北京 9-12/14-18）价格翻倍——
+    // models 补 peak_* 高峰价三字段（缺省 0 = 不启用高峰计费，沿用空闲价）
+    ensure_column(
+        conn,
+        "models",
+        "peak_input_per_m",
+        "peak_input_per_m REAL NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "models",
+        "peak_cache_hit_input_per_m",
+        "peak_cache_hit_input_per_m REAL NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "models",
+        "peak_output_per_m",
+        "peak_output_per_m REAL NOT NULL DEFAULT 0",
+    )?;
     // schema_version：INSERT OR REPLACE 保证幂等
     let v: i64 = conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
@@ -424,8 +444,8 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
     let mut n = 0u32;
     for m in &cfg.models {
         conn.execute(
-            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, context_window, context_length, max_output, vision, cache_hit_input_per_m, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now')) \
+            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, context_window, context_length, max_output, vision, cache_hit_input_per_m, peak_input_per_m, peak_cache_hit_input_per_m, peak_output_per_m, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now')) \
              ON CONFLICT(provider, model) DO UPDATE SET \
                currency = excluded.currency, \
                input_per_m = excluded.input_per_m, \
@@ -435,6 +455,9 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                max_output = excluded.max_output, \
                vision = excluded.vision, \
                cache_hit_input_per_m = excluded.cache_hit_input_per_m, \
+               peak_input_per_m = excluded.peak_input_per_m, \
+               peak_cache_hit_input_per_m = excluded.peak_cache_hit_input_per_m, \
+               peak_output_per_m = excluded.peak_output_per_m, \
                updated_at = datetime('now')",
             rusqlite::params![
                 m.provider,
@@ -447,6 +470,9 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                 m.max_output,
                 m.vision as i64,
                 m.cache_hit_input_per_m,
+                m.peak_input_per_m,
+                m.peak_cache_hit_input_per_m,
+                m.peak_output_per_m,
             ],
         )?;
         n += 1;
@@ -631,30 +657,71 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
             .unwrap();
         assert!(cnt >= 10, "models 已从 config [[models]] seed，cnt={cnt}");
-        // deepseek-v4-pro = config 官方 CNY 价（4.5 / 13.5 / 缓存命中 0.15）
-        let (input, output, cache_hit, currency): (f64, f64, f64, String) = conn
+        // deepseek-v4-pro = config 官方 CNY 价（4.5 / 13.5 / 缓存命中 0.15）+ 高峰价（9.0 / 27.0 / 0.30）
+        let (input, output, cache_hit, peak_in, peak_out, peak_cache, currency): (
+            f64,
+            f64,
+            f64,
+            f64,
+            f64,
+            f64,
+            String,
+        ) = conn
             .query_row(
-                "SELECT input_per_m, output_per_m, cache_hit_input_per_m, currency FROM models \
-                 WHERE provider = 'deepseek' AND model = 'deepseek-v4-pro'",
+                "SELECT input_per_m, output_per_m, cache_hit_input_per_m, \
+                        peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, currency \
+                 FROM models WHERE provider = 'deepseek' AND model = 'deepseek-v4-pro'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
             )
             .unwrap();
         assert!((input - 4.5).abs() < 1e-9, "input={input}");
         assert!((output - 13.5).abs() < 1e-9, "output={output}");
         assert!((cache_hit - 0.15).abs() < 1e-9, "cache_hit={cache_hit}");
+        assert!((peak_in - 9.0).abs() < 1e-9, "peak input={peak_in}");
+        assert!((peak_out - 27.0).abs() < 1e-9, "peak output={peak_out}");
+        assert!(
+            (peak_cache - 0.30).abs() < 1e-9,
+            "peak cache_hit={peak_cache}"
+        );
         assert_eq!(currency, "CNY");
-        // flash 也在（config 直接定义）
-        let (fi, fh): (f64, f64) = conn
+        // flash 也在（config 直接定义；高峰 3.0 / 9.0 / 0.10）
+        let (fi, fh, fp_in, fp_out): (f64, f64, f64, f64) = conn
             .query_row(
-                "SELECT input_per_m, cache_hit_input_per_m FROM models \
-                 WHERE provider = 'deepseek' AND model = 'deepseek-v4-flash'",
+                "SELECT input_per_m, cache_hit_input_per_m, peak_input_per_m, peak_output_per_m \
+                 FROM models WHERE provider = 'deepseek' AND model = 'deepseek-v4-flash'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
         assert!((fi - 1.5).abs() < 1e-9, "flash input={fi}");
         assert!((fh - 0.05).abs() < 1e-9, "flash cache_hit={fh}");
+        assert!((fp_in - 3.0).abs() < 1e-9, "flash peak input={fp_in}");
+        assert!((fp_out - 9.0).abs() < 1e-9, "flash peak output={fp_out}");
+        // 无高峰价的模型 → peak 缺省 0（不启用高峰计费）
+        let (z_in, z_cache, z_out): (f64, f64, f64) = conn
+            .query_row(
+                "SELECT peak_input_per_m, peak_cache_hit_input_per_m, peak_output_per_m FROM models \
+                 WHERE provider = 'zhipu' AND model = 'glm-5.2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (z_in, z_cache, z_out),
+            (0.0, 0.0, 0.0),
+            "非 DeepSeek 模型高峰价缺省 0"
+        );
         // 幂等：重复 seed 不报错且不产生重复行
         seed_models(&conn, &cfg).expect("二次 seed");
         let cnt2: i64 = conn

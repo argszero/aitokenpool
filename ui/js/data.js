@@ -75,7 +75,7 @@
     // 市场在售 key（游客浏览用；rant 2026-08-19T15:54:06：multi/success 为虚构数据已移除；
     // 登录态用 GET /api/models 真实数据，multi=available_keys>=2、ctx=context_window）
     MARKET: [
-      { id: 1, provider: "deepseek", model: "deepseek-v4-flash", in: USD(0.14), out: USD(0.28), ctx: 1048576, avail: true },
+      { id: 1, provider: "deepseek", model: "deepseek-v4-flash", in: USD(0.14), out: USD(0.28), ctx: 1048576, avail: true, peak: true, peakIn: USD(0.28), peakOut: USD(0.56), peakMult: 2 },
       { id: 2, provider: "zhipu",    model: "glm-5.2",           in: CNY(8.0),  out: CNY(28.0),  ctx: 1048576, avail: true },
       { id: 3, provider: "openai",   model: "gpt-5.5-pro",       in: USD(30.0), out: USD(180.0), ctx: 1050000, avail: true },
       { id: 4, provider: "anthropic",model: "claude-opus-4.7",    in: USD(5.0),  out: USD(25.0),  ctx: 1000000, avail: false },
