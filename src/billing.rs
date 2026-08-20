@@ -18,8 +18,13 @@ use rusqlite::Connection;
 
 /// 分享者分成比例（平台抽成 10%）
 pub const SHARE_RATIO: f64 = 0.9;
-/// 锚定货币为 USD 时的 CNY 汇率占位（正式汇率表留后续 P0）
+/// 锚定货币为 CNY 时的 USD 汇率占位（正式汇率表留后续 P0）
 pub const CNY_PER_USD: f64 = 7.2;
+
+/// 点数舍入：最多保留 5 位小数（宿主 2026-08-20：1 CNY = 1 点，点数可为小数）
+pub fn round5(x: f64) -> f64 {
+    (x * 100_000.0).round() / 100_000.0
+}
 
 /// 把某货币金额折算到锚定货币（同币种 1:1；USD↔CNY 用 CNY_PER_USD；其它未知币种按 1:1 兜底）
 pub fn to_anchor(amount: f64, model_currency: &str, anchor: &str) -> f64 {
@@ -70,7 +75,7 @@ pub fn calc_points(
         cache_hit_input_per_m,
         output_per_m,
     );
-    to_anchor(cost, model_currency, anchor) * points_per_unit as f64
+    round5(to_anchor(cost, model_currency, anchor) * points_per_unit as f64)
 }
 
 /// 北京时间高峰时段判定（rant 2026-08-20T11:58:40：DeepSeek 高峰 9:00-12:00、14:00-18:00，
@@ -149,8 +154,8 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
         rusqlite::params![remaining, p.consumer_id],
     )?;
 
-    // 分享者加 90%（平台抽成 10%）
-    let earn = p.pts * SHARE_RATIO;
+    // 分享者加 90%（平台抽成 10%；分成点数同样舍入到 5 位小数）
+    let earn = round5(p.pts * SHARE_RATIO);
     tx.execute(
         "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (?1, 0)",
         [p.owner_id],
@@ -245,30 +250,32 @@ mod tests {
 
     #[test]
     fn calc_points_basic() {
-        // 100 prompt × 10 USD/M + 50 completion × 20 USD/M = 0.002 USD → 1000 点/USD → 2.0 点
-        let pts = calc_points(100.0, 0.0, 50.0, 10.0, 0.0, 20.0, 1000, "USD", "USD");
-        assert!((pts - 2.0).abs() < 1e-9, "pts={pts}");
+        // 100 prompt × 10 USD/M + 50 completion × 20 USD/M = 0.002 USD
+        // → CNY 锚定 ×7.2 = 0.0144 CNY → 1 点/CNY = 0.0144 点（保留 5 位小数）
+        let pts = calc_points(100.0, 0.0, 50.0, 10.0, 0.0, 20.0, 1, "USD", "CNY");
+        assert!((pts - 0.0144).abs() < 1e-9, "pts={pts}");
     }
 
     #[test]
     fn calc_points_currency_conversion() {
-        // 1000 prompt × 10 CNY/M = 0.01 CNY → USD 锚定 ÷ 7.2 ≈ 0.001389 USD → ×1000 ≈ 1.3889 点
-        let pts = calc_points(1000.0, 0.0, 0.0, 10.0, 0.0, 0.0, 1000, "CNY", "USD");
-        let expect = 0.01 / 7.2 * 1000.0;
-        assert!((pts - expect).abs() < 1e-9, "pts={pts} expect={expect}");
+        // 1000 prompt × 10 CNY/M = 0.01 CNY → 1 点/CNY = 0.01 点
+        let pts = calc_points(1000.0, 0.0, 0.0, 10.0, 0.0, 0.0, 1, "CNY", "CNY");
+        assert!((pts - 0.01).abs() < 1e-9, "pts={pts}");
+        // USD 价 → CNY 锚定 ×7.2：1000 prompt × 10 USD/M = 0.01 USD = 0.072 CNY
+        let pts_usd = calc_points(1000.0, 0.0, 0.0, 10.0, 0.0, 0.0, 1, "USD", "CNY");
+        assert!((pts_usd - 0.072).abs() < 1e-9, "pts_usd={pts_usd}");
     }
 
     #[test]
     fn calc_points_cache_hit_mixed_pricing() {
         // rant 2026-08-20T10:17:27：输入分「缓存未命中 / 命中」两档价。
-        // 100 未命中 × 1.5 CNY/M + 900 命中 × 0.05 CNY/M + 500 输出 × 4.5 CNY/M
-        // = (150 + 45 + 2250)/1e6 CNY = 0.002445 CNY → USD 锚定 ÷7.2 ×1000 点
-        let pts = calc_points(100.0, 900.0, 500.0, 1.5, 0.05, 4.5, 1000, "CNY", "USD");
-        let expect = 0.002445 / 7.2 * 1000.0;
-        assert!((pts - expect).abs() < 1e-9, "pts={pts} expect={expect}");
+        // 1000 未命中 × 1.5 CNY/M + 1000 命中 × 0.05 CNY/M + 1000 输出 × 4.5 CNY/M
+        // = (1500 + 50 + 4500)/1e6 CNY = 0.00605 CNY → 1 点/CNY = 0.00605 点
+        let pts = calc_points(1000.0, 1000.0, 1000.0, 1.5, 0.05, 4.5, 1, "CNY", "CNY");
+        assert!((pts - 0.00605).abs() < 1e-9, "pts={pts}");
         // 命中价缺省 0 → 命中部分不计费（只按未命中 + 输出）
-        let pts_zero = calc_points(100.0, 900.0, 500.0, 1.5, 0.0, 4.5, 1000, "CNY", "USD");
-        let expect_zero = (150.0 + 2250.0) / 1e6 / 7.2 * 1000.0;
+        let pts_zero = calc_points(1000.0, 1000.0, 1000.0, 1.5, 0.0, 4.5, 1, "CNY", "CNY");
+        let expect_zero = (1500.0 + 4500.0) / 1e6;
         assert!((pts_zero - expect_zero).abs() < 1e-9, "pts_zero={pts_zero}");
     }
 
@@ -335,56 +342,27 @@ mod tests {
 
     #[test]
     fn calc_points_uses_peak_price_in_peak_hour() {
-        // 高峰 1M 输入 × 3.0 CNY/M = 3.0 CNY → USD 锚定 ÷7.2 ×1000 = 416.67 点；空闲 1.5 → 208.33 点
+        // CNY 锚定 1 点/元：高峰 1M 输入 × 3.0 CNY/M = 3.0 CNY = 3.0 点；空闲 1.5 → 1.5 点
         let peak = effective_prices(true, 1.5, 0.05, 4.5, 3.0, 0.10, 9.0);
         let off = effective_prices(false, 1.5, 0.05, 4.5, 3.0, 0.10, 9.0);
-        let pts_peak = calc_points(
-            1_000_000.0,
-            0.0,
-            0.0,
-            peak.0,
-            peak.1,
-            peak.2,
-            1000,
-            "CNY",
-            "USD",
-        );
-        let pts_off = calc_points(
-            1_000_000.0,
-            0.0,
-            0.0,
-            off.0,
-            off.1,
-            off.2,
-            1000,
-            "CNY",
-            "USD",
-        );
-        assert!(
-            (pts_peak - 3.0 / 7.2 * 1000.0).abs() < 1e-9,
-            "高峰 1M 输入 = 416.67 点: {pts_peak}"
-        );
-        assert!(
-            (pts_off - 1.5 / 7.2 * 1000.0).abs() < 1e-9,
-            "空闲 1M 输入 = 208.33 点: {pts_off}"
-        );
+        let pts_peak = calc_points(1_000_000.0, 0.0, 0.0, peak.0, peak.1, peak.2, 1, "CNY", "CNY");
+        let pts_off = calc_points(1_000_000.0, 0.0, 0.0, off.0, off.1, off.2, 1, "CNY", "CNY");
+        assert!((pts_peak - 3.0).abs() < 1e-9, "高峰 1M 输入 = 3.0 点: {pts_peak}");
+        assert!((pts_off - 1.5).abs() < 1e-9, "空闲 1M 输入 = 1.5 点: {pts_off}");
         // 未配置高峰价 → 高峰/空闲点数一致
         let no_peak = effective_prices(true, 1.5, 0.05, 4.5, 0.0, 0.0, 0.0);
-        let pts_no = calc_points(
-            1_000_000.0,
-            0.0,
-            0.0,
-            no_peak.0,
-            no_peak.1,
-            no_peak.2,
-            1000,
-            "CNY",
-            "USD",
-        );
-        assert!(
-            (pts_no - 1.5 / 7.2 * 1000.0).abs() < 1e-9,
-            "未配置高峰价 → 208.33 点: {pts_no}"
-        );
+        let pts_no =
+            calc_points(1_000_000.0, 0.0, 0.0, no_peak.0, no_peak.1, no_peak.2, 1, "CNY", "CNY");
+        assert!((pts_no - 1.5).abs() < 1e-9, "未配置高峰价 → 1.5 点: {pts_no}");
+    }
+
+    #[test]
+    fn round5_limits_precision() {
+        // 最多 5 位小数：0.123456 → 0.12346；整数保持不变
+        assert_eq!(round5(0.123456), 0.12346);
+        assert_eq!(round5(2.0), 2.0);
+        assert_eq!(round5(0.0144), 0.0144);
+        assert_eq!(round5(1.0 / 3.0), 0.33333);
     }
 
     #[test]

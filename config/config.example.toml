@@ -52,14 +52,13 @@ max_backups = 7                     # 保留最近 7 个滚动文件（自动删
 # ============================================================
 [points]
 # 货币锚：USD | CNY。国内厂商报人民币、国际报美元，统一折算到锚定货币。
-# 建议锚定 USD（国际通用），人民币价按汇率折算入库。
-anchor_currency = "USD"
+# 锚定 CNY：DeepSeek 等国内模型直接按官方 CNY 价计点（1 点 ≈ 1 元），
+# 国际厂商（claude/gpt 等 USD 价）按 7.2 汇率折算成 CNY 后计点。
+anchor_currency = "CNY"
 
-# 点数粒度：1 个单位锚定货币 = 多少「点」。
-# points_per_unit = 1000 表示 1 USD = 1000 点（即 1 点 = 0.001 USD）。
-# 这样最便宜的 DeepSeek Flash 输出约 180 点/M，最贵的 o1-pro 约 60 万点/M，
-# 粒度够用且不产生小数碎片。
-points_per_unit = 1000
+# 点数粒度：1 CNY = 1 点（点数可为小数，账本与展示最多保留 5 位小数）。
+# 例：DeepSeek Flash 输出 4.5 元/M → 消费 0.0000045 点/token。
+points_per_unit = 1
 
 # 显示名与最小单位（仅用于 UI 展示，不参与账本计算）
 display_name = "点数"

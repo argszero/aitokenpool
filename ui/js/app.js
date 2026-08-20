@@ -347,12 +347,12 @@
 
   // 自动单价：单价是模型×厂商的客观属性，由平台按模型定价自动计算（输出 1M tokens 折算点数）
   // 零 mock（rant 2026-08-19T15:54:06）：登录态优先用 /api/models 真实价格（同 modelsToView 折算，
-  // 锚定 USD × points_per_unit）；仅游客/表单兜底读 data.js
+  // 锚定 CNY × points_per_unit=1；USD 价 ×7.2）；仅游客/表单兜底读 data.js
   function autoPrice(model) {
     const live = Live.models && Live.models.find((x) => x.model === model);
     if (live) {
-      const mult = live.currency === "CNY" ? 1000 / 7.2 : 1000;
-      return Math.round(live.output_per_m * mult * 100) / 100;
+      const mult = live.currency === "CNY" ? 1 : 7.2;
+      return Math.round(live.output_per_m * mult * 1e5) / 1e5;
     }
     const m = D.MODELS.find((x) => x.model === model);
     if (m && typeof m.out === "number") return m.out;
@@ -586,7 +586,7 @@
         const days = lastDayLabels(7);
         const earn = dailySeries(days, (t) => t.type === "earn");
         let cum = 0;
-        const cumSeries = earn.map((v) => { cum = Math.round((cum + v) * 100) / 100; return cum; });
+        const cumSeries = earn.map((v) => { cum = Math.round((cum + v) * 1e5) / 1e5; return cum; });
         $("#dash-sharings").insertAdjacentHTML("afterbegin",
           sparkline(cumSeries, { labels: days, fmt: (v) => "+" + D.fmt(v), stroke: "var(--ok)" }));
       }
@@ -963,7 +963,7 @@
       const day = String(t.time || "").slice(0, 5);
       map[day] = (map[day] || 0) + t.pts;
     });
-    return days.map((d) => Math.round((map[d] || 0) * 100) / 100);
+    return days.map((d) => Math.round((map[d] || 0) * 1e5) / 1e5);
   }
 
   // UTC 日期串（'YYYY-MM-DDT00:00:00Z'）→ 本地 MM-DD（rant 2026-08-19T20:45:32 跨天不错位）
@@ -1060,7 +1060,7 @@
     }
     clearFieldError($("#topup-custom"));
     // 充值为模拟支付（演示；真实支付后续接入）——仅更新会话余额，不写 D.TRANSACTIONS（rant 15:54:06 已删）
-    D.USER.balance = Math.round((D.USER.balance + amt) * 100) / 100;
+    D.USER.balance = Math.round((D.USER.balance + amt) * 1e5) / 1e5;
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     renderWallet();
     bump($("#side-balance")); // 余额跳动（rant 18:06:09 E）
@@ -2379,26 +2379,33 @@
     return '<tr><td class="empty-cell" colspan="' + colspan + '">' + loadErrorHtml(emptyLabel, null, retryLabel) + "</td></tr>";
   }
 
-  // 后端 models → 视图行（点数按 points_per_unit=1000、锚定 USD 折算；ctx 来自 models.context_window；
+  // 后端 models → 视图行（点数按 points_per_unit=1、锚定 CNY 折算；USD 价 ×7.2；ctx 来自 models.context_window；
   // multi=available_keys>=2 真实计算；success 后端暂无字段 → null，视图不渲染假成功率；
   // peak 高峰时段价（rant 2026-08-20T11:58:40）：peak_input_per_m>0 → 启用高峰计费，展示 ×N 标注）
   // 零 mock（rant 2026-08-19T15:54:06）：不读 data.js MARKET 兜底
   function modelsToView(list) {
     return list.map((m, i) => {
       const cny = m.currency === "CNY";
-      const mult = cny ? 1000 / 7.2 : 1000;
+      const mult = cny ? 1 : 7.2;
       const peak = (m.peak_input_per_m || 0) > 0;
       return {
         id: i,
         provider: m.provider,
         model: m.model,
-        in: Math.round(m.input_per_m * mult * 100) / 100,
-        out: Math.round(m.output_per_m * mult * 100) / 100,
+        in: Math.round(m.input_per_m * mult * 1e5) / 1e5,
+        out: Math.round(m.output_per_m * mult * 1e5) / 1e5,
         peak: peak,
-        peakIn: peak ? Math.round(m.peak_input_per_m * mult * 100) / 100 : 0,
-        peakOut: peak ? Math.round(m.peak_output_per_m * mult * 100) / 100 : 0,
+        peakIn: peak ? Math.round(m.peak_input_per_m * mult * 1e5) / 1e5 : 0,
+        peakOut: peak ? Math.round(m.peak_output_per_m * mult * 1e5) / 1e5 : 0,
         peakMult: peak && (m.input_per_m || 0) > 0 ? Math.round((m.peak_input_per_m / m.input_per_m) * 10) / 10 : 0,
         ctx: m.context_window || 0,
+        avail: m.available_keys > 0,
+        multi: (m.available_keys || 0) >= 2,
+        success: null,
+        live: true,
+      };
+    });
+  }
         avail: m.available_keys > 0,
         multi: (m.available_keys || 0) >= 2,
         success: null,

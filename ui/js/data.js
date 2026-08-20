@@ -9,9 +9,10 @@
   "use strict";
 
   // CNY 模型：1 元 = 1 点；USD 模型：按 ~7.2 汇率折算为人民币点数（仅游客/表单兜底展示用；
-  // 真实计价以后端 billing 的 anchor_currency × points_per_unit 为准）
-  const USD = (usd) => Math.round(usd * 7.2);
-  const CNY = (cny) => Math.round(cny);
+  // 真实计价以后端 billing 的 anchor_currency × points_per_unit 为准；点数可为小数，保留 5 位）
+  const r5 = (x) => Math.round(x * 1e5) / 1e5;
+  const USD = (usd) => r5(usd * 7.2);
+  const CNY = (cny) => r5(cny);
 
   // 模型价格（对齐 config.toml [[models]] 官方价，折算为点数 / 1M tokens）——上架表单定价兜底
   const MODELS = [
@@ -28,8 +29,8 @@
     { provider: "aliyun-bailian", model: "qwen3-max",  in: CNY(4.0),   out: CNY(16.0),  ctx: 262144,  max: null,   tag: "通用" },
   ];
 
-  // 金额/余额格式化：整数原样（千分位）；小数保留 2 位（v1.6 CNY 锚定，消费点数可为小数）
-  const fmt = (n) => Number.isInteger(n) ? n.toLocaleString("zh-CN") : n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  // 金额/余额格式化：整数原样（千分位）；小数保留最多 5 位（2026-08-20：1 CNY = 1 点，点数可为小数）
+  const fmt = (n) => Number.isInteger(n) ? n.toLocaleString("zh-CN") : n.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 5 });
   const ctxFmt = (n) => (n >= 1000000 ? (n / 1000000).toFixed(1) + "M" : fmt(n));
 
   window.ATDATA = {

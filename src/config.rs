@@ -291,8 +291,8 @@ mod tests {
         // 校验规则也应通过
         cfg.validate().expect("example 配置应通过校验");
         // 点数
-        assert_eq!(cfg.points.anchor_currency, "USD");
-        assert_eq!(cfg.points.points_per_unit, 1000);
+        assert_eq!(cfg.points.anchor_currency, "CNY");
+        assert_eq!(cfg.points.points_per_unit, 1);
         assert_eq!(cfg.points.display_name, "点数");
         assert_eq!(cfg.points.symbol, "P");
         // providers
