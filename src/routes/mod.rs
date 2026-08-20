@@ -1288,8 +1288,11 @@ mod tests {
         // 清掉限频记录（直接操作 DB，测试辅助）→ 再 forgot 发码
         {
             let conn = st.db.lock().unwrap();
-            conn.execute("DELETE FROM email_verifications WHERE email = 'reset@example.com'", [])
-                .unwrap();
+            conn.execute(
+                "DELETE FROM email_verifications WHERE email = 'reset@example.com'",
+                [],
+            )
+            .unwrap();
         }
         let (s, body) = post(
             st.clone(),
