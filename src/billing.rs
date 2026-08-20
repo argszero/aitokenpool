@@ -33,22 +33,43 @@ pub fn to_anchor(amount: f64, model_currency: &str, anchor: &str) -> f64 {
     }
 }
 
-/// 原始成本（模型自身货币）：USD/CNY 每百万 token 单价 × token 数
-pub fn raw_cost(input_tokens: f64, output_tokens: f64, input_per_m: f64, output_per_m: f64) -> f64 {
-    input_tokens * input_per_m / 1_000_000.0 + output_tokens * output_per_m / 1_000_000.0
+/// 原始成本（模型自身货币）：USD/CNY 每百万 token 单价 × token 数。
+/// 输入分「缓存未命中」与「缓存命中」两档价（rant 2026-08-20T10:17:27）：
+/// 未命中 × input_per_m + 命中 × cache_hit_input_per_m（缺省 0 → 命中部分免费）
+pub fn raw_cost(
+    input_tokens: f64,
+    cached_tokens: f64,
+    output_tokens: f64,
+    input_per_m: f64,
+    cache_hit_input_per_m: f64,
+    output_per_m: f64,
+) -> f64 {
+    input_tokens * input_per_m / 1_000_000.0
+        + cached_tokens * cache_hit_input_per_m / 1_000_000.0
+        + output_tokens * output_per_m / 1_000_000.0
 }
 
 /// 计算点数：锚定货币成本 × points_per_unit
+#[allow(clippy::too_many_arguments)] // 价格字段平铺（输入/命中/输出 × 单价 × 货币锚定），保持可读性
 pub fn calc_points(
     input_tokens: f64,
+    cached_tokens: f64,
     output_tokens: f64,
     input_per_m: f64,
+    cache_hit_input_per_m: f64,
     output_per_m: f64,
     points_per_unit: u32,
     model_currency: &str,
     anchor: &str,
 ) -> f64 {
-    let cost = raw_cost(input_tokens, output_tokens, input_per_m, output_per_m);
+    let cost = raw_cost(
+        input_tokens,
+        cached_tokens,
+        output_tokens,
+        input_per_m,
+        cache_hit_input_per_m,
+        output_per_m,
+    );
     to_anchor(cost, model_currency, anchor) * points_per_unit as f64
 }
 
@@ -65,6 +86,8 @@ pub struct SettleParams {
     pub model: String,
     /// 本次调用 token 总数
     pub tokens: f64,
+    /// 缓存命中输入 token 数（v0.7.0，rant 2026-08-20T10:17:27）
+    pub cached_tokens: f64,
     /// 消费者应扣点数
     pub pts: f64,
     /// 锚定货币成本（usage_records.cost）
@@ -123,14 +146,15 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
 
     // usage_records
     tx.execute(
-        "INSERT INTO usage_records (user_id, api_key_id, key_id, model, tokens, cost) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO usage_records (user_id, api_key_id, key_id, model, tokens, cached_tokens, cost) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             p.consumer_id,
             p.api_key_id,
             p.key_id,
             p.model,
             p.tokens,
+            p.cached_tokens,
             p.cost
         ],
     )?;
@@ -180,16 +204,30 @@ mod tests {
     #[test]
     fn calc_points_basic() {
         // 100 prompt × 10 USD/M + 50 completion × 20 USD/M = 0.002 USD → 1000 点/USD → 2.0 点
-        let pts = calc_points(100.0, 50.0, 10.0, 20.0, 1000, "USD", "USD");
+        let pts = calc_points(100.0, 0.0, 50.0, 10.0, 0.0, 20.0, 1000, "USD", "USD");
         assert!((pts - 2.0).abs() < 1e-9, "pts={pts}");
     }
 
     #[test]
     fn calc_points_currency_conversion() {
         // 1000 prompt × 10 CNY/M = 0.01 CNY → USD 锚定 ÷ 7.2 ≈ 0.001389 USD → ×1000 ≈ 1.3889 点
-        let pts = calc_points(1000.0, 0.0, 10.0, 0.0, 1000, "CNY", "USD");
+        let pts = calc_points(1000.0, 0.0, 0.0, 10.0, 0.0, 0.0, 1000, "CNY", "USD");
         let expect = 0.01 / 7.2 * 1000.0;
         assert!((pts - expect).abs() < 1e-9, "pts={pts} expect={expect}");
+    }
+
+    #[test]
+    fn calc_points_cache_hit_mixed_pricing() {
+        // rant 2026-08-20T10:17:27：输入分「缓存未命中 / 命中」两档价。
+        // 100 未命中 × 1.5 CNY/M + 900 命中 × 0.05 CNY/M + 500 输出 × 4.5 CNY/M
+        // = (150 + 45 + 2250)/1e6 CNY = 0.002445 CNY → USD 锚定 ÷7.2 ×1000 点
+        let pts = calc_points(100.0, 900.0, 500.0, 1.5, 0.05, 4.5, 1000, "CNY", "USD");
+        let expect = 0.002445 / 7.2 * 1000.0;
+        assert!((pts - expect).abs() < 1e-9, "pts={pts} expect={expect}");
+        // 命中价缺省 0 → 命中部分不计费（只按未命中 + 输出）
+        let pts_zero = calc_points(100.0, 900.0, 500.0, 1.5, 0.0, 4.5, 1000, "CNY", "USD");
+        let expect_zero = (150.0 + 2250.0) / 1e6 / 7.2 * 1000.0;
+        assert!((pts_zero - expect_zero).abs() < 1e-9, "pts_zero={pts_zero}");
     }
 
     #[test]
@@ -224,6 +262,8 @@ mod tests {
             owner_id: 100,
             model: "test-model".into(),
             tokens: 150.0,
+
+            cached_tokens: 0.0,
             pts: 2.0,
             cost: 0.002,
         };
@@ -288,6 +328,8 @@ mod tests {
             owner_id: 1,
             model: "m".into(),
             tokens: 10.0,
+
+            cached_tokens: 0.0,
             pts: 1.0,
             cost: 0.001,
         };
@@ -344,6 +386,8 @@ mod tests {
             owner_id: 100,
             model: "test-model".into(),
             tokens: 100.0,
+
+            cached_tokens: 0.0,
             pts: 3.0,
             cost: 0.003,
         };
@@ -411,6 +455,8 @@ mod tests {
             owner_id: 1,
             model: "m".into(),
             tokens: 10.0,
+
+            cached_tokens: 0.0,
             pts: 2.0,
             cost: 0.002,
         };

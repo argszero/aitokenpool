@@ -890,7 +890,10 @@ mod tests {
         assert_eq!(dp["context_length"], 1048576);
         assert!(dp["max_output"].as_i64().is_some());
         assert!(dp["vision"].as_i64().is_some());
-        assert_eq!(dp["cache_hit_input_per_m"], 0.003625, "seed 写入缓存命中价");
+        assert_eq!(
+            dp["cache_hit_input_per_m"], 0.15,
+            "seed 写入缓存命中价（DeepSeek 官方 CNY）"
+        );
     }
 
     #[tokio::test]

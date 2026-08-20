@@ -1773,6 +1773,7 @@
     $("#model-form-model").value = m ? m.model : "";
     $("#model-form-currency").value = m ? m.currency : "USD";
     $("#model-form-in").value = m ? String(m.input_per_m || 0) : "0";
+    $("#model-form-cachehit").value = m ? String(m.cache_hit_input_per_m || 0) : "0";
     $("#model-form-out").value = m ? String(m.output_per_m || 0) : "0";
     $("#model-form-ctx").value = m ? String(m.context_length || m.context_window || 0) : "0";
     $("#model-form-outmax").value = m ? String(m.max_output || 0) : "0";
@@ -1789,6 +1790,7 @@
     const provider = String($("#model-form-provider").value).trim();
     const model = String($("#model-form-model").value).trim();
     const input = Number($("#model-form-in").value);
+    const cachehit = Number($("#model-form-cachehit").value);
     const output = Number($("#model-form-out").value);
     const ctx = Number($("#model-form-ctx").value);
     const outmax = Number($("#model-form-outmax").value);
@@ -1797,12 +1799,13 @@
     else clearFieldError($("#model-form-provider"));
     if (!model) { setFieldError($("#model-form-model"), T("admin.models.err.model")); firstErr = firstErr || $("#model-form-model"); }
     else clearFieldError($("#model-form-model"));
-    if (input < 0 || output < 0) { toast(T("admin.models.err.price"), "error"); return; }
+    if (input < 0 || cachehit < 0 || output < 0) { toast(T("admin.models.err.price"), "error"); return; }
     if (firstErr) { firstErr.focus(); return; }
     const body = {
       provider, model,
       currency: $("#model-form-currency").value,
       input_per_m: input, output_per_m: output,
+      cache_hit_input_per_m: cachehit,
       context_length: ctx || 0, max_output: outmax || 0,
       vision: $("#model-form-vision").checked ? 1 : 0,
     };

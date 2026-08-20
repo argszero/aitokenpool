@@ -251,11 +251,20 @@ endpoints = [
 [[price_overrides]]
 provider = "deepseek"
 model = "deepseek-v4-pro"
-currency = "USD"
-input_per_m = 0.435
-output_per_m = 0.87
-cache_hit_input_per_m = 0.003625
-source = "官方定价页 2026-08-13"
+currency = "CNY"
+input_per_m = 4.5
+output_per_m = 13.5
+cache_hit_input_per_m = 0.15
+source = "DeepSeek 官方定价 2026-08-20（CNY，空闲价；命中/未命中区分）"
+
+[[price_overrides]]
+provider = "deepseek"
+model = "deepseek-v4-flash"
+currency = "CNY"
+input_per_m = 1.5
+output_per_m = 4.5
+cache_hit_input_per_m = 0.05
+source = "DeepSeek 官方定价 2026-08-20（CNY，空闲价；命中/未命中区分）"
 
 [[price_overrides]]
 provider = "zhipu"

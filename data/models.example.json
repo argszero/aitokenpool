@@ -6,20 +6,20 @@
     {
       "provider": "deepseek",
       "model": "deepseek-v4-pro",
-      "currency": "USD",
-      "input_per_m": 0.435,
-      "output_per_m": 0.87,
-      "cache_hit_input_per_m": 0.003625,
+      "currency": "CNY",
+      "input_per_m": 4.5,
+      "output_per_m": 13.5,
+      "cache_hit_input_per_m": 0.15,
       "context_length": 1048576,
       "max_output": 384000
     },
     {
       "provider": "deepseek",
       "model": "deepseek-v4-flash",
-      "currency": "USD",
-      "input_per_m": 0.14,
-      "output_per_m": 0.28,
-      "cache_hit_input_per_m": 0.0028,
+      "currency": "CNY",
+      "input_per_m": 1.5,
+      "output_per_m": 4.5,
+      "cache_hit_input_per_m": 0.05,
       "context_length": 1048576,
       "max_output": 384000
     },

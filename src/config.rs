@@ -313,7 +313,8 @@ mod tests {
             .iter()
             .find(|o| o.model == "deepseek-v4-pro")
             .unwrap();
-        assert_eq!(dv.input_per_m, 0.435);
+        assert_eq!(dv.input_per_m, 4.5);
+        assert_eq!(dv.cache_hit_input_per_m.unwrap(), 0.15);
         assert!(dv.source.is_some());
         // server 默认值
         assert_eq!(cfg.server.addr, "0.0.0.0:8080");

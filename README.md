@@ -17,7 +17,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 
 ## 状态
 
-后端 + 前端已全部实现，当前版本 **v0.6.0**（102/102 测试全绿）：
+后端 + 前端已全部实现，当前版本 **v0.7.0**（缓存命中/未命中分开计费）：
 
 - ✅ **P0-A（v0.2.0）**：后端骨架 + TOML 配置（`Config::validate`：points_per_unit>0 / plan→provider 存在 / endpoints≥1 / protocol 枚举）+ SQLite 数据层（幂等迁移，**生产空库不种任何种子数据**）+ 认证（argon2 + Bearer API Key）+ API Key 端点
 - ✅ **P0-B（v0.2.1）**：网关转发（OpenAI Chat Completions + Anthropic Messages）+ 路由故障转移（粘性 / 健康冷却 / 3 次切换上限）+ 计量账本（点数计算、90/10 分成、事务性 settle）
@@ -39,6 +39,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 - ✅ **v0.6.5**：**全站时区修复（rant 2026-08-19T20:45:32 BUG）**——后端所有返回 JSON 的时间字段统一转 UTC ISO 带 Z（`2026-08-19T12:00:00Z`；交易/共享/API Key/部门/加额/模型列表全量，`utc_iso()` 序列化）；前端 `timeAgo()` 按 UTC 解析（兼容旧格式视为 UTC）、仪表盘 sparkline 日期按 UTC 转本地归天、绝对时间 title 本地化显示——消费后交易记录不再显示「8小时前」，跨天不错位
 - ✅ **v0.6.6**：**统一数据目录（rant 2026-08-19T20:53:23）**——`ATP_DATA_DIR`（默认 `./data`；`--data-dir` > env > 默认）下放 config.toml（首次自动复制示例）+ aitokenpool.db + logs/，目录自动创建；数据库路径统一由 data-dir 决定（config `db_path` 忽略）；Docker 单卷挂载 `./atp-data:/data`（镜像内置示例配置，首启自动复制）；.gitignore/.dockerignore 补 atp-data/；旧 data/ 迁移说明
 - ✅ **v0.6.7**：**日志系统（rant 2026-08-19T20:54:26）**——log4rs 替换 env_logger：日志落盘 `<data-dir>/logs/aitokenpool.log` + stdout 双写；按大小滚动（`[log].max_file_size`，默认 10MB）+ `max_backups`（默认 7）自动清理旧日志；`[log]` 配置段（dir / level / file_pattern）；Docker 日志随统一目录持久化
+- ✅ **v0.7.0**：**缓存命中/未命中分开计费（rant 2026-08-20T10:17:27）**——usage 解析拆分缓存 token（openai `prompt_tokens_details.cached_tokens` / anthropic `cache_read_input_tokens` / responses `input_tokens_details.cached_tokens`）；计费 = 未命中 × input_per_m + 命中 × cache_hit_input_per_m（缺省 0 = 命中免费）；usage_records 新增 `cached_tokens` 列（迁移 v8）；DeepSeek 官方 CNY 定价（deepseek-v4-flash 1.5/0.05/4.5、deepseek-v4-pro 4.5/0.15/13.5，空闲价）；管理端模型表单可配缓存命中输入价；流式（SSE 转换 + 透传）同拆
 
 `ui/` 已由纯静态原型升级为**对接真实 API**（登录、钱包、市场、共享、交易、设置、管理、运营全部真实数据），由后端 `ServeDir` 静态托管，无需单独部署前端。
 
@@ -132,7 +133,7 @@ open http://localhost:8080/                        # 浏览器访问
 
 ## API 端点（Bearer 认证）
 
-- `GET /healthz` → `{"status":"ok","version":"0.6.7"}`
+- `GET /healthz` → `{"status":"ok","version":"0.7.0"}`
 - `POST /api/auth/login` → `{api_key}`；`POST /api/auth/change-password`（改密）；`POST /api/auth/register|verify|resend-code`（注册+邮箱验证）；`GET /api/me` → `{id,email,name,role}`；`GET /api/config` → `{public_url}`（接入端点 base，rant 2026-08-19T20:37:37）
 - `POST|GET /api/api-keys`（key 脱敏 `atk_live_****xxxx`）；`DELETE /api/api-keys/:id`（撤销）
 - `POST /v1/chat/completions` / `POST /anthropic/v1/messages` / `POST /v1/responses`（网关，三协议互转，非流式 + 流式 SSE 跨协议转换）；`GET /v1/models`（OpenAI 兼容模型列表，认证可选）
