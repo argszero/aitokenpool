@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AITokenPool</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234ecdc4'/%3E%3Cstop offset='1' stop-color='%232a9d8f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Ctext x='32' y='43' font-family='-apple-system,Segoe UI,Arial,sans-serif' font-size='30' font-weight='800' text-anchor='middle' fill='%23062021'%3EAT%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="css/style.css?v=20260820-4">
+<link rel="stylesheet" href="css/style.css?v=20260820-5">
 </head>
 <body>
 
@@ -33,7 +33,7 @@
     </form>
     <div class="login-divider"><span data-i18n="login.or">或</span></div>
     <button type="button" class="btn btn-ghost btn-block" id="guest-browse-btn" data-i18n="login.guest">先逛逛市场</button>
-    <p class="login-foot" data-i18n="login.foot">还没有账号？<a href="#" id="reg-link" data-i18n="login.register">注册</a> · <a href="#">找回密码</a></p>
+    <p class="login-foot" data-i18n="login.foot">还没有账号？<a href="#" id="reg-link" data-i18n="login.register">注册</a> · <a href="#" id="forgot-link">找回密码</a></p>
     <p class="login-tip" data-i18n="login.tip">已对接后端 API · 登录后进入真实数据界面 · 管理员账号登录可见「管理视图」</p>
     <!-- 注册表单（rant 2026-08-19T14:36:19：自助注册入口，默认隐藏） -->
     <form id="register-form" class="login-form hidden" novalidate>
@@ -65,6 +65,25 @@
       <div id="verify-error" class="field-error" hidden></div>
       <button type="submit" class="btn btn-primary btn-block" data-i18n="verify.submit">验证并激活</button>
       <p class="login-foot"><button type="button" class="linklike" id="resend-btn" data-i18n="verify.resend">重新发送</button> · <a href="#" id="verify-back" data-i18n="register.back">返回登录</a></p>
+    </form>
+    <!-- 找回密码表单（rant 2026-08-20：已注册（含未验证）账号 → 邮箱验证码 → 重置密码） -->
+    <form id="forgot-form" class="login-form hidden" novalidate>
+      <p class="login-tip" data-i18n="forgot.hint">输入注册邮箱，验证码发送后用于重置密码（10 分钟内有效）</p>
+      <label><span data-i18n="login.email">邮箱</span>
+        <input type="email" id="forgot-email" placeholder="you@company.com">
+      </label>
+      <label><span data-i18n="verify.code">验证码</span>
+        <input type="text" id="forgot-code" maxlength="6" inputmode="numeric" placeholder="000000">
+      </label>
+      <label><span data-i18n="register.password">新密码</span>
+        <input type="password" id="forgot-pass" placeholder="••••••••">
+      </label>
+      <label><span data-i18n="register.confirm">确认新密码</span>
+        <input type="password" id="forgot-pass2" placeholder="••••••••">
+      </label>
+      <div id="forgot-error" class="field-error" hidden></div>
+      <button type="submit" class="btn btn-primary btn-block" data-i18n="forgot.submit">发送验证码并重置</button>
+      <p class="login-foot"><a href="#" id="forgot-back" data-i18n="register.back">返回登录</a></p>
     </form>
   </div>
 </div>
@@ -654,9 +673,9 @@
   </div>
 </div>
 
-<script src="js/api.js?v=20260820-4"></script>
-<script src="js/data.js?v=20260820-4"></script>
-<script src="js/i18n.js?v=20260820-4"></script>
-<script src="js/app.js?v=20260820-4"></script>
+<script src="js/api.js?v=20260820-5"></script>
+<script src="js/data.js?v=20260820-5"></script>
+<script src="js/i18n.js?v=20260820-5"></script>
+<script src="js/app.js?v=20260820-5"></script>
 </body>
 </html>

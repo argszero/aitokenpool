@@ -312,6 +312,101 @@ pub async fn resend_code(
     Ok(Json(v))
 }
 
+#[derive(Deserialize)]
+pub struct ForgotPasswordReq {
+    pub email: String,
+}
+
+/// POST /api/auth/forgot-password：{email} → 若邮箱已注册（含未验证）则发验证码，
+/// 用于重置密码。邮箱不存在也返回 ok（防枚举探测）。60 秒限频（复用 resend 限频）。
+/// 未验证账号同样可用本接口——重置密码的验证码本身就证明了邮箱所有权（宿主 2026-08-20）。
+pub async fn forgot_password(
+    State(st): State<AppState>,
+    Json(req): Json<ForgotPasswordReq>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    let email = req.email.trim().to_lowercase();
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let exists = dao::find_user_by_email(&conn, &email).is_some();
+    drop(conn);
+    if !exists {
+        // 防枚举：统一返回 ok（不发送）
+        return Ok(Json(serde_json::json!({ "status": "ok", "email": email })));
+    }
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    if dao::resend_too_soon(&conn, &email) {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "error": "请求过于频繁，请 60 秒后重试" })),
+        ));
+    }
+    drop(conn);
+    let (dev, code) = send_code(&st, &email)?;
+    let mut v = serde_json::json!({ "status": "ok", "email": email });
+    if dev {
+        v["dev_code"] = serde_json::json!(code);
+    }
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+pub struct ResetPasswordReq {
+    pub email: String,
+    pub code: String,
+    pub new_password: String,
+}
+
+/// POST /api/auth/reset-password：{email, code, new_password} → 校验邮箱验证码 →
+/// 重置密码（argon2）。验证码正确即证明邮箱所有权 → 未验证账号顺带激活（verified=1）。
+/// 已注册（无论验证与否）均可通过此流程找回密码（宿主 2026-08-20）。
+pub async fn reset_password(
+    State(st): State<AppState>,
+    Json(req): Json<ResetPasswordReq>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    if req.new_password.len() < 8 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "新密码至少 8 位" })),
+        ));
+    }
+    let email = req.email.trim().to_lowercase();
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    // 邮箱必须已注册（防任意邮箱开账号）
+    if dao::find_user_by_email(&conn, &email).is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "该邮箱未注册" })),
+        ));
+    }
+    let Some((hash, _attempts)) = dao::find_valid_verification(&conn, &email) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "验证码不存在或已过期，请重新获取" })),
+        ));
+    };
+    if sha2_hex(req.code.trim()) != hash {
+        if dao::bump_verification_attempt(&conn, &email).map_err(internal)? {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "验证码错误次数过多，请重新获取" })),
+            ));
+        }
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "验证码错误" })),
+        ));
+    }
+    // 重置密码 + 激活（未验证账号由验证码证明所有权后顺带激活）
+    let new_hash = crate::auth::hash_password(&req.new_password).map_err(internal)?;
+    conn.execute(
+        "UPDATE users SET password_hash = ?1, verified = 1 WHERE email = ?2",
+        rusqlite::params![new_hash, email],
+    )
+    .map_err(internal)?;
+    dao::activate_user(&conn, &email).map_err(internal)?; // 确保 quotas 存在
+    dao::clear_verification(&conn, &email).map_err(internal)?;
+    Ok(Json(serde_json::json!({ "status": "ok", "email": email })))
+}
+
 /// GET /api/me：当前登录用户信息（P2-A 前端会话）→ {id, email, name, role}
 pub async fn me(
     State(st): State<AppState>,
@@ -390,6 +485,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/auth/register", post(register))
         .route("/api/auth/verify", post(verify))
         .route("/api/auth/resend-code", post(resend_code))
+        .route("/api/auth/forgot-password", post(forgot_password))
+        .route("/api/auth/reset-password", post(reset_password))
         .route("/api/me", get(me))
         .route("/api/config", get(config))
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))
@@ -1152,6 +1249,105 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "弱密码应 400");
+    }
+
+    #[tokio::test]
+    async fn forgot_reset_password_full_flow() {
+        // 宿主 2026-08-20：已注册（含未验证）账号应可走「邮箱验证码 → 重置密码」，
+        // 未验证账号重置后顺带激活。
+        let st = test_state("fr");
+        // 邮箱不存在 → 返回 ok（防枚举），无 dev_code
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/forgot-password",
+            r#"{"email":"ghost@example.com"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "不存在邮箱也应 200: {body}");
+        let v2: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v2.get("dev_code").is_none(), "不存在邮箱不应发码");
+        // 注册一个不验证的账号
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"name":"重置用户","email":"reset@example.com","password":"oldpass123"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "注册应 201: {body}");
+        // 注册刚发过码 → forgot 触发 60 秒限频（合理行为）
+        let (s, _) = post(
+            st.clone(),
+            "/api/auth/forgot-password",
+            r#"{"email":"reset@example.com"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "60 秒内应限频 429");
+        // 清掉限频记录（直接操作 DB，测试辅助）→ 再 forgot 发码
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute("DELETE FROM email_verifications WHERE email = 'reset@example.com'", [])
+                .unwrap();
+        }
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/forgot-password",
+            r#"{"email":"reset@example.com"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "forgot 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let code = v["dev_code"].as_str().expect("dev 模式返回验证码");
+        // 错误验证码 → 400
+        let (s, _) = post(
+            st.clone(),
+            "/api/auth/reset-password",
+            r#"{"email":"reset@example.com","code":"000000","new_password":"newpass456"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "错验证码应 400");
+        // 正确验证码重置 → 200
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/reset-password",
+            &format!(
+                r#"{{"email":"reset@example.com","code":"{code}","new_password":"newpass456"}}"#
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "重置应 200: {body}");
+        // 新密码可登录（未验证账号顺带激活 → 不再 403）
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/login",
+            r#"{"email":"reset@example.com","password":"newpass456"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "重置后新密码登录应 200: {body}");
+        // 旧密码失效
+        let (s, _) = post(
+            st.clone(),
+            "/api/auth/login",
+            r#"{"email":"reset@example.com","password":"oldpass123"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "旧密码应 401");
+        // 新密码过短 → 400
+        let (s, _) = post(
+            st.clone(),
+            "/api/auth/reset-password",
+            r#"{"email":"reset@example.com","code":"123456","new_password":"short"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "短密码应 400");
     }
 
     #[tokio::test]

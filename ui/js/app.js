@@ -2511,18 +2511,20 @@
       toast(T("logout.done"), "info");
     });
 
-    /* ---- 注册 / 邮箱验证（rant 2026-08-19T14:36:19：自助注册）----
+    /* ---- 注册 / 邮箱验证 / 找回密码（rant 2026-08-19T14:36:19；2026-08-20 找回密码）----
        ⚠️ 事件委托（rant 2026-08-20：i18n applyStatic 用 innerHTML 重建 login-foot
        节点，直接绑定会丢失 listener；委托到 document 免疫） */
     const loginFormEl = $("#login-form");
     const registerFormEl = $("#register-form");
     const verifyFormEl = $("#verify-form");
+    const forgotFormEl = $("#forgot-form");
 
     function showAuthForm(which) {
-      // which: "login" | "register" | "verify"
+      // which: "login" | "register" | "verify" | "forgot"
       loginFormEl.classList.toggle("hidden", which !== "login");
       registerFormEl.classList.toggle("hidden", which !== "register");
       verifyFormEl.classList.toggle("hidden", which !== "verify");
+      if (forgotFormEl) forgotFormEl.classList.toggle("hidden", which !== "forgot");
     }
 
     document.addEventListener("click", (e) => {
@@ -2533,11 +2535,61 @@
         showAuthForm("register");
         const el = $("#reg-email");
         if (el) el.focus();
-      } else if (t.id === "reg-back" || t.id === "verify-back") {
+      } else if (t.id === "forgot-link") {
+        e.preventDefault();
+        showAuthForm("forgot");
+        const el = $("#forgot-email");
+        if (el) el.focus();
+      } else if (t.id === "reg-back" || t.id === "verify-back" || t.id === "forgot-back") {
         e.preventDefault();
         showAuthForm("login");
       }
     });
+
+    // 找回密码提交（rant 2026-08-20：已注册（含未验证）账号 → 验证码 → 重置密码）
+    if (forgotFormEl) {
+      forgotFormEl.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const email = $("#forgot-email").value.trim();
+        const code = $("#forgot-code").value.trim();
+        const pw = $("#forgot-pass").value;
+        const pw2 = $("#forgot-pass2").value;
+        const errEl = $("#forgot-error");
+        const showErr = (msg) => { errEl.textContent = msg; errEl.hidden = false; };
+        const hideErr = () => { errEl.hidden = true; errEl.textContent = ""; };
+        let firstErr = null;
+        if (!email) { setFieldError($("#forgot-email"), T("login.err.email")); firstErr = firstErr || $("#forgot-email"); }
+        else clearFieldError($("#forgot-email"));
+        if (!code) { setFieldError($("#forgot-code"), T("verify.err.code")); firstErr = firstErr || $("#forgot-code"); }
+        else clearFieldError($("#forgot-code"));
+        if (pw.length < 8) { setFieldError($("#forgot-pass"), T("register.err.pass")); firstErr = firstErr || $("#forgot-pass"); }
+        else clearFieldError($("#forgot-pass"));
+        if (pw !== pw2) { setFieldError($("#forgot-pass2"), T("register.err.confirm")); firstErr = firstErr || $("#forgot-pass2"); }
+        else clearFieldError($("#forgot-pass2"));
+        if (firstErr) { firstErr.focus(); return; }
+        hideErr();
+        const btn = forgotFormEl.querySelector("button[type=submit]");
+        const orig = btn.textContent;
+        btn.disabled = true;
+        try {
+          // 先发验证码（未发送过则发；已发送会 429，忽略继续用已发的码）
+          try { await api.post("/api/auth/forgot-password", { email }); }
+          catch (fe) { /* 429 说明已有码，忽略 */ }
+          const r = await api.post("/api/auth/reset-password", { email, code, new_password: pw });
+          if (r && r.status === "ok") {
+            toast(T("forgot.done"), "ok");
+            showAuthForm("login");
+            const le = $("#login-email");
+            if (le) le.value = email;
+          }
+        } catch (err) {
+          showErr((err && err.message) ? I18n.mapErr(err.message) : T("forgot.err.fail"));
+        } finally {
+          btn.disabled = false;
+          btn.textContent = orig;
+        }
+      });
+    }
 
     // 注册提交
     registerFormEl.addEventListener("submit", async (e) => {
