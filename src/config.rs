@@ -169,7 +169,6 @@ pub struct Provider {
     pub id: String,
     pub name: String,
     pub country: String,
-    pub has_plan: bool,
 }
 
 /// Plan 端点（一个可被路由到的上游端点）
@@ -287,14 +286,11 @@ mod tests {
         assert_eq!(cfg.points.symbol, "P");
         // providers
         assert_eq!(cfg.providers.len(), 6);
+        assert!(cfg.providers.iter().any(|p| p.id == "deepseek"));
         assert!(cfg
             .providers
             .iter()
-            .any(|p| p.id == "deepseek" && !p.has_plan));
-        assert!(cfg
-            .providers
-            .iter()
-            .any(|p| p.id == "zhipu" && p.has_plan && p.country == "CN"));
+            .any(|p| p.id == "zhipu" && p.country == "CN"));
         // plans
         assert!(cfg.plans.len() >= 7);
         let dp = cfg

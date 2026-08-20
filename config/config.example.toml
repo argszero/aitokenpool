@@ -78,38 +78,31 @@ symbol = "P"
 id = "deepseek"
 name = "DeepSeek"
 country = "CN"
-# 无 Coding Plan，纯按量付费（充多少用多少）
-has_plan = false
 
 [[providers]]
 id = "zhipu"
 name = "智谱 GLM"
 country = "CN"
-has_plan = true
 
 [[providers]]
 id = "aliyun-bailian"
 name = "阿里云百炼"
 country = "CN"
-has_plan = true
 
 [[providers]]
 id = "bytedance-ark"
 name = "火山方舟（豆包）"
 country = "CN"
-has_plan = true
 
 [[providers]]
 id = "moonshot"
 name = "Kimi（月之暗面）"
 country = "CN"
-has_plan = true
 
 [[providers]]
 id = "minimax"
 name = "MiniMax"
 country = "CN"
-has_plan = true
 
 # ============================================================
 # 3. Plan 端点（plans）
