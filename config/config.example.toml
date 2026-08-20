@@ -264,29 +264,27 @@ vision = false
 
 [[models]]
 provider = "zhipu"
-model = "glm-5.2"
+model = "glm-5.3"
 currency = "CNY"
 input_per_m = 8.0
 cache_hit_input_per_m = 2.0
 output_per_m = 28.0
 context_length = 1048576
-max_output = 0
+max_output = 131072
 vision = false
-
 [[models]]
 provider = "openai"
-model = "gpt-5.5-pro"
+model = "gpt-5.6-sol"
 currency = "USD"
-input_per_m = 30.0
-cache_hit_input_per_m = 0.0
-output_per_m = 180.0
+input_per_m = 5.0
+cache_hit_input_per_m = 0.5
+output_per_m = 30.0
 context_length = 1050000
 max_output = 0
 vision = false
-
 [[models]]
 provider = "anthropic"
-model = "claude-opus-4.7"
+model = "claude-opus-5"
 currency = "USD"
 input_per_m = 5.0
 cache_hit_input_per_m = 0.5
@@ -294,18 +292,16 @@ output_per_m = 25.0
 context_length = 1000000
 max_output = 0
 vision = false
-
 [[models]]
 provider = "google"
 model = "gemini-3.1-pro"
 currency = "USD"
 input_per_m = 2.0
-cache_hit_input_per_m = 0.0
+cache_hit_input_per_m = 0.2
 output_per_m = 12.0
 context_length = 1048576
 max_output = 0
 vision = false
-
 [[models]]
 provider = "xai"
 model = "grok-4.6"
@@ -330,22 +326,54 @@ vision = false
 
 [[models]]
 provider = "bytedance-ark"
-model = "doubao-seed-2.1-pro"
+model = "doubao-seed-evolving"
 currency = "CNY"
 input_per_m = 6.0
 cache_hit_input_per_m = 1.2
 output_per_m = 30.0
-context_length = 262144
+context_length = 1048576
+max_output = 262144
+vision = false
+[[models]]
+provider = "minimax"
+model = "minimax-m3"
+currency = "CNY"
+input_per_m = 2.1
+cache_hit_input_per_m = 0.42
+output_per_m = 8.4
+context_length = 1048576
 max_output = 0
 vision = false
 
 [[models]]
-provider = "minimax"
-model = "minimax-m3"
-currency = "USD"
-input_per_m = 0.3
-cache_hit_input_per_m = 0.0
-output_per_m = 1.2
+provider = "aliyun-bailian"
+model = "qwen3.8-max"
+currency = "CNY"
+input_per_m = 12.0
+cache_hit_input_per_m = 1.2
+output_per_m = 36.0
+context_length = 1048576
+max_output = 0
+vision = false
+
+[[models]]
+provider = "aliyun-bailian"
+model = "qwen3.7-plus"
+currency = "CNY"
+input_per_m = 2.0
+cache_hit_input_per_m = 0.2
+output_per_m = 8.0
+context_length = 1048576
+max_output = 0
+vision = false
+
+[[models]]
+provider = "aliyun-bailian"
+model = "qwen3.7-flash"
+currency = "CNY"
+input_per_m = 0.2
+cache_hit_input_per_m = 0.02
+output_per_m = 0.8
 context_length = 1048576
 max_output = 0
 vision = false
