@@ -712,7 +712,7 @@ mod tests {
         let (z_in, z_cache, z_out): (f64, f64, f64) = conn
             .query_row(
                 "SELECT peak_input_per_m, peak_cache_hit_input_per_m, peak_output_per_m FROM models \
-                 WHERE provider = 'zhipu' AND model = 'glm-5.2'",
+                 WHERE provider = 'zhipu' AND model = 'glm-5.3'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )

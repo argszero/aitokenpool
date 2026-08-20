@@ -1169,7 +1169,10 @@ mod tests {
                 })
                 .unwrap();
             // pts = (100×10 + 50×20)/1e6 USD = 0.002 USD × 7.2 CNY锚定 = 0.0144 点（1 点 = 1 CNY）
-            assert!((bal_c - (12471.0 - 0.0144)).abs() < 1e-9, "consumer={bal_c}");
+            assert!(
+                (bal_c - (12471.0 - 0.0144)).abs() < 1e-9,
+                "consumer={bal_c}"
+            );
             let bal_o: f64 = conn
                 .query_row("SELECT balance FROM quotas WHERE user_id = 2", [], |r| {
                     r.get(0)
@@ -1288,7 +1291,10 @@ mod tests {
                 .unwrap();
             (c, o)
         };
-        assert!((bal_c - (12471.0 - 0.02736)).abs() < 1e-9, "consumer={bal_c}");
+        assert!(
+            (bal_c - (12471.0 - 0.02736)).abs() < 1e-9,
+            "consumer={bal_c}"
+        );
         assert!((bal_o - 0.02462).abs() < 1e-9, "owner={bal_o}");
 
         up.abort();

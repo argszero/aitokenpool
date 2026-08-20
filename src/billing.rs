@@ -345,15 +345,43 @@ mod tests {
         // CNY 锚定 1 点/元：高峰 1M 输入 × 3.0 CNY/M = 3.0 CNY = 3.0 点；空闲 1.5 → 1.5 点
         let peak = effective_prices(true, 1.5, 0.05, 4.5, 3.0, 0.10, 9.0);
         let off = effective_prices(false, 1.5, 0.05, 4.5, 3.0, 0.10, 9.0);
-        let pts_peak = calc_points(1_000_000.0, 0.0, 0.0, peak.0, peak.1, peak.2, 1, "CNY", "CNY");
+        let pts_peak = calc_points(
+            1_000_000.0,
+            0.0,
+            0.0,
+            peak.0,
+            peak.1,
+            peak.2,
+            1,
+            "CNY",
+            "CNY",
+        );
         let pts_off = calc_points(1_000_000.0, 0.0, 0.0, off.0, off.1, off.2, 1, "CNY", "CNY");
-        assert!((pts_peak - 3.0).abs() < 1e-9, "高峰 1M 输入 = 3.0 点: {pts_peak}");
-        assert!((pts_off - 1.5).abs() < 1e-9, "空闲 1M 输入 = 1.5 点: {pts_off}");
+        assert!(
+            (pts_peak - 3.0).abs() < 1e-9,
+            "高峰 1M 输入 = 3.0 点: {pts_peak}"
+        );
+        assert!(
+            (pts_off - 1.5).abs() < 1e-9,
+            "空闲 1M 输入 = 1.5 点: {pts_off}"
+        );
         // 未配置高峰价 → 高峰/空闲点数一致
         let no_peak = effective_prices(true, 1.5, 0.05, 4.5, 0.0, 0.0, 0.0);
-        let pts_no =
-            calc_points(1_000_000.0, 0.0, 0.0, no_peak.0, no_peak.1, no_peak.2, 1, "CNY", "CNY");
-        assert!((pts_no - 1.5).abs() < 1e-9, "未配置高峰价 → 1.5 点: {pts_no}");
+        let pts_no = calc_points(
+            1_000_000.0,
+            0.0,
+            0.0,
+            no_peak.0,
+            no_peak.1,
+            no_peak.2,
+            1,
+            "CNY",
+            "CNY",
+        );
+        assert!(
+            (pts_no - 1.5).abs() < 1e-9,
+            "未配置高峰价 → 1.5 点: {pts_no}"
+        );
     }
 
     #[test]
