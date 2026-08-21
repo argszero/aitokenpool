@@ -1454,6 +1454,9 @@
   /* --- 设置 --- */
 
   function renderSettings() {
+    // 账户昵称框：真实昵称（rant 2026-08-22T00:01:52：不再静态写「阿零」，避免覆盖真实昵称）
+    const nick = $("#settings-nickname");
+    if (nick) nick.value = D.USER.name || (D.USER.email ? D.USER.email.split("@")[0] : "");
     // 接入端点卡片：实时从配置/同源 fallback 读取（rant 2026-08-19T20:37:37）
     applyEndpointUrls();
     const rawQ = $("#ak-search").value || "";
@@ -2309,6 +2312,13 @@
     }
   }
 
+  // 左下角用户芯片：真实昵称 + 头像首字符（rant 2026-08-22T00:01:52：去掉「阿零」硬编码）
+  function renderUserChip() {
+    const name = D.USER.name || (D.USER.email ? D.USER.email.split("@")[0] : "");
+    $("#side-name").textContent = name;
+    $("#side-avatar").textContent = name ? Array.from(name)[0] : "?";
+  }
+
   // 进入主界面（登录成功 / 会话恢复共用）
   function enterApp() {
     isGuest = false;
@@ -2317,6 +2327,7 @@
     $("#login-view").classList.add("hidden");
     $("#app").classList.remove("hidden");
     $("#side-balance").textContent = D.fmt(D.USER.balance);
+    renderUserChip();
     renderNav();
     // URL hash 路由：登录后恢复刷新前的视图（无 hash 则仪表盘）
     switchView(viewFromHash() || "dashboard");
