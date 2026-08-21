@@ -76,15 +76,62 @@ pub async fn transactions(
     let page_size = q.page_size.clamp(1, 100);
     let type_filter = match q.r#type.as_str() {
         "" | "all" => None,
-        t @ ("consume" | "earn" | "topup") => Some(t.to_string()),
+        t @ ("consume" | "earn" | "topup" | "gift") => Some(t.to_string()),
         _ => {
             return Err((
                 axum::http::StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "type 必须为 consume / earn / topup / all" })),
+                Json(
+                    serde_json::json!({ "error": "type 必须为 consume / earn / topup / gift / all" }),
+                ),
             ))
         }
     };
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    // 汇总（rant 2026-08-22T00:04:21/00:07:08）：全量 SQL 聚合（不依赖分页），按当前 type 筛选；
+    // 口径 = income 白名单（earn/topup/gift）为正、consume 为负；token 统计同口径。
+    let summary: serde_json::Value = {
+        let sql = "SELECT \
+            COALESCE(SUM(CASE WHEN type IN ('earn','topup','gift') THEN pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN type = 'consume' THEN pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN type IN ('earn','topup','gift') THEN pts ELSE -pts END), 0), \
+            COALESCE(SUM(tokens), 0), \
+            COALESCE(SUM(tokens - cached_tokens - output_tokens), 0), \
+            COALESCE(SUM(cached_tokens), 0), \
+            COALESCE(SUM(output_tokens), 0) \
+            FROM transactions WHERE user_id = ?1";
+        match &type_filter {
+            Some(t) => conn
+                .query_row(
+                    &format!("{sql} AND type = ?2"),
+                    params![auth.user_id, t],
+                    |r| {
+                        Ok(serde_json::json!({
+                            "income_pts": r.get::<_, f64>(0)?,
+                            "expense_pts": r.get::<_, f64>(1)?,
+                            "net_pts": r.get::<_, f64>(2)?,
+                            "tokens": r.get::<_, f64>(3)?,
+                            "input_tokens": r.get::<_, f64>(4)?,
+                            "cached_tokens": r.get::<_, f64>(5)?,
+                            "output_tokens": r.get::<_, f64>(6)?,
+                        }))
+                    },
+                )
+                .map_err(internal)?,
+            None => conn
+                .query_row(sql, [auth.user_id], |r| {
+                    Ok(serde_json::json!({
+                        "income_pts": r.get::<_, f64>(0)?,
+                        "expense_pts": r.get::<_, f64>(1)?,
+                        "net_pts": r.get::<_, f64>(2)?,
+                        "tokens": r.get::<_, f64>(3)?,
+                        "input_tokens": r.get::<_, f64>(4)?,
+                        "cached_tokens": r.get::<_, f64>(5)?,
+                        "output_tokens": r.get::<_, f64>(6)?,
+                    }))
+                })
+                .map_err(internal)?,
+        }
+    };
     let total: i64 = match &type_filter {
         Some(t) => conn
             .query_row(
@@ -175,6 +222,7 @@ pub async fn transactions(
         "total": total,
         "page": page,
         "page_size": page_size,
+        "summary": summary,
     })))
 }
 
@@ -202,10 +250,11 @@ pub async fn dashboard(
         .map_err(internal)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(internal)?;
-    // 近 7 天净额序列（earn 为正、consume 为负）
+    // 近 7 天净额序列（earn/topup/gift 为正、consume 为负；rant 2026-08-22T06:34:37：
+    // 原先只把 earn 当正数 → topup 充值被误算为负）
     let mut stmt = conn
         .prepare(
-            "SELECT date(time), COALESCE(SUM(CASE WHEN type = 'earn' THEN pts ELSE -pts END), 0) \
+            "SELECT date(time), COALESCE(SUM(CASE WHEN type IN ('earn','topup','gift') THEN pts ELSE -pts END), 0) \
              FROM transactions \
              WHERE user_id = ?1 AND date(time) >= date('now', '-6 days') \
              GROUP BY date(time) ORDER BY date(time)",
@@ -326,8 +375,105 @@ mod tests {
         let month = v["month"].as_array().unwrap();
         assert!(month.len() >= 2, "本月 consume+earn 两类聚合: {month:?}");
         let net = v["net"].as_f64().unwrap();
-        assert!((net - (1.8 - 2.0)).abs() < 1e-9, "净变化 = earn - consume");
+        // 净变化 = earn - consume + gift（demo 今日首次拉 wallet 触发每日赠送 +1 并写 transactions；
+        // rant 2026-08-22T00:04:21：赠送入账后净变化含 gift）
+        assert!(
+            (net - (1.8 - 2.0 + 1.0)).abs() < 1e-9,
+            "净变化 = earn - consume + gift: {net}"
+        );
         assert!(!v["series"].as_array().unwrap().is_empty(), "近 7 天序列");
+    }
+
+    #[tokio::test]
+    async fn transactions_summary_and_dashboard_net_with_topup() {
+        // rant 2026-08-22T00:04:21/00:07:08/06:34:37：
+        // - /api/transactions.summary：income 白名单（earn/topup/gift）为正、consume 为负 + token 统计
+        // - dashboard net：topup 充值不得被算成负数
+        let st = test_state("txsum");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, 'admin', NULL, '', 0, 2000.0, 'topup', '成功')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
+                 VALUES (1, '2', 1, 'm', 1000, 200.0, 100.0, 0.5, 'consume', '成功')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, '', NULL, '', 0, 1.0, 'gift', '成功')",
+                [],
+            )
+            .unwrap();
+        }
+        // all → summary：income=2001（topup+gift）、expense=0.5、net=2000.5；token 统计
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=all&page=1&page_size=10",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let sum = &v["summary"];
+        assert!(
+            (sum["income_pts"].as_f64().unwrap() - 2001.0).abs() < 1e-9,
+            "{sum}"
+        );
+        assert!(
+            (sum["expense_pts"].as_f64().unwrap() - 0.5).abs() < 1e-9,
+            "{sum}"
+        );
+        assert!(
+            (sum["net_pts"].as_f64().unwrap() - 2000.5).abs() < 1e-9,
+            "{sum}"
+        );
+        assert!(
+            (sum["tokens"].as_f64().unwrap() - 1000.0).abs() < 1e-9,
+            "{sum}"
+        );
+        assert!(
+            (sum["input_tokens"].as_f64().unwrap() - 700.0).abs() < 1e-9,
+            "input = tokens - cached - output = 1000-200-100: {sum}"
+        );
+        assert!(
+            (sum["cached_tokens"].as_f64().unwrap() - 200.0).abs() < 1e-9,
+            "{sum}"
+        );
+        assert!(
+            (sum["output_tokens"].as_f64().unwrap() - 100.0).abs() < 1e-9,
+            "{sum}"
+        );
+        // type=consume 筛选 → summary 只含 consume
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=consume&page=1&page_size=10",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let sum = &v["summary"];
+        assert!((sum["income_pts"].as_f64().unwrap()).abs() < 1e-9, "{sum}");
+        assert!(
+            (sum["expense_pts"].as_f64().unwrap() - 0.5).abs() < 1e-9,
+            "{sum}"
+        );
+        // dashboard net：topup+gift 为正 → +2000 -0.5 +1 = 2000.5（不得把 topup 算成负）
+        let (s, body) = get(st.clone(), "/api/dashboard", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let net = v["net"].as_f64().unwrap();
+        assert!(
+            (net - 2000.5).abs() < 1e-9,
+            "dashboard net 应含 topup+gift 为正（=2000.5，实际 {net}）"
+        );
     }
 
     #[tokio::test]

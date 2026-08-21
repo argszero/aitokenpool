@@ -1184,17 +1184,40 @@
       render: (t) => t.status === "处理中" ? '<span class="badge warn">' + esc(txStatus(t.status)) + "</span>" : esc(txStatus(t.status)) },
   ];
 
-  // 交易汇总条（rant 20:39:30 B：随 tab + 列筛选联动 — 总收入/总支出/净变化，+绿 −红，紧凑 inline 条）
+  // 交易汇总条（rant 20:39:30 B + 00:04:21 + 00:07:08：改用后端 summary 全量 SQL 聚合，
+  // 不再对当前页本地加总；口径 = income 白名单（earn/topup/gift）为正、consume 为负；
+  // 附带 Token 统计 总/输入/缓存/输出，M 单位）
   function renderTxSummary(list) {
+    const s = (Live.transactions && Live.transactions.summary) ? Live.transactions.summary : null;
     let income = 0, expense = 0;
-    list.forEach((t) => { if (t.pts > 0) income += t.pts; else expense += -t.pts; });
+    if (s) {
+      income = s.income_pts || 0;
+      expense = s.expense_pts || 0;
+    } else {
+      // 兜底（无 summary 的旧数据/游客 mock）：按 type 而非 pts 符号（rant 00:04:21 Bug A）
+      list.forEach((t) => {
+        if (t.type === "consume") expense += Math.abs(t.pts);
+        else income += Math.abs(t.pts);
+      });
+    }
     const net = income - expense;
     const cls = (n) => (n > 0 ? "ok" : n < 0 ? "danger" : "");
     const fmt = (n) => (n > 0 ? "+" : n < 0 ? "-" : "") + D.fmt(Math.abs(n));
-    $("#tx-summary").innerHTML =
+    const fmtM = (n) => (n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : (n >= 1000 ? Math.round(n / 1000) + "K" : String(Math.round(n))));
+    let html =
       '<div class="ts-item"><span class="ts-label">' + T("tx.summary.income") + "</span><span class='ts-value num ' + cls(income) + '\'>" + fmt(income) + "</span></div>" +
       '<div class="ts-item"><span class="ts-label">' + T("tx.summary.expense") + "</span><span class='ts-value num ' + cls(-expense) + '\'>" + fmt(-expense) + "</span></div>" +
       '<div class="ts-item"><span class="ts-label">' + T("tx.summary.net") + "</span><span class='ts-value num ' + cls(net) + '\'>" + fmt(net) + "</span></div>";
+    // Token 统计（仅后端 summary 提供时显示）：总 / 输入 / 缓存 / 输出
+    if (s) {
+      const t = (k) => fmtM(s[k] || 0);
+      html +=
+        '<div class="ts-item"><span class="ts-label">' + T("tx.summary.tokens") + "</span><span class='ts-value num '>" + t("tokens") + "</span></div>" +
+        '<div class="ts-item"><span class="ts-label">' + T("tx.summary.input") + "</span><span class='ts-value num '>" + t("input_tokens") + "</span></div>" +
+        '<div class="ts-item"><span class="ts-label">' + T("tx.summary.cached") + "</span><span class='ts-value num '>" + t("cached_tokens") + "</span></div>" +
+        '<div class="ts-item"><span class="ts-label">' + T("tx.summary.output") + "</span><span class='ts-value num '>" + t("output_tokens") + "</span></div>";
+    }
+    $("#tx-summary").innerHTML = html;
   }
 
   function renderTransactions() {
