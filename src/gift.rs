@@ -87,6 +87,12 @@ pub fn ensure_daily_gift(conn: &Connection, user_id: i64) -> Result<bool> {
         "UPDATE quotas SET gift_balance = gift_balance + ?1 WHERE user_id = ?2",
         rusqlite::params![GIFT_DAILY_AMOUNT, user_id],
     )?;
+    // 赠送写 transactions（rant 2026-08-22T00:04:21：每日赠送不入账 → 交易记录/汇总永远对不上）
+    conn.execute(
+        "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+         VALUES (?1, '', NULL, '', 0, ?2, 'gift', '成功')",
+        rusqlite::params![user_id, GIFT_DAILY_AMOUNT],
+    )?;
     Ok(true)
 }
 
@@ -264,6 +270,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(gift, 0.0, "过期赠送从 gift_balance 扣减");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn gift_writes_transaction_record() {
+        // rant 2026-08-22T00:04:21：每日赠送必须写 transactions（否则交易记录/汇总对不上余额）
+        let (conn, p) = tmp_db("g7");
+        let uid = register(&conn, "u7@t.local", &ts(&conn, 0));
+        assert!(ensure_daily_gift(&conn, uid).unwrap());
+        let (typ, pts, tokens): (String, f64, f64) = conn
+            .query_row(
+                "SELECT type, pts, tokens FROM transactions WHERE user_id = ?1",
+                [uid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(typ, "gift", "赠送应写 type='gift' 的交易记录");
+        assert_eq!(pts, GIFT_DAILY_AMOUNT, "赠送点数入账");
+        assert_eq!(tokens, 0.0);
         drop(conn);
         let _ = std::fs::remove_file(p);
     }
