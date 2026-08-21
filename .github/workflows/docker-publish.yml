@@ -38,7 +38,7 @@ jobs:
           tags: |
             type=ref,event=tag
             type=sha,prefix=,format=short
-            type=raw,value=latest,enable={{is_tag}}
+            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v6
