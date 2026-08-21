@@ -105,14 +105,14 @@ pub async fn transactions(
     let mut stmt = match &type_filter {
         Some(_) => conn
             .prepare(
-                "SELECT id, counterpart, key_id, model, tokens, pts, type, status, time \
+                "SELECT id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status, time \
                  FROM transactions WHERE user_id = ?1 AND type = ?2 \
                  ORDER BY id DESC LIMIT ?3 OFFSET ?4",
             )
             .map_err(internal)?,
         None => conn
             .prepare(
-                "SELECT id, counterpart, key_id, model, tokens, pts, type, status, time \
+                "SELECT id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status, time \
                  FROM transactions WHERE user_id = ?1 \
                  ORDER BY id DESC LIMIT ?2 OFFSET ?3",
             )
@@ -121,16 +121,23 @@ pub async fn transactions(
     let rows: Vec<serde_json::Value> = match &type_filter {
         Some(t) => stmt
             .query_map(params![auth.user_id, t, page_size, offset], |r| {
-                let time: String = r.get(8)?;
+                let time: String = r.get(10)?;
+                let tokens: f64 = r.get(4)?;
+                let cached: f64 = r.get(5)?;
+                let output: f64 = r.get(6)?;
+                let input = tokens - cached - output;
                 Ok(serde_json::json!({
                     "id": r.get::<_, i64>(0)?,
                     "counterpart": r.get::<_, String>(1)?,
                     "key_id": r.get::<_, Option<i64>>(2)?,
                     "model": r.get::<_, String>(3)?,
-                    "tokens": r.get::<_, f64>(4)?,
-                    "pts": r.get::<_, f64>(5)?,
-                    "type": r.get::<_, String>(6)?,
-                    "status": r.get::<_, String>(7)?,
+                    "tokens": tokens,
+                    "input_tokens": input,
+                    "cached_tokens": cached,
+                    "output_tokens": output,
+                    "pts": r.get::<_, f64>(7)?,
+                    "type": r.get::<_, String>(8)?,
+                    "status": r.get::<_, String>(9)?,
                     "time": crate::dao::utc_iso(&time),
                 }))
             })
@@ -139,16 +146,23 @@ pub async fn transactions(
             .map_err(internal)?,
         None => stmt
             .query_map(params![auth.user_id, page_size, offset], |r| {
-                let time: String = r.get(8)?;
+                let time: String = r.get(10)?;
+                let tokens: f64 = r.get(4)?;
+                let cached: f64 = r.get(5)?;
+                let output: f64 = r.get(6)?;
+                let input = tokens - cached - output;
                 Ok(serde_json::json!({
                     "id": r.get::<_, i64>(0)?,
                     "counterpart": r.get::<_, String>(1)?,
                     "key_id": r.get::<_, Option<i64>>(2)?,
                     "model": r.get::<_, String>(3)?,
-                    "tokens": r.get::<_, f64>(4)?,
-                    "pts": r.get::<_, f64>(5)?,
-                    "type": r.get::<_, String>(6)?,
-                    "status": r.get::<_, String>(7)?,
+                    "tokens": tokens,
+                    "input_tokens": input,
+                    "cached_tokens": cached,
+                    "output_tokens": output,
+                    "pts": r.get::<_, f64>(7)?,
+                    "type": r.get::<_, String>(8)?,
+                    "status": r.get::<_, String>(9)?,
                     "time": crate::dao::utc_iso(&time),
                 }))
             })
@@ -325,7 +339,7 @@ mod tests {
             for i in 0..5 {
                 let t = if i % 2 == 0 { "consume" } else { "earn" };
                 conn.execute(
-                    "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) VALUES (1, 'c', 1, 'm', 1, ?1, ?2, '成功')",
+                    "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) VALUES (1, 'c', 1, 'm', 100, 10, 20, ?1, ?2, '成功')",
                     rusqlite::params![i as f64 + 1.0, t],
                 )
                 .unwrap();
@@ -340,6 +354,14 @@ mod tests {
         // 时间倒序：最新在前
         let items = v["items"].as_array().unwrap();
         assert!(items[0]["id"].as_i64().unwrap() > items[1]["id"].as_i64().unwrap());
+        // 明细（rant 2026-08-21T14:53:20）：tokens=100 / cached=10 / output=20 → input=70
+        assert!((items[0]["tokens"].as_f64().unwrap() - 100.0).abs() < 1e-9);
+        assert!(
+            (items[0]["input_tokens"].as_f64().unwrap() - 70.0).abs() < 1e-9,
+            "输入=总量−缓存−输出"
+        );
+        assert!((items[0]["cached_tokens"].as_f64().unwrap() - 10.0).abs() < 1e-9);
+        assert!((items[0]["output_tokens"].as_f64().unwrap() - 20.0).abs() < 1e-9);
         // 时区（rant 2026-08-19T20:45:32）：time 返回 UTC ISO 带 Z（前端按 UTC 解析，不再差 8 小时）
         let t0 = items[0]["time"].as_str().expect("time 为字符串");
         assert!(

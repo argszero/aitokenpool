@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -96,6 +96,8 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             key_id       INTEGER,
             model        TEXT NOT NULL DEFAULT '',
             tokens       REAL NOT NULL DEFAULT 0,
+            cached_tokens REAL NOT NULL DEFAULT 0,
+            output_tokens REAL NOT NULL DEFAULT 0,
             pts          REAL NOT NULL DEFAULT 0,
             type         TEXT NOT NULL DEFAULT '',
             status       TEXT NOT NULL DEFAULT '成功',
@@ -109,6 +111,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             model      TEXT NOT NULL DEFAULT '',
             tokens     REAL NOT NULL DEFAULT 0,
             cached_tokens REAL NOT NULL DEFAULT 0,
+            output_tokens REAL NOT NULL DEFAULT 0,
             cost       REAL NOT NULL DEFAULT 0,
             time       TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -269,6 +272,27 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "models",
         "peak_output_per_m",
         "peak_output_per_m REAL NOT NULL DEFAULT 0",
+    )?;
+    // v10（rant 2026-08-21T14:53:20）：单次调用 token 消耗明细——输入/缓存命中/输出——
+    // transactions 补 cached_tokens + output_tokens（输入 = tokens − cached − output 可推导），
+    // usage_records 补 output_tokens（与 cached_tokens 同模式）
+    ensure_column(
+        conn,
+        "transactions",
+        "cached_tokens",
+        "cached_tokens REAL NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "transactions",
+        "output_tokens",
+        "output_tokens REAL NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "usage_records",
+        "output_tokens",
+        "output_tokens REAL NOT NULL DEFAULT 0",
     )?;
     // schema_version：INSERT OR REPLACE 保证幂等
     let v: i64 = conn
