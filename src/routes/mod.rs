@@ -182,7 +182,18 @@ fn send_code(st: &AppState, email: &str) -> Result<(bool, String), ApiErr> {
         .map_err(internal)?;
     }
     let dev = !st.cfg.mail.configured();
-    crate::mail::send_verification_code(&st.cfg.mail, email, &code).map_err(internal)?;
+    if let Err(e) = crate::mail::send_verification_code(&st.cfg.mail, email, &code) {
+        // SMTP 发送失败（重试后仍失败）→ 清除验证码记录（解除 60s 重发限频，用户可立即重发），
+        // 返回 502 + 明确错误提示（rant 2026-08-21T23:52:17：半注册账号兜底）
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        let _ = dao::clear_verification(&conn, email);
+        drop(conn);
+        log::error!("验证码发送失败（{email}，重试后仍失败）: {e:#}");
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": "验证码发送失败，请重试" })),
+        ));
+    }
     Ok((dev, code))
 }
 
@@ -1249,6 +1260,49 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "弱密码应 400");
+    }
+
+    #[tokio::test]
+    async fn register_smtp_failure_502() {
+        // SMTP 指向不可达主机 → 发送失败（重试后仍失败）→ 注册返回 502 + 明确错误，
+        // 且验证码记录被清除（解除 60s 限频，用户可立即重发）——rant 2026-08-21T23:52:17
+        let p =
+            std::env::temp_dir().join(format!("atp_route_{}_{}.db", std::process::id(), "reg502"));
+        let _ = std::fs::remove_file(&p);
+        let conn = crate::db::open(p.to_str().unwrap()).expect("open tmp db");
+        crate::db::seed_test_users(&conn).expect("seed test users");
+        let mut cfg = crate::config::Config::load("config/config.example.toml").unwrap();
+        cfg.mail.smtp_host = "127.0.0.1".to_string();
+        cfg.mail.smtp_port = 1; // 不可达端口：连接立即失败
+        cfg.mail.from = "noreply@test.local".to_string();
+        crate::db::seed_models(&conn, &cfg).expect("seed models");
+        let crypto = crate::crypto::Crypto::new([9u8; 32]);
+        let st = AppState::new(conn, Arc::new(cfg), crypto);
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"email":"smtp502@test.local","password":"password123"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY, "SMTP 发送失败应 502: {body}");
+        assert!(
+            body.contains("验证码发送失败"),
+            "错误信息应明确可操作: {body}"
+        );
+        // 验证码记录应已被清除 → 同邮箱立即 resend 不应被 60s 限频卡住（429）而是走到发送（502）
+        let (s2, _) = post(
+            st,
+            "/api/auth/resend-code",
+            r#"{"email":"smtp502@test.local"}"#,
+            None,
+        )
+        .await;
+        assert_ne!(
+            s2,
+            StatusCode::TOO_MANY_REQUESTS,
+            "发送失败后重发不应被限频卡住（验证码记录已清除）"
+        );
     }
 
     #[tokio::test]
