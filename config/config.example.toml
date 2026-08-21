@@ -378,3 +378,19 @@ output_per_m = 0.8
 context_length = 1048576
 max_output = 0
 vision = false
+
+# DeepSeek 视觉模型：价格与 deepseek-v4-flash 完全相同（读图能力增强）
+[[models]]
+provider = "deepseek"
+model = "deepseek-v4-flash-vision-exp"
+currency = "CNY"
+input_per_m = 1.5
+cache_hit_input_per_m = 0.05
+output_per_m = 4.5
+# 高峰时段价（北京 9-12 / 14-18 翻倍；与 flash 一致）
+peak_input_per_m = 3.0
+peak_cache_hit_input_per_m = 0.10
+peak_output_per_m = 9.0
+context_length = 1048576
+max_output = 384000
+vision = true
