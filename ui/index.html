@@ -109,9 +109,9 @@
     <div class="sidebar-bottom">
       <button class="btn btn-ghost btn-block" id="logout-btn" data-i18n="logout.btn">退出登录</button>
       <div class="user-chip">
-        <div class="avatar">零</div>
+        <div class="avatar" id="side-avatar">?</div>
         <div>
-          <strong>阿零</strong>
+          <strong id="side-name"></strong>
           <span><span data-i18n="common.balance">点数余额</span> <b id="side-balance">0</b></span>
         </div>
       </div>
@@ -397,7 +397,7 @@
         <div class="card">
           <h3 data-i18n="settings.account">账户</h3>
           <div class="form">
-            <label><span data-i18n="settings.account.nickname">昵称</span> <input class="input" value="阿零"></label>
+            <label><span data-i18n="settings.account.nickname">昵称</span> <input class="input" id="settings-nickname" value=""></label>
             <label><span data-i18n="settings.account.email">邮箱</span> <input class="input" placeholder="you@company.com"></label>
             <button class="btn btn-primary" data-i18n="common.save">保存</button>
           </div>

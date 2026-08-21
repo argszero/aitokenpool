@@ -395,7 +395,7 @@ pub(crate) fn seed_test_users(conn: &Connection) -> Result<()> {
         None => {
             let hash = hash_password("demo1234")?;
             conn.execute(
-                "INSERT INTO users (email, password_hash, name, role) VALUES (?1, ?2, '阿零', 'user')",
+                "INSERT INTO users (email, password_hash, name, role) VALUES (?1, ?2, 'demo', 'user')",
                 rusqlite::params!["demo@aitokenpool.local", hash],
             )?;
             conn.last_insert_rowid()
