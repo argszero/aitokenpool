@@ -2497,6 +2497,12 @@
           setFieldError($("#login-pass"), T("login.err.bad"));
           clearFieldError($("#login-email"));
           $("#login-pass").focus();
+        } else if (err && err.status === 403) {
+          // 邮箱未验证 → 切验证码界面 + 预填邮箱 + 自动发码（rant 2026-08-21T12:31:48）
+          $("#verify-email").value = email;
+          showAuthForm("verify");
+          const rb = $("#resend-btn");
+          if (rb) rb.click(); // 立即发验证码（60s 限频由后端 429 兜底提示）
         } else {
           toast((err && err.message) ? I18n.mapErr(err.message) : T("login.err.fail"), "error");
         }
