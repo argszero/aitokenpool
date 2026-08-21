@@ -1,9 +1,11 @@
 name: Docker Publish
 
+# rant 2026-08-22T07:14:15：改为仅 tag 触发（对齐 emrg 发版节奏——rant 说发版才发版）。
+# main push / PR merge 只跑 ci.yml；显式打 tag vX.Y.Z 才构建发布 GHCR 镜像。
 on:
   push:
-    branches: [main]
     tags: ['v*']
+  workflow_dispatch:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
@@ -34,10 +36,9 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
             type=ref,event=tag
             type=sha,prefix=,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_tag}}
 
       - name: Build and push
         uses: docker/build-push-action@v6

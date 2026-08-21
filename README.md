@@ -29,7 +29,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台 / 多模型网关**：把
 
 ```bash
 docker compose up -d --build
-# 或直接使用已发布镜像
+# 或直接使用已发布镜像（镜像随版本 tag 发布，latest 指向最新发版）
 docker pull ghcr.io/argszero/aitokenpool:latest
 docker run -p 8080:8080 -v "$PWD/atp-data:/data" \
   -e ATP_MASTER_KEY=$(openssl rand -hex 32) \
