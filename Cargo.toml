@@ -49,4 +49,4 @@ rand = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
 
 # 注册邮箱验证码发信（rant 2026-08-19T14:36:19：方案 B 完整验证码）
-lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls", "hostname", "pool"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls", "hostname"] }

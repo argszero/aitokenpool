@@ -2673,7 +2673,9 @@
       const email = $("#verify-email").value.trim();
       if (!email) return;
       const b = $("#resend-btn");
+      const orig = b.textContent;
       b.disabled = true;
+      b.textContent = T("verify.sending"); // 发送中反馈（rant 2026-08-21T14:08:03 补充验收）
       try {
         const r = await api.post("/api/auth/resend-code", { email });
         if (r.dev_code) { toast(T("verify.devCode") + ": " + r.dev_code, "info"); }
@@ -2682,7 +2684,7 @@
         const m = (err && err.message) ? I18n.mapErr(err.message) : T("verify.err.fail");
         toast(m, "error");
       } finally {
-        setTimeout(() => { b.disabled = false; }, 1000);
+        setTimeout(() => { b.disabled = false; b.textContent = orig; }, 300);
       }
     });
 
