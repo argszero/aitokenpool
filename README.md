@@ -17,7 +17,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 
 ## 状态
 
-后端 + 前端已全部实现，当前版本 **v0.7.3**（config.toml 模型目录唯一真源）：
+后端 + 前端已全部实现，当前版本 **v0.7.4**（config.toml 模型目录唯一真源）：
 
 - ✅ **P0-A（v0.2.0）**：后端骨架 + TOML 配置（`Config::validate`：points_per_unit>0 / plan→provider 存在 / endpoints≥1 / protocol 枚举）+ SQLite 数据层（幂等迁移，**生产空库不种任何种子数据**）+ 认证（argon2 + Bearer API Key）+ API Key 端点
 - ✅ **P0-B（v0.2.1）**：网关转发（OpenAI Chat Completions + Anthropic Messages）+ 路由故障转移（粘性 / 健康冷却 / 3 次切换上限）+ 计量账本（点数计算、90/10 分成、事务性 settle）
@@ -40,6 +40,7 @@ AITokenPool 是一个开源的 **AI Token 共享平台**：企业版（内部 ke
 - ✅ **v0.6.6**：**统一数据目录（rant 2026-08-19T20:53:23）**——`ATP_DATA_DIR`（默认 `./data`；`--data-dir` > env > 默认）下放 config.toml（首次自动复制示例）+ aitokenpool.db + logs/，目录自动创建；数据库路径统一由 data-dir 决定（config `db_path` 忽略）；Docker 单卷挂载 `./atp-data:/data`（镜像内置示例配置，首启自动复制）；.gitignore/.dockerignore 补 atp-data/；旧 data/ 迁移说明
 - ✅ **v0.6.7**：**日志系统（rant 2026-08-19T20:54:26）**——log4rs 替换 env_logger：日志落盘 `<data-dir>/logs/aitokenpool.log` + stdout 双写；按大小滚动（`[log].max_file_size`，默认 10MB）+ `max_backups`（默认 7）自动清理旧日志；`[log]` 配置段（dir / level / file_pattern）；Docker 日志随统一目录持久化
 - ✅ **v0.7.0**：**缓存命中/未命中分开计费（rant 2026-08-20T10:17:27）**——usage 解析拆分缓存 token（openai `prompt_tokens_details.cached_tokens` / anthropic `cache_read_input_tokens` / responses `input_tokens_details.cached_tokens`）；计费 = 未命中 × input_per_m + 命中 × cache_hit_input_per_m（缺省 0 = 命中免费）；usage_records 新增 `cached_tokens` 列（迁移 v8）；DeepSeek 官方 CNY 定价（deepseek-v4-flash 1.5/0.05/4.5、deepseek-v4-pro 4.5/0.15/13.5，空闲价）；管理端模型表单可配缓存命中输入价；流式（SSE 转换 + 透传）同拆
+- ✅ **v0.7.4**：**单次调用 token 消耗明细（rant 2026-08-21T14:53:20）**——交易记录展示本次调用明细「输入 / 缓存命中 / 输出」：settle 将 usage 拆出的 cached/output 一并写入 transactions 与 usage_records（迁移 v10 幂等；输入 = 总量 − 缓存 − 输出，不双存）；`GET /api/transactions` 返回 `input_tokens / cached_tokens / output_tokens` 三字段（旧记录缺省 0）；交易表「Token 用量」列下方小字显示明细（中英 i18n，缓存/输出分色 + tooltip）；132 passed
 - ✅ **v0.7.3**：**DeepSeek 高峰时段计价（rant 2026-08-20T11:58:40）**——models 表 + config `[[models]]` 新增三个可选高峰价字段 `peak_input_per_m / peak_output_per_m / peak_cache_hit_input_per_m`（缺省 0 = 不启用高峰计费，沿用空闲价）；计费按**北京时间**判定高峰（9:00-12:00、14:00-18:00，周一至周日，固定 Asia/Shanghai 不依赖服务器时区）命中则用高峰价；DeepSeek 官方高峰价写入示例配置（flash 3.0/0.10/9.0、pro 9.0/0.30/27.0 元/M）；市场页标注「高峰 ×N」+ 展开详情显示高峰价；管理端模型表单可配高峰价；迁移 v9 幂等；128 passed
 - ✅ **v0.7.2**：**seed 同步删除（rant 2026-08-20T11:58:33）**——启动 `seed_models` 在 upsert 之外同步删除 config 中已移除的模型行（config `[[models]]` 全量权威；市场不再显示幽灵模型；admin 运行时增删改下次启动被 config 覆盖/清掉，持久化自定义模型请写入 config.toml）；新增测试 `seed_models_deletes_config_removed_rows`（125 passed）
 - ✅ **v0.7.1**：**简化模型配置（rant 2026-08-20T10:27:13）**——模型（厂商/价格/上下文/读图等）全部在 config.toml `[[models]]` 段定义（唯一真源），启动 upsert 进 DB；**移除 data/models.example.json 与 price_overrides 双层机制**（不再有「json 聚合源 + 官方价覆盖」设想）；10 个模型迁入 config（DeepSeek 官方 CNY 价 flash 1.5/0.05/4.5、pro 4.5/0.15/13.5）；data.js 游客兜底价对齐 config

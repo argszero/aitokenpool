@@ -211,6 +211,7 @@ fn settle_usage(
         model: model.to_string(),
         tokens,
         cached_tokens,
+        output_tokens,
         pts,
         cost,
     };

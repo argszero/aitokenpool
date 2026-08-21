@@ -135,6 +135,8 @@ pub struct SettleParams {
     pub tokens: f64,
     /// 缓存命中输入 token 数（v0.7.0，rant 2026-08-20T10:17:27）
     pub cached_tokens: f64,
+    /// 输出 token 数（v0.7.4，rant 2026-08-21T14:53:20：单次调用明细 输入/缓存/输出）
+    pub output_tokens: f64,
     /// 消费者应扣点数
     pub pts: f64,
     /// 锚定货币成本（usage_records.cost）
@@ -167,34 +169,38 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
 
     // transactions：consume（消费者）+ earn（分享者），counterpart 记对方
     tx.execute(
-        "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'consume', '成功')",
+        "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'consume', '成功')",
         rusqlite::params![
             p.consumer_id,
             p.owner_id.to_string(),
             p.key_id,
             p.model,
             p.tokens,
+            p.cached_tokens,
+            p.output_tokens,
             p.pts
         ],
     )?;
     tx.execute(
-        "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'earn', '成功')",
+        "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'earn', '成功')",
         rusqlite::params![
             p.owner_id,
             p.consumer_id.to_string(),
             p.key_id,
             p.model,
             p.tokens,
+            p.cached_tokens,
+            p.output_tokens,
             earn
         ],
     )?;
 
     // usage_records
     tx.execute(
-        "INSERT INTO usage_records (user_id, api_key_id, key_id, model, tokens, cached_tokens, cost) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO usage_records (user_id, api_key_id, key_id, model, tokens, cached_tokens, output_tokens, cost) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             p.consumer_id,
             p.api_key_id,
@@ -202,6 +208,7 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
             p.model,
             p.tokens,
             p.cached_tokens,
+            p.output_tokens,
             p.cost
         ],
     )?;
@@ -426,7 +433,8 @@ mod tests {
             model: "test-model".into(),
             tokens: 150.0,
 
-            cached_tokens: 0.0,
+            cached_tokens: 30.0,
+            output_tokens: 20.0,
             pts: 2.0,
             cost: 0.002,
         };
@@ -470,6 +478,25 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM usage_records", [], |r| r.get(0))
             .unwrap();
         assert_eq!(u, 1);
+        // 明细持久化（rant 2026-08-21T14:53:20）：transactions 与 usage_records 均记 cached/output
+        let (cached_t, output_t): (f64, f64) = conn
+            .query_row(
+                "SELECT cached_tokens, output_tokens FROM transactions WHERE user_id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!((cached_t - 30.0).abs() < 1e-9, "consume cached={cached_t}");
+        assert!((output_t - 20.0).abs() < 1e-9, "consume output={output_t}");
+        let (cached_u, output_u): (f64, f64) = conn
+            .query_row(
+                "SELECT cached_tokens, output_tokens FROM usage_records",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!((cached_u - 30.0).abs() < 1e-9, "usage cached={cached_u}");
+        assert!((output_u - 20.0).abs() < 1e-9, "usage output={output_u}");
         // keys.used 更新
         let used: f64 = conn
             .query_row("SELECT used FROM keys WHERE id = 9", [], |r| r.get(0))
@@ -493,6 +520,7 @@ mod tests {
             tokens: 10.0,
 
             cached_tokens: 0.0,
+            output_tokens: 0.0,
             pts: 1.0,
             cost: 0.001,
         };
@@ -551,6 +579,7 @@ mod tests {
             tokens: 100.0,
 
             cached_tokens: 0.0,
+            output_tokens: 0.0,
             pts: 3.0,
             cost: 0.003,
         };
@@ -620,6 +649,7 @@ mod tests {
             tokens: 10.0,
 
             cached_tokens: 0.0,
+            output_tokens: 0.0,
             pts: 2.0,
             cost: 0.002,
         };

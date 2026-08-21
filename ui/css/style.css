@@ -343,6 +343,10 @@ select.input option { background: var(--bg-card); }
 .table .num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .table th.num { text-align: right; }
 .table th.num .th-sort { text-align: right; }
+/* Token 用量明细（rant 2026-08-21T14:53:20：输入/缓存命中/输出 随行展示，等宽小字） */
+.tx-brk { margin-top: 2px; font-size: 11px; line-height: 1.2; color: var(--text-dim); white-space: nowrap; }
+.tx-brk .brk-c { color: var(--accent); }
+.tx-brk .brk-o { color: var(--ok); }
 /* 斑马纹（rant 15:50:05 A.3：行 hover 高亮保留，hover 覆盖斑马纹） */
 .table tbody tr:nth-child(even) { background: var(--table-stripe); }
 .table tbody tr:hover { background: var(--bg-hover); }
