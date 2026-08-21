@@ -149,19 +149,31 @@ pub async fn transactions(
             .unwrap_or(0),
     };
     let offset = (page - 1) * page_size;
+    // rant 2026-08-22T06:36:54/06:37:50：模型/Key 列 — 补 key_label（JOIN keys：
+    // note 非空用 note，否则 provider / plan，plan 空则仅 provider；key 已删 → NULL）
     let mut stmt = match &type_filter {
         Some(_) => conn
             .prepare(
-                "SELECT id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status, time \
-                 FROM transactions WHERE user_id = ?1 AND type = ?2 \
-                 ORDER BY id DESC LIMIT ?3 OFFSET ?4",
+                "SELECT t.id, t.counterpart, t.key_id, t.model, t.tokens, t.cached_tokens, t.output_tokens, \
+                        t.pts, t.type, t.status, t.time, \
+                        CASE WHEN k.note <> '' THEN k.note \
+                             WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
+                             ELSE k.provider END AS key_label \
+                 FROM transactions t LEFT JOIN keys k ON k.id = t.key_id \
+                 WHERE t.user_id = ?1 AND t.type = ?2 \
+                 ORDER BY t.id DESC LIMIT ?3 OFFSET ?4",
             )
             .map_err(internal)?,
         None => conn
             .prepare(
-                "SELECT id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status, time \
-                 FROM transactions WHERE user_id = ?1 \
-                 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
+                "SELECT t.id, t.counterpart, t.key_id, t.model, t.tokens, t.cached_tokens, t.output_tokens, \
+                        t.pts, t.type, t.status, t.time, \
+                        CASE WHEN k.note <> '' THEN k.note \
+                             WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
+                             ELSE k.provider END AS key_label \
+                 FROM transactions t LEFT JOIN keys k ON k.id = t.key_id \
+                 WHERE t.user_id = ?1 \
+                 ORDER BY t.id DESC LIMIT ?2 OFFSET ?3",
             )
             .map_err(internal)?,
     };
@@ -186,6 +198,7 @@ pub async fn transactions(
                     "type": r.get::<_, String>(8)?,
                     "status": r.get::<_, String>(9)?,
                     "time": crate::dao::utc_iso(&time),
+                    "key_label": r.get::<_, Option<String>>(11)?,
                 }))
             })
             .map_err(internal)?
@@ -211,6 +224,7 @@ pub async fn transactions(
                     "type": r.get::<_, String>(8)?,
                     "status": r.get::<_, String>(9)?,
                     "time": crate::dao::utc_iso(&time),
+                    "key_label": r.get::<_, Option<String>>(11)?,
                 }))
             })
             .map_err(internal)?
@@ -473,6 +487,70 @@ mod tests {
         assert!(
             (net - 2000.5).abs() < 1e-9,
             "dashboard net 应含 topup+gift 为正（=2000.5，实际 {net}）"
+        );
+    }
+
+    #[tokio::test]
+    async fn transactions_key_label() {
+        // rant 2026-08-22T06:36:54/06:37:50：/api/transactions 每行返回 key_label
+        // （note 非空 → note；否则 provider / plan；key 已删/无 key → null）
+        let st = test_state("keylabel");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            // 种子 key（id=1，note 空）：key_label = provider / plan
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
+                 VALUES (1, '2', 1, 'deepseek-v4-flash', 1000, 200.0, 100.0, 0.5, 'consume', '成功')",
+                [],
+            )
+            .unwrap();
+            // note 非空的 key → key_label = note
+            conn.execute(
+                "INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key, quota, note) \
+                 VALUES ('openai', 'gpt-paygo', 'gpt-5.3', 'on', 2, 'enc2', 1000, '工作日共享')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
+                 VALUES (1, '2', 2, 'gpt-5.3', 500, 0, 0, 0.3, 'consume', '成功')",
+                [],
+            )
+            .unwrap();
+            // 无 key（topup）→ key_label = null
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, 'admin', NULL, '', 0, 2000.0, 'topup', '成功')",
+                [],
+            )
+            .unwrap();
+        }
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=all&page=1&page_size=10",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let items = v["items"].as_array().unwrap();
+        let find = |ty: &str, model: &str| {
+            items
+                .iter()
+                .find(|i| i["type"] == ty && i["model"] == model)
+                .expect("row found")
+                .clone()
+        };
+        let seeded = find("consume", "deepseek-v4-flash");
+        assert_eq!(seeded["key_label"], "deepseek / deepseek-paygo");
+        assert_eq!(seeded["model"], "deepseek-v4-flash");
+        let noted = find("consume", "gpt-5.3");
+        assert_eq!(noted["key_label"], "工作日共享");
+        let topup = find("topup", "");
+        assert!(
+            topup["key_label"].is_null(),
+            "无 key 交易 key_label 为 null: {topup}"
         );
     }
 

@@ -1171,11 +1171,16 @@
       options: () => ["consume", "earn", "topup", "withdraw", "gift"].map(txType),
       filterVal: (t) => txType(t.type),
       render: (t) => t.type === "earn" ? '<span class="badge ok">' + T("tx.type.earn") + "</span>" : t.type === "consume" ? '<span class="badge accent">' + T("tx.type.consume") + "</span>" : t.type === "gift" ? '<span class="badge ok">' + T("tx.type.gift") + "</span>" : '<span class="badge dim">' + esc(txType(t.type)) + "</span>" },
-    { key: "partner", title: () => T("tx.col.partner"), sort: "string", filter: "text" },
-    { key: "tokens", title: () => T("tx.col.tokens"), sort: "string", filter: "text", align: "num",
-      render: (t) => t.tokenDetail
-        ? '<div>' + t.tokens + '</div><div class="tx-brk" title="' + esc(T("tx.brk.title")) + '">' + t.tokenDetail + "</div>"
-        : t.tokens },
+    { key: "model", title: () => T("tx.col.model"), sort: "string", filter: "text" },
+    { key: "key", title: () => T("tx.col.key"), sort: "string", filter: "text" },
+    { key: "input", title: () => T("tx.col.input"), sort: "number", filter: "number-range", align: "num",
+      render: (t) => t.inputTokens },
+    { key: "cached", title: () => T("tx.col.cached"), sort: "number", filter: "number-range", align: "num",
+      render: (t) => t.cachedTokens },
+    { key: "output", title: () => T("tx.col.output"), sort: "number", filter: "number-range", align: "num",
+      render: (t) => t.outputTokens },
+    { key: "tokens", title: () => T("tx.col.tokens"), sort: "number", filter: "number-range", align: "num",
+      render: (t) => t.tokens },
     { key: "pts", title: () => T("tx.col.pts"), sort: "number", filter: "number-range", align: "num",
       render: (t) => '<span style="color:' + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ';font-weight:600">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span>" },
     { key: "status", title: () => T("tx.col.status"), sort: "string", filter: "select",
@@ -1259,8 +1264,8 @@
     list = filterRows(list, TX_COLUMNS, txTable.filters); // 与表格可见行一致（含列筛选）
     if (!list.length) { toast(T("tx.export.none"), "info"); return; }
     const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const headers = [T("tx.col.time"), T("tx.col.type"), T("tx.col.partner"), T("tx.col.tokens"), T("tx.col.pts"), T("tx.col.status")];
-    const lines = list.map((t) => [t.time, txType(t.type), t.partner, t.tokens, t.pts, txStatus(t.status)].map(cell).join(","));
+    const headers = [T("tx.col.time"), T("tx.col.type"), T("tx.col.model"), T("tx.col.key"), T("tx.col.input"), T("tx.col.cached"), T("tx.col.output"), T("tx.col.tokens"), T("tx.col.pts"), T("tx.col.status")];
+    const lines = list.map((t) => [t.time, txType(t.type), t.model, t.key, t.inputTokens, t.cachedTokens, t.outputTokens, t.tokens, t.pts, txStatus(t.status)].map(cell).join(","));
     const csv = "\uFEFF" + [headers.join(","), ...lines].join("\r\n"); // UTF-8 BOM，Excel 中文不乱码
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -2466,8 +2471,7 @@
     });
   }
 
-  // 后端 transactions items → 视图行（partner=counterpart、tokens 格式化、detail 用模型）
-  // rant 2026-08-21T14:53:20：单次调用 token 明细（输入/缓存命中/输出）随行展示
+  // 后端 transactions items → 视图行（模型 / Key 两列 + Token 四列平铺；rant 2026-08-22T06:36:54/06:37:50/06:39:04）
   const fmtTokens = (n) => (typeof n === "number" && n > 0 ? (n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : String(Math.round(n))) : "0");
   function txsToView(items) {
     return items.map((t) => {
@@ -2475,24 +2479,25 @@
       if (typeof t.tokens === "number" && t.tokens > 0) {
         tokens = t.tokens >= 1e6 ? (t.tokens / 1e6).toFixed(2) + "M" : String(Math.round(t.tokens));
       }
-      // 明细仅当后端提供了拆分且确有输出/缓存（旧记录 0/0 不显示，保持整洁）
-      const input = typeof t.input_tokens === "number" ? t.input_tokens : null;
-      const cached = typeof t.cached_tokens === "number" ? t.cached_tokens : null;
-      const output = typeof t.output_tokens === "number" ? t.output_tokens : null;
-      const hasBrk = input !== null && cached !== null && output !== null && (cached > 0 || output > 0);
-      const tokenDetail = hasBrk
-        ? '<span class="brk-i">' + esc(T("tx.brk.input")) + " " + fmtTokens(input) + "</span>" +
-          '<span class="brk-c">' + esc(T("tx.brk.cache")) + " " + fmtTokens(cached) + "</span>" +
-          '<span class="brk-o">' + esc(T("tx.brk.output")) + " " + fmtTokens(output) + "</span>"
-        : "";
+      // Token 四列：输入(非缓存) / 缓存 / 输出 / 总；旧记录（cached/output=0）输入=总
+      const inputTokens = fmtTokens(typeof t.input_tokens === "number" ? t.input_tokens : null);
+      const cachedTokens = fmtTokens(typeof t.cached_tokens === "number" ? t.cached_tokens : null);
+      const outputTokens = fmtTokens(typeof t.output_tokens === "number" ? t.output_tokens : null);
+      // 模型列：consume/earn 显示模型名；无模型（topup/gift 等）显示交易类型说明
+      // Key 列：key_label（note / provider / provider / plan）；无 key → —
+      const model = t.model || txType(t.type);
+      const key = t.key_label || "—";
       return {
         id: t.id,
         time: (t.time || "").replace("T", " ").slice(0, 16),
         type: t.type,
-        partner: t.counterpart || "—",
+        model,
+        key,
         detail: t.model ? "消费 · " + t.model : "交易",
         tokens,
-        tokenDetail,
+        inputTokens,
+        cachedTokens,
+        outputTokens,
         pts: t.pts,
         status: t.status || "成功",
       };
