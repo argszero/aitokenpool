@@ -10,6 +10,7 @@
 //! `SmtpTransport::builder_dangerous(...).tls(Tls::Opportunistic(...))`。
 
 use anyhow::{Context, Result};
+use std::time::Duration;
 
 use crate::config::Mail;
 use lettre::Transport;
@@ -61,6 +62,8 @@ pub fn send_verification_code(cfg: &Mail, to: &str, code: &str) -> Result<()> {
         .with_context(|| format!("SMTP 服务器不可用: {}", cfg.smtp_host))?
         .port(cfg.smtp_port)
         .credentials(creds)
+        // 显式 15s 超时：避免无 pool 时挂住/长等（rant 2026-08-21T14:08:03）
+        .timeout(Some(Duration::from_secs(15)))
         .build();
     mailer.send(&email).map_err(|e| {
         log::error!("SMTP 发送验证码到 {to} 失败: {e:?}");
