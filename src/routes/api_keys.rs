@@ -2,24 +2,58 @@
 //!
 //! - P0-A（rant 2026-08-17T22:21:52）：POST 生成（atk_live_ + 24 hex）；GET 列表（脱敏）
 //! - P2-B（rant 2026-08-18T12:02:40）：DELETE /api/api-keys/:id 软删（status → 'revoked'），仅属主
+//! - P2-C（rant 2026-08-22T17:21:39）：POST 接收 {name} 持久化；PATCH /api/api-keys/:id 改名，仅属主
 
 use axum::extract::{Path, State};
 use axum::Json;
+use serde::Deserialize;
 
 use crate::auth;
 use crate::routes::{internal, ApiErr, AppState, AuthUser};
+
+/// POST /api/api-keys 请求体；name 缺省为空串（前端留空 → 「未命名」）
+#[derive(Deserialize)]
+pub struct CreateKeyReq {
+    #[serde(default)]
+    pub name: String,
+}
+
+/// PATCH /api/api-keys/:id 请求体
+#[derive(Deserialize)]
+pub struct RenameKeyReq {
+    pub name: String,
+}
 
 /// POST /api/api-keys
 pub async fn create(
     State(st): State<AppState>,
     auth: AuthUser,
+    Json(req): Json<CreateKeyReq>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    let key = crate::dao::create_api_key(&conn, auth.user_id, "").map_err(internal)?;
+    let key = crate::dao::create_api_key(&conn, auth.user_id, &req.name).map_err(internal)?;
     Ok(Json(serde_json::json!({
         "api_key": key,
         "masked": auth::mask_api_key(&key),
     })))
+}
+
+/// PATCH /api/api-keys/:id（改名持久化；非属主 / 不存在 / 已撤销 → 404）
+pub async fn rename(
+    State(st): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<i64>,
+    Json(req): Json<RenameKeyReq>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let ok = crate::dao::rename_api_key(&conn, auth.user_id, id, &req.name).map_err(internal)?;
+    if !ok {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "API Key 不存在或已撤销" })),
+        ));
+    }
+    Ok(Json(serde_json::json!({ "id": id, "name": req.name })))
 }
 
 /// GET /api/api-keys（脱敏列表）

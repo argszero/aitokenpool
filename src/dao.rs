@@ -98,6 +98,15 @@ pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::
     Ok(out)
 }
 
+/// 改名 API Key（rant 2026-08-22T17:21:39：改名须持久化）；仅属主、仅 active 可改；返回是否成功
+pub fn rename_api_key(conn: &Connection, user_id: i64, key_id: i64, name: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE api_keys SET name = ?1 WHERE id = ?2 AND user_id = ?3 AND status = 'active'",
+        rusqlite::params![name, key_id, user_id],
+    )?;
+    Ok(n == 1)
+}
+
 /// 软删 API Key（P2-B：status → 'revoked'）；仅属主可删；返回是否删除成功
 pub fn revoke_api_key(conn: &Connection, user_id: i64, key_id: i64) -> Result<bool> {
     let n = conn.execute(

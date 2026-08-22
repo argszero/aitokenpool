@@ -1696,7 +1696,17 @@
       placeholder: T("settings.ak.rename.ph"),
       width: "160px",
       validate: (v) => v ? null : T("settings.ak.err.name"),
-      onSubmit: (name) => { k.name = name; renderSettings(); toast(T("settings.ak.renamed", { name: name }), "success"); },
+      // rant 2026-08-22T17:21:39：改名必须 PATCH 持久化（原实现只改内存变量 → 刷新失效假成功）
+      onSubmit: (name) => {
+        api.patch("/api/api-keys/" + k.id, { name }).then(async () => {
+          await liveLoad("apiKeys", "/api/api-keys");
+          renderSettings();
+          toast(T("settings.ak.renamed", { name: name }), "success");
+        }).catch((err) => {
+          renderSettings(); // 失败回滚：重渲染还原真实名字
+          toast((err && err.message) ? I18n.mapErr(err.message) : T("settings.ak.rename.fail"), "error");
+        });
+      },
       onCancel: () => renderSettings(),
     });
   }
