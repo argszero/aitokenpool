@@ -1174,8 +1174,11 @@
       options: () => ["consume", "earn", "topup", "withdraw", "gift"].map(txType),
       filterVal: (t) => txType(t.type),
       render: (t) => t.type === "earn" ? '<span class="badge ok">' + T("tx.type.earn") + "</span>" : t.type === "consume" ? '<span class="badge accent">' + T("tx.type.consume") + "</span>" : t.type === "gift" ? '<span class="badge ok">' + T("tx.type.gift") + "</span>" : '<span class="badge dim">' + esc(txType(t.type)) + "</span>" },
+    // rant 2026-08-22T17:21:39 需求 2：新增「用户」列（transactions.user_id JOIN users 取用户名）
+    { key: "user", title: () => T("tx.col.user"), sort: "string", filter: "text" },
     { key: "model", title: () => T("tx.col.model"), sort: "string", filter: "text" },
-    { key: "key", title: () => T("tx.col.key"), sort: "string", filter: "text" },
+    // rant 2026-08-22T17:21:39 需求 2：Key 列改为显示分发 key 的 name（api_keys.name），而非上游 keys 的 provider/plan
+    { key: "key", title: () => T("tx.col.apiKeyName"), sort: "string", filter: "text" },
     { key: "input", title: () => T("tx.col.input"), sort: "number", align: "num",
       render: (t) => '<span' + t.tokenBrk(T("tx.col.input"), t.inputRaw) + '>' + t.inputTokens + "</span>" },
     { key: "cached", title: () => T("tx.col.cached"), sort: "number", align: "num",
@@ -1287,8 +1290,8 @@
     list = filterRows(list, TX_COLUMNS, txTable.filters); // 与表格可见行一致（含列筛选）
     if (!list.length) { toast(T("tx.export.none"), "info"); return; }
     const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const headers = [T("tx.col.time"), T("tx.col.type"), T("tx.col.model"), T("tx.col.key"), T("tx.col.input"), T("tx.col.cached"), T("tx.col.output"), T("tx.col.tokens"), T("tx.col.pts"), T("tx.col.status")];
-    const lines = list.map((t) => [t.time, txType(t.type), t.model, t.key, t.inputTokens, t.cachedTokens, t.outputTokens, t.tokens, t.pts, txStatus(t.status)].map(cell).join(","));
+    const headers = [T("tx.col.time"), T("tx.col.type"), T("tx.col.user"), T("tx.col.model"), T("tx.col.apiKeyName"), T("tx.col.input"), T("tx.col.cached"), T("tx.col.output"), T("tx.col.tokens"), T("tx.col.pts"), T("tx.col.status")];
+    const lines = list.map((t) => [t.time, txType(t.type), t.user, t.model, t.key, t.inputTokens, t.cachedTokens, t.outputTokens, t.tokens, t.pts, txStatus(t.status)].map(cell).join(","));
     const csv = "\uFEFF" + [headers.join(","), ...lines].join("\r\n"); // UTF-8 BOM，Excel 中文不乱码
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -2529,13 +2532,16 @@
         return ' title="' + esc(label + ": " + exact) + '"';
       };
       // 模型列：consume/earn 显示模型名；无模型（topup/gift 等）显示交易类型说明
-      // Key 列：key_label（note / provider / provider / plan）；无 key 的有类型交易（topup/gift/withdraw）显示交易类型说明，consume/earn 无 key 显示 —
+      // Key 列（rant 2026-08-22T17:21:39 需求 2）：优先分发 key 的 name（api_keys.name）；
+      // 历史行无 api_key_id → 兜底 key_label（note/provider/plan），再兜底交易类型说明
       const model = t.model || txType(t.type);
-      const key = t.key_label || (t.type === "consume" || t.type === "earn" ? "—" : txType(t.type));
+      const key = t.key_name || t.key_label || (t.type === "consume" || t.type === "earn" ? "—" : txType(t.type));
       return {
         id: t.id,
         time: (t.time || "").replace("T", " ").slice(0, 16),
         type: t.type,
+        // 用户列（rant 2026-08-22T17:21:39 需求 2）：transactions.user_id JOIN users 取用户名
+        user: t.user_name || "—",
         model,
         key,
         detail: t.model ? "消费 · " + t.model : "交易",

@@ -189,12 +189,17 @@ pub async fn transactions(
     list_binds.push(rusqlite::types::Value::Integer(page_size as i64));
     list_binds.push(rusqlite::types::Value::Integer(offset as i64));
     let list_sql = format!(
-        "SELECT t.id, t.counterpart, t.key_id, t.model, t.tokens, t.cached_tokens, t.output_tokens, \
+        "SELECT t.id, t.counterpart, t.key_id, t.api_key_id, t.model, t.tokens, t.cached_tokens, t.output_tokens, \
                 t.pts, t.type, t.status, t.time, \
                 CASE WHEN k.note <> '' THEN k.note \
                      WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
-                     ELSE k.provider END AS key_label \
-         FROM transactions t LEFT JOIN keys k ON k.id = t.key_id \
+                     ELSE k.provider END AS key_label, \
+                u.name AS user_name, \
+                ak.name AS key_name \
+         FROM transactions t \
+         LEFT JOIN keys k ON k.id = t.key_id \
+         LEFT JOIN users u ON u.id = t.user_id \
+         LEFT JOIN api_keys ak ON ak.id = t.api_key_id \
          WHERE {list_where} \
          ORDER BY t.id DESC LIMIT ?{} OFFSET ?{}",
         n + 1,
@@ -203,25 +208,28 @@ pub async fn transactions(
     let mut stmt = conn.prepare(&list_sql).map_err(internal)?;
     let rows: Vec<serde_json::Value> = stmt
         .query_map(params_from_iter(list_binds.iter()), |r| {
-            let time: String = r.get(10)?;
-            let tokens: f64 = r.get(4)?;
-            let cached: f64 = r.get(5)?;
-            let output: f64 = r.get(6)?;
+            let time: String = r.get(11)?;
+            let tokens: f64 = r.get(5)?;
+            let cached: f64 = r.get(6)?;
+            let output: f64 = r.get(7)?;
             let input = tokens - cached - output;
             Ok(serde_json::json!({
                 "id": r.get::<_, i64>(0)?,
                 "counterpart": r.get::<_, String>(1)?,
                 "key_id": r.get::<_, Option<i64>>(2)?,
-                "model": r.get::<_, String>(3)?,
+                "api_key_id": r.get::<_, Option<i64>>(3)?,
+                "model": r.get::<_, String>(4)?,
                 "tokens": tokens,
                 "input_tokens": input,
                 "cached_tokens": cached,
                 "output_tokens": output,
-                "pts": r.get::<_, f64>(7)?,
-                "type": r.get::<_, String>(8)?,
-                "status": r.get::<_, String>(9)?,
+                "pts": r.get::<_, f64>(8)?,
+                "type": r.get::<_, String>(9)?,
+                "status": r.get::<_, String>(10)?,
                 "time": crate::dao::utc_iso(&time),
-                "key_label": r.get::<_, Option<String>>(11)?,
+                "key_label": r.get::<_, Option<String>>(12)?,
+                "user_name": r.get::<_, Option<String>>(13)?,
+                "key_name": r.get::<_, Option<String>>(14)?,
             }))
         })
         .map_err(internal)?
@@ -641,6 +649,76 @@ mod tests {
             topup["key_label"].is_null(),
             "无 key 交易 key_label 为 null: {topup}"
         );
+    }
+
+    #[tokio::test]
+    async fn transactions_user_and_api_key_name() {
+        // rant 2026-08-22T17:21:39 需求 2：/api/transactions 每行返回
+        // user_name（transactions.user_id JOIN users）+ key_name（api_key_id JOIN api_keys）；
+        // 历史行无 api_key_id → key_name null（前端兜底 key_label / 交易类型说明）
+        let st = test_state("txusernm");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            // 登录流程已为 demo 建分发 key（get_or_create_api_key，name 空）——起个名字
+            // （api_keys.name = 设置页用户起的名字）
+            conn.execute(
+                "UPDATE api_keys SET name = '我的测试key' WHERE user_id = 1",
+                [],
+            )
+            .unwrap();
+            let ak_id: i64 = conn
+                .query_row("SELECT id FROM api_keys WHERE user_id = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            // 上游 key 为 seed_test_users 种子行（id=1：deepseek / deepseek-paygo，note 空）
+            // 新行：带 api_key_id → key_name = api_keys.name
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, api_key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
+                 VALUES (1, '2', 1, ?1, 'deepseek-v4-flash', 1000, 200.0, 100.0, 0.5, 'consume', '成功')",
+                rusqlite::params![ak_id],
+            )
+            .unwrap();
+            // 历史行：无 api_key_id → key_name null，key_label 兜底
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, '2', 1, 'deepseek-v4-flash', 500, 0.3, 'consume', '成功')",
+                [],
+            )
+            .unwrap();
+        }
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=all&page=1&page_size=10",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let items = v["items"].as_array().unwrap();
+        let named = items
+            .iter()
+            .find(|i| i["tokens"] == 1000.0)
+            .expect("新行 found")
+            .clone();
+        assert_eq!(named["user_name"], "demo", "用户列 = users.name: {named}");
+        assert_eq!(
+            named["key_name"], "我的测试key",
+            "Key 列 = api_keys.name: {named}"
+        );
+        assert_eq!(named["key_label"], "deepseek / deepseek-paygo");
+        let legacy = items
+            .iter()
+            .find(|i| i["tokens"] == 500.0)
+            .expect("历史行 found")
+            .clone();
+        assert_eq!(legacy["user_name"], "demo");
+        assert!(
+            legacy["key_name"].is_null(),
+            "历史行 key_name 为 null: {legacy}"
+        );
+        assert_eq!(legacy["key_label"], "deepseek / deepseek-paygo");
     }
 
     #[tokio::test]
