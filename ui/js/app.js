@@ -1174,13 +1174,13 @@
     { key: "model", title: () => T("tx.col.model"), sort: "string", filter: "text" },
     { key: "key", title: () => T("tx.col.key"), sort: "string", filter: "text" },
     { key: "input", title: () => T("tx.col.input"), sort: "number", filter: "number-range", align: "num",
-      render: (t) => t.inputTokens },
+      render: (t) => '<span' + t.tokenBrk(T("tx.col.input"), t.inputRaw) + '>' + t.inputTokens + "</span>" },
     { key: "cached", title: () => T("tx.col.cached"), sort: "number", filter: "number-range", align: "num",
-      render: (t) => t.cachedTokens },
+      render: (t) => '<span' + t.tokenBrk(T("tx.col.cached"), t.cachedRaw) + '>' + t.cachedTokens + "</span>" },
     { key: "output", title: () => T("tx.col.output"), sort: "number", filter: "number-range", align: "num",
-      render: (t) => t.outputTokens },
+      render: (t) => '<span' + t.tokenBrk(T("tx.col.output"), t.outputRaw) + '>' + t.outputTokens + "</span>" },
     { key: "tokens", title: () => T("tx.col.tokens"), sort: "number", filter: "number-range", align: "num",
-      render: (t) => t.tokens },
+      render: (t) => '<span' + t.tokenBrk(T("tx.col.tokens"), t.tokensRaw) + '>' + t.tokens + "</span>" },
     { key: "pts", title: () => T("tx.col.pts"), sort: "number", filter: "number-range", align: "num",
       render: (t) => '<span style="color:' + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ';font-weight:600">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span>" },
     { key: "status", title: () => T("tx.col.status"), sort: "string", filter: "select",
@@ -2472,21 +2472,33 @@
   }
 
   // 后端 transactions items → 视图行（模型 / Key 两列 + Token 四列平铺；rant 2026-08-22T06:36:54/06:37:50/06:39:04）
-  const fmtTokens = (n) => (typeof n === "number" && n > 0 ? (n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : String(Math.round(n))) : "0");
+  // rant 2026-08-22T08:58:54：Token 数字加 K/M 缩写，悬停显示精确值
+  const fmtTokens = (n) => {
+    if (typeof n !== "number" || !(n > 0)) return "0";
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "K";
+    return String(Math.round(n));
+  };
+  const fmtTokensExact = (n) => (typeof n === "number" ? String(Math.round(n)) : "0");
   function txsToView(items) {
     return items.map((t) => {
       let tokens = "—";
       if (typeof t.tokens === "number" && t.tokens > 0) {
-        tokens = t.tokens >= 1e6 ? (t.tokens / 1e6).toFixed(2) + "M" : String(Math.round(t.tokens));
+        tokens = fmtTokens(t.tokens);
       }
       // Token 四列：输入(非缓存) / 缓存 / 输出 / 总；旧记录（cached/output=0）输入=总
       const inputTokens = fmtTokens(typeof t.input_tokens === "number" ? t.input_tokens : null);
       const cachedTokens = fmtTokens(typeof t.cached_tokens === "number" ? t.cached_tokens : null);
       const outputTokens = fmtTokens(typeof t.output_tokens === "number" ? t.output_tokens : null);
+      // 悬停显示精确值（K/M 缩写下的全量）
+      const brkTitle = (label, v) => {
+        const exact = typeof v === "number" && v > 0 ? fmtTokensExact(v) : "0";
+        return ' title="' + esc(label + ": " + exact) + '"';
+      };
       // 模型列：consume/earn 显示模型名；无模型（topup/gift 等）显示交易类型说明
-      // Key 列：key_label（note / provider / provider / plan）；无 key → —
+      // Key 列：key_label（note / provider / provider / plan）；无 key 的有类型交易（topup/gift/withdraw）显示交易类型说明，consume/earn 无 key 显示 —
       const model = t.model || txType(t.type);
-      const key = t.key_label || "—";
+      const key = t.key_label || (t.type === "consume" || t.type === "earn" ? "—" : txType(t.type));
       return {
         id: t.id,
         time: (t.time || "").replace("T", " ").slice(0, 16),
@@ -2495,9 +2507,14 @@
         key,
         detail: t.model ? "消费 · " + t.model : "交易",
         tokens,
+        tokensRaw: typeof t.tokens === "number" ? t.tokens : null,
         inputTokens,
+        inputRaw: typeof t.input_tokens === "number" ? t.input_tokens : null,
         cachedTokens,
+        cachedRaw: typeof t.cached_tokens === "number" ? t.cached_tokens : null,
         outputTokens,
+        outputRaw: typeof t.output_tokens === "number" ? t.output_tokens : null,
+        tokenBrk: brkTitle,
         pts: t.pts,
         status: t.status || "成功",
       };
