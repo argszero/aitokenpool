@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AITokenPool</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234ecdc4'/%3E%3Cstop offset='1' stop-color='%232a9d8f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Ctext x='32' y='43' font-family='-apple-system,Segoe UI,Arial,sans-serif' font-size='30' font-weight='800' text-anchor='middle' fill='%23062021'%3EAT%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="css/style.css?v=20260822-5">
+<link rel="stylesheet" href="css/style.css?v=20260822-6">
 </head>
 <body>
 
@@ -337,6 +337,15 @@
         <button class="tab" data-tx-tab="earn" data-i18n="tx.tab.earn">收益</button>
       </div>
       <div class="toolbar" style="justify-content:flex-end">
+        <select id="tx-range" class="th-filter" data-i18n-title="tx.range.title" title="时间范围">
+          <option value="24h" data-i18n="tx.range.24h">最近 24 小时</option>
+          <option value="7d" data-i18n="tx.range.7d">最近 7 天</option>
+          <option value="30d" data-i18n="tx.range.30d">最近 30 天</option>
+          <option value="all" data-i18n="tx.range.all">全部时间</option>
+          <option value="custom" data-i18n="tx.range.custom">自定义</option>
+        </select>
+        <input type="datetime-local" id="tx-range-start" class="tx-range-input" style="display:none" data-i18n-title="tx.range.start" title="开始时间">
+        <input type="datetime-local" id="tx-range-end" class="tx-range-input" style="display:none" data-i18n-title="tx.range.end" title="结束时间">
         <button type="button" class="btn btn-ghost" id="tx-export-btn" data-i18n-title="tx.export.title" data-i18n="tx.export" title="导出当前筛选的交易记录为 CSV">导出 CSV</button>
       </div>
       <div class="card">
@@ -673,9 +682,9 @@
   </div>
 </div>
 
-<script src="js/api.js?v=20260822-5"></script>
-<script src="js/data.js?v=20260822-5"></script>
-<script src="js/i18n.js?v=20260822-5"></script>
-<script src="js/app.js?v=20260822-5"></script>
+<script src="js/api.js?v=20260822-6"></script>
+<script src="js/data.js?v=20260822-6"></script>
+<script src="js/i18n.js?v=20260822-6"></script>
+<script src="js/app.js?v=20260822-6"></script>
 </body>
 </html>

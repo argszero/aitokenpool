@@ -7,7 +7,7 @@
 
 use axum::extract::{Query, State};
 use axum::Json;
-use rusqlite::params;
+use rusqlite::params_from_iter;
 use serde::Deserialize;
 
 use crate::dao;
@@ -57,6 +57,48 @@ pub struct TxQuery {
     pub page: u32,
     #[serde(default = "default_page_size")]
     pub page_size: u32,
+    /// 起始时间（ISO 8601，UTC，SQLite 可解析），time >= start；缺省不限
+    pub start: Option<String>,
+    /// 结束时间（ISO 8601，UTC，SQLite 可解析），time < end；缺省不限
+    pub end: Option<String>,
+}
+
+/// 构建 transactions 查询条件与绑定参数。
+/// 参数顺序固定：user_id → type → start → end（存在的才加入，占位符序号递增）。
+/// `prefix` 非空时列名加前缀（如 "t"），供带 JOIN 的列表查询使用。
+fn tx_where(
+    prefix: &str,
+    user_id: i64,
+    type_filter: &Option<String>,
+    start: &Option<String>,
+    end: &Option<String>,
+) -> (String, Vec<rusqlite::types::Value>) {
+    let col = |c: &str| {
+        if prefix.is_empty() {
+            c.to_string()
+        } else {
+            format!("{prefix}.{c}")
+        }
+    };
+    let mut conds: Vec<String> = Vec::new();
+    let mut binds: Vec<rusqlite::types::Value> = Vec::new();
+    conds.push(format!("{} = ?1", col("user_id")));
+    binds.push(rusqlite::types::Value::Integer(user_id));
+    if let Some(t) = type_filter {
+        conds.push(format!("{} = ?{}", col("type"), binds.len() + 1));
+        binds.push(rusqlite::types::Value::Text(t.clone()));
+    }
+    // 库内 time 为 datetime('now')（UTC "YYYY-MM-DD HH:MM:SS"），
+    // 前端传 ISO 8601（RFC3339）由 handler 用 chrono 规范化为同格式后再比较（字符串序 = 时间序）。
+    for (c, v) in [(start, ">="), (end, "<")] {
+        if let Some(s) = c {
+            if !s.trim().is_empty() {
+                conds.push(format!("{} {v} ?{}", col("time"), binds.len() + 1));
+                binds.push(rusqlite::types::Value::Text(s.trim().to_string()));
+            }
+        }
+    }
+    (conds.join(" AND "), binds)
 }
 
 fn default_page() -> u32 {
@@ -87,10 +129,29 @@ pub async fn transactions(
         }
     };
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    // 汇总（rant 2026-08-22T00:04:21/00:07:08）：全量 SQL 聚合（不依赖分页），按当前 type 筛选；
-    // 口径 = income 白名单（earn/topup/gift）为正、consume 为负；token 统计同口径。
-    let summary: serde_json::Value = {
-        let sql = "SELECT \
+    // start/end（rant 2026-08-22T10:50:00）：RFC3339/ISO 8601 → 规范化为 UTC "YYYY-MM-DD HH:MM:SS"
+    // （与库内 datetime('now') 一致，字符串比较即时间比较）；非法格式 400。
+    let norm = |s: &Option<String>| -> Result<Option<String>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+        match s {
+            None => Ok(None),
+            Some(v) if v.trim().is_empty() => Ok(None),
+            Some(v) => chrono::DateTime::parse_from_rfc3339(v.trim())
+                .map(|dt| Some(dt.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S").to_string()))
+                .map_err(|_| {
+                    (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({ "error": "时间参数需为 ISO 8601（RFC3339），如 2026-08-22T00:00:00Z" })),
+                    )
+                }),
+        }
+    };
+    let start = norm(&q.start)?;
+    let end = norm(&q.end)?;
+    // 汇总（rant 2026-08-22T00:04:21/00:07:08）：全量 SQL 聚合（不依赖分页），
+    // 按当前 type + 时间段筛选；口径 = income 白名单（earn/topup/gift）为正、consume 为负。
+    let (where_sql, where_binds) = tx_where("", auth.user_id, &type_filter, &start, &end);
+    let summary_sql = format!(
+        "SELECT \
             COALESCE(SUM(CASE WHEN type IN ('earn','topup','gift') THEN pts ELSE 0 END), 0), \
             COALESCE(SUM(CASE WHEN type = 'consume' THEN pts ELSE 0 END), 0), \
             COALESCE(SUM(CASE WHEN type IN ('earn','topup','gift') THEN pts ELSE -pts END), 0), \
@@ -98,139 +159,74 @@ pub async fn transactions(
             COALESCE(SUM(tokens - cached_tokens - output_tokens), 0), \
             COALESCE(SUM(cached_tokens), 0), \
             COALESCE(SUM(output_tokens), 0) \
-            FROM transactions WHERE user_id = ?1";
-        match &type_filter {
-            Some(t) => conn
-                .query_row(
-                    &format!("{sql} AND type = ?2"),
-                    params![auth.user_id, t],
-                    |r| {
-                        Ok(serde_json::json!({
-                            "income_pts": r.get::<_, f64>(0)?,
-                            "expense_pts": r.get::<_, f64>(1)?,
-                            "net_pts": r.get::<_, f64>(2)?,
-                            "tokens": r.get::<_, f64>(3)?,
-                            "input_tokens": r.get::<_, f64>(4)?,
-                            "cached_tokens": r.get::<_, f64>(5)?,
-                            "output_tokens": r.get::<_, f64>(6)?,
-                        }))
-                    },
-                )
-                .map_err(internal)?,
-            None => conn
-                .query_row(sql, [auth.user_id], |r| {
-                    Ok(serde_json::json!({
-                        "income_pts": r.get::<_, f64>(0)?,
-                        "expense_pts": r.get::<_, f64>(1)?,
-                        "net_pts": r.get::<_, f64>(2)?,
-                        "tokens": r.get::<_, f64>(3)?,
-                        "input_tokens": r.get::<_, f64>(4)?,
-                        "cached_tokens": r.get::<_, f64>(5)?,
-                        "output_tokens": r.get::<_, f64>(6)?,
-                    }))
-                })
-                .map_err(internal)?,
-        }
-    };
-    let total: i64 = match &type_filter {
-        Some(t) => conn
-            .query_row(
-                "SELECT COUNT(*) FROM transactions WHERE user_id = ?1 AND type = ?2",
-                params![auth.user_id, t],
-                |r| r.get(0),
-            )
-            .unwrap_or(0),
-        None => conn
-            .query_row(
-                "SELECT COUNT(*) FROM transactions WHERE user_id = ?1",
-                [auth.user_id],
-                |r| r.get(0),
-            )
-            .unwrap_or(0),
-    };
+            FROM transactions WHERE {where_sql}"
+    );
+    let summary: serde_json::Value = conn
+        .query_row(&summary_sql, params_from_iter(where_binds.iter()), |r| {
+            Ok(serde_json::json!({
+                "income_pts": r.get::<_, f64>(0)?,
+                "expense_pts": r.get::<_, f64>(1)?,
+                "net_pts": r.get::<_, f64>(2)?,
+                "tokens": r.get::<_, f64>(3)?,
+                "input_tokens": r.get::<_, f64>(4)?,
+                "cached_tokens": r.get::<_, f64>(5)?,
+                "output_tokens": r.get::<_, f64>(6)?,
+            }))
+        })
+        .map_err(internal)?;
+    let total: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM transactions WHERE {where_sql}"),
+            params_from_iter(where_binds.iter()),
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     let offset = (page - 1) * page_size;
     // rant 2026-08-22T06:36:54/06:37:50：模型/Key 列 — 补 key_label（JOIN keys：
     // note 非空用 note，否则 provider / plan，plan 空则仅 provider；key 已删 → NULL）
-    let mut stmt = match &type_filter {
-        Some(_) => conn
-            .prepare(
-                "SELECT t.id, t.counterpart, t.key_id, t.model, t.tokens, t.cached_tokens, t.output_tokens, \
-                        t.pts, t.type, t.status, t.time, \
-                        CASE WHEN k.note <> '' THEN k.note \
-                             WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
-                             ELSE k.provider END AS key_label \
-                 FROM transactions t LEFT JOIN keys k ON k.id = t.key_id \
-                 WHERE t.user_id = ?1 AND t.type = ?2 \
-                 ORDER BY t.id DESC LIMIT ?3 OFFSET ?4",
-            )
-            .map_err(internal)?,
-        None => conn
-            .prepare(
-                "SELECT t.id, t.counterpart, t.key_id, t.model, t.tokens, t.cached_tokens, t.output_tokens, \
-                        t.pts, t.type, t.status, t.time, \
-                        CASE WHEN k.note <> '' THEN k.note \
-                             WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
-                             ELSE k.provider END AS key_label \
-                 FROM transactions t LEFT JOIN keys k ON k.id = t.key_id \
-                 WHERE t.user_id = ?1 \
-                 ORDER BY t.id DESC LIMIT ?2 OFFSET ?3",
-            )
-            .map_err(internal)?,
-    };
-    let rows: Vec<serde_json::Value> = match &type_filter {
-        Some(t) => stmt
-            .query_map(params![auth.user_id, t, page_size, offset], |r| {
-                let time: String = r.get(10)?;
-                let tokens: f64 = r.get(4)?;
-                let cached: f64 = r.get(5)?;
-                let output: f64 = r.get(6)?;
-                let input = tokens - cached - output;
-                Ok(serde_json::json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "counterpart": r.get::<_, String>(1)?,
-                    "key_id": r.get::<_, Option<i64>>(2)?,
-                    "model": r.get::<_, String>(3)?,
-                    "tokens": tokens,
-                    "input_tokens": input,
-                    "cached_tokens": cached,
-                    "output_tokens": output,
-                    "pts": r.get::<_, f64>(7)?,
-                    "type": r.get::<_, String>(8)?,
-                    "status": r.get::<_, String>(9)?,
-                    "time": crate::dao::utc_iso(&time),
-                    "key_label": r.get::<_, Option<String>>(11)?,
-                }))
-            })
-            .map_err(internal)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(internal)?,
-        None => stmt
-            .query_map(params![auth.user_id, page_size, offset], |r| {
-                let time: String = r.get(10)?;
-                let tokens: f64 = r.get(4)?;
-                let cached: f64 = r.get(5)?;
-                let output: f64 = r.get(6)?;
-                let input = tokens - cached - output;
-                Ok(serde_json::json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "counterpart": r.get::<_, String>(1)?,
-                    "key_id": r.get::<_, Option<i64>>(2)?,
-                    "model": r.get::<_, String>(3)?,
-                    "tokens": tokens,
-                    "input_tokens": input,
-                    "cached_tokens": cached,
-                    "output_tokens": output,
-                    "pts": r.get::<_, f64>(7)?,
-                    "type": r.get::<_, String>(8)?,
-                    "status": r.get::<_, String>(9)?,
-                    "time": crate::dao::utc_iso(&time),
-                    "key_label": r.get::<_, Option<String>>(11)?,
-                }))
-            })
-            .map_err(internal)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(internal)?,
-    };
+    let (list_where, mut list_binds) = tx_where("t", auth.user_id, &type_filter, &start, &end);
+    let n = list_binds.len();
+    list_binds.push(rusqlite::types::Value::Integer(page_size as i64));
+    list_binds.push(rusqlite::types::Value::Integer(offset as i64));
+    let list_sql = format!(
+        "SELECT t.id, t.counterpart, t.key_id, t.model, t.tokens, t.cached_tokens, t.output_tokens, \
+                t.pts, t.type, t.status, t.time, \
+                CASE WHEN k.note <> '' THEN k.note \
+                     WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
+                     ELSE k.provider END AS key_label \
+         FROM transactions t LEFT JOIN keys k ON k.id = t.key_id \
+         WHERE {list_where} \
+         ORDER BY t.id DESC LIMIT ?{} OFFSET ?{}",
+        n + 1,
+        n + 2
+    );
+    let mut stmt = conn.prepare(&list_sql).map_err(internal)?;
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map(params_from_iter(list_binds.iter()), |r| {
+            let time: String = r.get(10)?;
+            let tokens: f64 = r.get(4)?;
+            let cached: f64 = r.get(5)?;
+            let output: f64 = r.get(6)?;
+            let input = tokens - cached - output;
+            Ok(serde_json::json!({
+                "id": r.get::<_, i64>(0)?,
+                "counterpart": r.get::<_, String>(1)?,
+                "key_id": r.get::<_, Option<i64>>(2)?,
+                "model": r.get::<_, String>(3)?,
+                "tokens": tokens,
+                "input_tokens": input,
+                "cached_tokens": cached,
+                "output_tokens": output,
+                "pts": r.get::<_, f64>(7)?,
+                "type": r.get::<_, String>(8)?,
+                "status": r.get::<_, String>(9)?,
+                "time": crate::dao::utc_iso(&time),
+                "key_label": r.get::<_, Option<String>>(11)?,
+            }))
+        })
+        .map_err(internal)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(internal)?;
     Ok(Json(serde_json::json!({
         "items": rows,
         "total": total,
@@ -487,6 +483,99 @@ mod tests {
         assert!(
             (net - 2000.5).abs() < 1e-9,
             "dashboard net 应含 topup+gift 为正（=2000.5，实际 {net}）"
+        );
+    }
+
+    #[tokio::test]
+    async fn transactions_time_range_filter() {
+        // rant 2026-08-22T10:50:00：start/end 时间段过滤（列表 + summary 联动）
+        let st = test_state("txrange");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, model, tokens, pts, type, status, time) \
+                 VALUES (1, 'old', 'm', 0, 5.0, 'consume', '成功', datetime('now', '-3 days'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, model, tokens, pts, type, status) \
+                 VALUES (1, 'new', 'm', 0, 2.0, 'consume', '成功')",
+                [],
+            )
+            .unwrap();
+        }
+        let now = chrono::Utc::now();
+        // 注意：query string 中 "+" 会被解码为空格，故测试用 Z 结尾格式（前端 encodeURIComponent 无此问题）
+        let z = |d: chrono::Duration| (now - d).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let start_2d = z(chrono::Duration::hours(48));
+        let end_1d = z(chrono::Duration::hours(24));
+        let has_pts = |items: &serde_json::Value, pts: f64| {
+            items
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|it| (it["pts"].as_f64().unwrap_or(0.0) - pts).abs() < 1e-9)
+        };
+        let sum_of = |v: &serde_json::Value| -> f64 {
+            v["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|it| it["pts"].as_f64().unwrap())
+                .sum()
+        };
+        // start = 2 天前 → 含今天的记录（2.0），不含 3 天前（5.0）
+        let (s, body) = get(
+            st.clone(),
+            &format!("/api/transactions?type=consume&start={start_2d}"),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(has_pts(&v["items"], 2.0), "start 过滤应含今天记录: {body}");
+        assert!(
+            !has_pts(&v["items"], 5.0),
+            "start 过滤应排除 3 天前: {body}"
+        );
+        // summary 与列表同区间联动（start 过滤后 expense_pts = 区间内列表 pts 之和）
+        assert!(
+            (v["summary"]["expense_pts"].as_f64().unwrap() - sum_of(&v)).abs() < 1e-9,
+            "summary 应随 start 时间段联动: {body}"
+        );
+        // end = 1 天前 → 含 3 天前（5.0），不含今天（2.0）
+        let (s, body) = get(
+            st.clone(),
+            &format!("/api/transactions?type=consume&end={end_1d}"),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(has_pts(&v["items"], 5.0), "end 过滤应含 3 天前: {body}");
+        assert!(!has_pts(&v["items"], 2.0), "end 过滤应排除今天: {body}");
+        assert!(
+            (v["summary"]["expense_pts"].as_f64().unwrap() - sum_of(&v)).abs() < 1e-9,
+            "summary 应随 end 时间段联动: {body}"
+        );
+        // start+end 窄区间（now-49h ~ now-47h）：显式插入的两条都不在区间
+        let (s, body) = get(
+            st.clone(),
+            &format!(
+                "/api/transactions?type=consume&start={}&end={}",
+                z(chrono::Duration::hours(49)),
+                z(chrono::Duration::hours(47))
+            ),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            !has_pts(&v["items"], 5.0) && !has_pts(&v["items"], 2.0),
+            "窄区间不应含显式插入的两条: {body}"
         );
     }
 

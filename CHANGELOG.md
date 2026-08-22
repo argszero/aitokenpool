@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.8 (2026-08-22)
+
+- **Transaction-table filter row fix** — filter row no longer stretches to 236px (constrained to ~48px via fixed-height/th-top-aligned filter inputs); the four token columns (input/cached/output/tokens) drop their number-range filters, keeping sort and right-align (rants 2026-08-22T10:11:48/10:12:57)
+
 ## v0.7.7 (2026-08-22)
 
 - **Transaction-page UE/UI** — token columns use K/M abbreviation with exact-value hover tooltip; summary bar values right-aligned; Key column shows a transaction-type label for non-keyed rows (topup/gift/withdraw) instead of a bare dash (rant 2026-08-22T08:58:54)
