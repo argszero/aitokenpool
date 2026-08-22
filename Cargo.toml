@@ -1,6 +1,6 @@
 [package]
 name = "aitokenpool"
-version = "0.7.6"
+version = "0.7.7"
 edition = "2021"
 description = "AI Token 共享池 — 企业 key 池 + 公共共享市场"
 license = "MIT"
