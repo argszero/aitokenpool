@@ -320,7 +320,7 @@ select.input option { background: var(--bg-card); }
 
 /* 交易汇总条（rant 20:39:30 B：紧凑 inline 条，随 tab/筛选联动） */
 .tx-summary { display: flex; flex-wrap: wrap; gap: 28px; padding: 12px 16px 10px; border-bottom: 1px solid var(--border); }
-.tx-summary .ts-item { display: flex; flex-direction: column; gap: 2px; }
+.tx-summary .ts-item { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
 .tx-summary .ts-label { color: var(--text-mute); font-size: 12px; }
 .tx-summary .ts-value { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .tx-summary .ts-value.ok { color: var(--ok); }
