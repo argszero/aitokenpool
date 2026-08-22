@@ -501,7 +501,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/me", get(me))
         .route("/api/config", get(config))
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))
-        .route("/api/api-keys/:id", axum::routing::delete(api_keys::remove))
+        .route(
+            "/api/api-keys/:id",
+            axum::routing::delete(api_keys::remove).patch(api_keys::rename),
+        )
         .route("/v1/chat/completions", post(gateway::chat_completions))
         .route("/anthropic/v1/messages", post(gateway::anthropic_messages))
         .route("/v1/responses", post(gateway::responses))
@@ -714,8 +717,14 @@ mod tests {
         .await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let bearer = v["api_key"].as_str().unwrap().to_string();
-        // POST 生成
-        let (s, body) = post(st.clone(), "/api/api-keys", "{}", Some(&bearer)).await;
+        // POST 生成（rant 2026-08-22T17:21:39：create 须接收 {name} 并持久化）
+        let (s, body) = post(
+            st.clone(),
+            "/api/api-keys",
+            r#"{"name":"我的测试Key"}"#,
+            Some(&bearer),
+        )
+        .await;
         assert_eq!(s, StatusCode::OK, "有效 Bearer 生成 key: {body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let new_key = v["api_key"].as_str().unwrap();
@@ -725,6 +734,10 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
         assert!(arr.len() >= 2, "列表含登录 key + 新生成 key");
+        assert!(
+            arr.iter().any(|k| k["name"] == "我的测试Key"),
+            "创建时传入的 name 已持久化入列表"
+        );
         assert!(
             arr.iter()
                 .all(|k| k["key"].as_str().unwrap().contains("****")),
@@ -791,6 +804,66 @@ mod tests {
         // 再删 → 404（已撤销）
         let (s, _) = del(st, &format!("/api/api-keys/{new_id}"), Some(&demo_bearer)).await;
         assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn api_key_rename_owner_only() {
+        let st = test_state("keyrename");
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        // 生成带名字的 key → 拿到 id
+        let (_, body) = post(
+            st.clone(),
+            "/api/api-keys",
+            r#"{"name":"原名"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["api_key"].is_string());
+        let (_, body) = get(st.clone(), "/api/api-keys", Some(&demo_bearer)).await;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        let new_id = arr[0]["id"].as_i64().expect("有 id");
+        assert_eq!(arr[0]["name"], "原名", "创建名字已入库");
+        // 属主改名 → 200，列表持久化
+        let (s, body) = patch(
+            st.clone(),
+            &format!("/api/api-keys/{new_id}"),
+            r#"{"name":"新名"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "属主改名应 200: {body}");
+        let (_, body) = get(st.clone(), "/api/api-keys", Some(&demo_bearer)).await;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(arr[0]["name"], "新名", "改名持久化，刷新后仍为新名");
+        // 非属主改名 → 404（admin 改 demo 的 key）
+        let admin_bearer = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        let (s, _) = patch(
+            st.clone(),
+            &format!("/api/api-keys/{new_id}"),
+            r#"{"name":"越权"}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "非属主改名应 404");
+        // 撤销后再改名 → 404
+        let (_, body) = del(
+            st.clone(),
+            &format!("/api/api-keys/{new_id}"),
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["status"],
+            "revoked"
+        );
+        let (s, _) = patch(
+            st,
+            &format!("/api/api-keys/{new_id}"),
+            r#"{"name":"复活"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "已撤销 key 改名应 404");
     }
 
     /// 登录并返回 Bearer
