@@ -1,5 +1,7 @@
 # AITokenPool — AI Token 共享池
 
+[English](README.en.md) | [简体中文](README.md)
+
 > **不要让 token plan 白白浪费。**
 > 订阅了 Claude / ChatGPT / GLM / DeepSeek 的额度用不完？共享出去赚点数，需要时也能用别人的。
 
@@ -64,6 +66,10 @@ OpenAI 兼容网关端点：`POST /v1/chat/completions`、`POST /v1/responses`�
 | [docs/plan-api-matrix.md](docs/plan-api-matrix.md) | 套餐与 API 矩阵 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本历史 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 |
+
+## Powered by EMRG
+
+本项目由 [EMRG](https://emrg.ai)（演化式多实例系统）驱动开发——需求以 rant 形式提交，由 EMRG 自动实现、测试并提交 PR，人工评审后合入。
 
 ## License
 

@@ -1,5 +1,7 @@
 # AITokenPool — Shared AI Token Pool
 
+[English](README.en.md) | [简体中文](README.md)
+
 > **Don't let your token plan go to waste.**
 > Subscribed to Claude / ChatGPT / GLM / DeepSeek and can't use it all? Share your quota to earn points — and spend them on models from others when you need to.
 
@@ -64,6 +66,10 @@ OpenAI-compatible endpoints: `POST /v1/chat/completions`, `POST /v1/responses`, 
 | [docs/plan-api-matrix.md](docs/plan-api-matrix.md) | Plans & API matrix |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guide |
+
+## Powered by EMRG
+
+This project is developed by [EMRG](https://emrg.ai) (Evolutionary Multi-instance Reasoning System) — requirements are filed as rants, and EMRG implements, tests, and submits PRs automatically, with human review before merge.
 
 ## License
 
