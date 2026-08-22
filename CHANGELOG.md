@@ -2,6 +2,11 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.9 (2026-08-22)
+
+- **API Key 名称持久化** — `POST /api/api-keys` now stores the submitted name (was hardcoded empty); new `PATCH /api/api-keys/:id` renames a key (owner-only); settings-page rename now calls the API and reloads instead of faking it in memory (rant 2026-08-22T17:21:39)
+- **Transaction table columns** — added a 用户 (user) column (JOIN users) and the api-key name column (api_keys.name via new `api_key_id` on transactions, migration v11 + settle writes); CSV export and i18n updated to match (rant 2026-08-22T17:21:39)
+
 ## v0.7.8 (2026-08-22)
 
 - **Transaction-table filter row fix** — filter row no longer stretches to 236px (constrained to ~48px via fixed-height/th-top-aligned filter inputs); the four token columns (input/cached/output/tokens) drop their number-range filters, keeping sort and right-align (rants 2026-08-22T10:11:48/10:12:57)
