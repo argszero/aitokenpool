@@ -474,6 +474,17 @@ mark {
 .th-filter:focus { border-color: var(--accent); }
 .range-filter { display: flex; gap: 4px; }
 .range-filter .th-filter { min-width: 0; width: 100%; }
+/* 筛选行定高（rant 2026-08-22T10:11:48：select 固有高度在 table-layout:auto 下撑高整行至 236px）：
+   约束各筛选控件的 height / line-height 消除 select 撑高，单元格顶部对齐，整行自然收敛 */
+.table thead tr:last-child th,
+.table thead tr:last-child td {
+  vertical-align: top;
+}
+.table .th-filter,
+.table select.th-filter {
+  height: 28px;
+  line-height: 1;
+}
 .pager-size {
   display: flex;
   align-items: center;
