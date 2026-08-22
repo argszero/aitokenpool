@@ -14,6 +14,9 @@
 
   let activeView = "dashboard";
   let txTab = "all";
+  let txRange = "24h"; // 交易时间段快捷范围：24h / 7d / 30d / all / custom（默认最近 24 小时，rant 2026-08-22T10:50:00）
+  let txCustomStart = ""; // 自定义开始（datetime-local 值，本地时区）
+  let txCustomEnd = ""; // 自定义结束
   let isGuest = false; // 游客模式（US-1：未登录可浏览市场）
   let pendingHashView = null; // URL hash 路由（rant 20:39:30 A）：刷新后登录时恢复上次视图
   let mkExpanded = null; // 市场行展开（rant 20:39:30 F）：当前展开的模型 id，null=全部收起；仅展开当前行
@@ -1246,12 +1249,32 @@
     });
   }
 
-  // P2-B：按 tab 拉取交易（后端分页）
+  // 交易时间段 → start/end 查询参数（UTC ISO，后端 datetime() 解析；默认最近 24 小时）
+  function txRangeParams() {
+    const now = new Date();
+    const MS = (h) => h * 3600 * 1000;
+    let start = null, end = null;
+    if (txRange === "24h") start = new Date(now - MS(24));
+    else if (txRange === "7d") start = new Date(now - MS(24 * 7));
+    else if (txRange === "30d") start = new Date(now - MS(24 * 30));
+    else if (txRange === "custom") {
+      if (txCustomStart) start = new Date(txCustomStart);
+      if (txCustomEnd) end = new Date(txCustomEnd);
+    }
+    const p = [];
+    if (start && !isNaN(start.getTime())) p.push("start=" + encodeURIComponent(start.toISOString()));
+    if (end && !isNaN(end.getTime())) p.push("end=" + encodeURIComponent(end.toISOString()));
+    return p.join("&");
+  }
+
+  // P2-B：按 tab 拉取交易（后端分页；带时间段过滤）
   async function loadTransactions() {
     if (!loggedIn()) return;
     const type = txTab === "all" ? "" : txTab;
+    const range = txRangeParams();
+    const q = "/api/transactions?type=" + type + "&page=1&page_size=100" + (range ? "&" + range : "");
     try {
-      await liveLoad("transactions", "/api/transactions?type=" + type + "&page=1&page_size=100");
+      await liveLoad("transactions", q);
     } catch (e) { Live.transactions = null; /* 登录态降级空态 */ }
     renderTransactions();
   }
@@ -2944,6 +2967,28 @@
     // 交易 Tab（P2-B：切 tab 重新拉后端过滤数据）
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); if (loggedIn()) loadTransactions(); }));
     $("#tx-export-btn").addEventListener("click", exportTxCsv); // 导出 CSV（rant 20:46:57 E）
+
+    // 交易时间段（rant 2026-08-22T10:50:00：快捷范围 + 自定义起止，切换后重载列表与汇总）
+    const txRangeEl = $("#tx-range");
+    const txStartEl = $("#tx-range-start");
+    const txEndEl = $("#tx-range-end");
+    if (txRangeEl && txStartEl && txEndEl) {
+      const showCustom = () => {
+        const custom = txRangeEl.value === "custom";
+        txStartEl.style.display = custom ? "" : "none";
+        txEndEl.style.display = custom ? "" : "none";
+      };
+      txRangeEl.addEventListener("change", () => {
+        txRange = txRangeEl.value;
+        showCustom();
+        txTable.page = 1;
+        renderTransactions();
+        if (loggedIn()) loadTransactions();
+      });
+      txStartEl.addEventListener("change", () => { txCustomStart = txStartEl.value; txTable.page = 1; if (loggedIn()) loadTransactions(); });
+      txEndEl.addEventListener("change", () => { txCustomEnd = txEndEl.value; txTable.page = 1; if (loggedIn()) loadTransactions(); });
+      showCustom();
+    }
 
     // 表格键盘导航（rant 20:46:57 F）：点击行 → 激活高亮，之后 ↑/↓/Enter/Esc 可用
     KBD_TABLE_IDS.forEach((id) => {

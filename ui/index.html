@@ -337,6 +337,15 @@
         <button class="tab" data-tx-tab="earn" data-i18n="tx.tab.earn">收益</button>
       </div>
       <div class="toolbar" style="justify-content:flex-end">
+        <select id="tx-range" class="th-filter" data-i18n-title="tx.range.title" title="时间范围">
+          <option value="24h" data-i18n="tx.range.24h">最近 24 小时</option>
+          <option value="7d" data-i18n="tx.range.7d">最近 7 天</option>
+          <option value="30d" data-i18n="tx.range.30d">最近 30 天</option>
+          <option value="all" data-i18n="tx.range.all">全部时间</option>
+          <option value="custom" data-i18n="tx.range.custom">自定义</option>
+        </select>
+        <input type="datetime-local" id="tx-range-start" class="tx-range-input" style="display:none" data-i18n-title="tx.range.start" title="开始时间">
+        <input type="datetime-local" id="tx-range-end" class="tx-range-input" style="display:none" data-i18n-title="tx.range.end" title="结束时间">
         <button type="button" class="btn btn-ghost" id="tx-export-btn" data-i18n-title="tx.export.title" data-i18n="tx.export" title="导出当前筛选的交易记录为 CSV">导出 CSV</button>
       </div>
       <div class="card">
