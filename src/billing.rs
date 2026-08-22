@@ -167,14 +167,16 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
         rusqlite::params![earn, p.owner_id],
     )?;
 
-    // transactions：consume（消费者）+ earn（分享者），counterpart 记对方
+    // transactions：consume（消费者）+ earn（分享者），counterpart 记对方；
+    // api_key_id 记录分发 key（v11，rant 2026-08-22T17:21:39 需求 2：Key 列显示 api_keys.name）
     tx.execute(
-        "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'consume', '成功')",
+        "INSERT INTO transactions (user_id, counterpart, key_id, api_key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'consume', '成功')",
         rusqlite::params![
             p.consumer_id,
             p.owner_id.to_string(),
             p.key_id,
+            p.api_key_id,
             p.model,
             p.tokens,
             p.cached_tokens,
@@ -183,12 +185,13 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
         ],
     )?;
     tx.execute(
-        "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'earn', '成功')",
+        "INSERT INTO transactions (user_id, counterpart, key_id, api_key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'earn', '成功')",
         rusqlite::params![
             p.owner_id,
             p.consumer_id.to_string(),
             p.key_id,
+            p.api_key_id,
             p.model,
             p.tokens,
             p.cached_tokens,
@@ -473,6 +476,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(t_earn, "earn");
+        // api_key_id 已写入两条 transactions（rant 2026-08-22T17:21:39 需求 2）
+        let ak_consume: Option<i64> = conn
+            .query_row(
+                "SELECT api_key_id FROM transactions WHERE user_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ak_consume, Some(3));
+        let ak_earn: Option<i64> = conn
+            .query_row(
+                "SELECT api_key_id FROM transactions WHERE user_id = 100",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ak_earn, Some(3));
         // usage_records 一条
         let u: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |r| r.get(0))

@@ -294,6 +294,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "output_tokens",
         "output_tokens REAL NOT NULL DEFAULT 0",
     )?;
+    // v11（rant 2026-08-22T17:21:39 需求 2）：交易记录表头重构——
+    // transactions 补 api_key_id（分发 key 关联字段，Key 列显示 api_keys.name；
+    // 历史行无此字段 → NULL，前端兜底走 key_label / 交易类型说明）
+    ensure_column(conn, "transactions", "api_key_id", "api_key_id INTEGER")?;
     // schema_version：INSERT OR REPLACE 保证幂等
     let v: i64 = conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
