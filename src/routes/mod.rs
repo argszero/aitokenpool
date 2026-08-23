@@ -517,6 +517,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/sharings/:id", axum::routing::patch(sharing::patch))
         .route("/api/wallet", get(wallet::wallet))
         .route("/api/transactions", get(wallet::transactions))
+        .route("/api/transactions/trend", get(wallet::transactions_trend))
         .route("/api/dashboard", get(wallet::dashboard))
         // P1：管理员（充值 / 成员列表 / 用量报表）
         .route("/api/admin/credits", post(admin::credits))

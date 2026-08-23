@@ -2,6 +2,14 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.12 (2026-08-23)
+
+- **交易页 UI 改进（rant 2026-08-23T16:01:07）** —
+  - 移除交易列表内 time 列的内部筛选（外部时间段筛选已覆盖，两套并存冗余且易混淆）
+  - 列表上方新增**趋势图**（手写 SVG 折线图，无外部依赖）：新增 `GET /api/transactions/trend`，按时间桶（hour/day/week）聚合收入/支出点数，口径与 summary 一致；趋势图跟随 tab + 时间段筛选联动
+  - **修复统计指标未联动表格内部筛选**：内部筛选（类型/模型/用户/Key 等）变化后，汇总条基于筛选后可见行本地加总（含 Token 总/输入/缓存/输出四指标），无筛选时仍用后端全量 SQL 聚合
+  - **修复筛选输入框逐字符刷新**：`.th-filter` 的 input 事件由立即重建改为 300ms 防抖，刷新后恢复焦点并置光标到末尾（此前输入 "sh" 会因中间刷新变成 "hs"）
+
 ## v0.7.11 (2026-08-23)
 
 - **P0 cache-billing fix (passthrough path)** — PR #128 (v0.7.10) only patched the cross-protocol SSE conversion path; the same-protocol passthrough path (`UsageCapture::finish()` in `src/gateway.rs`, used when client and upstream speak the same protocol, e.g. openai→openai) still passed the **full** `prompt_tokens` as input (including cache-hit tokens) and only recognized OpenAI's `prompt_tokens_details.cached_tokens` spelling — so DeepSeek responses double-counted cached tokens into the total (~2× tokens, per-call uncached showed 241,776 instead of 112). `finish()` now extracts cached via all three spellings (DeepSeek native `prompt_cache_hit_tokens` → OpenAI `prompt_tokens_details.cached_tokens` → Anthropic `cache_read_input_tokens`) and returns `(input − cached).max(0.0)` disjoint, matching the `sse.rs` logic; tests extended with cached cases for all three spellings (rant 2026-08-23T14:05:02, PR #130)

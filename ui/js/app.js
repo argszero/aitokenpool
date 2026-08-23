@@ -1169,7 +1169,8 @@
   const txStatus = (s) => s === "成功" ? T("tx.status.success") : s === "处理中" ? T("tx.status.pending") : s === "入账" ? T("tx.status.credited") : s;
 
   const TX_COLUMNS = [
-    { key: "time", title: () => T("tx.col.time"), sort: "string", filter: "text", render: (t) => timeCell(t.time) },
+    // rant 2026-08-23T16:01:07：列表内移除 time 列筛选（外部 tx-range 已有时间段筛选，两套并存冗余）
+    { key: "time", title: () => T("tx.col.time"), sort: "string", render: (t) => timeCell(t.time) },
     { key: "type", title: () => T("tx.col.type"), sort: "string", filter: "select",
       options: () => ["consume", "earn", "topup", "withdraw", "gift"].map(txType),
       filterVal: (t) => txType(t.type),
@@ -1200,15 +1201,26 @@
   // 附带 Token 统计 总/输入/缓存/输出，M 单位）
   function renderTxSummary(list) {
     const s = (Live.transactions && Live.transactions.summary) ? Live.transactions.summary : null;
-    let income = 0, expense = 0;
-    if (s) {
+    // rant 2026-08-23T16:01:07 Bug 1：统计指标与表格内部筛选联动——
+    // 内部筛选非空时基于筛选后的行本地加总（含 token 口径一致）；无内部筛选才用后端 summary（全量 SQL 聚合）。
+    const hasFilter = Object.keys(txTable.filters).some((k) => txTable.filters[k] !== "");
+    let income = 0, expense = 0, tokens = 0, inputT = 0, cachedT = 0, outputT = 0;
+    if (s && !hasFilter) {
       income = s.income_pts || 0;
       expense = s.expense_pts || 0;
+      tokens = s.tokens || 0;
+      inputT = s.input_tokens || 0;
+      cachedT = s.cached_tokens || 0;
+      outputT = s.output_tokens || 0;
     } else {
-      // 兜底（无 summary 的旧数据/游客 mock）：按 type 而非 pts 符号（rant 00:04:21 Bug A）
+      // 兜底（无 summary 的旧数据/游客 mock / 内部筛选后）：按 type 而非 pts 符号（rant 00:04:21 Bug A）
       list.forEach((t) => {
         if (t.type === "consume") expense += Math.abs(t.pts);
         else income += Math.abs(t.pts);
+        if (typeof t.tokensRaw === "number") tokens += t.tokensRaw;
+        if (typeof t.inputRaw === "number") inputT += t.inputRaw;
+        if (typeof t.cachedRaw === "number") cachedT += t.cachedRaw;
+        if (typeof t.outputRaw === "number") outputT += t.outputRaw;
       });
     }
     const net = income - expense;
@@ -1219,16 +1231,99 @@
       '<div class="ts-item"><span class="ts-label">' + T("tx.summary.income") + "</span><span class='ts-value num ' + cls(income) + '\'>" + fmt(income) + "</span></div>" +
       '<div class="ts-item"><span class="ts-label">' + T("tx.summary.expense") + "</span><span class='ts-value num ' + cls(-expense) + '\'>" + fmt(-expense) + "</span></div>" +
       '<div class="ts-item"><span class="ts-label">' + T("tx.summary.net") + "</span><span class='ts-value num ' + cls(net) + '\'>" + fmt(net) + "</span></div>";
-    // Token 统计（仅后端 summary 提供时显示）：总 / 输入 / 缓存 / 输出
-    if (s) {
-      const t = (k) => fmtM(s[k] || 0);
-      html +=
-        '<div class="ts-item"><span class="ts-label">' + T("tx.summary.tokens") + "</span><span class='ts-value num '>" + t("tokens") + "</span></div>" +
-        '<div class="ts-item"><span class="ts-label">' + T("tx.summary.input") + "</span><span class='ts-value num '>" + t("input_tokens") + "</span></div>" +
-        '<div class="ts-item"><span class="ts-label">' + T("tx.summary.cached") + "</span><span class='ts-value num '>" + t("cached_tokens") + "</span></div>" +
-        '<div class="ts-item"><span class="ts-label">' + T("tx.summary.output") + "</span><span class='ts-value num '>" + t("output_tokens") + "</span></div>";
-    }
+    // Token 统计：总 / 输入 / 缓存 / 输出（后端 summary 或本地筛选后加总均可提供）
+    html +=
+      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.tokens") + "</span><span class='ts-value num '>" + fmtM(tokens) + "</span></div>" +
+      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.input") + "</span><span class='ts-value num '>" + fmtM(inputT) + "</span></div>" +
+      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.cached") + "</span><span class='ts-value num '>" + fmtM(cachedT) + "</span></div>" +
+      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.output") + "</span><span class='ts-value num '>" + fmtM(outputT) + "</span></div>";
     $("#tx-summary").innerHTML = html;
+  }
+
+  // 交易趋势图（rant 2026-08-23T16:01:07 需求 2）：手写 SVG 折线图（无外部依赖），
+  // 数据源 = /api/transactions/trend（跟随 tab + 外部时间段筛选，与 summary 同口径）；
+  // 横轴 = 时间桶（hour/day/week），纵轴 = 点数；收入(绿) / 支出(红) 两条线，点悬停显示精确值。
+  function renderTxTrend() {
+    const el = $("#tx-trend");
+    const tr = (Live.transactions && Live.transactions.trend) ? Live.transactions.trend : null;
+    const buckets = (tr && Array.isArray(tr.buckets)) ? tr.buckets : [];
+    if (!buckets.length) {
+      el.innerHTML = '<div class="tx-trend-empty">' + esc(T("tx.trend.empty")) + "</div>";
+      return;
+    }
+    const bucket = tr.bucket || "day";
+    const income = buckets.map((b) => b.income || 0);
+    const expense = buckets.map((b) => b.expense || 0);
+    const maxV = Math.max(1, ...income, ...expense);
+    const W = 640, H = 170, PL = 46, PR = 12, PT = 12, PB = 24;
+    const iw = W - PL - PR, ih = H - PT - PB;
+    const X = (i) => PL + (buckets.length === 1 ? iw / 2 : iw * i / (buckets.length - 1));
+    const Y = (v) => PT + ih * (1 - v / maxV);
+    const lbl = (b) => bucketLabel(b.t, bucket);
+    const fmt = (n) => (n > 0 ? "+" : "") + D.fmt(n);
+    const fmtShort = (n) => (n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : (n >= 1000 ? Math.round(n / 1000) + "K" : String(Math.round(n))));
+    // 网格 + 纵轴刻度（4 档）
+    let grid = "";
+    for (let g = 0; g <= 4; g++) {
+      const gy = PT + ih * g / 4;
+      grid += '<line class="tx-trend-grid" x1="' + PL + '" y1="' + gy.toFixed(1) + '" x2="' + (W - PR) + '" y2="' + gy.toFixed(1) + '"/>' +
+        '<text class="tx-trend-axis" x="' + (PL - 6) + '" y="' + (gy + 4).toFixed(1) + '" text-anchor="end">' + fmtShort(maxV * (4 - g) / 4) + "</text>";
+    }
+    // 横轴标签：首 / 中 / 尾
+    const idxs = [0, Math.floor((buckets.length - 1) / 2), buckets.length - 1].filter((v, i, a) => a.indexOf(v) === i);
+    let xlabels = "";
+    idxs.forEach((i) => {
+      xlabels += '<text class="tx-trend-axis" x="' + X(i).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="middle">' + esc(lbl(buckets[i])) + "</text>";
+    });
+    // 折线 + 数据点（<title> 悬停显示精确值）
+    const lineHtml = (arr, cls, name) => {
+      let pts = "", dots = "";
+      arr.forEach((v, i) => {
+        const xi = X(i).toFixed(1), yi = Y(v).toFixed(1);
+        pts += (i ? " " : "") + xi + "," + yi;
+        dots += '<circle class="' + cls + '" cx="' + xi + '" cy="' + yi + '" r="2.5"><title>' +
+          esc(lbl(buckets[i]) + " · " + name + " " + fmt(v)) + "</title></circle>";
+      });
+      return '<polyline class="' + cls + '" points="' + pts + '"/>' + dots;
+    };
+    const html =
+      '<div class="tx-trend-title">' + esc(T("tx.trend.title")) + "</div>" +
+      '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(T("tx.trend.title")) + '">' +
+      grid + xlabels +
+      lineHtml(income, "tx-trend-inc", T("tx.summary.income")) +
+      lineHtml(expense, "tx-trend-exp", T("tx.summary.expense")) +
+      "</svg>" +
+      '<div class="tx-trend-legend"><span><i class="tx-trend-dot inc"></i>' + esc(T("tx.summary.income")) + "</span>" +
+      '<span><i class="tx-trend-dot exp"></i>' + esc(T("tx.summary.expense")) + "</span></div>";
+    el.innerHTML = html;
+  }
+
+  // 趋势桶标签：hour → "MM-DD HH:00"；day/week → "MM-DD"（bucket 起点均为 UTC，转本地显示）
+  function bucketLabel(iso, bucket) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    const p = (n) => String(n).padStart(2, "0");
+    const md = p(d.getMonth() + 1) + "-" + p(d.getDate());
+    return bucket === "hour" ? md + " " + p(d.getHours()) + ":00" : md;
+  }
+
+  // 趋势聚合粒度：跟随外部时间段筛选（24h→小时；≤3.5 天→小时；≤60 天→天；其余→周）
+  function txTrendBucket() {
+    if (txRange === "24h") return "hour";
+    if (txRange === "7d") return "day";
+    if (txRange === "30d") return "day";
+    if (txRange === "custom") {
+      const s = txCustomStart ? new Date(txCustomStart) : null;
+      const e = txCustomEnd ? new Date(txCustomEnd) : null;
+      const now = new Date();
+      const from = (s && !isNaN(s.getTime())) ? s : ((e && !isNaN(e.getTime())) ? new Date(e.getTime() - 30 * 86400000) : now);
+      const to = (e && !isNaN(e.getTime())) ? e : now;
+      const days = (to.getTime() - from.getTime()) / 86400000;
+      if (days <= 3.5) return "hour";
+      if (days <= 60) return "day";
+      return "week";
+    }
+    return "week"; // all：跨度过大按周聚合
   }
 
   function renderTransactions() {
@@ -1237,12 +1332,15 @@
     // 加载失败 → 空态 + 重试；游客不可达（导航拦截）
     if (loggedIn() && !Live.transactions) {
       renderTxSummary([]);
+      renderTxTrend();
       $("#tx-table").innerHTML = loadErrorHtml(T("tx.loadFail"), null, T("err.loadFail"));
       return;
     }
     let list = Live.transactions ? txsToView(Live.transactions.items || []) : [];
     // 交易汇总条：与 tab + 列筛选联动，与表格可见行一致（rant 20:39:30 B）
     renderTxSummary(filterRows(list, TX_COLUMNS, txTable.filters));
+    // 趋势图：跟随 tab + 外部时间段（rant 2026-08-23T16:01:07 需求 2）
+    renderTxTrend();
     buildDataTable({
       container: $("#tx-table"),
       columns: TX_COLUMNS,
@@ -1279,6 +1377,12 @@
     try {
       await liveLoad("transactions", q);
     } catch (e) { Live.transactions = null; /* 登录态降级空态 */ }
+    // 趋势图数据（rant 2026-08-23T16:01:07 需求 2）：独立拉取，失败不阻塞列表
+    const bucket = txTrendBucket();
+    try {
+      const trend = await api.get("/api/transactions/trend?type=" + type + "&bucket=" + bucket + (range ? "&" + range : ""));
+      if (Live.transactions) Live.transactions.trend = trend;
+    } catch (e) { if (Live.transactions) Live.transactions.trend = null; }
     renderTransactions();
   }
 
@@ -1489,10 +1593,18 @@
           state.filters[key] = el.value;
         }
         state.page = 1;
+        // rant 2026-08-23T16:01:07 Bug 2：逐字符 input 立即 onState() 重建表格会打断输入
+        // （如想输入 "sh" 变成 "hs"）。改为 300ms 防抖，刷新后恢复焦点并置光标到末尾。
+        if (el._dbTimer) clearTimeout(el._dbTimer);
         const focusSel = range ? '[data-filter-key="' + key + '"][data-range="' + range + '"]' : '[data-filter-key="' + key + '"]';
-        onState();
-        const n = container.querySelector(focusSel);
-        if (n) n.focus();
+        el._dbTimer = setTimeout(() => {
+          onState();
+          const n = container.querySelector(focusSel);
+          if (n) {
+            n.focus();
+            try { n.setSelectionRange(n.value.length, n.value.length); } catch (e) { /* 非 text 元素忽略 */ }
+          }
+        }, 300);
       });
     });
     container.querySelectorAll("[data-p]").forEach((b) => {

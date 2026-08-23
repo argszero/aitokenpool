@@ -326,6 +326,22 @@ select.input option { background: var(--bg-card); }
 .tx-summary .ts-value.ok { color: var(--ok); }
 .tx-summary .ts-value.danger { color: var(--danger-text); }
 
+/* 交易趋势图（rant 2026-08-23T16:01:07 需求 2）：SVG 折线图，无外部依赖 */
+.tx-trend { padding: 10px 16px 8px; border-bottom: 1px solid var(--border); }
+.tx-trend-title { color: var(--text-mute); font-size: 12px; margin-bottom: 2px; }
+.tx-trend svg { width: 100%; height: auto; display: block; }
+.tx-trend-grid { stroke: var(--border); stroke-width: 1; }
+.tx-trend-axis { fill: var(--text-mute); font-size: 10px; }
+.tx-trend svg .tx-trend-inc { fill: none; stroke: var(--ok); stroke-width: 2; }
+.tx-trend svg .tx-trend-exp { fill: none; stroke: var(--danger-text); stroke-width: 2; }
+.tx-trend svg circle.tx-trend-inc { fill: var(--ok); stroke: none; }
+.tx-trend svg circle.tx-trend-exp { fill: var(--danger-text); stroke: none; }
+.tx-trend-legend { display: flex; gap: 18px; font-size: 12px; color: var(--text-mute); padding-top: 2px; }
+.tx-trend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.tx-trend-dot.inc { background: var(--ok); }
+.tx-trend-dot.exp { background: var(--danger-text); }
+.tx-trend-empty { color: var(--text-mute); font-size: 13px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+
 .table-wrap { overflow-x: auto; }
 .table-wrap.compact { margin-top: 4px; }
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }

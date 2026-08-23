@@ -244,6 +244,118 @@ pub async fn transactions(
     })))
 }
 
+/// GET /api/transactions/trend 查询参数
+#[derive(Debug, Deserialize)]
+pub struct TxTrendQuery {
+    /// consume / earn / topup / gift / all（缺省 all）
+    #[serde(default)]
+    pub r#type: String,
+    /// 起始时间（同 /api/transactions，ISO 8601 UTC）
+    pub start: Option<String>,
+    /// 结束时间（同 /api/transactions，ISO 8601 UTC）
+    pub end: Option<String>,
+    /// 聚合粒度：hour / day / week（缺省 day；非法值回退 day）
+    #[serde(default)]
+    pub bucket: String,
+}
+
+/// GET /api/transactions/trend（rant 2026-08-23T16:01:07：交易页趋势图数据源）
+/// 按时间桶聚合，口径与 summary 一致（income 白名单 earn/topup/gift 为正、consume 为负；
+/// token 字段：tokens 总 / input = tokens − cached − output / cached / output）。
+/// 返回仅含非空桶，按时间升序；前端负责连续时间轴补齐。
+pub async fn transactions_trend(
+    State(st): State<AppState>,
+    auth: AuthUser,
+    Query(q): Query<TxTrendQuery>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    let type_filter = match q.r#type.as_str() {
+        "" | "all" => None,
+        t @ ("consume" | "earn" | "topup" | "gift") => Some(t.to_string()),
+        _ => {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(
+                    serde_json::json!({ "error": "type 必须为 consume / earn / topup / gift / all" }),
+                ),
+            ))
+        }
+    };
+    let bucket = match q.bucket.as_str() {
+        "hour" | "day" | "week" => q.bucket.clone(),
+        _ => "day".to_string(),
+    };
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let norm = |s: &Option<String>| -> Result<Option<String>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+        match s {
+            None => Ok(None),
+            Some(v) if v.trim().is_empty() => Ok(None),
+            Some(v) => chrono::DateTime::parse_from_rfc3339(v.trim())
+                .map(|dt| Some(dt.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S").to_string()))
+                .map_err(|_| {
+                    (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({ "error": "时间参数需为 ISO 8601（RFC3339），如 2026-08-22T00:00:00Z" })),
+                    )
+                }),
+        }
+    };
+    let start = norm(&q.start)?;
+    let end = norm(&q.end)?;
+    let (where_sql, where_binds) = tx_where("t", auth.user_id, &type_filter, &start, &end);
+    // 桶表达式：day/week 产出 "YYYY-MM-DD"，hour 产出 "YYYY-MM-DD HH:00"
+    let expr = match bucket.as_str() {
+        "hour" => "%Y-%m-%d %H:00",
+        "week" => "%Y-%m-%d", // 配 modifier：周一起始
+        _ => "%Y-%m-%d",
+    };
+    let mods = if bucket == "week" {
+        ", 'weekday 1', '-7 days'"
+    } else {
+        ""
+    };
+    let trend_sql = format!(
+        "SELECT strftime('{expr}', t.time{mods}) AS b, \
+            COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type = 'consume' THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE -t.pts END), 0), \
+            COALESCE(SUM(t.tokens), 0), \
+            COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
+            COALESCE(SUM(t.cached_tokens), 0), \
+            COALESCE(SUM(t.output_tokens), 0), \
+            COUNT(*) \
+         FROM transactions t WHERE {where_sql} GROUP BY b ORDER BY b"
+    );
+    let mut stmt = conn.prepare(&trend_sql).map_err(internal)?;
+    let buckets: Vec<serde_json::Value> = stmt
+        .query_map(params_from_iter(where_binds.iter()), |r| {
+            let b: String = r.get(0)?;
+            // 桶起点 → UTC ISO（hour 桶带小时，day/week 桶为当日 00:00）
+            let iso = if bucket == "hour" {
+                format!("{}:00Z", b.replace(' ', "T"))
+            } else {
+                format!("{b}T00:00:00Z")
+            };
+            Ok(serde_json::json!({
+                "t": iso,
+                "income": r.get::<_, f64>(1)?,
+                "expense": r.get::<_, f64>(2)?,
+                "net": r.get::<_, f64>(3)?,
+                "tokens": r.get::<_, f64>(4)?,
+                "input_tokens": r.get::<_, f64>(5)?,
+                "cached_tokens": r.get::<_, f64>(6)?,
+                "output_tokens": r.get::<_, f64>(7)?,
+                "count": r.get::<_, i64>(8)?,
+            }))
+        })
+        .map_err(internal)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(internal)?;
+    Ok(Json(serde_json::json!({
+        "bucket": bucket,
+        "buckets": buckets,
+    })))
+}
+
 /// GET /api/dashboard：本月按类型聚合 + 净变化 + 近 7 天净额序列
 pub async fn dashboard(
     State(st): State<AppState>,
@@ -585,6 +697,147 @@ mod tests {
             !has_pts(&v["items"], 5.0) && !has_pts(&v["items"], 2.0),
             "窄区间不应含显式插入的两条: {body}"
         );
+    }
+
+    #[tokio::test]
+    async fn transactions_trend_buckets() {
+        // rant 2026-08-23T16:01:07：/api/transactions/trend 按时间桶聚合趋势
+        // （口径与 summary 一致：income 白名单 earn/topup/gift 为正、consume 为负；token 四字段）
+        let st = test_state("trend");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            // 今天：consume 1.0（token: 总100 / 缓存80 / 输出10 → 输入10）+ earn 2.0
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, model, tokens, cached_tokens, output_tokens, pts, type, status) \
+                 VALUES (1, 'a', 'm', 100, 80, 10, 1.0, 'consume', '成功')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, model, tokens, pts, type, status) \
+                 VALUES (1, 'b', 'm', 0, 2.0, 'earn', '成功')",
+                [],
+            )
+            .unwrap();
+            // 2 天前：consume 5.0
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, model, tokens, pts, type, status, time) \
+                 VALUES (1, 'old', 'm', 0, 5.0, 'consume', '成功', datetime('now', '-2 days'))",
+                [],
+            )
+            .unwrap();
+        }
+        let now = chrono::Utc::now();
+        let z = |d: chrono::Duration| (now - d).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        // day bucket + 3 天窗口 → 2 个非空桶（2 天前 + 今天），时间升序
+        let (s, body) = get(
+            st.clone(),
+            &format!(
+                "/api/transactions/trend?type=all&bucket=day&start={}",
+                z(chrono::Duration::days(3))
+            ),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["bucket"], "day", "body: {body}");
+        let buckets = v["buckets"].as_array().unwrap();
+        assert_eq!(buckets.len(), 2, "应有 2 个非空桶: {body}");
+        let old = &buckets[0];
+        assert!(
+            (old["expense"].as_f64().unwrap() - 5.0).abs() < 1e-9,
+            "旧桶 expense=5: {body}"
+        );
+        assert_eq!(old["count"].as_i64().unwrap(), 1, "旧桶 count: {body}");
+        let today = &buckets[1];
+        assert!(
+            (today["income"].as_f64().unwrap() - 2.0).abs() < 1e-9,
+            "今天桶 income=2: {body}"
+        );
+        assert!(
+            (today["expense"].as_f64().unwrap() - 1.0).abs() < 1e-9,
+            "今天桶 expense=1: {body}"
+        );
+        assert!(
+            (today["net"].as_f64().unwrap() - 1.0).abs() < 1e-9,
+            "今天桶 net=1: {body}"
+        );
+        assert!(
+            (today["tokens"].as_f64().unwrap() - 100.0).abs() < 1e-9,
+            "今天桶 tokens=100: {body}"
+        );
+        assert!(
+            (today["input_tokens"].as_f64().unwrap() - 10.0).abs() < 1e-9,
+            "今天桶 input=10: {body}"
+        );
+        assert!(
+            (today["cached_tokens"].as_f64().unwrap() - 80.0).abs() < 1e-9,
+            "今天桶 cached=80: {body}"
+        );
+        assert!(
+            (today["output_tokens"].as_f64().unwrap() - 10.0).abs() < 1e-9,
+            "今天桶 output=10: {body}"
+        );
+        assert_eq!(today["count"].as_i64().unwrap(), 2, "今天桶 count: {body}");
+        assert!(
+            today["t"].as_str().unwrap().ends_with("T00:00:00Z"),
+            "day 桶时间应为当日 00:00Z: {body}"
+        );
+        // hour bucket：今天两条 + 2 天前一条 → 2 个桶（跨天），t 带小时
+        let (s, body) = get(
+            st.clone(),
+            &format!(
+                "/api/transactions/trend?type=all&bucket=hour&start={}",
+                z(chrono::Duration::days(3))
+            ),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let buckets = v["buckets"].as_array().unwrap();
+        assert_eq!(buckets.len(), 2, "hour 桶应 2 个: {body}");
+        assert!(
+            buckets
+                .iter()
+                .all(|b| chrono::DateTime::parse_from_rfc3339(b["t"].as_str().unwrap()).is_ok()),
+            "hour 桶 t 应为合法 RFC3339: {body}"
+        );
+        // type=consume 筛选 → 只聚合 consume
+        let (s, body) = get(
+            st.clone(),
+            &format!(
+                "/api/transactions/trend?type=consume&bucket=day&start={}",
+                z(chrono::Duration::days(3))
+            ),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let buckets = v["buckets"].as_array().unwrap();
+        assert_eq!(buckets.len(), 2, "consume 桶应 2 个: {body}");
+        assert!(
+            buckets
+                .iter()
+                .all(|b| (b["income"].as_f64().unwrap()).abs() < 1e-9),
+            "consume 筛选下 income 应全 0: {body}"
+        );
+        // 非法 bucket → 回退 day 不报错
+        let (s, body) = get(
+            st.clone(),
+            &format!(
+                "/api/transactions/trend?type=all&bucket=month&start={}",
+                z(chrono::Duration::days(3))
+            ),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["bucket"], "day", "非法 bucket 应回退 day: {body}");
     }
 
     #[tokio::test]
