@@ -162,6 +162,10 @@ struct StreamUsage {
     cache_read_input_tokens: Option<u32>,
     #[serde(default)]
     cache_creation_input_tokens: Option<u32>,
+    // DeepSeek 原生顶层拼写（rant 2026-08-23T08:20:38 P0 缓存计费）：
+    // prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens
+    #[serde(default)]
+    prompt_cache_hit_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,11 +258,13 @@ pub fn openai_sse_to_anthropic<E: std::error::Error + Send + 'static>(
                                             *pending_usage = Some(usage_json.clone());
                                         }
                                         // 计量：openai 原样 usage → (prompt, cached, completion)
+                                        // input 做 disjoint：prompt_tokens 含缓存命中部分，扣除后避免重复计费（rant 2026-08-23T08:20:38）
                                         if let Some(u) = &chunk.usage {
+                                            let cached = extract_cache_read_tokens(u).unwrap_or(0);
                                             record_usage(
                                                 &usage,
-                                                u.prompt_tokens as f64,
-                                                extract_cache_read_tokens(u).unwrap_or(0) as f64,
+                                                u.prompt_tokens.saturating_sub(cached) as f64,
+                                                cached as f64,
                                                 u.completion_tokens as f64,
                                             );
                                         }
@@ -575,14 +581,19 @@ fn build_anthropic_usage_json(usage: &StreamUsage) -> Value {
 }
 
 fn extract_cache_read_tokens(usage: &StreamUsage) -> Option<u32> {
-    if let Some(v) = usage.cache_read_input_tokens {
-        return Some(v);
+    // 优先级（rant 2026-08-23T08:20:38）：DeepSeek 原生顶层 → OpenAI → Anthropic
+    if usage.prompt_cache_hit_tokens > 0 {
+        return Some(usage.prompt_cache_hit_tokens);
     }
-    usage
+    if let Some(v) = usage
         .prompt_tokens_details
         .as_ref()
         .map(|d| d.cached_tokens)
         .filter(|&v| v > 0)
+    {
+        return Some(v);
+    }
+    usage.cache_read_input_tokens
 }
 
 fn map_stop_reason(finish_reason: Option<&str>) -> Option<String> {
@@ -651,14 +662,17 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                         Err(_) => continue,
                     };
                     // 计量：openai usage 字段 → (prompt, cached, completion)
+                    // 统一走 StreamUsage 提取（三拼写兼容）+ input disjoint（rant 2026-08-23T08:20:38）
                     if let Some(u) = v.get("usage") {
-                        let input = u.get("prompt_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                        let cached = u
-                            .pointer("/prompt_tokens_details/cached_tokens")
-                            .and_then(|x| x.as_f64())
-                            .unwrap_or(0.0);
-                        let output = u.get("completion_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                        record_usage(&usage, input, cached, output);
+                        if let Ok(su) = serde_json::from_value::<StreamUsage>(u.clone()) {
+                            let cached = extract_cache_read_tokens(&su).unwrap_or(0);
+                            record_usage(
+                                &usage,
+                                su.prompt_tokens.saturating_sub(cached) as f64,
+                                cached as f64,
+                                su.completion_tokens as f64,
+                            );
+                        }
                     }
 
                     let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
@@ -956,7 +970,7 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
                                         output_tokens = u.get("output_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
                                         cached_tokens = u.get("cache_read_input_tokens").and_then(|x| x.as_f64()).unwrap_or(cached_tokens);
                                     }
-                                    record_usage(&usage, input_tokens, cached_tokens, output_tokens);
+                                    record_usage(&usage, (input_tokens - cached_tokens).max(0.0), cached_tokens, output_tokens);
                                     let stop_reason = v.get("delta").and_then(|d| d.get("stop_reason")).and_then(|s| s.as_str());
                                     let finish = match stop_reason {
                                         Some("max_tokens") => "length",
@@ -980,7 +994,7 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
                                 }
                                 "message_stop" => {
                                     if !finished {
-                                        record_usage(&usage, input_tokens, cached_tokens, output_tokens);
+                                        record_usage(&usage, (input_tokens - cached_tokens).max(0.0), cached_tokens, output_tokens);
                                         let data = json!({
                                             "id": format!("chatcmpl-{msg_id}"),
                                             "object": "chat.completion.chunk",
@@ -1016,7 +1030,7 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
         }
         // 上游无 message_stop 直接断流 → 补 finish + [DONE]
         if !finished {
-            record_usage(&usage, input_tokens, cached_tokens, output_tokens);
+            record_usage(&usage, (input_tokens - cached_tokens).max(0.0), cached_tokens, output_tokens);
             let data = json!({
                 "id": format!("chatcmpl-{msg_id}"),
                 "object": "chat.completion.chunk",
@@ -1184,7 +1198,8 @@ pub fn responses_sse_to_openai_chat<E: std::error::Error + Send + 'static>(
                                             .and_then(|x| x.as_f64())
                                             .unwrap_or(0.0);
                                         let output = u.get("output_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                                        record_usage(&usage, input, cached, output);
+                                        // input disjoint：input_tokens 含缓存命中部分（rant 2026-08-23T08:20:38）
+                                        record_usage(&usage, (input - cached).max(0.0), cached, output);
                                     }
                                     if !finished {
                                         let data = json!({
@@ -1434,5 +1449,72 @@ mod tests {
             panic!("usage missing");
         };
         assert_eq!((i, o), (3.0, 0.0), "usage recorded");
+    }
+
+    // ── 缓存计费三拼写 + disjoint（rant 2026-08-23T08:20:38 P0）──
+
+    #[test]
+    fn deepseek_cache_hit_tokens_spelling() {
+        // DeepSeek 原生顶层 prompt_cache_hit_tokens：prompt_tokens=100 含 90 命中
+        // → input disjoint 为 10、cached=90、output=50；下游 input_tokens 同样不含命中
+        let slot = usage_slot();
+        let chunks = sse_chunks(vec![
+            "data: {\"id\":\"c1\",\"model\":\"m1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"x\"},\"finish_reason\":null}]}\n\n".to_string(),
+            "data: {\"id\":\"c1\",\"model\":\"m1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"prompt_cache_hit_tokens\":90,\"completion_tokens\":50}}\n\n".to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ]);
+        let out = collect(openai_sse_to_anthropic(chunks, slot.clone()));
+        let Some((i, c, o)) = *slot.lock().unwrap() else {
+            panic!("usage missing");
+        };
+        assert_eq!((i, c, o), (10.0, 90.0, 50.0), "deepseek disjoint usage");
+        assert!(
+            out.contains("\"input_tokens\":10"),
+            "downstream input_tokens disjoint: {out}"
+        );
+        assert!(
+            out.contains("\"cache_read_input_tokens\":90"),
+            "downstream cache_read forwarded: {out}"
+        );
+    }
+
+    #[test]
+    fn openai_cached_tokens_spelling_disjoint() {
+        // OpenAI 拼写 prompt_tokens_details.cached_tokens
+        let slot = usage_slot();
+        let chunks = sse_chunks(vec![
+            "data: {\"id\":\"c1\",\"model\":\"m1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"x\"},\"finish_reason\":null}]}\n\n".to_string(),
+            "data: {\"id\":\"c1\",\"model\":\"m1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"prompt_tokens_details\":{\"cached_tokens\":90},\"completion_tokens\":50}}\n\n".to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ]);
+        let out = collect(openai_sse_to_anthropic(chunks, slot.clone()));
+        let Some((i, c, o)) = *slot.lock().unwrap() else {
+            panic!("usage missing");
+        };
+        assert_eq!((i, c, o), (10.0, 90.0, 50.0), "openai disjoint usage");
+        assert!(
+            out.contains("\"cache_read_input_tokens\":90"),
+            "downstream cache_read forwarded: {out}"
+        );
+    }
+
+    #[test]
+    fn anthropic_cache_read_spelling_disjoint() {
+        // Anthropic 拼写 cache_read_input_tokens（message_start 计 input，message_delta 计 output）
+        let slot = usage_slot();
+        let chunks = sse_chunks(vec![
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"claude-x\",\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":90,\"output_tokens\":0}}}\n\n".to_string(),
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n".to_string(),
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n".to_string(),
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n".to_string(),
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":50}}\n\n".to_string(),
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".to_string(),
+        ]);
+        let out = collect(anthropic_sse_to_openai(chunks, slot.clone()));
+        assert!(out.contains("data: [DONE]"), "done: {out}");
+        let Some((i, c, o)) = *slot.lock().unwrap() else {
+            panic!("usage missing");
+        };
+        assert_eq!((i, c, o), (10.0, 90.0, 50.0), "anthropic disjoint usage");
     }
 }
