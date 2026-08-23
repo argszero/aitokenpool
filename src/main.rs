@@ -210,6 +210,11 @@ async fn main() -> anyhow::Result<()> {
     let state = routes::AppState::new(conn, cfg, crypto);
     let app = routes::router()
         .with_state(state)
+        // 请求体上限：axum 默认 2MB，对超长 LLM 上下文/图片 base64 不够，放宽到 70MB
+        //（rant 2026-08-22T23:20:00；真实限制仍由上游模型 context 窗口裁决）
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            70 * 1024 * 1024,
+        ))
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
