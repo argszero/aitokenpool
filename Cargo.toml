@@ -12,7 +12,7 @@ rust-version = "1.86"
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
+tower-http = { version = "0.5", features = ["cors", "fs", "trace", "limit"] }
 hyper = { version = "1.0", features = ["full"] }
 
 # HTTP 客户端（上游转发）
