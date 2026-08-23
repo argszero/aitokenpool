@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.11 (2026-08-23)
+
+- **P0 cache-billing fix (passthrough path)** — PR #128 (v0.7.10) only patched the cross-protocol SSE conversion path; the same-protocol passthrough path (`UsageCapture::finish()` in `src/gateway.rs`, used when client and upstream speak the same protocol, e.g. openai→openai) still passed the **full** `prompt_tokens` as input (including cache-hit tokens) and only recognized OpenAI's `prompt_tokens_details.cached_tokens` spelling — so DeepSeek responses double-counted cached tokens into the total (~2× tokens, per-call uncached showed 241,776 instead of 112). `finish()` now extracts cached via all three spellings (DeepSeek native `prompt_cache_hit_tokens` → OpenAI `prompt_tokens_details.cached_tokens` → Anthropic `cache_read_input_tokens`) and returns `(input − cached).max(0.0)` disjoint, matching the `sse.rs` logic; tests extended with cached cases for all three spellings (rant 2026-08-23T14:05:02, PR #130)
+
 ## v0.7.10 (2026-08-23)
 
 - **Request body limit raised to 70MB** — axum's default 2MB body limit rejected long LLM contexts (~1M token) and large image-base64 payloads with 413; gateway now applies `RequestBodyLimitLayer::new(70 * 1024 * 1024)` (rant 2026-08-22T23:20:00)
