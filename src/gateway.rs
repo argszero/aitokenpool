@@ -655,9 +655,14 @@ impl UsageCapture {
                     .get("prompt_tokens")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(0.0);
+                // cached 三拼写兼容（rant 2026-08-23T14:05:02）：DeepSeek 原生顶层 → OpenAI details
                 cached = u
-                    .pointer("/prompt_tokens_details/cached_tokens")
+                    .get("prompt_cache_hit_tokens")
                     .and_then(|x| x.as_f64())
+                    .or_else(|| {
+                        u.pointer("/prompt_tokens_details/cached_tokens")
+                            .and_then(|x| x.as_f64())
+                    })
                     .unwrap_or(0.0);
                 output = u
                     .get("completion_tokens")
@@ -665,7 +670,9 @@ impl UsageCapture {
                     .unwrap_or(0.0);
             }
         }
-        (input, cached, output)
+        // input disjoint：input_tokens/prompt_tokens 含缓存命中部分，扣除后避免重复计费
+        //（同 sse.rs 已修复逻辑，rant 2026-08-23T14:05:02；max 防下溢）
+        ((input - cached).max(0.0), cached, output)
     }
 }
 
@@ -1968,6 +1975,26 @@ mod tests {
         assert_eq!(i, 10.0);
         assert_eq!(o, 5.0);
 
+        // openai + DeepSeek 原生顶层拼写 prompt_cache_hit_tokens（rant 2026-08-23T14:05:02）
+        let mut cap = UsageCapture::new("openai_chat");
+        cap.push(
+            br#"data: {"usage":{"prompt_tokens":100,"prompt_cache_hit_tokens":90,"completion_tokens":50},"choices":[]}"#,
+        );
+        let (i, c, o) = cap.finish();
+        assert_eq!(i, 10.0, "DeepSeek cached 应从 prompt 扣除（disjoint）");
+        assert_eq!(c, 90.0);
+        assert_eq!(o, 50.0);
+
+        // openai + OpenAI 拼写 prompt_tokens_details.cached_tokens：同样 disjoint
+        let mut cap = UsageCapture::new("openai_chat");
+        cap.push(
+            br#"data: {"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":90},"completion_tokens":50},"choices":[]}"#,
+        );
+        let (i, c, o) = cap.finish();
+        assert_eq!(i, 10.0);
+        assert_eq!(c, 90.0);
+        assert_eq!(o, 50.0);
+
         // anthropic：input 在头部 message_start，output 在尾部 message_delta
         let mut cap = UsageCapture::new("anthropic");
         cap.push(
@@ -1982,5 +2009,21 @@ data: {"type":"message_delta","usage":{"output_tokens":30}}"#,
         let (i, _c, o) = cap.finish();
         assert_eq!(i, 80.0, "message_start 的 input_tokens 提前捕获");
         assert_eq!(o, 30.0, "message_delta 的 output_tokens 流尾解析");
+
+        // anthropic + cache_read_input_tokens：input 同样 disjoint（与 sse.rs anthropic 路径一致）
+        let mut cap = UsageCapture::new("anthropic");
+        cap.push(
+            br#"event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":80,"cache_read_input_tokens":70,"output_tokens":1}}}"#,
+        );
+        cap.push(b"\n\n");
+        cap.push(
+            br#"event: message_delta
+data: {"type":"message_delta","usage":{"output_tokens":30}}"#,
+        );
+        let (i, c, o) = cap.finish();
+        assert_eq!(i, 10.0, "cache_read 应从 input 扣除（disjoint）");
+        assert_eq!(c, 70.0);
+        assert_eq!(o, 30.0);
     }
 }
