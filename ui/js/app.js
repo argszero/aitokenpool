@@ -1257,10 +1257,10 @@
     }
     const bucket = tr.bucket || "day";
     const METRICS = [
-      { key: "expense", label: T("tx.trend.metric.expense"), pick: (b) => b.expense || 0, cls: "exp" },
-      { key: "income", label: T("tx.trend.metric.income"), pick: (b) => b.income || 0, cls: "inc" },
-      { key: "net", label: T("tx.trend.metric.net"), pick: (b) => (b.net === undefined ? (b.income || 0) - (b.expense || 0) : b.net) || 0, cls: "net", signed: true },
-      { key: "tokens", label: T("tx.trend.metric.tokens"), pick: (b) => b.tokens || 0, cls: "tok" },
+      { key: "expense", label: T("tx.trend.metric.expense"), pick: (b) => b.expense || 0, cls: "exp", stroke: "var(--accent)" },
+      { key: "income", label: T("tx.trend.metric.income"), pick: (b) => b.income || 0, cls: "inc", stroke: "var(--ok)" },
+      { key: "net", label: T("tx.trend.metric.net"), pick: (b) => (b.net === undefined ? (b.income || 0) - (b.expense || 0) : b.net) || 0, cls: "net", signed: true, stroke: "var(--accent-text)" },
+      { key: "tokens", label: T("tx.trend.metric.tokens"), pick: (b) => b.tokens || 0, cls: "tok", stroke: "var(--warn)" },
     ];
     const m = METRICS.find((x) => x.key === txTrendMetric) || METRICS[0];
     const vals = buckets.map(m.pick);
@@ -1321,16 +1321,21 @@
         '<button type="button" class="tsw-btn' + (x.key === m.key ? " active" : "") + '" data-metric="' + x.key + '" role="tab" aria-selected="' + (x.key === m.key) + '">' + esc(x.label) + "</button>"
       ).join("") +
       "</div>";
+    const stroke = m.stroke || "var(--accent)";
+    const gid = "spark-grad-" + (++_sparkId); // 每实例唯一 id，防多次渲染/多图冲突（rant 12:32:18：CSS class 设 stop 色在 Chrome 不可靠 → 内联属性）
     const total = vals.reduce((a, b) => a + b, 0);
     const html =
       '<div class="tx-trend-title">' + esc(T("tx.trend.title")) + "</div>" +
       switchHtml +
       '<div class="tx-trend-chart">' +
-      '<svg class="m-' + m.cls + '" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(T("tx.trend.title")) + '">' +
-      '<defs><linearGradient id="tx-trend-grad" x1="0" y1="0" x2="0" y2="1"><stop class="tg-0" offset="0%"/><stop class="tg-1" offset="100%"/></linearGradient></defs>' +
+      '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(T("tx.trend.title")) + '">' +
+      '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="' + stroke + '" stop-opacity="0.35"/>' +
+      '<stop offset="100%" stop-color="' + stroke + '" stop-opacity="0"/>' +
+      "</linearGradient></defs>" +
       axis + xlabels +
-      '<path class="trend-area" d="' + areaPath + '"/>' +
-      '<path class="trend-line" d="' + smoothPath(pts) + '"/>' +
+      '<path class="trend-area" d="' + areaPath + '" fill="url(#' + gid + ')"/>' +
+      '<path class="trend-line" d="' + smoothPath(pts) + '" stroke="' + stroke + '"/>' +
       "</svg>" +
       '<div class="tx-trend-guide" id="tx-trend-guide"></div>' +
       '<div class="tx-trend-tip" id="tx-trend-tip"></div>' +
