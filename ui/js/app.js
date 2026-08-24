@@ -1723,7 +1723,7 @@
         name: k.name || T("common.unnamed"),
         key: k.key,
         created: String(k.created_at || "").slice(0, 10),
-        last: T("settings.ak.last.never"),
+        last: k.last_used || null, // rant 2026-08-24T12:41:25：真实最近使用时间（NULL=从未使用）
         status: k.status || "active",
       }));
     } else {
@@ -1734,7 +1734,7 @@
       "<tr><td data-label='名字'><strong>" + hl(k.name, rawQ) + "</strong></td>" +
       "<td data-label='Key'><code>" + esc(Live.apiKeys ? k.key : "") + "</code></td>" +
       "<td data-label='创建时间'>" + esc(k.created) + "</td>" +
-      "<td data-label='最近使用'>" + timeCell(k.last) + "</td>" +
+      "<td data-label='最近使用'>" + (k.last ? timeCell(k.last) : esc(T("settings.ak.last.never"))) + "</td>" +
       "<td data-label='状态'>" + (k.status === "active" ? '<span class="badge ok">' + T("settings.ak.status.active") + "</span>" : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
       "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>" + T("settings.ak.copy") + "</button> " +
       "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>" + T("settings.ak.rename") + "</button> " +

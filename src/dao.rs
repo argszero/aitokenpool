@@ -74,14 +74,16 @@ pub fn create_api_key(conn: &Connection, user_id: i64, name: &str) -> Result<Str
 }
 
 /// 列出用户的 API Key（key 值脱敏；P2-B 起只列 active，revoked 不再显示）
+/// rant 2026-08-24T12:41:25：返回 last_used（网关 Bearer 鉴权时 touch_api_key 维护，NULL=从未使用）
 pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::Value>> {
     let mut stmt = conn.prepare(
-        "SELECT id, key_value, name, status, created_at FROM api_keys \
+        "SELECT id, key_value, name, status, created_at, last_used FROM api_keys \
          WHERE user_id = ?1 AND status = 'active' ORDER BY id DESC",
     )?;
     let rows = stmt.query_map([user_id], |r| {
         let raw: String = r.get(1)?;
         let created_at: String = r.get(4)?;
+        let last_used: Option<String> = r.get(5)?;
         Ok(serde_json::json!({
             "id": r.get::<_, i64>(0)?,
             "key": auth::mask_api_key(&raw),
@@ -89,6 +91,7 @@ pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::
             "name": r.get::<_, String>(2)?,
             "status": r.get::<_, String>(3)?,
             "created_at": utc_iso(&created_at),
+            "last_used": last_used.as_deref().map(utc_iso),
         }))
     })?;
     let mut out = Vec::new();
