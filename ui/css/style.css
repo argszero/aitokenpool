@@ -327,27 +327,27 @@ select.input option { background: var(--bg-card); }
 .tx-summary .ts-value.danger { color: var(--danger-text); }
 
 /* 交易趋势图（rant 2026-08-23T16:01:07 需求 2）：SVG 折线图，无外部依赖 */
-.tx-trend { padding: 10px 16px 8px; border-bottom: 1px solid var(--border); }
-.tx-trend-title { color: var(--text-mute); font-size: 12px; margin-bottom: 2px; }
+.tx-trend { padding: 8px 16px 6px; border-bottom: 1px solid var(--border); }
+.tx-trend-title { color: var(--text-mute); font-size: 11px; margin-bottom: 1px; }
 /* 指标切换（rant 2026-08-23T16:17:18 需求 2） */
-.tx-trend-switch { display: flex; gap: 6px; margin: 6px 0 8px; flex-wrap: wrap; }
+.tx-trend-switch { display: flex; gap: 5px; margin: 4px 0 6px; flex-wrap: wrap; }
 .tsw-btn {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-dim);
-  padding: 3px 12px;
+  padding: 2px 10px;
   border-radius: 999px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
 }
 .tsw-btn:hover { color: var(--text); }
 .tsw-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
 .tx-trend-chart { position: relative; }
 .tx-trend svg { width: 100%; height: auto; display: block; }
-.tx-trend-axis { fill: var(--text-mute); font-size: 9px; }
+.tx-trend-axis { fill: var(--text-mute); font-size: 8px; }
 /* 平滑折线 + 渐变面积（sparkline 化，rant 2026-08-24T10:51:57.821209：
    无网格线、无数据点圆、渐变 0.35→0、teal 主题色系——消费用主强调色区分） */
-.tx-trend svg .trend-line { fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.tx-trend svg .trend-line { fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .tx-trend svg .trend-area { stroke: none; }
 /* 悬停引导线 + tooltip */
 .tx-trend-guide { position: absolute; top: 2px; bottom: 6px; width: 1px; background: var(--text-dim); opacity: 0.45; display: none; pointer-events: none; }
@@ -358,8 +358,8 @@ select.input option { background: var(--bg-card); }
   box-shadow: var(--shadow); z-index: 5; white-space: nowrap; line-height: 1.5;
 }
 .tx-trend-tip b { color: var(--accent-text); font-weight: 600; }
-.tx-trend-legend { display: flex; gap: 12px; font-size: 11px; color: var(--text-mute); padding-top: 4px; align-items: center; }
-.tx-trend-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.tx-trend-legend { display: flex; gap: 10px; font-size: 10px; color: var(--text-mute); padding-top: 2px; align-items: center; }
+.tx-trend-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
 .tx-trend-dot.exp { background: var(--accent); }
 .tx-trend-dot.inc { background: var(--ok); }
 .tx-trend-dot.net { background: var(--accent-text); }
