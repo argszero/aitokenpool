@@ -1171,7 +1171,7 @@
 
   const TX_COLUMNS = [
     // rant 2026-08-23T16:01:07：列表内移除 time 列筛选（外部 tx-range 已有时间段筛选，两套并存冗余）
-    { key: "time", title: () => T("tx.col.time"), sort: "string", render: (t) => timeCell(t.time) },
+    { key: "time", title: () => T("tx.col.time"), sort: "string", render: (t) => timeCell(t.time, true) },
     { key: "type", title: () => T("tx.col.type"), sort: "string", filter: "select",
       options: () => ["consume", "earn", "topup", "withdraw", "gift"].map(txType),
       filterVal: (t) => txType(t.type),
@@ -2432,8 +2432,30 @@
     return full;
   }
 
-  // 时间单元格：相对时间展示 + title 悬停显示本地化绝对时间（rant 2026-08-19T20:45:32）
-  function timeCell(s) {
+  // 精确本地时间（YYYY-MM-DD HH:MM:SS，到秒）——交易列表时间列（rant 2026-08-24T12:38:44）
+  function fmtPrecise(s) {
+    if (!s) return "";
+    const t = String(s);
+    const p2 = (x) => String(x).padStart(2, "0");
+    let m = t.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?Z$/);
+    let d = null;
+    if (m) {
+      d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)));
+    } else {
+      // 旧后端格式 'YYYY-MM-DD[ HH:MM[:SS]]' → 视为 UTC（同 timeAgo 口径）
+      m = t.match(/^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+      if (m) d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)));
+    }
+    if (d && !isNaN(d.getTime())) {
+      return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) +
+        " " + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+    }
+    return t; // 非标准格式（游客 mock 'MM-DD HH:mm' 等）原样返回
+  }
+
+  // 时间单元格：precise=true → 精确本地时间为主文本、相对时间入 title（交易列表，rant 2026-08-24T12:38:44）；
+  // 默认 → 相对时间为主文本、title 悬停显示本地化绝对时间（rant 2026-08-19T20:45:32）
+  function timeCell(s, precise) {
     if (!s) return "";
     const t = String(s);
     const iso = /^(\d{4})-(\d{2})-(\d{2})[T ]/.test(t);
@@ -2441,6 +2463,10 @@
     if (iso) {
       const d = new Date(iso && t.includes("T") ? t : t.replace(" ", "T") + "Z");
       if (!isNaN(d.getTime())) title = d.toLocaleString();
+    }
+    if (precise) {
+      const rel = timeAgo(s);
+      return '<span class="timeago" title="' + esc(rel) + '">' + esc(fmtPrecise(s)) + "</span>";
     }
     return '<span class="timeago" title="' + esc(title) + '">' + esc(timeAgo(s)) + "</span>";
   }
