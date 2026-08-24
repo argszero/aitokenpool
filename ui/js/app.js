@@ -1385,6 +1385,11 @@
       $("#tx-table").innerHTML = loadErrorHtml(T("tx.loadFail"), null, T("err.loadFail"));
       return;
     }
+    // 真后端分页（rant 2026-08-24T10:51:57）：本地页码/每页行数与已加载页不一致 → 重新向后端拉取对应页
+    if (Live.transactions && (txTable.loadedPage !== txTable.page || txTable.loadedPageSize !== txTable.pageSize)) {
+      loadTransactions();
+      return;
+    }
     let list = Live.transactions ? txsToView(Live.transactions.items || []) : [];
     // 交易汇总条：与 tab + 列筛选联动，与表格可见行一致（rant 20:39:30 B）
     renderTxSummary(filterRows(list, TX_COLUMNS, txTable.filters));
@@ -1396,6 +1401,8 @@
       rows: list,
       state: txTable,
       onState: renderTransactions,
+      // 真后端分页（rant 2026-08-24T10:51:57）：总数显示后端 total；页码点击 → onState → renderTransactions 页码不一致自动重拉
+      serverPaging: Live.transactions ? { total: Live.transactions.total || 0 } : null,
     });
   }
 
@@ -1417,14 +1424,19 @@
     return p.join("&");
   }
 
-  // P2-B：按 tab 拉取交易（后端分页；带时间段过滤）
+  // P2-B：按 tab 拉取交易（真后端分页 rant 2026-08-24T10:51:57：页码/每页行数随请求发出；
+  // loadedPage/loadedPageSize 记录已加载页，renderTransactions 发现页码不一致时自动重拉）
   async function loadTransactions() {
     if (!loggedIn()) return;
     const type = txTab === "all" ? "" : txTab;
     const range = txRangeParams();
-    const q = "/api/transactions?type=" + type + "&page=1&page_size=100" + (range ? "&" + range : "");
+    const page = Math.max(1, txTable.page || 1);
+    const pageSize = Math.min(100, Math.max(1, txTable.pageSize || 10));
+    const q = "/api/transactions?type=" + type + "&page=" + page + "&page_size=" + pageSize + (range ? "&" + range : "");
     try {
       await liveLoad("transactions", q);
+      txTable.loadedPage = page;
+      txTable.loadedPageSize = pageSize;
     } catch (e) { Live.transactions = null; /* 登录态降级空态 */ }
     // 趋势图数据（rant 2026-08-23T16:01:07 需求 2）：独立拉取，失败不阻塞列表
     const bucket = txTrendBucket();
@@ -1433,6 +1445,11 @@
       if (Live.transactions) Live.transactions.trend = trend;
     } catch (e) { if (Live.transactions) Live.transactions.trend = null; }
     renderTransactions();
+    // 翻页后滚动到列表顶部（rant 2026-08-24T10:51:57 需求 4）
+    if (page > 1) {
+      const tbl = $("#tx-table");
+      if (tbl && tbl.scrollIntoView) tbl.scrollIntoView({ block: "start" });
+    }
   }
 
   // 交易记录导出 CSV（rant 20:46:57 E：Blob + a[download]，UTF-8 BOM，文件名 aitokenpool-transactions-YYYYMMDD.csv；导出当前筛选可见行）
@@ -1540,8 +1557,20 @@
     });
   }
 
+  // 紧凑分页码（页数 > 9 时省略号收拢：1 … p-1 p p+1 … N；页数少则全量渲染）
+  function pagerButtons(page, pages) {
+    const out = [];
+    if (pages <= 9) { for (let i = 1; i <= pages; i++) out.push(i); return out; }
+    out.push(1);
+    if (page > 4) out.push("…");
+    for (let i = Math.max(2, page - 1); i <= Math.min(pages - 1, page + 1); i++) out.push(i);
+    if (page < pages - 3) out.push("…");
+    out.push(pages);
+    return out;
+  }
+
   function buildDataTable(cfg) {
-    const { container, columns, rows, state, onState } = cfg;
+    const { container, columns, rows, state, onState, serverPaging } = cfg;
 
     // 1) 筛选
     let data = filterRows(rows, columns, state.filters);
@@ -1561,10 +1590,11 @@
       });
     }
 
-    // 3) 分页
-    const pages = Math.max(1, Math.ceil(data.length / state.pageSize));
+    // 3) 分页（serverPaging：总数取后端 total，行即当前页——服务端已翻页，不做本地 slice）
+    const totalRows = serverPaging ? serverPaging.total : data.length;
+    const pages = Math.max(1, Math.ceil(totalRows / state.pageSize));
     if (state.page > pages) state.page = pages;
-    const pageRows = data.slice((state.page - 1) * state.pageSize, state.page * state.pageSize);
+    const pageRows = serverPaging ? data : data.slice((state.page - 1) * state.pageSize, state.page * state.pageSize);
 
     // 4) 渲染表头（排序按钮）+ 筛选行
     let html = '<table class="table"><thead><tr>';
@@ -1606,8 +1636,11 @@
     // 5) 分页器 + 每页行数
     if (pages > 1) {
       html += '<div class="pager">';
-      for (let i = 1; i <= pages; i++) html += '<button type="button" class="' + (i === state.page ? "active" : "") + '" data-p="' + i + '">' + i + "</button>";
-      html += "<span>" + state.page + " / " + pages + " · " + T("tx.pager.count", { n: data.length }) + "</span></div>";
+      pagerButtons(state.page, pages).forEach((p) => {
+        if (p === "…") html += '<span class="pager-ellipsis">…</span>';
+        else html += '<button type="button" class="' + (p === state.page ? "active" : "") + '" data-p="' + p + '">' + p + "</button>";
+      });
+      html += "<span>" + state.page + " / " + pages + " · " + T("tx.pager.count", { n: totalRows }) + "</span></div>";
     }
     html += '<div class="pager-size">' + T("tx.pager.size") + ' <select data-page-size><option value="5">5</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select> ' + T("tx.pager.rows") + '</div>';
 
