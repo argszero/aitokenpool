@@ -1241,9 +1241,10 @@
     $("#tx-summary").innerHTML = html;
   }
 
-  // 交易趋势图（rant 2026-08-23T16:01:07 需求 2 + 2026-08-23T16:17:18 优化）：手写 SVG（无外部依赖），
-  // 数据源 = /api/transactions/trend（跟随 tab + 外部时间段筛选，与 summary 同口径）；
-  // 指标可切换（消费/收入/净变化/Token，默认消费点数）；平滑折线 + 渐变面积 + 自适应刻度 + 悬停 tooltip。
+  // 交易趋势图（rant 2026-08-23T16:01:07 需求 2 + 16:17:18 优化 + 2026-08-24T10:51:57 重做）：
+  // 参考仪表盘 sparkline()：渐变面积（0.35→0）、连续平滑曲线（round 连接）、无网格极简坐标、
+  // teal 主题配色、紧凑高度（viewBox 85，原 170 减半，rant 10:51:57.821928）；
+  // 保留指标切换（消费/收入/净变化/Token，默认消费）与悬停 tooltip。
   let _trendCtx = null; // 悬停 tooltip 上下文（renderTxTrend 写入，事件委托读取）
   function renderTxTrend() {
     const el = $("#tx-trend");
@@ -1279,7 +1280,8 @@
     const nm = Math.max(absMax, 1e-9) / np;
     const maxV = Math.max((nm <= 1 ? 1 : nm <= 2 ? 2 : nm <= 5 ? 5 : 10) * np, 4);
     const minV = neg ? -maxV : 0;
-    const W = 640, H = 190, PL = 46, PR = 14, PT = 14, PB = 26;
+    // 紧凑几何（rant 10:51:57.821928：高 170 → 85 减半，无网格预留边距）
+    const W = 640, H = 85, PL = 32, PR = 8, PT = 6, PB = 14;
     const iw = W - PL - PR, ih = H - PT - PB;
     const X = (i) => PL + (buckets.length === 1 ? iw / 2 : iw * i / (buckets.length - 1));
     const Y = (v) => PT + ih * (maxV - v) / (maxV - minV || 1);
@@ -1297,33 +1299,22 @@
       }
       return d;
     };
-    // 网格 + 纵轴刻度（4 等分，5 条线，负值指标含负刻度）
-    let grid = "";
-    for (let g = 0; g <= 4; g++) {
-      const gy = PT + ih * g / 4;
-      const gv = minV + (maxV - minV) * (4 - g) / 4;
-      grid += '<line class="tx-trend-grid" x1="' + PL + '" y1="' + gy.toFixed(1) + '" x2="' + (W - PR) + '" y2="' + gy.toFixed(1) + '"/>' +
-        '<text class="tx-trend-axis" x="' + (PL - 6) + '" y="' + (gy + 4).toFixed(1) + '" text-anchor="end">' + fmtAxis(gv) + "</text>";
-    }
-    // 横轴标签：首 / 中 / 尾
+    // 极简坐标（rant 10:51:57.821209：去生硬网格）：仅顶/底 2 个纵轴刻度标签，无网格线
+    let axis =
+      '<text class="tx-trend-axis" x="' + (PL - 4) + '" y="' + (PT + 3).toFixed(1) + '" text-anchor="end">' + fmtAxis(maxV) + "</text>" +
+      '<text class="tx-trend-axis" x="' + (PL - 4) + '" y="' + (H - PB + 3).toFixed(1) + '" text-anchor="end">' + fmtAxis(minV) + "</text>";
+    // 横轴标签：首 / 中 / 尾（紧凑小字号）
     const idxs = [0, Math.floor((buckets.length - 1) / 2), buckets.length - 1].filter((v, i, a) => a.indexOf(v) === i);
     let xlabels = "";
     idxs.forEach((i) => {
-      xlabels += '<text class="tx-trend-axis" x="' + X(i).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="middle">' + esc(lbl(buckets[i])) + "</text>";
+      xlabels += '<text class="tx-trend-axis" x="' + X(i).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + esc(lbl(buckets[i])) + "</text>";
     });
-    // 折线 + 渐变面积 + 数据点（面积基线：负值指标取零轴，正值指标取图表底）
+    // 渐变面积（基线：负值指标取零轴，正值指标取图表底）+ 平滑曲线；
+    // 不画数据点圆（rant 10:51:57.821209：空白圆点造成折线断点/锯齿，sparkline 化优雅降级）
     const yBase = Y(neg ? 0 : minV);
     const areaPath = pts.length
       ? smoothPath(pts) + " L" + pts[pts.length - 1][0].toFixed(1) + "," + yBase.toFixed(1) + " L" + pts[0][0].toFixed(1) + "," + yBase.toFixed(1) + " Z"
       : "";
-    const lineHtml = () => {
-      let dots = "";
-      pts.forEach((p) => {
-        dots += '<circle class="trend-dot" cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="2.5"/>';
-      });
-      return '<path class="trend-area" d="' + areaPath + '"/>' +
-        '<path class="trend-line" d="' + smoothPath(pts) + '"/>' + dots;
-    };
     const switchHtml =
       '<div class="tx-trend-switch" role="tablist" aria-label="' + esc(T("tx.trend.metricLabel")) + '">' +
       METRICS.map((x) =>
@@ -1337,7 +1328,9 @@
       '<div class="tx-trend-chart">' +
       '<svg class="m-' + m.cls + '" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(T("tx.trend.title")) + '">' +
       '<defs><linearGradient id="tx-trend-grad" x1="0" y1="0" x2="0" y2="1"><stop class="tg-0" offset="0%"/><stop class="tg-1" offset="100%"/></linearGradient></defs>' +
-      grid + xlabels + lineHtml() +
+      axis + xlabels +
+      '<path class="trend-area" d="' + areaPath + '"/>' +
+      '<path class="trend-line" d="' + smoothPath(pts) + '"/>' +
       "</svg>" +
       '<div class="tx-trend-guide" id="tx-trend-guide"></div>' +
       '<div class="tx-trend-tip" id="tx-trend-tip"></div>' +
