@@ -17,6 +17,7 @@
   let txRange = "24h"; // 交易时间段快捷范围：24h / 7d / 30d / all / custom（默认最近 24 小时，rant 2026-08-22T10:50:00）
   let txCustomStart = ""; // 自定义开始（datetime-local 值，本地时区）
   let txCustomEnd = ""; // 自定义结束
+  let txTrendMetric = "expense"; // 趋势图指标（rant 2026-08-23T16:17:18 需求 2）：expense / income / net / tokens，默认消费点数
   let isGuest = false; // 游客模式（US-1：未登录可浏览市场）
   let pendingHashView = null; // URL hash 路由（rant 20:39:30 A）：刷新后登录时恢复上次视图
   let mkExpanded = null; // 市场行展开（rant 20:39:30 F）：当前展开的模型 id，null=全部收起；仅展开当前行
@@ -1240,34 +1241,69 @@
     $("#tx-summary").innerHTML = html;
   }
 
-  // 交易趋势图（rant 2026-08-23T16:01:07 需求 2）：手写 SVG 折线图（无外部依赖），
+  // 交易趋势图（rant 2026-08-23T16:01:07 需求 2 + 2026-08-23T16:17:18 优化）：手写 SVG（无外部依赖），
   // 数据源 = /api/transactions/trend（跟随 tab + 外部时间段筛选，与 summary 同口径）；
-  // 横轴 = 时间桶（hour/day/week），纵轴 = 点数；收入(绿) / 支出(红) 两条线，点悬停显示精确值。
+  // 指标可切换（消费/收入/净变化/Token，默认消费点数）；平滑折线 + 渐变面积 + 自适应刻度 + 悬停 tooltip。
+  let _trendCtx = null; // 悬停 tooltip 上下文（renderTxTrend 写入，事件委托读取）
   function renderTxTrend() {
     const el = $("#tx-trend");
     const tr = (Live.transactions && Live.transactions.trend) ? Live.transactions.trend : null;
     const buckets = (tr && Array.isArray(tr.buckets)) ? tr.buckets : [];
     if (!buckets.length) {
       el.innerHTML = '<div class="tx-trend-empty">' + esc(T("tx.trend.empty")) + "</div>";
+      _trendCtx = null;
       return;
     }
     const bucket = tr.bucket || "day";
-    const income = buckets.map((b) => b.income || 0);
-    const expense = buckets.map((b) => b.expense || 0);
-    const maxV = Math.max(1, ...income, ...expense);
-    const W = 640, H = 170, PL = 46, PR = 12, PT = 12, PB = 24;
+    const METRICS = [
+      { key: "expense", label: T("tx.trend.metric.expense"), pick: (b) => b.expense || 0, cls: "exp" },
+      { key: "income", label: T("tx.trend.metric.income"), pick: (b) => b.income || 0, cls: "inc" },
+      { key: "net", label: T("tx.trend.metric.net"), pick: (b) => (b.net === undefined ? (b.income || 0) - (b.expense || 0) : b.net) || 0, cls: "net", signed: true },
+      { key: "tokens", label: T("tx.trend.metric.tokens"), pick: (b) => b.tokens || 0, cls: "tok" },
+    ];
+    const m = METRICS.find((x) => x.key === txTrendMetric) || METRICS[0];
+    const vals = buckets.map(m.pick);
+    const lbl = (b) => bucketLabel(b.t, bucket);
+    const fmtSigned = (n) => (n > 0 ? "+" : n < 0 ? "-" : "") + D.fmt(Math.abs(n));
+    const fmtAxis = (n) => {
+      const a = Math.abs(n);
+      const s = a >= 1e6 ? (a / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M"
+        : a >= 1000 ? Math.round(a / 1000) + "K"
+        : (Math.round(a * 10) / 10).toString();
+      return (n < 0 ? "-" : "") + s;
+    };
+    // 自适应刻度：nice 上限（1/2/5×10^n）；负值指标（净变化）±maxV 对称，零轴居中
+    const neg = vals.some((v) => v < 0);
+    const absMax = Math.max(0, ...vals.map((v) => Math.abs(v)));
+    const np = Math.pow(10, Math.floor(Math.log10(Math.max(absMax, 1e-9))));
+    const nm = Math.max(absMax, 1e-9) / np;
+    const maxV = Math.max((nm <= 1 ? 1 : nm <= 2 ? 2 : nm <= 5 ? 5 : 10) * np, 4);
+    const minV = neg ? -maxV : 0;
+    const W = 640, H = 190, PL = 46, PR = 14, PT = 14, PB = 26;
     const iw = W - PL - PR, ih = H - PT - PB;
     const X = (i) => PL + (buckets.length === 1 ? iw / 2 : iw * i / (buckets.length - 1));
-    const Y = (v) => PT + ih * (1 - v / maxV);
-    const lbl = (b) => bucketLabel(b.t, bucket);
-    const fmt = (n) => (n > 0 ? "+" : "") + D.fmt(n);
-    const fmtShort = (n) => (n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : (n >= 1000 ? Math.round(n / 1000) + "K" : String(Math.round(n))));
-    // 网格 + 纵轴刻度（4 档）
+    const Y = (v) => PT + ih * (maxV - v) / (maxV - minV || 1);
+    const pts = vals.map((v, i) => [X(i), Y(v)]);
+    // 平滑折线（Catmull-Rom → 三次贝塞尔，单点退化为点）
+    const smoothPath = (p) => {
+      if (!p.length) return "";
+      if (p.length === 1) return "M" + p[0][0].toFixed(1) + "," + p[0][1].toFixed(1) + " L" + (p[0][0] + 1).toFixed(1) + "," + p[0][1].toFixed(1);
+      let d = "M" + p[0][0].toFixed(1) + "," + p[0][1].toFixed(1);
+      for (let i = 0; i < p.length - 1; i++) {
+        const p0 = p[Math.max(0, i - 1)], p1 = p[i], p2 = p[i + 1], p3 = p[Math.min(p.length - 1, i + 2)];
+        const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+        const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+        d += " C" + c1x.toFixed(1) + "," + c1y.toFixed(1) + " " + c2x.toFixed(1) + "," + c2y.toFixed(1) + " " + p2[0].toFixed(1) + "," + p2[1].toFixed(1);
+      }
+      return d;
+    };
+    // 网格 + 纵轴刻度（4 等分，5 条线，负值指标含负刻度）
     let grid = "";
     for (let g = 0; g <= 4; g++) {
       const gy = PT + ih * g / 4;
+      const gv = minV + (maxV - minV) * (4 - g) / 4;
       grid += '<line class="tx-trend-grid" x1="' + PL + '" y1="' + gy.toFixed(1) + '" x2="' + (W - PR) + '" y2="' + gy.toFixed(1) + '"/>' +
-        '<text class="tx-trend-axis" x="' + (PL - 6) + '" y="' + (gy + 4).toFixed(1) + '" text-anchor="end">' + fmtShort(maxV * (4 - g) / 4) + "</text>";
+        '<text class="tx-trend-axis" x="' + (PL - 6) + '" y="' + (gy + 4).toFixed(1) + '" text-anchor="end">' + fmtAxis(gv) + "</text>";
     }
     // 横轴标签：首 / 中 / 尾
     const idxs = [0, Math.floor((buckets.length - 1) / 2), buckets.length - 1].filter((v, i, a) => a.indexOf(v) === i);
@@ -1275,27 +1311,40 @@
     idxs.forEach((i) => {
       xlabels += '<text class="tx-trend-axis" x="' + X(i).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="middle">' + esc(lbl(buckets[i])) + "</text>";
     });
-    // 折线 + 数据点（<title> 悬停显示精确值）
-    const lineHtml = (arr, cls, name) => {
-      let pts = "", dots = "";
-      arr.forEach((v, i) => {
-        const xi = X(i).toFixed(1), yi = Y(v).toFixed(1);
-        pts += (i ? " " : "") + xi + "," + yi;
-        dots += '<circle class="' + cls + '" cx="' + xi + '" cy="' + yi + '" r="2.5"><title>' +
-          esc(lbl(buckets[i]) + " · " + name + " " + fmt(v)) + "</title></circle>";
+    // 折线 + 渐变面积 + 数据点（面积基线：负值指标取零轴，正值指标取图表底）
+    const yBase = Y(neg ? 0 : minV);
+    const areaPath = pts.length
+      ? smoothPath(pts) + " L" + pts[pts.length - 1][0].toFixed(1) + "," + yBase.toFixed(1) + " L" + pts[0][0].toFixed(1) + "," + yBase.toFixed(1) + " Z"
+      : "";
+    const lineHtml = () => {
+      let dots = "";
+      pts.forEach((p) => {
+        dots += '<circle class="trend-dot" cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="2.5"/>';
       });
-      return '<polyline class="' + cls + '" points="' + pts + '"/>' + dots;
+      return '<path class="trend-area" d="' + areaPath + '"/>' +
+        '<path class="trend-line" d="' + smoothPath(pts) + '"/>' + dots;
     };
+    const switchHtml =
+      '<div class="tx-trend-switch" role="tablist" aria-label="' + esc(T("tx.trend.metricLabel")) + '">' +
+      METRICS.map((x) =>
+        '<button type="button" class="tsw-btn' + (x.key === m.key ? " active" : "") + '" data-metric="' + x.key + '" role="tab" aria-selected="' + (x.key === m.key) + '">' + esc(x.label) + "</button>"
+      ).join("") +
+      "</div>";
+    const total = vals.reduce((a, b) => a + b, 0);
     const html =
       '<div class="tx-trend-title">' + esc(T("tx.trend.title")) + "</div>" +
-      '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(T("tx.trend.title")) + '">' +
-      grid + xlabels +
-      lineHtml(income, "tx-trend-inc", T("tx.summary.income")) +
-      lineHtml(expense, "tx-trend-exp", T("tx.summary.expense")) +
+      switchHtml +
+      '<div class="tx-trend-chart">' +
+      '<svg class="m-' + m.cls + '" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(T("tx.trend.title")) + '">' +
+      '<defs><linearGradient id="tx-trend-grad" x1="0" y1="0" x2="0" y2="1"><stop class="tg-0" offset="0%"/><stop class="tg-1" offset="100%"/></linearGradient></defs>' +
+      grid + xlabels + lineHtml() +
       "</svg>" +
-      '<div class="tx-trend-legend"><span><i class="tx-trend-dot inc"></i>' + esc(T("tx.summary.income")) + "</span>" +
-      '<span><i class="tx-trend-dot exp"></i>' + esc(T("tx.summary.expense")) + "</span></div>";
+      '<div class="tx-trend-guide" id="tx-trend-guide"></div>' +
+      '<div class="tx-trend-tip" id="tx-trend-tip"></div>' +
+      "</div>" +
+      '<div class="tx-trend-legend"><i class="tx-trend-dot ' + m.cls + '"></i><span>' + esc(m.label) + " · " + (m.signed ? fmtSigned(total) : D.fmt(total)) + "</span></div>";
     el.innerHTML = html;
+    _trendCtx = { buckets, vals, m, lbl, X, iw, W, PL };
   }
 
   // 趋势桶标签：hour → "MM-DD HH:00"；day/week → "MM-DD"（bucket 起点均为 UTC，转本地显示）
@@ -3116,6 +3165,43 @@
       txStartEl.addEventListener("change", () => { txCustomStart = txStartEl.value; txTable.page = 1; if (loggedIn()) loadTransactions(); });
       txEndEl.addEventListener("change", () => { txCustomEnd = txEndEl.value; txTable.page = 1; if (loggedIn()) loadTransactions(); });
       showCustom();
+    }
+
+    // 趋势图指标切换 + 悬停 tooltip（rant 2026-08-23T16:17:18 需求 1/2：事件委托，重渲染不丢绑定）
+    const txTrendEl = $("#tx-trend");
+    if (txTrendEl) {
+      txTrendEl.addEventListener("click", (e) => {
+        const b = e.target.closest ? e.target.closest(".tsw-btn") : null;
+        if (!b || b.dataset.metric === txTrendMetric) return;
+        txTrendMetric = b.dataset.metric;
+        renderTxTrend();
+      });
+      txTrendEl.addEventListener("mousemove", (e) => {
+        const ctx = _trendCtx;
+        const tip = $("#tx-trend-tip"), guide = $("#tx-trend-guide");
+        const svg = txTrendEl.querySelector("svg"), chartEl = txTrendEl.querySelector(".tx-trend-chart");
+        if (!ctx || !tip || !guide || !svg || !chartEl) return;
+        const rect = svg.getBoundingClientRect();
+        if (!rect.width) return;
+        const vb = svg.getAttribute("viewBox").split(" ").map(Number);
+        const x = (e.clientX - rect.left) / rect.width * vb[2];
+        const step = ctx.buckets.length > 1 ? ctx.X(1) - ctx.X(0) : ctx.iw;
+        const i = Math.max(0, Math.min(ctx.buckets.length - 1, Math.round((x - ctx.PL) / step)));
+        const v = ctx.vals[i];
+        const cr = chartEl.getBoundingClientRect();
+        const valTxt = ctx.m.signed ? (v > 0 ? "+" : v < 0 ? "-" : "") + D.fmt(Math.abs(v)) : D.fmt(v);
+        tip.innerHTML = esc(ctx.lbl(ctx.buckets[i])) + "<br><b>" + esc(ctx.m.label) + " " + valTxt + "</b>";
+        tip.style.display = "block";
+        guide.style.display = "block";
+        guide.style.left = (ctx.X(i) / vb[2] * cr.width) + "px";
+        tip.style.left = Math.min(Math.max(e.clientX - cr.left + 14, 4), Math.max(cr.width - tip.offsetWidth - 4, 4)) + "px";
+        tip.style.top = Math.min(Math.max(e.clientY - cr.top - tip.offsetHeight - 10, 4), Math.max(cr.height - tip.offsetHeight - 4, 4)) + "px";
+      });
+      txTrendEl.addEventListener("mouseleave", () => {
+        const tip = $("#tx-trend-tip"), guide = $("#tx-trend-guide");
+        if (tip) tip.style.display = "none";
+        if (guide) guide.style.display = "none";
+      });
     }
 
     // 表格键盘导航（rant 20:46:57 F）：点击行 → 激活高亮，之后 ↑/↓/Enter/Esc 可用
