@@ -1280,8 +1280,15 @@
     const nm = Math.max(absMax, 1e-9) / np;
     const maxV = Math.max((nm <= 1 ? 1 : nm <= 2 ? 2 : nm <= 5 ? 5 : 10) * np, 4);
     const minV = neg ? -maxV : 0;
-    // 紧凑几何（rant 10:51:57.821928：高 170 → 85 减半，无网格预留边距）
-    const W = 640, H = 85, PL = 32, PR = 8, PT = 6, PB = 14;
+    // 紧凑几何 + 动态 viewBox（rant 2026-08-24T14:29:57 真正根因）：SVG width:100% 在宽容器
+    // 会被等比放大 ~2.4x（1534px 容器 / 640 viewBox → canvasScale 2.397），使 CSS 像素
+    // （stroke-width 1.4 / font-size 8px）实际渲染 ≈3.4px / ≈19px——v0.7.15→v0.7.16 调细后
+    // "看起来没变化"即被此放大吞掉。修复：viewBox 宽 = 容器宽 → 1 viewBox 单位 ≈ 1 物理像素，
+    // 线宽/字号按 CSS 值真实呈现；窄屏（容器 ≤ 设计宽 640）保持 s=1 原样等比缩小，避免变形。
+    const DW = 640, DH = 85;
+    const cw = el.clientWidth - 32; // .tx-trend 水平 padding 16px*2 → svg 实际可用宽
+    const s = Math.max(1, (cw > 0 ? cw : DW) / DW);
+    const W = DW * s, H = DH * s, PL = 32 * s, PR = 8 * s, PT = 6 * s, PB = 14 * s;
     const iw = W - PL - PR, ih = H - PT - PB;
     const X = (i) => PL + (buckets.length === 1 ? iw / 2 : iw * i / (buckets.length - 1));
     const Y = (v) => PT + ih * (maxV - v) / (maxV - minV || 1);
@@ -3258,6 +3265,13 @@
         const tip = $("#tx-trend-tip"), guide = $("#tx-trend-guide");
         if (tip) tip.style.display = "none";
         if (guide) guide.style.display = "none";
+      });
+      // 窗口 resize → 重渲染趋势图（动态 viewBox 需跟随容器宽度，debounce 防抖；视图隐藏时跳过）
+      let _txTrendResizeT = null;
+      window.addEventListener("resize", () => {
+        if (txTrendEl.offsetParent === null) return;
+        clearTimeout(_txTrendResizeT);
+        _txTrendResizeT = setTimeout(renderTxTrend, 120);
       });
     }
 
