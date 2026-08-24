@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.16 (2026-08-24)
+
+- **趋势图视觉比例精修（rant 2026-08-24T13:31:02，PR #142）** — 交易页"点数趋势"图更精致：折线 stroke-width 1.8→1.4、坐标轴/时间标签字号 9px→8px、标题 12px→11px、图例 11px→10px、指标切换按钮 12px→11px 并收紧间距；仅调视觉比例，渐变面积/平滑曲线/指标切换/悬停 tooltip 功能不变
+
 ## v0.7.15 (2026-08-24)
 
 - **趋势图渐变修复（rant 2026-08-24T12:32:18，PR #138）** — 交易趋势图填充面积不再显示黑色实心：`<stop>` 的 stop-color/stop-opacity 改为内联属性（复用仪表盘 sparkline 写法）+ 每实例唯一渐变 id，删除不可靠的 CSS class 方案；4 个指标切换均显示对应色 0.35→0 渐变面积
