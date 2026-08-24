@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.17 (2026-08-24)
+
+- **趋势图 1:1 渲染修复（rant 2026-08-24T14:29:57，PR #144）** — 根因：SVG viewBox 640 在宽容器被等比放大 ~2.4x（线 1.4px 视觉 ≈3.4px、字 8px ≈19px，v0.7.16 调细"看不出来"即被放大吞掉）。修复：viewBox 宽动态 = 容器宽（1 viewBox 单位 ≈ 1 物理像素），线宽/字号按 CSS 值真实呈现；窄屏保持等比缩小不变形；窗口 resize 防抖重渲染。
+
 ## v0.7.16 (2026-08-24)
 
 - **趋势图视觉比例精修（rant 2026-08-24T13:31:02，PR #142）** — 交易页"点数趋势"图更精致：折线 stroke-width 1.8→1.4、坐标轴/时间标签字号 9px→8px、标题 12px→11px、图例 11px→10px、指标切换按钮 12px→11px 并收紧间距；仅调视觉比例，渐变面积/平滑曲线/指标切换/悬停 tooltip 功能不变
