@@ -749,6 +749,20 @@ mod tests {
             arr.iter().any(|k| k["full_key"] == new_key),
             "列表含新生成 key 的完整值 full_key"
         );
+        // rant 2026-08-24T12:41:25：列表返回 last_used（新 key 未使用 → null；用过 → 时间串）
+        assert!(
+            arr.iter().all(|k| k["last_used"].is_null()
+                || k["last_used"]
+                    .as_str()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false)),
+            "last_used 字段存在且为 null（未用）或时间串（已用）"
+        );
+        assert!(
+            arr.iter()
+                .any(|k| k["full_key"] == new_key && k["last_used"].is_null()),
+            "新生成且未调用的 key last_used 应为 null"
+        );
         assert!(
             arr.iter().all(|k| {
                 k["full_key"]
