@@ -344,29 +344,24 @@ select.input option { background: var(--bg-card); }
 .tsw-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
 .tx-trend-chart { position: relative; }
 .tx-trend svg { width: 100%; height: auto; display: block; }
-.tx-trend-grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 4; }
-.tx-trend-axis { fill: var(--text-mute); font-size: 10px; }
-/* 平滑折线 + 渐变面积（指标色随切换，rant 2026-08-23T16:17:18 需求 1） */
-.tx-trend svg .trend-line { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tx-trend-axis { fill: var(--text-mute); font-size: 9px; }
+/* 平滑折线 + 渐变面积（sparkline 化，rant 2026-08-24T10:51:57.821209：
+   无网格线、无数据点圆、渐变 0.35→0、teal 主题色系——消费用主强调色区分） */
+.tx-trend svg .trend-line { fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .tx-trend svg .trend-area { stroke: none; }
-.tx-trend svg .trend-dot { fill: var(--bg-card); stroke-width: 1.5; }
 .tx-trend svg .tg-0 { stop-opacity: 0; }
 .tx-trend svg .tg-1 { stop-opacity: 0; }
-.tx-trend svg.m-exp .trend-line { stroke: var(--danger-text); }
-.tx-trend svg.m-exp .trend-dot { stroke: var(--danger-text); }
-.tx-trend svg.m-exp .tg-0 { stop-color: var(--danger-text); stop-opacity: 0.22; }
-.tx-trend svg.m-exp .tg-1 { stop-color: var(--danger-text); }
+.tx-trend svg.m-exp .trend-line { stroke: var(--accent); }
+.tx-trend svg.m-exp .tg-0 { stop-color: var(--accent); stop-opacity: 0.35; }
+.tx-trend svg.m-exp .tg-1 { stop-color: var(--accent); }
 .tx-trend svg.m-inc .trend-line { stroke: var(--ok); }
-.tx-trend svg.m-inc .trend-dot { stroke: var(--ok); }
-.tx-trend svg.m-inc .tg-0 { stop-color: var(--ok); stop-opacity: 0.22; }
+.tx-trend svg.m-inc .tg-0 { stop-color: var(--ok); stop-opacity: 0.35; }
 .tx-trend svg.m-inc .tg-1 { stop-color: var(--ok); }
 .tx-trend svg.m-net .trend-line { stroke: var(--accent-text); }
-.tx-trend svg.m-net .trend-dot { stroke: var(--accent-text); }
-.tx-trend svg.m-net .tg-0 { stop-color: var(--accent-text); stop-opacity: 0.22; }
+.tx-trend svg.m-net .tg-0 { stop-color: var(--accent-text); stop-opacity: 0.35; }
 .tx-trend svg.m-net .tg-1 { stop-color: var(--accent-text); }
 .tx-trend svg.m-tok .trend-line { stroke: var(--warn); }
-.tx-trend svg.m-tok .trend-dot { stroke: var(--warn); }
-.tx-trend svg.m-tok .tg-0 { stop-color: var(--warn); stop-opacity: 0.22; }
+.tx-trend svg.m-tok .tg-0 { stop-color: var(--warn); stop-opacity: 0.35; }
 .tx-trend svg.m-tok .tg-1 { stop-color: var(--warn); }
 /* 悬停引导线 + tooltip */
 .tx-trend-guide { position: absolute; top: 2px; bottom: 6px; width: 1px; background: var(--text-dim); opacity: 0.45; display: none; pointer-events: none; }
@@ -377,9 +372,9 @@ select.input option { background: var(--bg-card); }
   box-shadow: var(--shadow); z-index: 5; white-space: nowrap; line-height: 1.5;
 }
 .tx-trend-tip b { color: var(--accent-text); font-weight: 600; }
-.tx-trend-legend { display: flex; gap: 18px; font-size: 12px; color: var(--text-mute); padding-top: 4px; align-items: center; }
-.tx-trend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
-.tx-trend-dot.exp { background: var(--danger-text); }
+.tx-trend-legend { display: flex; gap: 12px; font-size: 11px; color: var(--text-mute); padding-top: 4px; align-items: center; }
+.tx-trend-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.tx-trend-dot.exp { background: var(--accent); }
 .tx-trend-dot.inc { background: var(--ok); }
 .tx-trend-dot.net { background: var(--accent-text); }
 .tx-trend-dot.tok { background: var(--warn); }
