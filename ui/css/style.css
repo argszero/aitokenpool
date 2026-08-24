@@ -505,6 +505,7 @@ mark {
 }
 .pager button.active { border-color: var(--accent); color: var(--accent-text); }
 .pager span { color: var(--text-mute); font-size: 12px; }
+.pager .pager-ellipsis { min-width: 22px; text-align: center; user-select: none; }
 
 /* MRT 风格表格：表头排序 + 列筛选 + 每页行数 */
 .th-sort {
