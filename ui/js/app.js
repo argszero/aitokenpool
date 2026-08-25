@@ -1606,6 +1606,51 @@
     return out;
   }
 
+  // 表头（排序按钮）+ 筛选行 HTML（rant 2026-08-25T11:15:16：拆出独立渲染，整表重建不销毁筛选输入框）
+  function tableTheadHtml(columns, state) {
+    let html = "<tr>";
+    columns.forEach((col) => {
+      const sk = state.sort.find((s) => s.key === col.key);
+      const arrow = sk ? (sk.dir === "asc" ? " ▲" : " ▼") : "";
+      html += '<th' + (col.align === "num" ? ' class="num"' : "") + '><button type="button" class="th-sort" data-sort-key="' + esc(col.key) + '" title="' + T("tx.sort.title") + '">' +
+        esc(typeof col.title === "function" ? col.title() : col.title) + arrow + "</button></th>";
+    });
+    html += "</tr><tr>";
+    columns.forEach((col) => {
+      const fv = state.filters[col.key] != null ? String(state.filters[col.key]) : "";
+      if (col.filter === "select") {
+        const opts = (typeof col.options === "function" ? col.options() : (col.options || [])).map((o) =>
+          '<option value="' + esc(o) + '"' + (fv === String(o) ? " selected" : "") + ">" + esc(o) + "</option>").join("");
+        html += '<td><select class="th-filter" data-filter-key="' + esc(col.key) + '"><option value="">' + T("common.all") + "</option>" + opts + "</select></td>";
+      } else if (col.filter === "number-range") {
+        const p = fv ? fv.split(":") : ["", ""];
+        html += '<td class="range-filter"><input class="th-filter" data-filter-key="' + esc(col.key) + '" data-range="min" placeholder="' + T("tx.filter.min") + '" value="' + esc(p[0] || "") + '">' +
+          '<input class="th-filter" data-filter-key="' + esc(col.key) + '" data-range="max" placeholder="' + T("tx.filter.max") + '" value="' + esc(p[1] || "") + '"></td>';
+      } else if (col.filter) {
+        html += '<td><input class="th-filter" data-filter-key="' + esc(col.key) + '" placeholder="' + T("tx.filter.placeholder") + '" value="' + esc(fv) + '"></td>';
+      } else {
+        html += "<td></td>";
+      }
+    });
+    html += "</tr>";
+    return html;
+  }
+
+  // 数据行 HTML（每次重建 tbody 内容）
+  function tableBodyHtml(pageRows, columns) {
+    let html = "";
+    if (!pageRows.length) html += '<tr><td colspan="' + columns.length + '" class="empty-cell">' + emptyState(T("tx.empty"), T("tx.empty.sub")) + "</td></tr>";
+    pageRows.forEach((row) => {
+      html += "<tr>";
+      columns.forEach((col) => {
+        html += "<td" + (col.align === "num" ? ' class="num"' : "") + ' data-label="' + esc(typeof col.title === "function" ? col.title() : col.title) + '">' +
+          (col.render ? col.render(row) : esc(row[col.key] == null ? "" : row[col.key])) + "</td>";
+      });
+      html += "</tr>";
+    });
+    return html;
+  }
+
   function buildDataTable(cfg) {
     const { container, columns, rows, state, onState, serverPaging } = cfg;
 
@@ -1633,107 +1678,126 @@
     if (state.page > pages) state.page = pages;
     const pageRows = serverPaging ? data : data.slice((state.page - 1) * state.pageSize, state.page * state.pageSize);
 
-    // 4) 渲染表头（排序按钮）+ 筛选行
-    let html = '<table class="table"><thead><tr>';
-    columns.forEach((col) => {
-      const sk = state.sort.find((s) => s.key === col.key);
-      const arrow = sk ? (sk.dir === "asc" ? " ▲" : " ▼") : "";
-      html += '<th' + (col.align === "num" ? ' class="num"' : "") + '><button type="button" class="th-sort" data-sort-key="' + esc(col.key) + '" title="' + T("tx.sort.title") + '">' +
-        esc(typeof col.title === "function" ? col.title() : col.title) + arrow + "</button></th>";
-    });
-    html += "</tr><tr>";
-    columns.forEach((col) => {
-      const fv = state.filters[col.key] != null ? String(state.filters[col.key]) : "";
-      if (col.filter === "select") {
-        const opts = (typeof col.options === "function" ? col.options() : (col.options || [])).map((o) =>
-          '<option value="' + esc(o) + '"' + (fv === String(o) ? " selected" : "") + ">" + esc(o) + "</option>").join("");
-        html += '<td><select class="th-filter" data-filter-key="' + esc(col.key) + '"><option value="">' + T("common.all") + "</option>" + opts + "</select></td>";
-      } else if (col.filter === "number-range") {
-        const p = fv ? fv.split(":") : ["", ""];
-        html += '<td class="range-filter"><input class="th-filter" data-filter-key="' + esc(col.key) + '" data-range="min" placeholder="' + T("tx.filter.min") + '" value="' + esc(p[0] || "") + '">' +
-          '<input class="th-filter" data-filter-key="' + esc(col.key) + '" data-range="max" placeholder="' + T("tx.filter.max") + '" value="' + esc(p[1] || "") + '"></td>';
-      } else if (col.filter) {
-        html += '<td><input class="th-filter" data-filter-key="' + esc(col.key) + '" placeholder="' + T("tx.filter.placeholder") + '" value="' + esc(fv) + '"></td>';
-      } else {
-        html += "<td></td>";
-      }
-    });
-    html += "</tr></thead><tbody>";
-    if (!pageRows.length) html += '<tr><td colspan="' + columns.length + '" class="empty-cell">' + emptyState(T("tx.empty"), T("tx.empty.sub")) + "</td></tr>";
-    pageRows.forEach((row) => {
-      html += "<tr>";
-      columns.forEach((col) => {
-        html += "<td" + (col.align === "num" ? ' class="num"' : "") + ' data-label="' + esc(typeof col.title === "function" ? col.title() : col.title) + '">' +
-          (col.render ? col.render(row) : esc(row[col.key] == null ? "" : row[col.key])) + "</td>";
-      });
-      html += "</tr>";
-    });
-    html += "</tbody></table>";
-
-    // 5) 分页器 + 每页行数
-    if (pages > 1) {
-      html += '<div class="pager">';
-      pagerButtons(state.page, pages).forEach((p) => {
-        if (p === "…") html += '<span class="pager-ellipsis">…</span>';
-        else html += '<button type="button" class="' + (p === state.page ? "active" : "") + '" data-p="' + p + '">' + p + "</button>";
-      });
-      html += "<span>" + state.page + " / " + pages + " · " + T("tx.pager.count", { n: totalRows }) + "</span></div>";
-    }
-    html += '<div class="pager-size">' + T("tx.pager.size") + ' <select data-page-size><option value="5">5</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select> ' + T("tx.pager.rows") + '</div>';
-
-    container.innerHTML = html;
-
-    // 6) 事件绑定
-    container.querySelectorAll("[data-sort-key]").forEach((b) => {
-      b.addEventListener("click", (e) => {
-        const key = b.dataset.sortKey;
-        const ex = state.sort.find((s) => s.key === key);
-        if (ex) {
-          if (ex.dir === "asc") ex.dir = "desc";
-          else state.sort = state.sort.filter((s) => s.key !== key);
-        } else {
-          if (!e.shiftKey) state.sort = [];
-          state.sort.push({ key, dir: "asc" });
+    // 4) 表头 + 筛选行：仅在容器无 <table> 时渲染一次（rant 2026-08-25T11:15:16：
+    //    整表重建改为只重建数据行 + 分页器，筛选输入框 DOM 永不销毁 → 输入焦点天然保留；
+    //    输入框值即 DOM 状态源，数据行重建读 state.filters，二者一致）
+    let table = container.querySelector("table");
+    if (!table) {
+      container.innerHTML = '<table class="table"></table>';
+      table = container.querySelector("table");
+      const thead = document.createElement("thead");
+      thead.innerHTML = tableTheadHtml(columns, state); // 初值取 state.filters
+      table.appendChild(thead);
+      table.appendChild(document.createElement("tbody"));
+      // 一次性容器级事件委托（排序 / 筛选输入 / 分页 / 每页行数 / IME 组合）——
+      // 重建不重绑，事件不丢失；处理器读取 container._dt（每次渲染刷新）
+      container.addEventListener("click", (e) => {
+        const dt = container._dt; if (!dt) return;
+        const sb = e.target.closest("[data-sort-key]");
+        if (sb) {
+          const key = sb.dataset.sortKey;
+          const ex = dt.state.sort.find((s) => s.key === key);
+          if (ex) {
+            if (ex.dir === "asc") ex.dir = "desc";
+            else dt.state.sort = dt.state.sort.filter((s) => s.key !== key);
+          } else {
+            if (!e.shiftKey) dt.state.sort = [];
+            dt.state.sort.push({ key, dir: "asc" });
+          }
+          dt.state.page = 1;
+          dt.onState();
+          return;
         }
-        state.page = 1;
-        onState();
+        const pb = e.target.closest("[data-p]");
+        if (pb) { dt.state.page = Number(pb.dataset.p); dt.onState(); }
       });
-    });
-    container.querySelectorAll(".th-filter").forEach((el) => {
-      el.addEventListener("input", () => {
+      container.addEventListener("input", (e) => {
+        const dt = container._dt; if (!dt) return;
+        const el = e.target.closest(".th-filter");
+        if (!el) return;
         const key = el.dataset.filterKey;
         const range = el.dataset.range;
         if (range) {
           const other = container.querySelector('[data-filter-key="' + key + '"][data-range="' + (range === "min" ? "max" : "min") + '"]');
           const min = range === "min" ? el.value : (other ? other.value : "");
           const max = range === "max" ? el.value : (other ? other.value : "");
-          state.filters[key] = min + ":" + max;
+          dt.state.filters[key] = min + ":" + max;
         } else {
-          state.filters[key] = el.value;
+          dt.state.filters[key] = el.value;
         }
-        state.page = 1;
-        // rant 2026-08-23T16:01:07 Bug 2：逐字符 input 立即 onState() 重建表格会打断输入
-        // （如想输入 "sh" 变成 "hs"）。改为 300ms 防抖，刷新后恢复焦点并置光标到末尾。
+        dt.state.page = 1;
+        // rant 2026-08-23T16:01:07 Bug 2：逐字符 input 立即 onState() 会打断输入 → 300ms 防抖。
+        // rant 2026-08-25T11:15:16：筛选行不再被销毁，焦点天然保留；恢复焦点仅兜底
+        // （已聚焦时不动光标），IME 组合期间跳过（避免 setSelectionRange 打断中文输入法组合态）。
         if (el._dbTimer) clearTimeout(el._dbTimer);
         const focusSel = range ? '[data-filter-key="' + key + '"][data-range="' + range + '"]' : '[data-filter-key="' + key + '"]';
         el._dbTimer = setTimeout(() => {
-          onState();
+          if (el._composing) return; // 组合中：不重建表格、不碰光标，待 compositionend 后再刷新
+          dt.onState();
           const n = container.querySelector(focusSel);
-          if (n) {
+          if (n && document.activeElement !== n) {
             n.focus();
-            try { n.setSelectionRange(n.value.length, n.value.length); } catch (e) { /* 非 text 元素忽略 */ }
+            try { n.setSelectionRange(n.value.length, n.value.length); } catch (e2) { /* 非 text 元素忽略 */ }
           }
         }, 300);
       });
-    });
-    container.querySelectorAll("[data-p]").forEach((b) => {
-      b.addEventListener("click", () => { state.page = Number(b.dataset.p); onState(); });
-    });
-    const ps = container.querySelector("[data-page-size]");
-    if (ps) {
-      ps.value = state.pageSize;
-      ps.addEventListener("change", () => { state.pageSize = Number(ps.value); state.page = 1; onState(); });
+      container.addEventListener("change", (e) => {
+        const dt = container._dt; if (!dt) return;
+        const ps = e.target.closest("[data-page-size]");
+        if (ps) { dt.state.pageSize = Number(ps.value); dt.state.page = 1; dt.onState(); }
+      });
+      container.addEventListener("compositionstart", (e) => {
+        const el = e.target;
+        if (el && el.classList && el.classList.contains("th-filter")) el._composing = true;
+      });
+      container.addEventListener("compositionend", (e) => {
+        const el = e.target;
+        if (!el || !el.classList || !el.classList.contains("th-filter")) return;
+        el._composing = false;
+        // 组合结束提交文本 → 防抖触发一次筛选刷新（覆盖组合期间的输入事件被跳过的情况）
+        if (el._dbTimer) clearTimeout(el._dbTimer);
+        el._dbTimer = setTimeout(() => {
+          const dt = container._dt; if (!dt) return;
+          dt.onState();
+        }, 300);
+      });
+      // 组合被取消（Esc/切走）时清标志，避免 _composing 卡死导致后续输入不再刷新
+      container.addEventListener("focusout", (e) => {
+        const el = e.target;
+        if (el && el.classList && el.classList.contains("th-filter")) el._composing = false;
+      });
     }
+
+    // 5) 数据行（每次重建 tbody 内容）
+    const tbody = table.querySelector("tbody");
+    tbody.innerHTML = tableBodyHtml(pageRows, columns);
+
+    // 6) 分页器 + 每页行数（每次重建）
+    const oldPager = container.querySelector(".pager");
+    if (oldPager) oldPager.remove();
+    if (pages > 1) {
+      const pager = document.createElement("div");
+      pager.className = "pager";
+      let ph = "";
+      pagerButtons(state.page, pages).forEach((p) => {
+        if (p === "…") ph += '<span class="pager-ellipsis">…</span>';
+        else ph += '<button type="button" class="' + (p === state.page ? "active" : "") + '" data-p="' + p + '">' + p + "</button>";
+      });
+      ph += "<span>" + state.page + " / " + pages + " · " + T("tx.pager.count", { n: totalRows }) + "</span>";
+      pager.innerHTML = ph;
+      container.appendChild(pager);
+    }
+    const oldPs = container.querySelector(".pager-size");
+    if (oldPs) oldPs.remove();
+    const psDiv = document.createElement("div");
+    psDiv.className = "pager-size";
+    psDiv.innerHTML = T("tx.pager.size") + ' <select data-page-size><option value="5">5</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select> ' + T("tx.pager.rows");
+    const psSel = psDiv.querySelector("[data-page-size]");
+    if (psSel) psSel.value = state.pageSize;
+    container.appendChild(psDiv);
+
+    // 7) 记录最新配置，供容器级事件委托读取
+    container._dt = { state, onState };
   }
 
   /* --- 设置 --- */
