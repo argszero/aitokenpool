@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.18 (2026-08-25)
+
+- **交易列筛选改服务端全量（rant 2026-08-25T10:33:26，PR #146）** — 修复 v0.7.15 后端翻页引入的回归：表格内部列筛选（用户/模型/Key/状态/点数区间等）此前只过滤当前加载页（几十条），全量几千条不在范围内。现改为：后端 `/api/transactions` 支持列筛选参数（model/user_name/key_name LIKE、status 精确、pts_min/pts_max 区间，与 type/时间段叠加），前端筛选变化时重新向后端拉全量子集（page 重置 1）；summary/trend 同步叠加列筛选口径，各区域结果一致。
+
 ## v0.7.17 (2026-08-24)
 
 - **趋势图 1:1 渲染修复（rant 2026-08-24T14:29:57，PR #144）** — 根因：SVG viewBox 640 在宽容器被等比放大 ~2.4x（线 1.4px 视觉 ≈3.4px、字 8px ≈19px，v0.7.16 调细"看不出来"即被放大吞掉）。修复：viewBox 宽动态 = 容器宽（1 viewBox 单位 ≈ 1 物理像素），线宽/字号按 CSS 值真实呈现；窄屏保持等比缩小不变形；窗口 resize 防抖重渲染。
