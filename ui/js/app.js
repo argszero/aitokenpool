@@ -1202,11 +1202,10 @@
   // 附带 Token 统计 总/输入/缓存/输出，M 单位）
   function renderTxSummary(list) {
     const s = (Live.transactions && Live.transactions.summary) ? Live.transactions.summary : null;
-    // rant 2026-08-23T16:01:07 Bug 1：统计指标与表格内部筛选联动——
-    // 内部筛选非空时基于筛选后的行本地加总（含 token 口径一致）；无内部筛选才用后端 summary（全量 SQL 聚合）。
-    const hasFilter = Object.keys(txTable.filters).some((k) => txTable.filters[k] !== "");
+    // rant 2026-08-25T10:33:26：后端 summary 已随列筛选全量 SQL 聚合（income 白名单 earn/topup/gift
+    // 为正、consume 为负；token 口径一致）——登录态一律用后端 summary，本地加总仅作无 summary 的兜底。
     let income = 0, expense = 0, tokens = 0, inputT = 0, cachedT = 0, outputT = 0;
-    if (s && !hasFilter) {
+    if (s) {
       income = s.income_pts || 0;
       expense = s.expense_pts || 0;
       tokens = s.tokens || 0;
@@ -1214,7 +1213,7 @@
       cachedT = s.cached_tokens || 0;
       outputT = s.output_tokens || 0;
     } else {
-      // 兜底（无 summary 的旧数据/游客 mock / 内部筛选后）：按 type 而非 pts 符号（rant 00:04:21 Bug A）
+      // 兜底（无 summary 的旧数据/游客 mock）：按 type 而非 pts 符号（rant 00:04:21 Bug A）
       list.forEach((t) => {
         if (t.type === "consume") expense += Math.abs(t.pts);
         else income += Math.abs(t.pts);
@@ -1390,8 +1389,9 @@
       $("#tx-table").innerHTML = loadErrorHtml(T("tx.loadFail"), null, T("err.loadFail"));
       return;
     }
-    // 真后端分页（rant 2026-08-24T10:51:57）：本地页码/每页行数与已加载页不一致 → 重新向后端拉取对应页
-    if (Live.transactions && (txTable.loadedPage !== txTable.page || txTable.loadedPageSize !== txTable.pageSize)) {
+    // 真后端分页 + 列筛选（rant 2026-08-24T10:51:57 + 2026-08-25T10:33:26）：页码/每页行数/筛选条件
+    // 任一与已加载不一致 → 重新向后端拉取对应页（筛选变化同样触发，不再只过滤本地当前页）
+    if (Live.transactions && (txTable.loadedPage !== txTable.page || txTable.loadedPageSize !== txTable.pageSize || txTable.loadedFilterSig !== txFilterSig())) {
       loadTransactions();
       return;
     }
@@ -1429,24 +1429,56 @@
     return p.join("&");
   }
 
+  // 列筛选 → 后端全量过滤查询参数（rant 2026-08-25T10:33:26：列筛选不再只过滤当前加载页）。
+  // 列 key → 后端参数：user→user_name、key→key_name、pts 区间→pts_min/pts_max、status 精确；
+  // select 列（type/status）筛选值为 i18n 文案，反查英文 key / 库内中文值后发送。
+  const TX_TYPE_INV = {};
+  Object.keys(TX_TYPE).forEach((k) => { TX_TYPE_INV[txType(k)] = k; });
+  const TX_STATUS_INV = {};
+  ["成功", "入账", "处理中"].forEach((s) => { TX_STATUS_INV[txStatus(s)] = s; });
+  function txFilterParams() {
+    const f = txTable.filters || {};
+    const p = [];
+    const add = (k, v) => { const s = String(v == null ? "" : v).trim(); if (s !== "") p.push(k + "=" + encodeURIComponent(s)); };
+    if (f.user) add("user_name", f.user);
+    if (f.model) add("model", f.model);
+    if (f.key) add("key_name", f.key);
+    if (f.pts) {
+      const parts = String(f.pts).split(":");
+      if (parts[0] !== "") add("pts_min", parts[0]);
+      if (parts[1] !== "" && parts[1] != null) add("pts_max", parts[1]);
+    }
+    if (f.status) add("status", TX_STATUS_INV[f.status] || f.status);
+    return p.join("&");
+  }
+  // 列筛选签名：筛选条件变化 → renderTransactions 触发重拉（rant 2026-08-25T10:33:26）
+  function txFilterSig() {
+    const f = txTable.filters || {};
+    return Object.keys(f).sort().map((k) => k + "=" + String(f[k] == null ? "" : f[k])).join("&");
+  }
+
   // P2-B：按 tab 拉取交易（真后端分页 rant 2026-08-24T10:51:57：页码/每页行数随请求发出；
   // loadedPage/loadedPageSize 记录已加载页，renderTransactions 发现页码不一致时自动重拉）
   async function loadTransactions() {
     if (!loggedIn()) return;
-    const type = txTab === "all" ? "" : txTab;
+    // 类型：列筛选 type（select）优先于顶部 tab（tab=all 时即列筛选值）；列筛选后端化后同走 type 参数
+    const colType = (txTable.filters && txTable.filters.type) ? (TX_TYPE_INV[txTable.filters.type] || txTable.filters.type) : "";
+    const type = colType || (txTab === "all" ? "" : txTab);
     const range = txRangeParams();
+    const cols = txFilterParams(); // rant 2026-08-25T10:33:26：列筛选随请求发出，后端全量过滤
     const page = Math.max(1, txTable.page || 1);
     const pageSize = Math.min(100, Math.max(1, txTable.pageSize || 10));
-    const q = "/api/transactions?type=" + type + "&page=" + page + "&page_size=" + pageSize + (range ? "&" + range : "");
+    const q = "/api/transactions?type=" + type + "&page=" + page + "&page_size=" + pageSize + (range ? "&" + range : "") + (cols ? "&" + cols : "");
     try {
       await liveLoad("transactions", q);
       txTable.loadedPage = page;
       txTable.loadedPageSize = pageSize;
+      txTable.loadedFilterSig = txFilterSig(); // 记录已加载的筛选条件，变化时 renderTransactions 重拉
     } catch (e) { Live.transactions = null; /* 登录态降级空态 */ }
-    // 趋势图数据（rant 2026-08-23T16:01:07 需求 2）：独立拉取，失败不阻塞列表
+    // 趋势图数据（rant 2026-08-23T16:01:07 需求 2）：独立拉取，失败不阻塞列表；同列筛选口径
     const bucket = txTrendBucket();
     try {
-      const trend = await api.get("/api/transactions/trend?type=" + type + "&bucket=" + bucket + (range ? "&" + range : ""));
+      const trend = await api.get("/api/transactions/trend?type=" + type + "&bucket=" + bucket + (range ? "&" + range : "") + (cols ? "&" + cols : ""));
       if (Live.transactions) Live.transactions.trend = trend;
     } catch (e) { if (Live.transactions) Live.transactions.trend = null; }
     renderTransactions();
