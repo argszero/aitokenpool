@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.19 (2026-08-25)
+
+- **筛选输入不再丢焦点（rant 2026-08-25T11:15:16，PR #148）** — 修复 v0.7.18 服务端列筛选回归：每输入一个字母触发刷新并失去焦点。方案（宿主确认 B）：表头筛选行改为**只渲染一次、重建时保持存活**——buildDataTable 仅重建 tbody 与分页器，筛选输入框 DOM 永不销毁，焦点天然保留；聚焦时不做 fallback 恢复。
+
 ## v0.7.18 (2026-08-25)
 
 - **交易列筛选改服务端全量（rant 2026-08-25T10:33:26，PR #146）** — 修复 v0.7.15 后端翻页引入的回归：表格内部列筛选（用户/模型/Key/状态/点数区间等）此前只过滤当前加载页（几十条），全量几千条不在范围内。现改为：后端 `/api/transactions` 支持列筛选参数（model/user_name/key_name LIKE、status 精确、pts_min/pts_max 区间，与 type/时间段叠加），前端筛选变化时重新向后端拉全量子集（page 重置 1）；summary/trend 同步叠加列筛选口径，各区域结果一致。
