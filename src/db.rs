@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -21,6 +21,14 @@ pub fn open(path: &str) -> Result<Connection> {
         }
     }
     let conn = Connection::open(path).with_context(|| format!("打开数据库失败: {}", path))?;
+    // v12（rant 2026-08-25T12:02:13）：NFS 库性能——64MB 页缓存 + 64MB mmap 预读，
+    // 整库常驻进程内存，远端存储只首读一次（默认 cache_size 2MB < 库体积 → 每次查询准冷读）。
+    // 注意：不要启用 WAL 模式（SQLite 官方明确不支持网络文件系统，有损坏风险）；
+    // 数据库不能移本地盘（部署硬约束，库必须留在 NAS）。
+    conn.pragma_update(None, "cache_size", -65536)
+        .with_context(|| "设置 PRAGMA cache_size 失败".to_string())?;
+    conn.pragma_update(None, "mmap_size", 67108864)
+        .with_context(|| "设置 PRAGMA mmap_size 失败".to_string())?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -298,6 +306,14 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     // transactions 补 api_key_id（分发 key 关联字段，Key 列显示 api_keys.name；
     // 历史行无此字段 → NULL，前端兜底走 key_label / 交易类型说明）
     ensure_column(conn, "transactions", "api_key_id", "api_key_id INTEGER")?;
+    // v12（rant 2026-08-25T12:02:13）：transactions 查询性能——summary/COUNT/list 原先
+    // 全表扫描 + 3 LEFT JOIN（dev 库 23079 行）；建 (user_id) 前缀复合索引覆盖筛选/排序/翻页/时间范围
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);
+         CREATE INDEX IF NOT EXISTS idx_transactions_user_id_id ON transactions(user_id, id DESC);
+         CREATE INDEX IF NOT EXISTS idx_transactions_user_id_time ON transactions(user_id, time);
+         CREATE INDEX IF NOT EXISTS idx_transactions_user_id_type ON transactions(user_id, type);",
+    )?;
     // schema_version：INSERT OR REPLACE 保证幂等
     let v: i64 = conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
@@ -557,6 +573,34 @@ mod tests {
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn transactions_perf_indexes_created_on_migrate() {
+        // v12（rant 2026-08-25T12:02:13）：transactions 性能索引在迁移时建好
+        //（summary/COUNT/list 原先全表扫描 + 3 LEFT JOIN，dev 库 23079 行）
+        let (conn, p) = tmp_db("txidx");
+        let names: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_transactions_%' ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            names,
+            vec![
+                "idx_transactions_user_id",
+                "idx_transactions_user_id_id",
+                "idx_transactions_user_id_time",
+                "idx_transactions_user_id_type",
+            ],
+            "四个性能索引都应建好"
+        );
         drop(conn);
         let _ = std::fs::remove_file(p);
     }

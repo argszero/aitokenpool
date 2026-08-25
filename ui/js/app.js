@@ -1469,18 +1469,21 @@
     const page = Math.max(1, txTable.page || 1);
     const pageSize = Math.min(100, Math.max(1, txTable.pageSize || 10));
     const q = "/api/transactions?type=" + type + "&page=" + page + "&page_size=" + pageSize + (range ? "&" + range : "") + (cols ? "&" + cols : "");
+    // 趋势图数据（rant 2026-08-23T16:01:07 需求 2）：同列筛选口径
+    const bucket = txTrendBucket();
+    const tq = "/api/transactions/trend?type=" + type + "&bucket=" + bucket + (range ? "&" + range : "") + (cols ? "&" + cols : "");
     try {
-      await liveLoad("transactions", q);
+      // rant 2026-08-25T12:02:13：列表与趋势并行拉取（页面加载不再串行多等一个 ~0.9s 请求）；
+      // 失败互不阻塞：列表失败降级空态，趋势失败仅 trend=null
+      const [, trend] = await Promise.all([
+        liveLoad("transactions", q).catch(() => { Live.transactions = null; return null; }),
+        api.get(tq).catch(() => null),
+      ]);
+      if (Live.transactions) Live.transactions.trend = trend;
       txTable.loadedPage = page;
       txTable.loadedPageSize = pageSize;
       txTable.loadedFilterSig = txFilterSig(); // 记录已加载的筛选条件，变化时 renderTransactions 重拉
     } catch (e) { Live.transactions = null; /* 登录态降级空态 */ }
-    // 趋势图数据（rant 2026-08-23T16:01:07 需求 2）：独立拉取，失败不阻塞列表；同列筛选口径
-    const bucket = txTrendBucket();
-    try {
-      const trend = await api.get("/api/transactions/trend?type=" + type + "&bucket=" + bucket + (range ? "&" + range : "") + (cols ? "&" + cols : ""));
-      if (Live.transactions) Live.transactions.trend = trend;
-    } catch (e) { if (Live.transactions) Live.transactions.trend = null; }
     renderTransactions();
     // 翻页后滚动到列表顶部（rant 2026-08-24T10:51:57 需求 4）
     if (page > 1) {
