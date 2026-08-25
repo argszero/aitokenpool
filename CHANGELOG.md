@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.20 (2026-08-25)
+
+- **交易页性能修复（rant 2026-08-25T12:02:13，PR #150）** — dev 库在 NFS 导致的页面慢（浏览器实测 /api/transactions 1.7s、刷新 ~5s）三层修复：① `db.rs open()` 设 `PRAGMA cache_size=-65536`（64MB）+ `mmap_size=67108864`，整库常驻进程内存，NFS 只首读一次（dev 实测 COUNT 2.39s → 0.40s）；② v12 迁移为 transactions 建 4 个索引 `(user_id)` / `(user_id, id DESC)` / `(user_id, time)` / `(user_id, type)`，消除 summary/COUNT/list 全表扫描；③ 前端 `loadTransactions` 用 `Promise.all` 并行拉列表与趋势图，去掉一次串行 ~0.9s 等待。不启用 WAL（网络文件系统不支持）、数据库仍留在 NAS。
+
 ## v0.7.19 (2026-08-25)
 
 - **筛选输入不再丢焦点（rant 2026-08-25T11:15:16，PR #148）** — 修复 v0.7.18 服务端列筛选回归：每输入一个字母触发刷新并失去焦点。方案（宿主确认 B）：表头筛选行改为**只渲染一次、重建时保持存活**——buildDataTable 仅重建 tbody 与分页器，筛选输入框 DOM 永不销毁，焦点天然保留；聚焦时不做 fallback 恢复。
