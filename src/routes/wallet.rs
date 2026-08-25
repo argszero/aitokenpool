@@ -47,6 +47,26 @@ pub async fn wallet(
     })))
 }
 
+/// 交易列筛选（rant 2026-08-25T10:33:26：列筛选从本地当前页改为后端全量过滤）。
+/// 与前端 TX_COLUMNS 各列 filter 对应：文本列（model/user_name/key_name）LIKE 匹配、
+/// select 列（status）精确匹配、number-range（pts）区间匹配；与 type/start/end 叠加。
+/// 值为字符串以宽容空值/非法输入（解析失败按未筛处理）。
+#[derive(Debug, Default, Deserialize)]
+pub struct TxColFilters {
+    /// 模型名 LIKE（%v%）
+    pub model: Option<String>,
+    /// 用户名 LIKE（JOIN users u）
+    pub user_name: Option<String>,
+    /// Key 名 LIKE（JOIN api_keys ak；历史行兜底 key_label 表达式）
+    pub key_name: Option<String>,
+    /// 状态精确匹配（库内中文值：成功/入账/处理中）
+    pub status: Option<String>,
+    /// 点数下限（>=）
+    pub pts_min: Option<String>,
+    /// 点数上限（<=）
+    pub pts_max: Option<String>,
+}
+
 /// GET /api/transactions 查询参数
 #[derive(Debug, Deserialize)]
 pub struct TxQuery {
@@ -61,17 +81,22 @@ pub struct TxQuery {
     pub start: Option<String>,
     /// 结束时间（ISO 8601，UTC，SQLite 可解析），time < end；缺省不限
     pub end: Option<String>,
+    /// 列筛选（model/user_name/key_name/status/pts_min/pts_max）
+    #[serde(flatten)]
+    pub filters: TxColFilters,
 }
 
 /// 构建 transactions 查询条件与绑定参数。
-/// 参数顺序固定：user_id → type → start → end（存在的才加入，占位符序号递增）。
-/// `prefix` 非空时列名加前缀（如 "t"），供带 JOIN 的列表查询使用。
+/// 参数顺序固定：user_id → type → start → end → 列筛选（存在的才加入，占位符序号递增）。
+/// 列筛选引用 JOIN 表列（u.name / ak.name / k.*）——调用方须带对应 LEFT JOIN
+/// （列表/summary/trend 统一带 keys/users/api_keys 三 JOIN，LEFT JOIN 主键 1:1 不放大行数）。
 fn tx_where(
     prefix: &str,
     user_id: i64,
     type_filter: &Option<String>,
     start: &Option<String>,
     end: &Option<String>,
+    f: &TxColFilters,
 ) -> (String, Vec<rusqlite::types::Value>) {
     let col = |c: &str| {
         if prefix.is_empty() {
@@ -98,7 +123,55 @@ fn tx_where(
             }
         }
     }
+    // 列筛选：文本列 LIKE、status 精确、pts 区间
+    let like = |v: &Option<String>| -> Option<String> {
+        v.as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("%{s}%"))
+    };
+    if let Some(s) = like(&f.model) {
+        conds.push(format!("{} LIKE ?{}", col("model"), binds.len() + 1));
+        binds.push(rusqlite::types::Value::Text(s));
+    }
+    if let Some(s) = like(&f.user_name) {
+        conds.push(format!("u.name LIKE ?{}", binds.len() + 1));
+        binds.push(rusqlite::types::Value::Text(s));
+    }
+    if let Some(s) = like(&f.key_name) {
+        // 与前端 Key 列显示口径一致：key_name 优先，历史行兜底 key_label（note/provider/plan）
+        conds.push(format!(
+            "COALESCE(ak.name, CASE WHEN k.note <> '' THEN k.note \
+                WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
+                ELSE k.provider END) LIKE ?{}",
+            binds.len() + 1
+        ));
+        binds.push(rusqlite::types::Value::Text(s));
+    }
+    if let Some(s) = f
+        .status
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        conds.push(format!("{} = ?{}", col("status"), binds.len() + 1));
+        binds.push(rusqlite::types::Value::Text(s.to_string()));
+    }
+    for (v, op) in [(f.pts_min.as_deref(), ">="), (f.pts_max.as_deref(), "<=")] {
+        if let Some(n) = v.and_then(|s| s.trim().parse::<f64>().ok()) {
+            conds.push(format!("{} {op} ?{}", col("pts"), binds.len() + 1));
+            binds.push(rusqlite::types::Value::Real(n));
+        }
+    }
     (conds.join(" AND "), binds)
+}
+
+/// transactions 三 JOIN（keys/users/api_keys）片段：列表/summary/trend 共用，
+/// 使列筛选中的 user_name/key_name 可引用 JOIN 表列。
+fn tx_joins() -> &'static str {
+    "LEFT JOIN keys k ON k.id = t.key_id \
+     LEFT JOIN users u ON u.id = t.user_id \
+     LEFT JOIN api_keys ak ON ak.id = t.api_key_id"
 }
 
 fn default_page() -> u32 {
@@ -118,12 +191,13 @@ pub async fn transactions(
     let page_size = q.page_size.clamp(1, 100);
     let type_filter = match q.r#type.as_str() {
         "" | "all" => None,
-        t @ ("consume" | "earn" | "topup" | "gift") => Some(t.to_string()),
+        // 列筛选 select 含 withdraw（rant 2026-08-25T10:33.26：列筛选后端化后 UI 选项须全被 API 接受）
+        t @ ("consume" | "earn" | "topup" | "gift" | "withdraw") => Some(t.to_string()),
         _ => {
             return Err((
                 axum::http::StatusCode::BAD_REQUEST,
                 Json(
-                    serde_json::json!({ "error": "type 必须为 consume / earn / topup / gift / all" }),
+                    serde_json::json!({ "error": "type 必须为 consume / earn / topup / gift / withdraw / all" }),
                 ),
             ))
         }
@@ -148,18 +222,20 @@ pub async fn transactions(
     let start = norm(&q.start)?;
     let end = norm(&q.end)?;
     // 汇总（rant 2026-08-22T00:04:21/00:07:08）：全量 SQL 聚合（不依赖分页），
-    // 按当前 type + 时间段筛选；口径 = income 白名单（earn/topup/gift）为正、consume 为负。
-    let (where_sql, where_binds) = tx_where("", auth.user_id, &type_filter, &start, &end);
+    // 按当前 type + 时间段 + 列筛选；口径 = income 白名单（earn/topup/gift）为正、consume 为负。
+    let (where_sql, where_binds) =
+        tx_where("t", auth.user_id, &type_filter, &start, &end, &q.filters);
     let summary_sql = format!(
         "SELECT \
-            COALESCE(SUM(CASE WHEN type IN ('earn','topup','gift') THEN pts ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN type = 'consume' THEN pts ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN type IN ('earn','topup','gift') THEN pts ELSE -pts END), 0), \
-            COALESCE(SUM(tokens), 0), \
-            COALESCE(SUM(tokens - cached_tokens - output_tokens), 0), \
-            COALESCE(SUM(cached_tokens), 0), \
-            COALESCE(SUM(output_tokens), 0) \
-            FROM transactions WHERE {where_sql}"
+            COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type = 'consume' THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE -t.pts END), 0), \
+            COALESCE(SUM(t.tokens), 0), \
+            COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
+            COALESCE(SUM(t.cached_tokens), 0), \
+            COALESCE(SUM(t.output_tokens), 0) \
+            FROM transactions t {} WHERE {where_sql}",
+        tx_joins()
     );
     let summary: serde_json::Value = conn
         .query_row(&summary_sql, params_from_iter(where_binds.iter()), |r| {
@@ -176,7 +252,10 @@ pub async fn transactions(
         .map_err(internal)?;
     let total: i64 = conn
         .query_row(
-            &format!("SELECT COUNT(*) FROM transactions WHERE {where_sql}"),
+            &format!(
+                "SELECT COUNT(*) FROM transactions t {} WHERE {where_sql}",
+                tx_joins()
+            ),
             params_from_iter(where_binds.iter()),
             |r| r.get(0),
         )
@@ -184,7 +263,8 @@ pub async fn transactions(
     let offset = (page - 1) * page_size;
     // rant 2026-08-22T06:36:54/06:37:50：模型/Key 列 — 补 key_label（JOIN keys：
     // note 非空用 note，否则 provider / plan，plan 空则仅 provider；key 已删 → NULL）
-    let (list_where, mut list_binds) = tx_where("t", auth.user_id, &type_filter, &start, &end);
+    let (list_where, mut list_binds) =
+        tx_where("t", auth.user_id, &type_filter, &start, &end, &q.filters);
     let n = list_binds.len();
     list_binds.push(rusqlite::types::Value::Integer(page_size as i64));
     list_binds.push(rusqlite::types::Value::Integer(offset as i64));
@@ -257,6 +337,9 @@ pub struct TxTrendQuery {
     /// 聚合粒度：hour / day / week（缺省 day；非法值回退 day）
     #[serde(default)]
     pub bucket: String,
+    /// 列筛选（model/user_name/key_name/status/pts_min/pts_max，与 /api/transactions 一致）
+    #[serde(flatten)]
+    pub filters: TxColFilters,
 }
 
 /// GET /api/transactions/trend（rant 2026-08-23T16:01:07：交易页趋势图数据源）
@@ -270,12 +353,13 @@ pub async fn transactions_trend(
 ) -> Result<Json<serde_json::Value>, ApiErr> {
     let type_filter = match q.r#type.as_str() {
         "" | "all" => None,
-        t @ ("consume" | "earn" | "topup" | "gift") => Some(t.to_string()),
+        // 与 /api/transactions 一致：列筛选 select 含 withdraw（rant 2026-08-25T10:33:26）
+        t @ ("consume" | "earn" | "topup" | "gift" | "withdraw") => Some(t.to_string()),
         _ => {
             return Err((
                 axum::http::StatusCode::BAD_REQUEST,
                 Json(
-                    serde_json::json!({ "error": "type 必须为 consume / earn / topup / gift / all" }),
+                    serde_json::json!({ "error": "type 必须为 consume / earn / topup / gift / withdraw / all" }),
                 ),
             ))
         }
@@ -301,7 +385,8 @@ pub async fn transactions_trend(
     };
     let start = norm(&q.start)?;
     let end = norm(&q.end)?;
-    let (where_sql, where_binds) = tx_where("t", auth.user_id, &type_filter, &start, &end);
+    let (where_sql, where_binds) =
+        tx_where("t", auth.user_id, &type_filter, &start, &end, &q.filters);
     // 桶表达式：day/week 产出 "YYYY-MM-DD"，hour 产出 "YYYY-MM-DD HH:00"
     let expr = match bucket.as_str() {
         "hour" => "%Y-%m-%d %H:00",
@@ -323,7 +408,8 @@ pub async fn transactions_trend(
             COALESCE(SUM(t.cached_tokens), 0), \
             COALESCE(SUM(t.output_tokens), 0), \
             COUNT(*) \
-         FROM transactions t WHERE {where_sql} GROUP BY b ORDER BY b"
+         FROM transactions t {} WHERE {where_sql} GROUP BY b ORDER BY b",
+        tx_joins()
     );
     let mut stmt = conn.prepare(&trend_sql).map_err(internal)?;
     let buckets: Vec<serde_json::Value> = stmt
@@ -696,6 +782,117 @@ mod tests {
         assert!(
             !has_pts(&v["items"], 5.0) && !has_pts(&v["items"], 2.0),
             "窄区间不应含显式插入的两条: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transactions_column_filters() {
+        // rant 2026-08-25T10:33:26：列筛选（model/user_name/key_name/status/pts 区间）
+        // 从本地当前页过滤改为后端全量过滤——列表 total/summary 联动；trend 同口径。
+        let st = test_state("txcolf");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "UPDATE api_keys SET name = '我的测试key' WHERE user_id = 1",
+                [],
+            )
+            .unwrap();
+            let ak_id: i64 = conn
+                .query_row("SELECT id FROM api_keys WHERE user_id = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            // 3 条：model/点数各异；1 条 earn + 状态「处理中」
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, api_key_id, model, tokens, pts, type, status) \
+                 VALUES (1, '2', 1, ?1, 'deepseek-v4-flash', 100, 10.0, 'consume', '成功')",
+                rusqlite::params![ak_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, '3', 1, 'gpt-4o', 200, 20.0, 'consume', '成功')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, '4', 2, 'claude-3-5-sonnet', 300, 30.0, 'earn', '处理中')",
+                [],
+            )
+            .unwrap();
+        }
+        // model LIKE（%deepseek%）→ 1 条；summary 联动为消费 10
+        let (s, body) = get(st.clone(), "/api/transactions?model=deepseek", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "model LIKE 全量过滤: {body}");
+        assert_eq!(
+            v["items"].as_array().unwrap()[0]["model"],
+            "deepseek-v4-flash"
+        );
+        assert!(
+            (v["summary"]["expense_pts"].as_f64().unwrap() - 10.0).abs() < 1e-9,
+            "summary 随列筛选联动: {body}"
+        );
+        // status 精确（处理中，URL-encoded）→ 1 条 earn
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?status=%E5%A4%84%E7%90%86%E4%B8%AD",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "status 精确过滤: {body}");
+        assert_eq!(v["items"].as_array().unwrap()[0]["type"], "earn");
+        // pts 区间 [15, 25] → 1 条（20）
+        let (s, body) = get(st.clone(), "/api/transactions?pts_min=15&pts_max=25", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "pts 区间过滤: {body}");
+        assert!((v["items"].as_array().unwrap()[0]["pts"].as_f64().unwrap() - 20.0).abs() < 1e-9);
+        // user_name LIKE（demo，全部 3 条命中）
+        let (s, body) = get(st.clone(), "/api/transactions?user_name=dem", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 3, "user_name LIKE: {body}");
+        // key_name LIKE（我的测试key）→ 仅 api_key_id 那条（10.0）
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?key_name=%E6%88%91%E7%9A%84",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "key_name LIKE: {body}");
+        assert!((v["items"].as_array().unwrap()[0]["pts"].as_f64().unwrap() - 10.0).abs() < 1e-9);
+        // 列筛选 + type 叠加（model=deepseek & type=consume）→ 仍 1 条
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=consume&model=deepseek",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "type + 列筛选叠加: {body}");
+        // trend 与列表同口径（model=deepseek → 单桶 expense=10）
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions/trend?model=deepseek&bucket=day",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let buckets = v["buckets"].as_array().unwrap();
+        assert_eq!(buckets.len(), 1, "trend 随列筛选: {body}");
+        assert!(
+            (buckets[0]["expense"].as_f64().unwrap() - 10.0).abs() < 1e-9,
+            "{body}"
         );
     }
 
