@@ -168,27 +168,54 @@
     <!-- 仪表盘 Dashboard -->
     <section class="view" id="view-dashboard">
       <header class="page-head">
-        <h2 data-i18n="view.dashboard">仪表盘</h2>
-        <p data-i18n="view.dashboard.sub">总览你的点数、用量与收益</p>
+        <div>
+          <div class="crumb" data-i18n="dash.crumb">/ 仪表盘</div>
+          <h2 data-i18n="view.dashboard">仪表盘</h2>
+          <p data-i18n="view.dashboard.sub">总览你的点数、用量与收益</p>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" data-goto="marketplace" data-i18n="dash.gotoMarket">去市场调用模型</button>
       </header>
       <div class="stat-grid" id="dash-stats"></div>
-      <div class="card-grid">
+      <div class="split mt16">
         <div class="card">
-          <h3 data-i18n="dash.sharings">我的共享</h3>
-          <div class="mini-list" id="dash-sharings"></div>
+          <div class="spread">
+            <div>
+              <h3 data-i18n="dash.trend">近 14 天消耗与收益</h3>
+              <p class="card-sub" data-i18n="dash.trend.sub">单位：点数 · 每日合计</p>
+            </div>
+          </div>
+          <div class="trend" id="dash-trend"></div>
+          <div class="legend" id="dash-trend-legend">
+            <span><i class="consume"></i><span data-i18n="dash.trend.consume">消费</span></span>
+            <span><i class="earn"></i><span data-i18n="dash.trend.earn">共享收益</span></span>
+          </div>
         </div>
         <div class="card">
           <h3 data-i18n="dash.month">本月点数变化</h3>
+          <p class="card-sub" data-i18n="dash.month.sub">最近几笔累计</p>
           <div class="mini-list" id="dash-month-changes"></div>
         </div>
+      </div>
+      <div class="card mt16">
+        <div class="spread">
+          <div>
+            <h3 data-i18n="dash.sharings">我的共享</h3>
+            <p class="card-sub" data-i18n="dash.sharings.sub">上架中的 key 与实时用量</p>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm" data-goto="sharing" data-i18n="dash.manageSharing">管理共享</button>
+        </div>
+        <div class="mini-list" id="dash-sharings"></div>
       </div>
     </section>
 
     <!-- 模型市场 Marketplace -->
     <section class="view hidden" id="view-marketplace">
       <header class="page-head">
-        <h2 data-i18n="view.marketplace">模型市场</h2>
-        <p data-i18n="view.marketplace.sub">浏览 / 搜索各家模型，按点数计价</p>
+        <div>
+          <div class="crumb" data-i18n="mk.crumb">/ 模型市场</div>
+          <h2 data-i18n="view.marketplace">模型市场</h2>
+          <p data-i18n="view.marketplace.sub">浏览 / 搜索各家模型，按点数计价</p>
+        </div>
       </header>
       <div class="toolbar">
         <span class="search">
@@ -204,18 +231,31 @@
           <option value="price-desc" data-i18n="mk.sort.priceDesc">输入价 高→低</option>
           <option value="ctx-desc" data-i18n="mk.sort.ctxDesc">上下文 大→小</option>
         </select>
+        <select id="mk-avail" class="input">
+          <option value="all" data-i18n="mk.avail.all">全部可用性</option>
+          <option value="yes" data-i18n="mk.avail.yes">仅可用</option>
+        </select>
+        <span class="grow"></span>
         <span class="toolbar-count" id="mk-count"></span>
       </div>
       <!-- 最近使用（rant 20:46:57 D：localStorage 最近 5 个去重，复用 .chip，点击直接使用） -->
       <div class="recent-row" id="mk-recent" hidden>
         <span class="recent-label" data-i18n="mk.recent">最近使用</span>
         <span class="chips" id="mk-recent-chips"></span>
-        <button type="button" class="btn btn-ghost" data-mk-recent-clear data-i18n-title="mk.recent.clear.title" data-i18n="mk.recent.clear" title="清空最近使用记录">清空</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-mk-recent-clear data-i18n-title="mk.recent.clear.title" data-i18n="mk.recent.clear" title="清空最近使用记录">清空</button>
       </div>
       <div class="table-wrap">
         <table class="table">
           <thead>
-            <tr><th data-i18n="mk.col.provider">厂商 Provider</th><th data-i18n="mk.col.model">模型 Model</th><th class="num" data-i18n="mk.col.in">输入价 /1M</th><th class="num" data-i18n="mk.col.out">输出价 /1M</th><th class="num" data-i18n="mk.col.ctx">上下文</th><th data-i18n="mk.col.avail">可用性</th><th data-i18n="mk.col.action">操作</th></tr>
+            <tr>
+              <th data-i18n="mk.col.providerModel">厂商 / 模型</th>
+              <th class="num" data-i18n="mk.col.in">输入价 /1M</th>
+              <th class="num" data-i18n="mk.col.out">输出价 /1M</th>
+              <th class="num" data-i18n="mk.col.ctx">上下文</th>
+              <th data-i18n="mk.col.caps">能力</th>
+              <th data-i18n="mk.col.avail">可用性</th>
+              <th data-i18n="mk.col.action">操作</th>
+            </tr>
           </thead>
           <tbody id="mk-body"></tbody>
         </table>
@@ -225,15 +265,15 @@
     <!-- 共享管理 Sharing -->
     <section class="view hidden" id="view-sharing">
       <header class="page-head">
-        <h2 data-i18n="view.sharing">共享管理</h2>
-        <p data-i18n="view.sharing.sub">上架闲置 key 赚点数 · 管理共享中的 key</p>
+        <div>
+          <div class="crumb" data-i18n="share.crumb">/ 共享管理</div>
+          <h2 data-i18n="view.sharing">共享管理</h2>
+          <p data-i18n="view.sharing.sub">上架闲置 key 赚点数 · 管理共享中的 key</p>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" id="share-add-btn" data-i18n="share.add">＋ 上架新 key</button>
       </header>
       <div class="stat-grid" id="share-stats"></div>
-      <div class="toolbar">
-        <button type="button" class="btn btn-primary" id="share-add-btn" data-i18n="share.add">＋ 添加 / 上架新 key</button>
-      </div>
-      <div class="card-grid">
-        <div class="card" id="share-form-card" hidden>
+      <div class="card mt16" id="share-form-card" hidden>
           <h3 data-i18n="share.form.title">上架新 key</h3>
           <form id="share-form" class="form">
             <div class="form-row">
@@ -289,16 +329,15 @@
               <button type="button" class="btn btn-ghost" id="sf-cancel" data-i18n="share.form.cancel">取消</button>
             </div>
           </form>
-        </div>
-        <div class="card">
-          <h3 data-i18n="share.list">我的共享列表</h3>
-          <p class="muted" data-i18n="share.earned">收益已到账</p>
-          <div class="table-wrap compact">
-            <table class="table">
-              <thead><tr><th data-i18n="share.col.provider">厂商 · Plan / 模型</th><th data-i18n="share.col.key">Key</th><th class="num" data-i18n="share.col.used">已用/额度</th><th class="num" data-i18n="share.col.price">单价</th><th class="num" data-i18n="share.col.earn">收益</th><th data-i18n="share.col.time">上架时间</th><th data-i18n="share.col.status">状态</th><th></th></tr></thead>
-              <tbody id="share-body"></tbody>
-            </table>
-          </div>
+      </div>
+      <div class="card mt16">
+        <h3 data-i18n="share.list">我的共享列表</h3>
+        <p class="card-sub" data-i18n="share.earned">收益已到账 · 可暂停 / 下线</p>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th data-i18n="share.col.provider">厂商 · Plan / 模型</th><th data-i18n="share.col.key">Key</th><th class="num" data-i18n="share.col.used">已用 / 额度</th><th class="num" data-i18n="share.col.price">单价</th><th class="num" data-i18n="share.col.earn">收益</th><th data-i18n="share.col.avail">可用时段</th><th data-i18n="share.col.status">状态</th><th></th></tr></thead>
+            <tbody id="share-body"></tbody>
+          </table>
         </div>
       </div>
     </section>
