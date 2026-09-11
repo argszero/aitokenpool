@@ -141,7 +141,7 @@ ui/
 
 ## 搜索增强约定（v1.18，rant 2026-08-17T18:06:09 D）
 
-- **统一接线 `wireSearch(input, render)`**：所有搜索框（`#mk-search` / `#ak-search` / `#od-search` / `#ops-search`）走**~150ms 输入防抖**渲染（连续输入只渲染一次，避免整表重绘闪烁）+ **「清空 ×」按钮**（有内容时显示；点击清空立即重绘并聚焦，不走防抖）；HTML 结构为 `.search-box` 包裹 `<input>` + `<button class="search-clear">`；
+- **统一接线 `wireSearch(input, render)`**：所有搜索框（`#mk-search` / `#ak-search` / `#od-search` / `#emp-search` / `#ops-search` / `#model-search`）走**~150ms 输入防抖**渲染（连续输入只渲染一次，避免整表重绘闪烁）+ **「清空 ×」按钮**（有内容时显示；点击清空立即重绘并聚焦，不走防抖）；HTML 结构为 `.search` 包裹 `<input>` + `<button class="search-clear">`（v1.22 全站 UI 重设计对齐原型类名，原 `.search-box` 已更名）；
 - **关键词高亮用 `hl(text, rawQ)`**：先 `esc()` 转义再对查询词**大小写不敏感**包 `<mark>`（正则转义用户输入，`& < >` 等字符与转义正文同构不错位）；无关键词返回转义原样（重置后自动清除）；
 - **程序化清空用 `resetSearch(input)`**（值 + × 按钮态同步，不触发渲染；调用方随后自行重绘）——空状态「清除搜索 / 清除筛选」按钮已统一走此路径；
 - `mark` 样式：`--accent-soft` 底 + `--accent-text` 字，双主题对比度达标。
@@ -225,8 +225,9 @@ ui/
 ## 接入端点卡片约定（v1.19，rant 2026-08-17T20:44:18）
 
 - 设置页 **`#endpoint-card`「接入方式 / API 端点」** 卡片，位于 API Key 卡片**上方**（先看端点再生成 key）；
-- 每端点一行 `.endpoint-row`：`.ep-tag` 协议标签（OpenAI 兼容 / Anthropic 兼容，accent 药丸）→ `.ep-url`（`--mono` 等宽、`user-select:all` 整段选中、可横向滚动）→ `.ep-copy` 复制按钮 → `.ep-desc` 说明小字（支持的工具列表）；
-- **URL 数据**：`API_ENDPOINTS` 静态常量（`ui/js/app.js`，注释标明真实值来自部署配置 `config.server.base_url` 之类）；卡片内 `.ep-note`「部署后替换为你的网关域名」（原型占位）；`.ep-steps` 使用步骤 ①②③（生成 key → 填 Base URL → 填 key）；
+- **三行端点**（v1.22 全站 UI 重设计对齐原型，rant 2026-09-11T16:23:43）：OpenAI Chat `/v1`（POST /v1/chat/completions）· OpenAI Responses `/v1`（POST /v1/responses）· Anthropic Messages `/anthropic`（POST /anthropic/v1/messages）——三条都是后端真实路由（`src/routes/mod.rs`），不是虚标：前两者共用 `/v1` base，协议路径不同；
+- 每端点一行 `.endpoint-row`（原型三列栅格 `auto 1fr auto`，行间 1px 分隔线）：`.ep-tag` 协议标签（accent 小药丸）→ `.ep-url`（`--mono` 等宽、`user-select:all` 整段选中、可横向滚动）→ `.ep-copy` 复制按钮 → `.ep-desc` 说明小字跨第 2-3 列（支持的工具与协议路径）；
+- **URL 数据**：`apiEndpoints()` 按 `endpointBase()`（`GET /api/config` 的 `public_url`，取不到则同源 origin）实时拼接，无静态域名；`.ep-desc` 文案走 i18n（`settings.ep.*.desc`，`data-ep-desc` 索引在 `applyEndpointUrls()` 里随语言刷新）；卡片内 `.ep-note` 说明端点来源；`.ep-steps` 使用步骤 ①②③（生成 key → 填 Base URL → 填 key）；
 - **复制**：`copyEndpoint(i)` 复用 copyKey 的降级链（clipboard API → textarea+execCommand → 提示 Ctrl+C）与「已复制 ✓」flash（1.2s 恢复）；事件绑定 `document.querySelectorAll("[data-ep-copy]")`（bindEvents）；
 - 窄屏（≤560px）：`.endpoint-row` 纵向堆叠，`.ep-url` `word-break:break-all` 自动换行。
 
@@ -248,6 +249,8 @@ ui/
 ## 表格密度切换约定（v1.20，rant 2026-08-17T20:46:57 C）
 
 - 设置页「偏好」区**「表格密度」**两档单选：`#density-comfortable`（舒适，默认）/ `#density-compact`（紧凑），name 统一 `density`，`.density-options` 纵向布局；
+- v1.22（rant 2026-09-11T16:23:43）：「偏好」新增**主题下拉 `#prefs-theme`**（与右上角/侧边栏切换按钮共用 `applyTheme()`，localStorage `atp-theme` 记忆）与**默认模型下拉 `#prefs-model`**（选项来自真实 `/api/models`，在 `renderPrefModels()` 里填充，未加载时只有「未设置」）；「账户」改为昵称（`/api/me` 真实昵称）+ 只读邮箱（登录账号，无后端改邮箱接口）；三个卡片用 `.card-grid-3`（原型三栏），API Key 卡片用 `.spread` 把「生成新 Key」提到卡片标题右侧；
+
 - **localStorage `atp-density`**（`"comfortable"` / `"compact"`，无值默认 `comfortable`）：启动时 `applyDensity(getDensity())` 还原并勾选对应 radio；`change` 事件 → `applyDensity(value)`（`#app` 加/移 `.density-compact` 类 + 写 localStorage，try/catch 兼容隐私模式）；
 - 修饰类**只加在 `#app`**，通过 `.density-compact .table …` 选择器全站生效：紧凑档 `th/td` padding `4px 8px`、`td` 字号 12px、`th`/行内按钮 11px；舒适档不写任何规则（默认样式零回归）；
 - 新增表格无需改动——继承 `.table` 即自动响应密度；冒烟测试断言走 `#app` 的 `_classes.has("density-compact")` 与 radio `checked`。
@@ -325,3 +328,10 @@ ui/
   - 游客模式（`loggedIn()` 为假）→ 继续用 `D.SHARINGS` mock 浏览（不变）；
 - **覆盖范围**：仪表盘 `renderDashboard()` 与共享管理 `renderSharing()` 两处 `Live.sharings` 消费点均按此约定（共享页为登录态专属视图，原 mock fallback 只在拉取失败时暴露，同属本 bug 类）；
 - **冒烟测试注意**：登录态断言「我的共享」不得含 `glm-5.2` / `deepseek-v4-flash` 行；干净库（上架 0 条）应见空态文案；stub `api.get("/api/sharings")` 抛错时断言出现 `[data-live-retry]` 按钮且点击后重新调用 `loadDashboard()`。
+
+## 设置 / 管理 / 运营布局约定（v1.22，rant 2026-09-11T16:23:43 PR6）
+
+- **page-head crumb**：8 个视图统一 `.crumb`（`/ 设置` `/ 管理视图` `/ 运营视图`），与仪表盘/市场/共享/钱包/交易一致；
+- **管理视图**（4 tab 不变）：成员管理 pane 增加 `#emp-search` 成员搜索（成员名 / 邮箱 / 部门，`hl()` 高亮）+ 表格「角色 / 部门 / 永久点数 / 赠送点数 / 可用」列；用量报表用 `.card-grid-3` 三栏；组织管理与模型管理的工具栏为「搜索 + `.grow` + 主按钮（`btn-sm`）」，与原型一致；
+- **运营视图**（2 tab 不变）：运行概览新增两张卡片——**今日调用量（按小时）** `.bar-list`（`/api/ops/runtime` 的 `today_hours`，服务端 0-23 全量补零；GROUP BY 会省略无调用的小时，不补零会让柱子整体左移，与交易页 `txTrendDays` 同款坑）与**上游 key 健康** `.mini-list`（`key_health` 按厂商聚合 total/on/off，三态 pill：健康 / N 个异常 / 全部失败）；成员充值的搜索框移到卡片标题行右侧（原型 `.spread`）；
+- **零 mock 不破**：以上数据全部来自真实端点，加载失败仍走空态 + 重试（`.mini-item` / `.bar-row` 只在有真实数据时才渲染）。

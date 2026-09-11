@@ -1833,6 +1833,19 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["users"], 3, "demo+admin+ops: {body}");
         assert_eq!(v["month_calls"], 0);
+        // rant 2026-09-11T16:23:43（PR6）：今日按小时必须 0-23 全量补零（缺小时会让前端柱状图左移）
+        let hours = v["today_hours"].as_array().expect("today_hours 数组");
+        assert_eq!(hours.len(), 24, "24 个小时桶: {body}");
+        assert_eq!(hours[0]["hour"], 0);
+        assert_eq!(hours[23]["hour"], 23);
+        assert!(
+            hours.iter().all(|h| h["calls"] == 0),
+            "无调用时全为 0: {body}"
+        );
+        // 上游 key 健康：按厂商聚合（测试库仅 seed 的 deepseek 一条，status='on'）
+        let kh = v["key_health"].as_array().expect("key_health 数组");
+        assert!(!kh.is_empty(), "至少有 seed 的上游 key: {body}");
+        assert!(kh.iter().all(|k| k["off"] == 0), "seed key 均为 on: {body}");
         // users 列表（含余额）
         let (s, body) = get(st.clone(), "/api/ops/users", Some(&ops_bearer)).await;
         assert_eq!(s, StatusCode::OK);

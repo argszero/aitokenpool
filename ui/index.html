@@ -469,24 +469,33 @@
     <!-- 设置 Settings -->
     <section class="view hidden" id="view-settings">
       <header class="page-head">
-        <h2 data-i18n="view.settings">设置</h2>
-        <p data-i18n="view.settings.sub">账户 · API Key · 通知 · 偏好（原型展示）</p>
-        <button type="button" class="btn btn-ghost tour-replay" id="tour-replay-btn" data-i18n="settings.tour">重新查看引导</button>
+        <div>
+          <div class="crumb" data-i18n="settings.crumb">/ 设置</div>
+          <h2 data-i18n="view.settings">设置</h2>
+          <p data-i18n="view.settings.sub">账户 · 接入方式 · API Key · 通知与偏好</p>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm tour-replay" id="tour-replay-btn" data-i18n="settings.tour">重新查看引导</button>
       </header>
       <div class="card" id="endpoint-card">
         <h3 data-i18n="settings.endpoints">接入方式</h3>
-        <p class="muted" data-i18n="settings.endpoints.sub">生成了 API Key 后，把下面端点填进 Cursor / Cline / Roo Code / Claude Code 等工具的 Base URL。</p>
+        <p class="card-sub" data-i18n="settings.endpoints.sub">生成了 API Key 后，把下面端点填进 Cursor / Cline / Roo Code / Claude Code 等工具的 Base URL。</p>
         <div class="endpoint-row">
-          <span class="ep-tag" data-i18n="settings.ep.openai">OpenAI 兼容</span>
+          <span class="ep-tag" data-i18n="settings.ep.openaiChat">OpenAI Chat</span>
           <code class="ep-url" data-ep-url="0">https://gateway.aitokenpool.local/v1</code>
           <button type="button" class="btn btn-ghost ep-copy" data-ep-copy="0" data-i18n="settings.ak.copy">复制</button>
-          <span class="ep-desc">Chat Completions · Cursor / Cline / Roo Code / OpenCode / OpenAI SDK</span>
+          <span class="ep-desc" data-ep-desc="0" data-i18n="settings.ep.openaiChat.desc">POST /v1/chat/completions · Cursor / Cline / Roo Code / OpenCode / OpenAI SDK</span>
+        </div>
+        <div class="endpoint-row">
+          <span class="ep-tag" data-i18n="settings.ep.openaiResponses">OpenAI Responses</span>
+          <code class="ep-url" data-ep-url="1">https://gateway.aitokenpool.local/v1</code>
+          <button type="button" class="btn btn-ghost ep-copy" data-ep-copy="1" data-i18n="settings.ak.copy">复制</button>
+          <span class="ep-desc" data-ep-desc="1" data-i18n="settings.ep.openaiResponses.desc">POST /v1/responses · Codex / OpenAI Responses SDK</span>
         </div>
         <div class="endpoint-row">
           <span class="ep-tag" data-i18n="settings.ep.anthropic">Anthropic 兼容</span>
-          <code class="ep-url" data-ep-url="1">https://gateway.aitokenpool.local/anthropic</code>
-          <button type="button" class="btn btn-ghost ep-copy" data-ep-copy="1" data-i18n="settings.ak.copy">复制</button>
-          <span class="ep-desc">Messages API · Claude Code / Goose / OpenClaw</span>
+          <code class="ep-url" data-ep-url="2">https://gateway.aitokenpool.local/anthropic</code>
+          <button type="button" class="btn btn-ghost ep-copy" data-ep-copy="2" data-i18n="settings.ak.copy">复制</button>
+          <span class="ep-desc" data-ep-desc="2" data-i18n="settings.ep.anthropic.desc">POST /anthropic/v1/messages · Claude Code / Goose / OpenClaw</span>
         </div>
         <p class="ep-note" data-i18n="settings.ep.note">部署后替换为你的网关域名（原型占位说明）</p>
         <div class="ep-steps">
@@ -494,8 +503,13 @@
         </div>
       </div>
       <div class="card api-key-card">
-        <h3 data-i18n="settings.apikey">API Key</h3>
-        <p class="muted" data-i18n="settings.apikey.sub">用于本地工具 / 代码接入平台的密钥。独占整行，避免表格字段挤压。</p>
+        <div class="spread">
+          <div>
+            <h3 data-i18n="settings.apikey">API Key</h3>
+            <p class="card-sub" data-i18n="settings.apikey.sub">用于本地工具 / 代码接入平台的密钥。</p>
+          </div>
+          <button class="btn btn-primary btn-sm" id="new-api-key-btn" data-i18n="settings.ak.new">生成新 Key</button>
+        </div>
         <span class="search" style="display:block;margin-bottom:10px">
           <input id="ak-search" class="input" data-i18n-ph="settings.ak.search.ph" placeholder="搜索 key 名字…">
           <button type="button" class="search-clear" hidden aria-label="清空搜索" data-i18n-title="common.search" title="清空搜索">×</button>
@@ -506,44 +520,46 @@
             <tbody id="api-keys"></tbody>
           </table>
         </div>
-        <button class="btn btn-ghost" id="new-api-key-btn" data-i18n="settings.ak.new">生成新 Key</button>
         <!-- 行内新建 key（rant 16:57:17 A：替代原生输入弹窗，Enter 确认 / Esc 取消） -->
-        <span class="inline-edit" id="ak-new-inline" hidden>
+        <span class="inline-edit mt16" id="ak-new-inline" hidden>
           <input id="ak-new-name" class="input" data-i18n-ph="settings.ak.name.ph" placeholder="key 名字（留空默认「未命名」）" style="max-width:260px;padding:6px 10px">
           <button type="button" class="btn btn-primary" id="ak-new-ok" data-i18n="settings.ak.ok">确认</button>
           <button type="button" class="btn btn-ghost" id="ak-new-cancel" data-i18n="settings.ak.cancel">取消</button>
         </span>
       </div>
-      <div class="card-grid settings-grid">
+      <div class="card-grid-3 settings-grid">
         <div class="card">
           <h3 data-i18n="settings.account">账户</h3>
-          <div class="form">
-            <label><span data-i18n="settings.account.nickname">昵称</span> <input class="input" id="settings-nickname" value=""></label>
-            <label><span data-i18n="settings.account.email">邮箱</span> <input class="input" placeholder="you@company.com"></label>
-            <button class="btn btn-primary" data-i18n="common.save">保存</button>
+          <div class="form mt16">
+            <label class="f"><span data-i18n="settings.account.nickname">昵称</span> <input class="input" id="settings-nickname" value=""></label>
+            <label class="f"><span data-i18n="settings.account.email">邮箱</span> <input class="input" id="settings-email" readonly placeholder="you@company.com"></label>
+            <span class="hint" style="display:block" data-i18n="settings.account.email.hint">邮箱即登录账号，如需变更请联系管理员</span>
           </div>
         </div>
         <div class="card">
           <h3 data-i18n="settings.notify">通知</h3>
-          <div class="form">
-            <label class="check"><input type="checkbox" checked> <span data-i18n="settings.notify.balance">点数余额低于阈值时提醒</span></label>
-            <label class="check"><input type="checkbox" checked> <span data-i18n="settings.notify.consume">共享 key 被消费时通知</span></label>
-            <label class="check"><input type="checkbox"> <span data-i18n="settings.notify.report">每周用量报告邮件</span></label>
+          <div class="form mt16">
+            <label class="check-line"><input type="checkbox" checked> <span data-i18n="settings.notify.balance">点数余额低于阈值时提醒</span></label>
+            <label class="check-line"><input type="checkbox" checked> <span data-i18n="settings.notify.consume">共享 key 被消费时通知</span></label>
+            <label class="check-line"><input type="checkbox"> <span data-i18n="settings.notify.report">每周用量报告邮件</span></label>
           </div>
         </div>
         <div class="card">
           <h3 data-i18n="settings.prefs">偏好</h3>
-          <div class="form">
-            <label><span data-i18n="settings.prefs.lang">界面语言</span>
+          <div class="form mt16">
+            <label class="f"><span data-i18n="settings.prefs.lang">界面语言</span>
               <select class="input" id="prefs-lang"><option value="zh">中文（简体）</option><option value="en">English</option></select>
             </label>
-            <label><span data-i18n="settings.prefs.model">默认模型</span>
-              <select class="input"><option>deepseek-v4-flash</option><option>glm-5.2</option></select>
+            <label class="f"><span data-i18n="settings.prefs.model">默认模型</span>
+              <select class="input" id="prefs-model"><option value="">—</option></select>
             </label>
-            <label><span data-i18n="settings.prefs.density">表格密度</span>
+            <label class="f"><span data-i18n="settings.prefs.theme">主题</span>
+              <select class="input" id="prefs-theme"><option value="dark" data-i18n="settings.prefs.theme.dark">深色（默认）</option><option value="light" data-i18n="settings.prefs.theme.light">浅色</option></select>
+            </label>
+            <label class="f"><span data-i18n="settings.prefs.density">表格密度</span>
               <span class="density-options">
-                <label class="check"><input type="radio" name="density" value="comfortable" id="density-comfortable" checked> <span data-i18n="settings.prefs.density.comfortable">舒适（默认）</span></label>
-                <label class="check"><input type="radio" name="density" value="compact" id="density-compact"> <span data-i18n="settings.prefs.density.compact">紧凑</span></label>
+                <label class="check-line"><input type="radio" name="density" value="comfortable" id="density-comfortable" checked> <span data-i18n="settings.prefs.density.comfortable">舒适（默认）</span></label>
+                <label class="check-line"><input type="radio" name="density" value="compact" id="density-compact"> <span data-i18n="settings.prefs.density.compact">紧凑</span></label>
               </span>
             </label>
           </div>
@@ -554,8 +570,11 @@
     <!-- 管理员角色视图 Admin（同一套产品中的角色权限） -->
     <section class="view hidden" id="view-admin">
       <header class="page-head">
-        <h2 data-i18n="view.admin">管理视图</h2>
-        <p data-i18n="view.admin.sub">管理员角色专属：成员/员工点数 · 用量报表 · 组织管理 · 平台运营（普通用户无此视图）</p>
+        <div>
+          <div class="crumb" data-i18n="admin.crumb">/ 管理视图</div>
+          <h2 data-i18n="view.admin">管理视图</h2>
+          <p data-i18n="view.admin.sub">管理员角色专属：成员点数 · 用量报表 · 组织管理 · 模型管理（普通用户无此视图）</p>
+        </div>
       </header>
       <div class="tabs" id="admin-tabs">
         <button class="tab active" data-admin-tab="employees" data-i18n="admin.tab.employees">成员管理</button>
@@ -566,22 +585,32 @@
 
       <div class="admin-pane" data-admin-pane="employees">
         <div class="stat-grid" id="emp-stats"></div>
-        <div class="card">
+        <div class="card mt16">
+          <div class="spread mb16">
+            <div>
+              <h3 data-i18n="admin.emp.list">成员列表</h3>
+              <p class="card-sub" data-i18n="admin.emp.list.sub">余额 / 赠送 / 可用（永久点数 + 每日赠送）</p>
+            </div>
+            <span class="search">
+              <input id="emp-search" class="input" data-i18n-ph="admin.emp.search.ph" placeholder="搜索成员 / 部门…">
+              <button type="button" class="search-clear" hidden aria-label="清空搜索" title="清空搜索">×</button>
+            </span>
+          </div>
           <div class="table-wrap compact">
             <table class="table">
-              <thead><tr><th data-i18n="admin.emp.col.member">成员</th><th data-i18n="admin.emp.col.dept">部门</th><th class="num" data-i18n="admin.emp.col.quota">配额 / 已用</th><th class="num" data-i18n="admin.emp.col.remain">剩余</th><th data-i18n="admin.emp.col.status">状态</th><th></th></tr></thead>
+              <thead><tr><th data-i18n="admin.emp.col.member">成员</th><th data-i18n="admin.emp.col.role">角色</th><th data-i18n="admin.emp.col.dept">部门</th><th class="num" data-i18n="admin.emp.col.perm">永久点数</th><th class="num" data-i18n="admin.emp.col.gift">赠送点数</th><th class="num" data-i18n="admin.emp.col.avail">可用</th><th></th></tr></thead>
               <tbody id="emp-body"></tbody>
             </table>
           </div>
         </div>
-        <div class="card">
+        <div class="card mt16">
           <h3 data-i18n="admin.raise.title">加额申请 <span class="muted" style="font-weight:400;font-size:12px" data-i18n="admin.raise.sub">（US-20：成员申请 → 管理员批准 / 驳回）</span></h3>
           <div id="raise-requests"></div>
         </div>
       </div>
 
       <div class="admin-pane hidden" data-admin-pane="usage">
-        <div class="card-grid">
+        <div class="card-grid-3">
           <div class="card">
             <h3 data-i18n="admin.usage.byModel">按模型用量</h3>
             <div class="bar-list" id="usage-model"></div>
@@ -605,7 +634,8 @@
             <input id="od-search" class="input" data-i18n-ph="admin.org.search.ph" placeholder="搜索部门…">
             <button type="button" class="search-clear" hidden aria-label="清空搜索" title="清空搜索">×</button>
           </span>
-          <button class="btn btn-primary" id="add-dept-btn" data-i18n="admin.org.add">添加部门</button>
+          <span class="grow"></span>
+          <button class="btn btn-primary btn-sm" id="add-dept-btn" data-i18n="admin.org.add">添加部门</button>
         </div>
         <div class="card">
           <h3 data-i18n="admin.org.list">部门列表</h3>
@@ -642,11 +672,12 @@
             <input id="model-search" class="input" data-i18n-ph="admin.models.search.ph" placeholder="搜索模型…">
             <button type="button" class="search-clear" hidden aria-label="清空搜索" title="清空搜索">×</button>
           </span>
-          <button class="btn btn-primary" id="add-model-btn" data-i18n="admin.models.add">添加模型</button>
+          <span class="grow"></span>
+          <button class="btn btn-primary btn-sm" id="add-model-btn" data-i18n="admin.models.add">添加模型</button>
         </div>
         <div class="card">
           <h3 data-i18n="admin.models.list">模型列表</h3>
-          <p class="muted" data-i18n="admin.models.sub">厂商 / 模型 / 价格 / 上下文 / 读图——增删改查即时生效；模型删除后该 model 的调用按 0 计费。</p>
+          <p class="card-sub" data-i18n="admin.models.sub">厂商 / 模型 / 价格 / 上下文 / 读图——增删改查即时生效；模型删除后该 model 的调用按 0 计费。</p>
           <div class="table-wrap compact">
             <table class="table">
               <thead><tr><th data-i18n="admin.models.col.provider">厂商</th><th data-i18n="admin.models.col.model">模型</th><th class="num" data-i18n="admin.models.col.in">输入价</th><th class="num" data-i18n="admin.models.col.out">输出价</th><th class="num" data-i18n="admin.models.col.ctx">上下文</th><th class="num" data-i18n="admin.models.col.outmax">最大输出</th><th data-i18n="admin.models.col.vision">读图</th><th></th></tr></thead>
@@ -716,8 +747,11 @@
     <!-- 运营者角色视图 Operator（P2-C：role=ops 专属；运行概览 + 成员充值） -->
     <section class="view hidden" id="view-ops">
       <header class="page-head">
-        <h2 data-i18n="view.ops">运营视图</h2>
-        <p data-i18n="view.ops.sub">运营者角色专属：平台运行概览 · 成员充值（普通用户无此视图）</p>
+        <div>
+          <div class="crumb" data-i18n="ops.crumb">/ 运营视图</div>
+          <h2 data-i18n="view.ops">运营视图</h2>
+          <p data-i18n="view.ops.sub">运营者角色专属：平台运行概览 · 成员充值（普通用户无此视图）</p>
+        </div>
       </header>
       <div class="tabs" id="ops-tabs">
         <button class="tab active" data-ops-tab="runtime" data-i18n="ops.tab.runtime">运行概览</button>
@@ -725,13 +759,27 @@
       </div>
       <div class="ops-pane" data-ops-pane="runtime">
         <div class="stat-grid" id="ops-stats"></div>
+        <div class="card-grid mt16">
+          <div class="card">
+            <h3 data-i18n="ops.hours.title">今日调用量（按小时）</h3>
+            <p class="card-sub" data-i18n="ops.hours.sub">按小时用量记录 · 本地时区</p>
+            <div class="bar-list" id="ops-hours"></div>
+          </div>
+          <div class="card">
+            <h3 data-i18n="ops.keys.title">上游 key 健康</h3>
+            <p class="card-sub" data-i18n="ops.keys.sub">按厂商聚合 · 启用状态与总上架数</p>
+            <div class="mini-list" id="ops-keys"></div>
+          </div>
+        </div>
         <div id="ops-demo-note"></div>
       </div>
       <div class="ops-pane hidden" data-ops-pane="users">
         <div class="card">
-          <h3 data-i18n="ops.users.title">用户充值</h3>
-          <p class="muted" data-i18n="ops.users.sub">运营者 = 宿主本人（职责最小化：仅运行概览 + 充值）。按用户名 / 邮箱定位用户 → 输入点数金额 → 确认后余额增加<strong>永久有效点数</strong>并产生一条交易记录。</p>
-          <div class="toolbar">
+          <div class="spread mb16">
+            <div>
+              <h3 data-i18n="ops.users.title">用户充值</h3>
+              <p class="card-sub" data-i18n="ops.users.sub">运营者 = 宿主本人（职责最小化：仅运行概览 + 充值）。按用户名 / 邮箱定位用户 → 输入点数金额 → 确认后余额增加<strong>永久有效点数</strong>并产生一条交易记录。</p>
+            </div>
             <span class="search">
               <input id="ops-search" class="input" data-i18n-ph="ops.users.search.ph" placeholder="搜索用户名 / 邮箱…">
               <button type="button" class="search-clear" hidden aria-label="清空搜索" title="清空搜索">×</button>

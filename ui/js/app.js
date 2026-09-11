@@ -842,10 +842,13 @@
   // P2-B：拉取市场真实模型（登录时）；失败 → 空态 + 重试（不 mock，rant 15:54:06）
   async function loadMarketplace() {
     if (!loggedIn()) return;
-    try {
-      await liveLoad("models", "/api/models");
-    } catch (e) { Live.models = null; /* 登录态降级空态 */ }
+    if (!Live.models) {
+      try {
+        await liveLoad("models", "/api/models");
+      } catch (e) { Live.models = null; /* 登录态降级空态 */ }
+    }
     renderMarketplace();
+    renderPrefModels(); // 设置页「偏好 → 默认模型」下拉同源真实模型表
   }
 
   /* --- 可用时间段（rant 10:54:48：结构化字段，备注只作纯备注） --- */
@@ -1900,8 +1903,12 @@
     // 账户昵称框：真实昵称（rant 2026-08-22T00:01:52：不再静态写「阿零」，避免覆盖真实昵称）
     const nick = $("#settings-nickname");
     if (nick) nick.value = D.USER.name || (D.USER.email ? D.USER.email.split("@")[0] : "");
+    // 邮箱为登录账号（/api/me 的真实邮箱，只读展示；无改邮箱后端接口）
+    const mail = $("#settings-email");
+    if (mail) mail.value = D.USER.email || "";
     // 接入端点卡片：实时从配置/同源 fallback 读取（rant 2026-08-19T20:37:37）
     applyEndpointUrls();
+    renderPrefModels();
     const rawQ = $("#ak-search").value || "";
     const q = rawQ.toLowerCase();
     // 零 mock（rant 2026-08-19T15:54:06）：登录态绝不 fallback D.API_KEYS；
@@ -1997,9 +2004,13 @@
   }
   function apiEndpoints() {
     const base = endpointBase();
+    // rant 2026-09-11T16:23:43（PR6 设置页）：原型拆三行端点 = 后端真实的三条路由
+    // （src/routes/mod.rs：/v1/chat/completions、/v1/responses、/anthropic/v1/messages），
+    // 不是虚标：OpenAI Chat 与 OpenAI Responses 共用 /v1 base，但协议路径不同
     return [
-      { tag: () => T("settings.ep.openai"), url: base + "/v1", desc: "Chat Completions · Cursor / Cline / Roo Code / OpenCode / OpenAI SDK" },
-      { tag: () => T("settings.ep.anthropic"), url: base + "/anthropic", desc: "Messages API · Claude Code / Goose / OpenClaw" },
+      { tag: () => T("settings.ep.openaiChat"), url: base + "/v1", desc: T("settings.ep.openaiChat.desc") },
+      { tag: () => T("settings.ep.openaiResponses"), url: base + "/v1", desc: T("settings.ep.openaiResponses.desc") },
+      { tag: () => T("settings.ep.anthropic"), url: base + "/anthropic", desc: T("settings.ep.anthropic.desc") },
     ];
   }
   // 把动态端点写回设置页「接入方式」卡片（index.html 的 <code data-ep-url="i">）
@@ -2012,6 +2023,23 @@
       el.textContent = ep.url;
       el.setAttribute("data-endpoint", ep.url);
     });
+    // 端点描述也随语言切换（原型把客户端列表写死在 DOM 里，线上走 i18n）
+    document.querySelectorAll("[data-ep-desc]").forEach((el) => {
+      const i = Number(el.getAttribute("data-ep-desc"));
+      const ep = eps[i];
+      if (ep) el.textContent = ep.desc;
+    });
+  }
+
+  // 偏好「默认模型」下拉：真实模型列表（/api/models，零 mock；未加载时仅保留「未设置」）
+  function renderPrefModels() {
+    const sel = $("#prefs-model");
+    if (!sel) return;
+    const models = (Live.models || []).map((m) => m.model).filter(Boolean);
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">' + esc(T("settings.prefs.model.none")) + "</option>" +
+      models.map((m) => '<option value="' + esc(m) + '">' + esc(m) + "</option>").join("");
+    if (cur && models.indexOf(cur) >= 0) sel.value = cur;
   }
 
   // 复制端点 URL（复用 copyKey 的降级逻辑：clipboard API → execCommand → 提示 Ctrl+C）
@@ -2141,17 +2169,25 @@
         stat(T("admin.emp.stats.admins"), T("cnt.members", { n: users.filter((u) => u.role === "admin").length }), T("admin.emp.stats.admins.sub")),
         stat(T("admin.emp.stats.deps"), T("cnt.depts", { n: depts.length }), T("admin.emp.stats.deps.sub")),
       ].join("");
-      $("#emp-body").innerHTML = users.map((u, i) =>
-        "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + esc(u.name || u.email) + "</strong>" +
-        "<div class='muted' style='font-size:12px'>" + esc(u.email) + (u.role === "admin" ? T("admin.emp.role.admin") : u.role === "ops" ? T("admin.emp.role.ops") : "") + "</div></td>" +
+      // 成员搜索（原型 #emp-search：成员名 / 邮箱 / 部门；rant 16:23:43 第 9 节）
+      const rawEmpQ = ($("#emp-search") && $("#emp-search").value) || "";
+      const empQ = rawEmpQ.toLowerCase();
+      const shown = users.filter((u) => !empQ ||
+        (u.name || "").toLowerCase().includes(empQ) ||
+        (u.email || "").toLowerCase().includes(empQ) ||
+        (u.dept_name || "").toLowerCase().includes(empQ));
+      $("#emp-body").innerHTML = shown.length ? shown.map((u) => {
+        const i = users.indexOf(u);
+        return "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + hl(u.name || u.email, rawEmpQ) + "</strong>" +
+        "<div class='muted' style='font-size:12px'>" + hl(u.email, rawEmpQ) + "</div></td>" +
         "<td data-label='角色'>" + (u.role === "admin" ? '<span class="pill pill-ok">admin</span>' : u.role === "ops" ? '<span class="pill pill-warn">ops</span>' : '<span class="pill pill-muted">user</span>') + "</td>" +
-        "<td data-label='部门'>" + (u.dept_name ? esc(u.dept_name) : '<span class="muted">' + T("common.unassigned") + "</span>") + "</td>" +
+        "<td data-label='部门'>" + (u.dept_name ? hl(u.dept_name, rawEmpQ) : '<span class="muted">' + T("common.unassigned") + "</span>") + "</td>" +
         '<td class="num" data-label="永久点数">' + D.fmt(u.balance || 0) + "</td>" +
         '<td class="num" data-label="赠送点数">' + D.fmt(u.gift_balance || 0) + "</td>" +
         '<td class="num" data-label="可用">' + D.fmt((u.balance || 0) + (u.gift_balance || 0)) + "</td>" +
         "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>" + T("admin.emp.dept.change") + "</button> " +
-        "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>" + T("admin.emp.topup") + "</button></td></tr>"
-      ).join("");
+        "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>" + T("admin.emp.topup") + "</button></td></tr>";
+      }).join("") : emptyRow(7, T("admin.emp.empty"), T("admin.emp.empty.sub"));
       pulseTbody($("#emp-body"));
       renderRaiseRequests();
     } else if (tab === "usage") {
@@ -2495,6 +2531,8 @@
       if (note) note.innerHTML = "";
       if (!Live.opsRuntime) {
         $("#ops-stats").innerHTML = loadErrorHtml(T("ops.loadFail"), null, T("err.loadFail"));
+        $("#ops-hours").innerHTML = "";
+        $("#ops-keys").innerHTML = "";
         return;
       }
       // P2-C：/api/ops/runtime 真实聚合
@@ -2507,6 +2545,30 @@
         stat(T("ops.stats.in"), "+" + D.fmt(rt.month_in) + " " + T("common.points"), T("ops.stats.in.sub")),
         stat(T("ops.stats.out"), "-" + D.fmt(rt.month_out) + " " + T("common.points"), T("ops.stats.out.sub")),
       ].join("");
+
+      // 今日调用量（按小时）：后端 today_hours 为 0-23 全量补零数组（缺小时补 0，
+      // 与交易页 txTrendDays 同款：GROUP BY 省略空桶会让柱子整体左移）
+      const hours = (rt.today_hours || []).slice(0, 24);
+      const maxH = Math.max(1, ...hours.map((h) => h.calls || 0));
+      const hasHours = hours.some((h) => (h.calls || 0) > 0);
+      $("#ops-hours").innerHTML = hasHours
+        ? hours.map((h) => barRow(String(h.hour).padStart(2, "0") + ":00", h.calls || 0, maxH, T("cnt.calls.unit"))).join("")
+        : '<div class="empty-state compact"><p>' + T("ops.hours.empty") + "</p></div>";
+
+      // 上游 key 健康：按厂商聚合（健康 / N 个异常 / 全部失败 三态，对齐原型 .mini-list）
+      const kh = rt.key_health || [];
+      $("#ops-keys").innerHTML = kh.length ? kh.map((k) => {
+        const total = k.total || 0;
+        const off = k.off || 0;
+        const pill = off === 0
+          ? '<span class="pill pill-ok">' + T("ops.keys.healthy") + "</span>"
+          : (off >= total
+            ? '<span class="pill pill-danger">' + T("ops.keys.failed") + "</span>"
+            : '<span class="pill pill-warn">' + T("ops.keys.abnormal", { n: off }) + "</span>");
+        return '<div class="mini-item"><div><div class="t">' + esc(k.provider || "—") + '</div>' +
+          '<div class="d">' + T("ops.keys.count", { total: total, on: k.on || 0 }) + "</div></div>" +
+          '<div class="r">' + pill + "</div></div>";
+      }).join("") : '<div class="empty-state compact"><p>' + T("ops.keys.empty") + "</p></div>";
       return;
     }
 
@@ -2797,6 +2859,8 @@
       D.USER.balance = 0;
       toast(T("login.balance.fail"), "error");
     }
+    // 设置页「偏好 → 默认模型」下拉与市场同源（/api/models）；此处理不阻塞会话建立
+    try { await liveLoad("models", "/api/models"); } catch (e) { Live.models = null; }
   }
 
   // 左下角用户芯片：真实昵称 + 头像首字符（rant 2026-08-22T00:01:52：去掉「阿零」硬编码）
@@ -3523,6 +3587,9 @@
       renderAdmin();
     }));
 
+    // 成员搜索（原型 #emp-search：成员 / 邮箱 / 部门；rant 2026-09-11T16:23:43 第 9 节）
+    wireSearch($("#emp-search"), renderAdmin);
+
     // 成员充值（管理台）：行内编辑（替代原生输入弹窗，Enter 确认 / Esc 取消）
     // 零 mock（rant 15:54:06）：仅真实成员（/api/admin/users）→ POST /api/admin/credits
     $("#emp-body").addEventListener("click", (e) => {
@@ -3678,13 +3745,25 @@
     // 主题切换（rant 18:06:09 B）：登录页右上角 + 侧边栏底部两处共用同一逻辑
     function toggleTheme() {
       const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
-      document.documentElement.dataset.theme = next;
-      try { localStorage.setItem("atp-theme", next); } catch (e) { /* 隐私模式忽略 */ }
+      applyTheme(next);
       toast(T("theme.switched", { theme: next === "light" ? T("theme.light") : T("theme.dark") }), "info");
+    }
+    // 应用主题（toggleTheme 与设置页「偏好 → 主题」下拉共用；localStorage atp-theme 记忆）
+    function applyTheme(next) {
+      document.documentElement.dataset.theme = next;
+      const sel = $("#prefs-theme");
+      if (sel) sel.value = next;
+      try { localStorage.setItem("atp-theme", next); } catch (e) { /* 隐私模式忽略 */ }
     }
     $("#theme-toggle").addEventListener("click", toggleTheme);
     const loginThemeBtn = $("#login-theme-toggle");
     if (loginThemeBtn) loginThemeBtn.addEventListener("click", toggleTheme);
+    // 偏好「主题」下拉（原型设置页 .pref-theme；与右上/侧边栏切换按钮同源）
+    const themeSel = $("#prefs-theme");
+    if (themeSel) {
+      themeSel.value = document.documentElement.dataset.theme || "dark";
+      themeSel.addEventListener("change", () => applyTheme(themeSel.value));
+    }
 
     // 全局快捷键（rant 16:57:17 D）：/ 聚焦市场搜索；数字 1-7 切换侧边栏视图；Esc 关闭行内新建 key
     // rant 20:39:30 E：? / Shift+/ 开合快捷键帮助面板（Esc 优先关帮助）
