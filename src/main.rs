@@ -18,6 +18,10 @@ mod dao;
 mod db;
 mod gateway;
 mod gift;
+// 语言包不变量门禁（C2006）：仅测试期编译 —— 其中的 include_str! 会把 ui/ 源码
+// 嵌进二进制，加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod i18n_pack;
 mod mail;
 mod protocol;
 mod router;
