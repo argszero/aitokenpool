@@ -139,6 +139,19 @@ h1, h2, h3 { text-wrap: balance; }
    的元素一直由下方 `.table .num` 规则兜住，故此前未被发现。 */
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
+/* 标识符等宽（共享管理「Key」列）。
+   该格自 UI 原型 commit d70e032 起就写着 class="mono"，但**任何提交里都不存在
+   .mono 规则**，因此一直是无样式孤儿类 —— 实测 computed font-family 为
+   -apple-system、font-variant-numeric 为 normal，同排 .num 兄弟却是等宽 + 表格数字。
+   这里补上定义；对齐保持左对齐（原型对该格直接复用 .num 会连带右对齐，
+   本次不改变既有排版，只修复失效的等宽）。 */
+.mono { font-family: var(--mono); }
+
+/* 短语不换行（原型 .nb，用于登录页品牌标题里的 "token plan"）。
+   原型 markup 是 <span class="nb">token plan</span>，迁移时 span 与规则一并丢失：
+   实测同视口下原型 token/plan 同行（149==149），实现被拆成两行（149/203）。 */
+.nb { white-space: nowrap; }
+
 /* 小标签 / 图标按钮（原型 .eyebrow / .icon-btn，PR2 起供登录页与侧边栏使用） */
 .eyebrow {
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em;
