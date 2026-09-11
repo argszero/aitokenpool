@@ -2,6 +2,17 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.22 (2026-09-11)
+
+- **补齐全局 reset 层并让表单/按钮几何对齐原型（rant 2026-09-11T22:01:43，PR #159 f46882c）** — 纯前端改动（`ui/` 内，后端契约与部署结构不变，数据库仍留 NAS、不启用 WAL）：
+  - **整层全局 reset（根因）**：原型 `docs/prototype/aitokenpool-console.html` 第 53–72 行的全局 reset 层在整站 UI 重设计迁移时**整层漏掉**，导致所有**未带 class 的表单控件**直接裸露浏览器默认外观 —— 这是登录页 / 共享管理 / 设置页与原型视觉脱节的单一根因。本次补齐 `button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit }`、`input, select, textarea { font: inherit }`、`a { color: inherit; text-decoration: none }`、`img, svg { display: block; max-width: 100% }`、`p { text-wrap: pretty }`、`h1, h2, h3 { text-wrap: balance }` 等条目（均为元素选择器，权重低于既有 `.btn` / `.input` 类选择器）。原型那行 `:focus-visible` 未重复：实现早有等价规则，仅圆角沿用既有 `--radius-sm`（已在代码注释记录该决策）。
+  - **补齐依赖 reset 的缺失组件类**：`.num`（此前只有 `.table .num`，表格外的 `.num` 丢失等宽与 tabular-nums 对齐）、`.row`（markup 里 6 处 `class="row"` 此前**完全没有规则**，按钮贴边且不换行）、`.divider`（原型类名，与历史别名 `.login-divider` 合并同规格）、独立 `.avatar`（此前仅 `.user-chip .avatar` 后代选择器）。
+  - **几何与原型对齐**：`.btn`（min-height 40px / `padding: 0 16px` / 13.5px / inline-flex）、`.btn-sm`（32px / `0 11px`）、`.input`（`padding: 10px 12px` / 13.5px）、`.auth-tabs button` 显式写出 `border: 0` + `background: none` —— 消除未选中 tab 的浏览器原生 `2px outset` 立体边框，输入框高度 25px → 44px。
+  - **12 个裸 input 补 `class="input"`**：登录 / 注册 / 验证码 / 找回密码四族（与全站其余 47 个已有 class 的 input 一致）。
+  - **cache-bust** `?v=20260911-4` → `?v=20260911-5`（5 处引用）。
+  - **实测证据**（headless computed-style 探针，同视口 1912×836，9 个视图）：浏览器默认样式控件 **108 → 0**、原生 3D（inset/outset）边框 **0**、`.row` 按钮行 18 组 0 异常；identity-keyed A/B 对 310 个元素 × 10 个 computed 字段比对显示 reset 的 `img,svg{display:block}` **未改变任何可见图标尺寸**、`border-radius` 0 处变化，39 处几何变化全为「向原型靠拢」的预期修复。
+  - **质量门禁**：`cargo test` 148/148 + `cargo fmt --check` + `cargo clippy` + `node --check` ×4 + i18n ZH/EN 键集精确相等（762×2）。
+
 ## v0.7.21 (2026-09-11)
 
 - **全站 UI 按新原型完整重设计（rant 2026-09-11T16:23:43，PR #152 → #157）** — 纯前端改动（后端契约不变），6 片独立可部署提交：
