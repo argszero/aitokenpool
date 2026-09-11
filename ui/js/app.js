@@ -236,7 +236,7 @@
   function wireSearch(input, render, ms) {
     if (!input) return;
     const delay = ms || 150;
-    const box = input.closest(".search-box");
+    const box = input.closest(".search");
     const clear = box ? box.querySelector(".search-clear") : null;
     const syncClear = () => { if (clear) clear.hidden = !input.value; };
     let t = null;
@@ -260,7 +260,7 @@
   function resetSearch(input) {
     if (!input) return;
     input.value = "";
-    const box = input.closest(".search-box");
+    const box = input.closest(".search");
     const clear = box ? box.querySelector(".search-clear") : null;
     if (clear) clear.hidden = true;
   }
@@ -331,10 +331,13 @@
     });
   }
 
+  // 状态徽标（原型 .pill-ok/-warn/-danger/-muted/-accent，rant 2026-09-11T16:23:43 第三节）
+  // labels[status].cls 取语义色名（ok/warn/danger/dim/accent）→ 映射到原型 pill 类
+  const PILL_CLS = { ok: "pill-ok", warn: "pill-warn", danger: "pill-danger", dim: "pill-muted", accent: "pill-accent" };
   function badge(status, labels) {
     const l = labels[status];
     const text = l && typeof l.text === "function" ? l.text() : (l ? l.text : status);
-    return '<span class="badge ' + (l ? l.cls : "dim") + '">' + esc(text) + "</span>";
+    return '<span class="pill ' + (PILL_CLS[l ? l.cls : "dim"] || "pill-muted") + '">' + esc(text) + "</span>";
   }
 
   // 空状态组件（rant 15:50:05 A.4：列表/表格为空时给出图标 + 文案 + 可选行动按钮）
@@ -629,7 +632,7 @@
   }
 
   function stat(label, value, sub, cls) {
-    return '<div class="stat' + (cls ? " " + cls : "") + '"><div class="label">' + esc(label) +
+    return '<div class="stat-card' + (cls ? " " + cls : "") + '"><div class="label">' + esc(label) +
       '</div><div class="value">' + value + "</div><div class='sub'>" + esc(sub) + "</div></div>";
   }
 
@@ -729,11 +732,11 @@
       '<button type="button" class="row-expand" data-mk-expand="' + m.id + '" title="' + (mkExpanded === m.id ? T("mk.collapse") : T("mk.expand")) + '">' + (mkExpanded === m.id ? "−" : "+") + "</button>" +
       hl(m.provider, rawQ) + "</td><td data-label='模型'><strong>" + hl(m.model, rawQ) + "</strong></td>" +
       '<td class="num" data-label="输入价 /1M">' + D.fmt(m.in) + " " + T("common.points") +
-      (m.peak ? ' <span class="badge warn" title="' + esc(T("mk.peak.title", { n: m.peakMult })) + '">' + esc(T("mk.peak.badge", { n: m.peakMult })) + "</span>" : "") + "</td>" +
+      (m.peak ? ' <span class="tag tag-accent" title="' + esc(T("mk.peak.title", { n: m.peakMult })) + '">' + esc(T("mk.peak.badge", { n: m.peakMult })) + "</span>" : "") + "</td>" +
       '<td class="num" data-label="输出价 /1M">' + D.fmt(m.out) + " " + T("common.points") + "</td>" +
       '<td class="num" data-label="上下文">' + D.ctxFmt(m.ctx) + "</td>" +
-      "<td data-label='可用性'>" + (m.avail ? '<span class="badge ok">' + T("mk.avail") + "</span>" : '<span class="badge warn">' + T("mk.busy") + "</span>") +
-      (m.multi ? ' <span class="badge ok" title="' + T("mk.multi") + '">' + T("mk.multi") + "</span>" : "") + "</td>" +
+      "<td data-label='可用性'>" + (m.avail ? '<span class="pill pill-ok">' + T("mk.avail") + "</span>" : '<span class="pill pill-warn">' + T("mk.busy") + "</span>") +
+      (m.multi ? ' <span class="tag" title="' + T("mk.multi") + '">' + T("mk.multi") + "</span>" : "") + "</td>" +
       "<td data-label='操作'><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">" + T("mk.use") + "</button>" +
       // 零 mock：成功率后端暂无字段 → 仅当有真实值时展示（multi/success 已从 data.js 移除）
       (m.success != null ? "<div class='muted' style='margin-top:4px;font-size:12px'>" + T("mk.success", { p: m.success }) + "</div>" : "") + "</td></tr>" +
@@ -1185,7 +1188,7 @@
     { key: "type", title: () => T("tx.col.type"), sort: "string", filter: "select",
       options: () => ["consume", "earn", "topup", "withdraw", "gift"].map(txType),
       filterVal: (t) => txType(t.type),
-      render: (t) => t.type === "earn" ? '<span class="badge ok">' + T("tx.type.earn") + "</span>" : t.type === "consume" ? '<span class="badge accent">' + T("tx.type.consume") + "</span>" : t.type === "gift" ? '<span class="badge ok">' + T("tx.type.gift") + "</span>" : '<span class="badge dim">' + esc(txType(t.type)) + "</span>" },
+      render: (t) => t.type === "earn" ? '<span class="pill pill-ok">' + T("tx.type.earn") + "</span>" : t.type === "consume" ? '<span class="pill pill-accent">' + T("tx.type.consume") + "</span>" : t.type === "gift" ? '<span class="pill pill-ok">' + T("tx.type.gift") + "</span>" : '<span class="pill pill-muted">' + esc(txType(t.type)) + "</span>" },
     // rant 2026-08-22T17:21:39 需求 2：新增「用户」列（transactions.user_id JOIN users 取用户名）
     { key: "user", title: () => T("tx.col.user"), sort: "string", filter: "text" },
     { key: "model", title: () => T("tx.col.model"), sort: "string", filter: "text" },
@@ -1204,7 +1207,7 @@
     { key: "status", title: () => T("tx.col.status"), sort: "string", filter: "select",
       options: () => ["成功", "入账", "处理中"].map(txStatus),
       filterVal: (t) => txStatus(t.status),
-      render: (t) => t.status === "处理中" ? '<span class="badge warn">' + esc(txStatus(t.status)) + "</span>" : esc(txStatus(t.status)) },
+      render: (t) => t.status === "处理中" ? '<span class="pill pill-warn">' + esc(txStatus(t.status)) + "</span>" : esc(txStatus(t.status)) },
   ];
 
   // 交易汇总条（rant 20:39:30 B + 00:04:21 + 00:07:08：改用后端 summary 全量 SQL 聚合，
@@ -1851,7 +1854,7 @@
       "<td data-label='Key'><code>" + esc(Live.apiKeys ? k.key : "") + "</code></td>" +
       "<td data-label='创建时间'>" + esc(k.created) + "</td>" +
       "<td data-label='最近使用'>" + (k.last ? timeCell(k.last) : esc(T("settings.ak.last.never"))) + "</td>" +
-      "<td data-label='状态'>" + (k.status === "active" ? '<span class="badge ok">' + T("settings.ak.status.active") + "</span>" : '<span class="badge dim">' + esc(k.status || "—") + "</span>") + "</td>" +
+      "<td data-label='状态'>" + (k.status === "active" ? '<span class="pill pill-ok">' + T("settings.ak.status.active") + "</span>" : '<span class="pill pill-muted">' + esc(k.status || "—") + "</span>") + "</td>" +
       "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>" + T("settings.ak.copy") + "</button> " +
       "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>" + T("settings.ak.rename") + "</button> " +
       "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + i + "'>" + T("settings.ak.del") + "</button></td></tr>"
@@ -2063,7 +2066,7 @@
       $("#emp-body").innerHTML = users.map((u, i) =>
         "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + esc(u.name || u.email) + "</strong>" +
         "<div class='muted' style='font-size:12px'>" + esc(u.email) + (u.role === "admin" ? T("admin.emp.role.admin") : u.role === "ops" ? T("admin.emp.role.ops") : "") + "</div></td>" +
-        "<td data-label='角色'>" + (u.role === "admin" ? '<span class="badge ok">admin</span>' : u.role === "ops" ? '<span class="badge warn">ops</span>' : '<span class="badge dim">user</span>') + "</td>" +
+        "<td data-label='角色'>" + (u.role === "admin" ? '<span class="pill pill-ok">admin</span>' : u.role === "ops" ? '<span class="pill pill-warn">ops</span>' : '<span class="pill pill-muted">user</span>') + "</td>" +
         "<td data-label='部门'>" + (u.dept_name ? esc(u.dept_name) : '<span class="muted">' + T("common.unassigned") + "</span>") + "</td>" +
         '<td class="num" data-label="永久点数">' + D.fmt(u.balance || 0) + "</td>" +
         '<td class="num" data-label="赠送点数">' + D.fmt(u.gift_balance || 0) + "</td>" +
@@ -2130,7 +2133,7 @@
       '<td class="num">' + D.fmt(m.output_per_m || 0) + "</td>" +
       '<td class="num">' + fmtCtx(m.context_length || m.context_window || 0) + "</td>" +
       '<td class="num">' + fmtCtx(m.max_output || 0) + "</td>" +
-      "<td>" + (m.vision ? '<span class="badge ok">' + T("admin.models.vision.yes") + "</span>" : '<span class="badge dim">' + T("admin.models.vision.no") + "</span>") + "</td>" +
+      "<td>" + (m.vision ? '<span class="pill pill-ok">' + T("admin.models.vision.yes") + "</span>" : '<span class="pill pill-muted">' + T("admin.models.vision.no") + "</span>") + "</td>" +
       "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-model-edit='" + i + "'>" + T("admin.models.edit") + "</button> " +
       "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-model-del='" + i + "'>" + T("admin.models.del") + "</button></td></tr>"
     ).join("") : emptyRow(7, T("admin.models.empty"), T("admin.models.empty.sub"));
@@ -2321,7 +2324,7 @@
       const used = d.month_cost || 0;
       const members = d.member_count || 0;
       const pct = d.quota > 0 ? used / d.quota : 0;
-      const st = pct >= 1 ? '<span class="badge danger">' + T("common.exhausted") + "</span>" : pct > 0.9 ? '<span class="badge warn">' + T("common.nearLimit") + "</span>" : '<span class="badge ok">' + T("common.normal") + "</span>";
+      const st = pct >= 1 ? '<span class="pill pill-danger">' + T("common.exhausted") + "</span>" : pct > 0.9 ? '<span class="pill pill-warn">' + T("common.nearLimit") + "</span>" : '<span class="pill pill-ok">' + T("common.normal") + "</span>";
       return "<tr><td data-label='部门'><strong>" + hl(d.name, rawQ) + "</strong></td>" +
         '<td class="num" data-label="成员数">' + T("cnt.members", { n: members }) + "</td>" +
         '<td class="num" data-label="月分配（点数）">' + D.fmt(d.quota) + " " + T("common.points") + "</td>" +
@@ -2397,8 +2400,8 @@
 
   function barRow(name, pts, max, unit) {
     const pct = Math.round((pts / max) * 100);
-    return '<div class="bar-row"><div class="bar-label"><span>' + esc(name) + '</span><span class="n">' + D.fmt(pts) + " " + unit + "</span></div>" +
-      '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
+    return '<div class="bar-row"><div class="bar-top"><span>' + esc(name) + '</span><span class="n">' + D.fmt(pts) + " " + unit + "</span></div>" +
+      '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div></div>';
   }
 
   /* --- 平台运营者视图（US-运营1 / US-运营2：运营者 = 宿主本人，职责仅两项） --- */
@@ -2419,7 +2422,7 @@
       // P2-C：/api/ops/runtime 真实聚合
       const rt = Live.opsRuntime;
       $("#ops-stats").innerHTML = [
-        stat(T("ops.stats.status"), '<span class="badge ok">' + T("common.online") + "</span>", T("ops.stats.status.sub")),
+        stat(T("ops.stats.status"), '<span class="pill pill-ok">' + T("common.online") + "</span>", T("ops.stats.status.sub")),
         stat(T("ops.stats.users"), T("cnt.people", { n: rt.users }), T("ops.stats.users.sub")),
         stat(T("ops.stats.keys"), T("cnt.keys", { n: rt.active_keys }), T("ops.stats.keys.sub.on")),
         stat(T("ops.stats.calls"), T("cnt.calls", { n: rt.month_calls }), T("ops.stats.calls.sub")),
