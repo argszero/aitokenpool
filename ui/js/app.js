@@ -586,6 +586,8 @@
       stat(T("dash.trades"), T("cnt.trades", { n: tradeCount }), T("dash.trades.sub")),
     ].join("");
 
+    renderDashTrend();
+
     // 降级原则（rant 2026-08-19T15:48:17 / 15:54:06）：mock 只用于游客模式；
     // 登录态加载失败 → 空态 + 重试（loadErrorHtml），不静默 fallback 到 D.SHARINGS
     const shares = Live.sharings ? sharingsToView(Live.sharings) : (loggedIn() ? null : (D.SHARINGS || []));
@@ -612,6 +614,61 @@
     renderMonthChanges();
   }
 
+  // 仪表盘「近 14 天消耗与收益」双色柱图（rant 2026-09-11T16:23:43 第 3 节：仪表盘新增
+  // 双色趋势图，消费=accent / 共享收益=ok，含 .legend 图例，柱高按当日 max 归一，最小高度 2%）。
+  // 零 mock：数据源为 /api/transactions/trend（income/expense 已按日聚合，口径与交易页一致），
+  // 登录态失败 → 空态文案，绝不回落 D. 静态序列（rant 15:54:06）。
+  //
+  // 补齐空日（DASH_TREND_DAYS）：后端 GROUP BY 只返回「有交易」的日桶，无交易的日期直接缺行。
+  // 原型是固定 14 列柱图，缺行会让柱子左右移位、横轴节奏错乱（今天可能不在最右）。
+  // 故按请求窗口铺满 14 天，缺数据的日子补 0（柱高 min 2%，tooltip 显示 0），保持固定节奏。
+  function dashTrendDays(buckets) {
+    const byKey = new Map();
+    buckets.forEach((b) => {
+      const d = new Date(b.t);
+      if (!isNaN(d.getTime())) byKey.set(d.toISOString().slice(0, 10), b);
+    });
+    // 窗口与 loadDashboard 请求的 start（now - 13d）对齐，锚点取 UTC 日（后端 time 亦是 UTC）
+    const now = new Date();
+    const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const days = [];
+    for (let i = DASH_TREND_DAYS - 1; i >= 0; i--) {
+      const t = new Date(todayUtc - i * 864e5).toISOString().slice(0, 10);
+      days.push(byKey.get(t) || { t: t + "T00:00:00Z", income: 0, expense: 0, tokens: 0, count: 0 });
+    }
+    return days;
+  }
+
+  function renderDashTrend() {
+    const el = $("#dash-trend");
+    if (!el) return;
+    const tr = (Live.dashboardTrend && Array.isArray(Live.dashboardTrend.buckets)) ? Live.dashboardTrend : null;
+    const raw = tr ? tr.buckets : [];
+    const logged = loggedIn();
+    if (!logged) {
+      el.innerHTML = '<div class="empty compact">' + esc(T("dash.trend.guest")) + "</div>";
+      return;
+    }
+    // 窗口内一笔交易都没有 → 空态（保留零 mock 语义，不去画一排 0 柱）
+    if (!raw.length) {
+      el.innerHTML = '<div class="empty compact">' + esc(Live.dashboardTrend === null ? T("dash.trend.fail") : T("dash.trend.empty")) + "</div>";
+      return;
+    }
+    const buckets = dashTrendDays(raw);
+    // 柱高按当日 max(消费, 收益) 归一，最小高度 2%（原型规则）
+    const max = Math.max(1, ...buckets.map((b) => Math.max(b.expense || 0, b.income || 0)));
+    el.innerHTML = buckets.map((b) => {
+      const c = b.expense || 0, e = b.income || 0;
+      const day = bucketLabel(b.t, "day");
+      const h = (v) => Math.max(2, (v / max) * 100).toFixed(1);
+      const tip = day + " " + T("dash.trend.consume") + " " + D.fmt(c) + " / " + T("dash.trend.earn") + " " + D.fmt(e);
+      return '<div class="trend-col" title="' + esc(tip) + '"><div class="trend-pair">' +
+        '<div class="trend-bar consume" style="height:' + h(c) + '%"></div>' +
+        '<div class="trend-bar earn" style="height:' + h(e) + '%"></div>' +
+        '</div><span class="trend-x">' + esc(day) + "</span></div>";
+    }).join("");
+  }
+
   // P2-B：拉取仪表盘所需数据（wallet + dashboard + sharings + 交易数）
   async function loadDashboard() {
     if (!loggedIn()) return;
@@ -619,6 +676,16 @@
     try {
       Live.dashboard = await api.get("/api/dashboard");
     } catch (e) { Live.dashboard = null; }
+    // 近 14 天双色趋势（rant 2026-09-11T16:23:43 第 3 节）：复用交易页趋势接口，
+    // 按日聚合 income/expense，与列表同口径；失败 → null（renderDashTrend 显示空态，不 mock）。
+    // start 取「今天 UTC 零点 - 13 天」而非 now-13d：与后端 strftime('%Y-%m-%d', time)（UTC 日桶）
+    // 及 renderDashTrend 的补齐锚点三者对齐，否则跨零点时首桶会被截掉（窗口只剩 13 天）。
+    try {
+      const now = new Date();
+      const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+      const start = new Date(todayUtc - (DASH_TREND_DAYS - 1) * 864e5).toISOString();
+      Live.dashboardTrend = await api.get("/api/transactions/trend?type=all&bucket=day&start=" + encodeURIComponent(start));
+    } catch (e) { Live.dashboardTrend = null; }
     // 交易数统计（dash.trades）：拉 1 条取 total（零 mock，rant 2026-08-19T15:54:06）
     try {
       Live.transactions = await api.get("/api/transactions?page=1&page_size=1");
@@ -716,6 +783,9 @@
       (!q || m.model.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q)) &&
       (!prov || m.provider === prov)
     );
+    // 可用性筛选（rant 2026-09-11T16:23:43 第 4 节：all / 仅可用）
+    const avail = $("#mk-avail") ? $("#mk-avail").value : "all";
+    if (avail === "yes") list = list.filter((m) => m.avail);
     if (sort === "price-asc") list = [...list].sort((a, b) => a.in - b.in);
     else if (sort === "price-desc") list = [...list].sort((a, b) => b.in - a.in);
     else if (sort === "ctx-desc") list = [...list].sort((a, b) => b.ctx - a.ctx);
@@ -728,16 +798,21 @@
 
     $("#mk-count").textContent = T("cnt.on", { n: list.length });
     $("#mk-body").innerHTML = guestHint + (list.length ? list.map((m) =>
-      "<tr><td data-label='厂商'>" +
+      "<tr><td data-label='厂商 / 模型'>" +
+      '<div class="provider-cell">' +
       '<button type="button" class="row-expand" data-mk-expand="' + m.id + '" title="' + (mkExpanded === m.id ? T("mk.collapse") : T("mk.expand")) + '">' + (mkExpanded === m.id ? "−" : "+") + "</button>" +
-      hl(m.provider, rawQ) + "</td><td data-label='模型'><strong>" + hl(m.model, rawQ) + "</strong></td>" +
+      '<span class="dot' + (m.avail ? "" : " muted") + '"></span>' +
+      '<span><span class="muted" style="font-size:11.5px;display:block">' + hl(m.provider, rawQ) + "</span>" +
+      '<span class="model-name">' + hl(m.model, rawQ) + "</span></span></div></td>" +
       '<td class="num" data-label="输入价 /1M">' + D.fmt(m.in) + " " + T("common.points") +
       (m.peak ? ' <span class="tag tag-accent" title="' + esc(T("mk.peak.title", { n: m.peakMult })) + '">' + esc(T("mk.peak.badge", { n: m.peakMult })) + "</span>" : "") + "</td>" +
       '<td class="num" data-label="输出价 /1M">' + D.fmt(m.out) + " " + T("common.points") + "</td>" +
       '<td class="num" data-label="上下文">' + D.ctxFmt(m.ctx) + "</td>" +
-      "<td data-label='可用性'>" + (m.avail ? '<span class="pill pill-ok">' + T("mk.avail") + "</span>" : '<span class="pill pill-warn">' + T("mk.busy") + "</span>") +
-      (m.multi ? ' <span class="tag" title="' + T("mk.multi") + '">' + T("mk.multi") + "</span>" : "") + "</td>" +
-      "<td data-label='操作'><button class='btn btn-primary' style='padding:4px 10px;font-size:12px' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">" + T("mk.use") + "</button>" +
+      // 能力标签（rant 第 4 节：旗舰/推理 tag-accent，读图另加 tag）——仅渲染后端真实字段
+      '<td data-label="能力">' + capabilityTags(m) + "</td>" +
+      // 可用性 pill（rant 第 4 节：keys>=2 可用·N key / keys==1 紧张 / 无 key）
+      "<td data-label='可用性'>" + availPill(m) + "</td>" +
+      "<td data-label='操作'><button class='btn btn-primary btn-sm' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">" + T("mk.use") + "</button>" +
       // 零 mock：成功率后端暂无字段 → 仅当有真实值时展示（multi/success 已从 data.js 移除）
       (m.success != null ? "<div class='muted' style='margin-top:4px;font-size:12px'>" + T("mk.success", { p: m.success }) + "</div>" : "") + "</td></tr>" +
       (mkExpanded === m.id ? '<tr class="mk-detail"><td colspan="7">' + mkDetailHtml(m) + "</td></tr>" : "")
@@ -745,6 +820,24 @@
       '<button type="button" class="btn btn-ghost" data-mk-clear-filters>' + T("mk.clearFilters") + "</button>"));
     pulseTbody($("#mk-body"));
     renderRecent(); // 最近使用 chips（rant 20:46:57 D）
+  }
+
+  // 能力标签（rant 2026-09-11T16:23:43 第 4 节）：只用后端真实字段渲染，缺字段则不出标签
+  // 读图 = vision；多 key = 多路可用；高峰计价 = peak（tag-accent 强调）
+  function capabilityTags(m) {
+    const tags = [];
+    if (m.vision) tags.push('<span class="tag" title="' + esc(T("mk.cap.vision.title")) + '">' + esc(T("mk.cap.vision")) + "</span>");
+    if (m.multi) tags.push('<span class="tag" title="' + esc(T("mk.multi")) + '">' + esc(T("mk.multi")) + "</span>");
+    if (m.peak) tags.push('<span class="tag tag-accent" title="' + esc(T("mk.peak.title", { n: m.peakMult })) + '">' + esc(T("mk.cap.peak")) + "</span>");
+    return tags.length ? tags.join(" ") : '<span class="muted">—</span>';
+  }
+
+  // 可用性 pill（rant 第 4 节）：key 数三态；无 key → muted 且「使用」按钮禁用
+  function availPill(m) {
+    const n = m.keys || 0;
+    if (n >= 2) return '<span class="pill pill-ok">' + esc(T("mk.avail.multi", { n: n })) + "</span>";
+    if (n === 1) return '<span class="pill pill-warn">' + esc(T("mk.avail.tight")) + "</span>";
+    return '<span class="pill pill-muted">' + esc(T("mk.avail.none")) + "</span>";
   }
 
   // P2-B：拉取市场真实模型（登录时）；失败 → 空态 + 重试（不 mock，rant 15:54:06）
@@ -843,19 +936,22 @@
       fillPlans();
     }
 
-    $("#share-body").innerHTML = list.length ? list.map((s, i) =>
-      "<tr><td data-label='厂商 · Plan / 模型'><strong>" + esc(provLabel(s.provider)) + " · " + esc(s.plan || "API") +
-      "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + " · " + esc(fmtAvailable(s)) + "</div></td>" +
+    $("#share-body").innerHTML = list.length ? list.map((s, i) => {
+      // 已用 / 额度 进度条（rant 2026-09-11T16:23:43 第 5 节：进度条 + 数字）
+      const pct = s.quota > 0 ? Math.min(100, Math.round((s.used / s.quota) * 100)) : 0;
+      return "<tr><td data-label='厂商 · Plan / 模型'><strong>" + esc(provLabel(s.provider)) + " · " + esc(s.plan || "API") +
+      "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + "</div></td>" +
       "<td data-label='Key' class='mono'>" + esc(maskKey(s.key)) + "</td>" +
-      "<td data-label='已用/额度' class='num'>" + D.fmt(s.used) + " / " + D.fmt(s.quota) + "</td>" +
+      "<td data-label='已用 / 额度' class='num'>" + D.fmt(s.used) + " / " + D.fmt(s.quota) +
+      '<div class="bar-track" style="margin-top:5px"><div class="bar-fill' + (pct >= 100 ? " alt" : "") + '" style="width:' + pct + '%"></div></div></td>' +
       '<td class="num" data-label="单价">' + D.fmt(s.price) + " " + T("share.priceUnit") + "</td>" +
       '<td class="num" data-label="收益">+' + D.fmt(s.earned) + " " + T("common.points") + "</td>" +
-      "<td data-label='上架时间'>" + timeCell(s.time) + "</td>" +
+      "<td data-label='可用时段'>" + esc(fmtAvailable(s)) + "</td>" +
       "<td data-label='状态'>" + badge(s.status, SHARE_STATUS) + "</td>" +
-      "<td data-label='操作'><button class='btn btn-ghost' data-share-toggle='" + i + "' style='padding:4px 10px;font-size:12px'>" +
+      "<td data-label='操作'><button class='btn btn-ghost btn-sm' data-share-toggle='" + i + "'>" +
       (s.status === "on" ? T("share.toggle.pause") : s.status === "paused" ? T("share.toggle.resume") : T("share.toggle.relist")) + "</button> " +
-      "<button class='btn btn-danger' data-share-delete='" + i + "' style='padding:4px 10px;font-size:12px'>" + T("common.delete") + "</button></td></tr>"
-    ).join("") : emptyRow(8, T("share.empty"), T("share.empty.sub"),
+      "<button class='btn btn-danger btn-sm' data-share-delete='" + i + "'>" + T("common.delete") + "</button></td></tr>";
+    }).join("") : emptyRow(8, T("share.empty"), T("share.empty.sub"),
       '<button type="button" class="btn btn-primary" data-share-add>' + T("share.empty.add") + "</button>");
     pulseTbody($("#share-body"));
   }
@@ -2752,6 +2848,9 @@
 
   /* ---------------- P2-B 真实 API 数据层（各视图 mock 数据逐步替换为后端） ---------------- */
 
+  // 仪表盘双色柱图窗口天数（rant 2026-09-11T16:23:43 第 3 节：原型为固定 14 列）
+  const DASH_TREND_DAYS = 14;
+
   // 各视图真实数据缓存：登录且加载成功后使用；游客 / 失败降级 mock
   const Live = {
     publicUrl: null,     // GET /api/config → public_url（接入端点 base，rant 2026-08-19T20:37:37）
@@ -2823,6 +2922,9 @@
         ctx: m.context_window || 0,
         avail: m.available_keys > 0,
         multi: (m.available_keys || 0) >= 2,
+        // rant 2026-09-11T16:23:43 第 4 节：可用性 pill 需显示真实 key 数、能力标签需 vision 字段
+        keys: m.available_keys || 0,
+        vision: !!m.vision,
         success: null,
         live: true,
       };
@@ -3173,6 +3275,8 @@
     wireSearch($("#mk-search"), renderMarketplace);
     $("#mk-provider").addEventListener("change", renderMarketplace);
     $("#mk-sort").addEventListener("change", renderMarketplace);
+    // 可用性筛选（rant 2026-09-11T16:23:43 第 4 节：all / 仅可用）
+    if ($("#mk-avail")) $("#mk-avail").addEventListener("change", renderMarketplace);
 
     // 市场页：使用 / 消费（G4：聊天 Mock 扣小数点数并产生 consume 交易；游客需先登录 US-1）
     $("#mk-body").addEventListener("click", (e) => {
@@ -3195,6 +3299,7 @@
         resetSearch($("#mk-search"));
         $("#mk-provider").value = "";
         $("#mk-sort").value = "default";
+        if ($("#mk-avail")) $("#mk-avail").value = "all";
         renderMarketplace();
       }
     });
@@ -3348,6 +3453,10 @@
     );
     // 钱包页提示 → 跳转交易记录（明细统一入口）
     $("#wallet-goto-tx").addEventListener("click", () => switchView("transactions"));
+
+    // 仪表盘 page-head 动作按钮（rant 2026-09-11T16:23:43 第 3 节：去市场 / 管理共享）
+    // 容器级委托，避免为每个视图各绑一次；与原型 data-goto 语义一致
+    $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
 
     // 交易 Tab（P2-B：切 tab 重新拉后端过滤数据）
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); if (loggedIn()) loadTransactions(); }));
