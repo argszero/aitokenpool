@@ -815,6 +815,12 @@
     "err.codeLocked": "验证码错误次数过多，请重新获取",
     "err.badEmail": "邮箱格式不正确",
     "err.weakPassword": "密码至少 8 位",
+    "err.emailNotRegistered": "该邮箱未注册",
+    "err.modelExists": "模型已存在（provider+model 唯一）",
+    "err.raisePending": "已有待审批的加额申请，请等待管理员处理",
+    "err.raiseHandled": "该申请已处理",
+    "err.codeSendFail": "验证码发送失败，请重试",
+    "err.negativePrice": "价格不能为负数",
   };
 
   var EN = {
@@ -1601,6 +1607,12 @@
     "err.codeLocked": "Too many wrong attempts, please request a new code",
     "err.badEmail": "Invalid email format",
     "err.weakPassword": "Password must be at least 8 characters",
+    "err.emailNotRegistered": "This email is not registered",
+    "err.modelExists": "Model already exists (provider + model must be unique)",
+    "err.raisePending": "A raise request is already awaiting approval",
+    "err.raiseHandled": "This request has already been handled",
+    "err.codeSendFail": "Failed to send the verification code, please try again",
+    "err.negativePrice": "Price cannot be negative",
   };
 
   // 后端中文错误 → en 键（lang=en 时对已知错误做映射；未知原样返回）
@@ -1608,8 +1620,12 @@
   // 只是为了让人读起来「最具体的在最前」，避免后续插条时又互相遮蔽（如
   // 「不存在」遮蔽「验证码不存在或已过期」、「验证码错误」遮蔽「验证码错误次数过多」）。
   var ERR_MAP = [
+    ["模型已存在（provider+model 唯一）", "err.modelExists"],
+    ["已有待审批的加额申请，请等待管理员处理", "err.raisePending"],
+    ["网络不可用，请检查后端服务是否启动", "err.network"],
     ["该模型暂无可用 key", "err.noAvailableKey"],
     ["API Key 不存在", "err.keyNotFound"],
+    ["验证码发送失败，请重试", "err.codeSendFail"],
     ["验证码不存在或已过期", "err.codeExpired"],
     ["验证码错误次数过多", "err.codeLocked"],
     ["密码至少 8 位", "err.weakPassword"],
@@ -1618,9 +1634,12 @@
     ["key 不存在", "err.keyNotFound"],
     ["服务器内部错误", "err.serverError"],
     ["邮箱格式不正确", "err.badEmail"],
+    ["价格不能为负数", "err.negativePrice"],
     ["点数余额不足", "err.insufficient"],
     ["请求过于频繁", "err.rateLimit"],
     ["该邮箱已注册", "err.emailTaken"],
+    ["该邮箱未注册", "err.emailNotRegistered"],
+    ["该申请已处理", "err.raiseHandled"],
     ["邮箱未验证", "err.emailUnverified"],
     ["验证码错误", "err.badCode"],
     ["余额不足", "err.insufficient"],
