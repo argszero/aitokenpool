@@ -2,6 +2,17 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.21 (2026-09-11)
+
+- **全站 UI 按新原型完整重设计（rant 2026-09-11T16:23:43，PR #152 → #157）** — 纯前端改动（后端契约不变），6 片独立可部署提交：
+  - **设计 token 层（#152 bafd223）**：`:root` 与浅色主题全面迁移到 OKLCH 色彩系统（`--bg` / `--surface` / `--fg` / `--muted` / `--border` / `--accent` 等），26 个 token 与原型逐字一致；旧 token 名保留为别名，视觉零跳变；原型基线入库 `docs/prototype/aitokenpool-console.html`。
+  - **登录页与侧边栏（#153 e33bf2e）**：登录页改左右分栏（左侧品牌叙事 + 三行端点卡片含 OpenAI Responses，右侧表单 + 登录/注册 tab，复用既有 `showAuthForm` 故验证码/找回密码全保留）；侧边栏重构为 brand → 分组导航 → 底部用户 chip（头像/主题切换/退出），游客态同样可达。
+  - **共享组件层（#154 75dcb2c）**：补齐此前缺失的 `.btn-secondary` / `.btn-sm`，迁移 stat-card / pill / tag / trend / bar-list / toolbar / search / empty 等组件（全部使用 OKLCH token，明暗主题免覆盖），原型组件覆盖 48/48。
+  - **8 视图全部对齐原型**：仪表盘 + 模型市场 + 共享管理（#155 7e094e0）、钱包 + 交易记录（#156 41bb6d1）、设置 + 管理 + 运营（#157 09e4121）。
+  - **保留的强功能**：i18n 中英双语（键集 762×2，精确等集）、交易页列筛选整行（焦点保持 + IME 保护）、24h + 自定义时间段、后端真分页、tokenBrk 换行、CSV 导出、withdraw/gift 类型。
+  - **新增后端支持**：`/api/ops/runtime` 追加 `today_hours`（今日按小时调用量，0–23 全量补零）与 `key_health`（按厂商聚合上游 key 健康度）。
+  - **质量门禁**：`cargo test` 148/148 + `cargo fmt --check` + `cargo clippy` + `node --check` ×4 + i18n ZH/EN 键集精确相等 + headless 明暗双主题 DOM 标记与几何探针校验。
+
 ## v0.7.20 (2026-08-25)
 
 - **交易页性能修复（rant 2026-08-25T12:02:13，PR #150）** — dev 库在 NFS 导致的页面慢（浏览器实测 /api/transactions 1.7s、刷新 ~5s）三层修复：① `db.rs open()` 设 `PRAGMA cache_size=-65536`（64MB）+ `mmap_size=67108864`，整库常驻进程内存，NFS 只首读一次（dev 实测 COUNT 2.39s → 0.40s）；② v12 迁移为 transactions 建 4 个索引 `(user_id)` / `(user_id, id DESC)` / `(user_id, time)` / `(user_id, type)`，消除 summary/COUNT/list 全表扫描；③ 前端 `loadTransactions` 用 `Promise.all` 并行拉列表与趋势图，去掉一次串行 ~0.9s 等待。不启用 WAL（网络文件系统不支持）、数据库仍留在 NAS。
