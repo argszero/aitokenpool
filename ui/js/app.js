@@ -2232,7 +2232,7 @@
   // 模型搜索过滤 + 表格渲染（数据来自 /api/admin/models；零 mock：加载失败 → 空态 + 重试）
   function renderAdminModels() {
     if (!Live.adminModels) {
-      $("#model-body").innerHTML = loadErrorRow(7, T("admin.models.loadFail"), T("err.loadFail"));
+      $("#model-body").innerHTML = loadErrorRow(8, T("admin.models.loadFail"), T("err.loadFail"));
       pulseTbody($("#model-body"));
       return;
     }
@@ -2241,16 +2241,16 @@
     const list = Live.adminModels.filter((m) => !q ||
       (m.provider || "").toLowerCase().includes(q) || (m.model || "").toLowerCase().includes(q));
     $("#model-body").innerHTML = list.length ? list.map((m, i) =>
-      "<tr data-model-row='" + i + "'><td><strong>" + esc(m.provider) + "</strong></td>" +
-      "<td><code>" + esc(m.model) + "</code></td>" +
-      '<td class="num">' + D.fmt(m.input_per_m || 0) + "</td>" +
-      '<td class="num">' + D.fmt(m.output_per_m || 0) + "</td>" +
-      '<td class="num">' + fmtCtx(m.context_length || m.context_window || 0) + "</td>" +
-      '<td class="num">' + fmtCtx(m.max_output || 0) + "</td>" +
-      "<td>" + (m.vision ? '<span class="pill pill-ok">' + T("admin.models.vision.yes") + "</span>" : '<span class="pill pill-muted">' + T("admin.models.vision.no") + "</span>") + "</td>" +
+      "<tr data-model-row='" + i + "'><td data-label='厂商'><strong>" + esc(m.provider) + "</strong></td>" +
+      "<td data-label='模型'><code>" + esc(m.model) + "</code></td>" +
+      '<td class="num" data-label="输入价">' + D.fmt(m.input_per_m || 0) + "</td>" +
+      '<td class="num" data-label="输出价">' + D.fmt(m.output_per_m || 0) + "</td>" +
+      '<td class="num" data-label="上下文">' + fmtCtx(m.context_length || m.context_window || 0) + "</td>" +
+      '<td class="num" data-label="最大输出">' + fmtCtx(m.max_output || 0) + "</td>" +
+      "<td data-label='读图'>" + (m.vision ? '<span class="pill pill-ok">' + T("admin.models.vision.yes") + "</span>" : '<span class="pill pill-muted">' + T("admin.models.vision.no") + "</span>") + "</td>" +
       "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-model-edit='" + i + "'>" + T("admin.models.edit") + "</button> " +
       "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-model-del='" + i + "'>" + T("admin.models.del") + "</button></td></tr>"
-    ).join("") : emptyRow(7, T("admin.models.empty"), T("admin.models.empty.sub"));
+    ).join("") : emptyRow(8, T("admin.models.empty"), T("admin.models.empty.sub"));
     pulseTbody($("#model-body"));
   }
 
