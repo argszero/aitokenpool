@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AITokenPool</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234ecdc4'/%3E%3Cstop offset='1' stop-color='%232a9d8f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Ctext x='32' y='43' font-family='-apple-system,Segoe UI,Arial,sans-serif' font-size='30' font-weight='800' text-anchor='middle' fill='%23062021'%3EAT%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="css/style.css?v=20260911-3">
+<link rel="stylesheet" href="css/style.css?v=20260911-4">
 </head>
 <body>
 
@@ -62,10 +62,10 @@
     </div>
     <form id="login-form" class="login-form" novalidate>
       <label><span data-i18n="login.email">邮箱 / 账号</span>
-        <input type="email" id="login-email" placeholder="you@company.com">
+        <input class="input" type="email" id="login-email" placeholder="you@company.com">
       </label>
       <label><span data-i18n="login.password">密码</span>
-        <input type="password" id="login-pass" placeholder="••••••••">
+        <input class="input" type="password" id="login-pass" placeholder="••••••••">
       </label>
       <div class="login-remember">
         <label class="checkbox-line"><input type="checkbox" id="login-remember"> <span data-i18n="login.remember">记住我</span></label>
@@ -74,7 +74,7 @@
     </form>
     <!-- 仅登录 tab 显示的附加项（分隔线 / 游客入口 / 底部提示）：切到注册等表单时整体隐藏，避免串在注册字段上方 -->
     <div id="auth-login-extras">
-      <div class="login-divider"><span data-i18n="login.or">或</span></div>
+      <div class="divider"><span data-i18n="login.or">或</span></div>
       <button type="button" class="btn btn-ghost btn-block" id="guest-browse-btn" data-i18n="login.guest">先逛逛市场</button>
       <p class="login-foot" data-i18n="login.foot">还没有账号？<a href="#" id="reg-link" data-i18n="login.register">注册</a> · <a href="#" id="forgot-link">找回密码</a></p>
       <p class="login-tip" data-i18n="login.tip">已对接后端 API · 登录后进入真实数据界面 · 管理员账号登录可见「管理视图」</p>
@@ -82,16 +82,16 @@
     <!-- 注册表单（rant 2026-08-19T14:36:19：自助注册入口，默认隐藏） -->
     <form id="register-form" class="login-form hidden" novalidate>
       <label><span data-i18n="register.name">昵称（可选）</span>
-        <input type="text" id="reg-name" placeholder="" data-i18n-ph="register.name.ph">
+        <input class="input" type="text" id="reg-name" placeholder="" data-i18n-ph="register.name.ph">
       </label>
       <label><span data-i18n="login.email">邮箱</span>
-        <input type="email" id="reg-email" placeholder="you@company.com">
+        <input class="input" type="email" id="reg-email" placeholder="you@company.com">
       </label>
       <label><span data-i18n="register.password">密码</span>
-        <input type="password" id="reg-pass" placeholder="••••••••">
+        <input class="input" type="password" id="reg-pass" placeholder="••••••••">
       </label>
       <label><span data-i18n="register.confirm">确认密码</span>
-        <input type="password" id="reg-pass2" placeholder="••••••••">
+        <input class="input" type="password" id="reg-pass2" placeholder="••••••••">
       </label>
       <div id="reg-error" class="field-error" hidden></div>
       <button type="submit" class="btn btn-primary btn-block" data-i18n="register.submit">注册</button>
@@ -101,10 +101,10 @@
     <form id="verify-form" class="login-form hidden" novalidate>
       <p class="login-tip" data-i18n="verify.hint">验证码已发送到邮箱，请输入 6 位验证码（10 分钟内有效）</p>
       <label><span data-i18n="login.email">邮箱</span>
-        <input type="email" id="verify-email" readonly>
+        <input class="input" type="email" id="verify-email" readonly>
       </label>
       <label><span data-i18n="verify.code">验证码</span>
-        <input type="text" id="verify-code" maxlength="6" inputmode="numeric" placeholder="000000">
+        <input class="input" type="text" id="verify-code" maxlength="6" inputmode="numeric" placeholder="000000">
       </label>
       <div id="verify-error" class="field-error" hidden></div>
       <button type="submit" class="btn btn-primary btn-block" data-i18n="verify.submit">验证并激活</button>
@@ -114,16 +114,16 @@
     <form id="forgot-form" class="login-form hidden" novalidate>
       <p class="login-tip" data-i18n="forgot.hint">输入注册邮箱，验证码发送后用于重置密码（10 分钟内有效）</p>
       <label><span data-i18n="login.email">邮箱</span>
-        <input type="email" id="forgot-email" placeholder="you@company.com">
+        <input class="input" type="email" id="forgot-email" placeholder="you@company.com">
       </label>
       <label><span data-i18n="verify.code">验证码</span>
-        <input type="text" id="forgot-code" maxlength="6" inputmode="numeric" placeholder="000000">
+        <input class="input" type="text" id="forgot-code" maxlength="6" inputmode="numeric" placeholder="000000">
       </label>
       <label><span data-i18n="register.password">新密码</span>
-        <input type="password" id="forgot-pass" placeholder="••••••••">
+        <input class="input" type="password" id="forgot-pass" placeholder="••••••••">
       </label>
       <label><span data-i18n="register.confirm">确认新密码</span>
-        <input type="password" id="forgot-pass2" placeholder="••••••••">
+        <input class="input" type="password" id="forgot-pass2" placeholder="••••••••">
       </label>
       <div id="forgot-error" class="field-error" hidden></div>
       <button type="submit" class="btn btn-primary btn-block" data-i18n="forgot.submit">发送验证码并重置</button>
@@ -842,9 +842,9 @@
   </div>
 </div>
 
-<script src="js/api.js?v=20260911-3"></script>
-<script src="js/data.js?v=20260911-3"></script>
-<script src="js/i18n.js?v=20260911-3"></script>
-<script src="js/app.js?v=20260911-3"></script>
+<script src="js/api.js?v=20260911-4"></script>
+<script src="js/data.js?v=20260911-4"></script>
+<script src="js/i18n.js?v=20260911-4"></script>
+<script src="js/app.js?v=20260911-4"></script>
 </body>
 </html>

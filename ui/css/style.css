@@ -99,6 +99,23 @@ body {
   line-height: 1.6;
 }
 
+/* ---------- 全局 reset 层 ----------
+   bug 2026-09-11T22:01:43：原型 docs/prototype/aitokenpool-console.html 第 53-72 行
+   的全局 reset 在迁移整站 UI 时整层漏掉，导致所有**未带 class 的表单控件**直接
+   裸露浏览器默认外观（input 变 25px 窄扁灰框 / 2px inset 边框，无 class 的 button
+   出现 2px outset 立体边框）。此处补齐与原型逐条对齐的 reset。
+   注：button/input/select/textarea 用元素选择器，权重低于 .btn/.input 等类选择器，
+   既有组件不受影响（下方 .btn/.input 规则照常覆盖）。 */
+img, svg { display: block; max-width: 100%; }
+a { color: inherit; text-decoration: none; }
+button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; }
+input, select, textarea { font: inherit; }
+p { text-wrap: pretty; }
+h1, h2, h3 { text-wrap: balance; }
+/* 原型第 70 行的 `:focus-visible` 未在此重复：实现早已有等价规则（见下方「键盘可达性」
+   区块，outline 2px solid var(--accent) + offset 2px），唯一差异是圆角用 --radius-sm(8px)
+   而非原型硬编码的 4px —— 属既有设计决策，本次不动，避免无谓的视觉回归。 */
+
 .hidden { display: none !important; }
 /* 全局防御：hidden 属性不被作者 display 样式覆盖（rant 2026-08-17T21:36:27：.inline-edit 的 inline-flex 曾盖过 hidden） */
 [hidden] { display: none !important; }
@@ -116,6 +133,11 @@ body {
 }
 .table tbody { animation: tbodyIn 0.15s ease-out; }
 .muted { color: var(--text-mute); }
+/* 数字类：等宽 + 表格数字对齐（原型 .num）。
+   bug 2026-09-11T22:01:43：原型第 71 行的全局 .num 在迁移时漏掉，导致表格外的
+   .num（#wallet-forever / #tx-count）失去等宽字体与 tabular-nums 对齐；表格内
+   的元素一直由下方 `.table .num` 规则兜住，故此前未被发现。 */
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* 小标签 / 图标按钮（原型 .eyebrow / .icon-btn，PR2 起供登录页与侧边栏使用） */
 .eyebrow {
@@ -132,13 +154,18 @@ body {
 /* ---------- 通用组件 ---------- */
 
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text);
-  padding: 8px 16px;
+  padding: 0 16px;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13.5px;
+  font-weight: 600;
   transition: all .15s;
 }
 .btn:hover { background: var(--bg-hover); border-color: var(--card-hover-border); }
@@ -161,7 +188,7 @@ body {
 .btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); }
 .btn-block { width: 100%; }
 /* 小尺寸按钮（原型 .btn-sm）：侧边栏退出登录等紧凑位置使用 */
-.btn-sm { padding: 5px 11px; font-size: 12.5px; }
+.btn-sm { min-height: 32px; padding: 0 11px; font-size: 12.5px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; pointer-events: none; }
 /* 按钮按压反馈（rant 18:06:09 E：:active 轻微下压；disabled 不触发） */
 .btn:active:not(:disabled) { transform: scale(0.98); }
@@ -200,8 +227,8 @@ select.input:focus-visible { outline: none; }
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: var(--radius-sm);
-  padding: 9px 12px;
-  font-size: 14px;
+  padding: 10px 12px;
+  font-size: 13.5px;
   outline: none;
   transition: border-color .15s;
 }
@@ -547,6 +574,10 @@ mark {
 }
 .form { display: flex; flex-direction: column; gap: 12px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* 表单按钮行（原型 .row）：bug 2026-09-11T22:01:43 —— 原型类名 .row 在实现中缺失，
+   而 markup 里 6 处 `class="row"`（共享上架 / 充值 / 申请加额的确认·取消按钮行）
+   因此完全无样式，按钮贴在一起且不换行。补齐与原型逐条一致的规则。 */
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
 .form label.check { flex-direction: row; align-items: center; gap: 8px; }
 .form label.check input { accent-color: var(--accent); }
@@ -663,12 +694,18 @@ mark {
 .login-card { width: 100%; max-width: 380px; }
 .login-card h2 { font-size: 24px; letter-spacing: -0.01em; }
 .login-card > p.sub { color: var(--muted); margin: 6px 0 22px; }
-/* 登录 / 注册 tab（rant 2026-09-11T16:23:43） */
+/* 登录 / 注册 tab（rant 2026-09-11T16:23:43）
+   显式写 border/background：这两个 button 刻意不带 .btn 类（是 tab 不是按钮），
+   只依赖元素级 reset 时曾渲染出浏览器原生 2px outset 立体边框
+   （bug 2026-09-11T22:01:43），故此处把原型 .auth-tabs button 的规格写全。 */
 .auth-tabs {
   display: flex; gap: 4px; background: var(--bg); border: 1px solid var(--border);
   border-radius: 999px; padding: 4px; margin-bottom: 20px;
 }
-.auth-tabs button { flex: 1; padding: 8px 0; border-radius: 999px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.auth-tabs button {
+  flex: 1; padding: 8px 0; border-radius: 999px; font-size: 13px; font-weight: 600;
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+}
 .auth-tabs button.active { background: var(--accent); color: var(--accent-ink); }
 
 .login-form { display: flex; flex-direction: column; gap: 12px; }
@@ -682,7 +719,10 @@ mark {
 .checkbox-line { display: flex; align-items: center; gap: 6px; flex-direction: row !important; color: var(--text-dim); cursor: pointer; }
 .checkbox-line input { accent-color: var(--accent); width: 14px; height: 14px; }
 .demo-hint { color: var(--text-mute); font-size: 11px; }
-.login-divider { display: flex; align-items: center; gap: 12px; margin: 16px 0; color: var(--muted); font-size: 11px; }
+/* 「或」分隔线（原型 .divider；.login-divider 为登录页历史别名，两者同规格）
+   bug 2026-09-11T22:01:43：原型类名 .divider 在实现中缺失（只有 .login-divider 别名）。 */
+.divider, .login-divider { display: flex; align-items: center; gap: 12px; margin: 16px 0; color: var(--muted); font-size: 11px; }
+.divider::before, .divider::after,
 .login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .login-foot { margin-top: 16px; text-align: center; font-size: 13px; color: var(--text-dim); }
 .login-foot a { color: var(--accent-text); text-decoration: none; }
@@ -799,6 +839,10 @@ mark {
 }
 .user-chip { display: flex; align-items: center; gap: 10px; padding: 8px 6px; }
 .user-chip .chip-text { flex: 1; min-width: 0; }
+/* 头像圆片（原型 .avatar）：线上只出现在侧边栏用户卡内，历史选择器一直是
+   .user-chip .avatar；此处提升为独立的 .avatar 类（bug 2026-09-11T22:01:43：
+   原型类名在实现里缺失，任何放到用户卡之外的 .avatar 会完全没有样式）。 */
+.avatar,
 .user-chip .avatar {
   width: 34px; height: 34px; border-radius: 50%; flex: none;
   background: var(--accent-soft); color: var(--accent);
