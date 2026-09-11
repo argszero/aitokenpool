@@ -343,53 +343,16 @@ select.input option { background: var(--bg-card); }
    定义见本节末尾「通用组件层」；此处保留 .sub 副说明的历史写法 */
 .stat-card .sub { color: var(--text-dim); font-size: 12px; }
 
-/* 交易汇总条（rant 20:39:30 B：紧凑 inline 条，随 tab/筛选联动） */
-.tx-summary { display: flex; flex-wrap: wrap; gap: 28px; padding: 12px 16px 10px; border-bottom: 1px solid var(--border); }
-.tx-summary .ts-item { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
-.tx-summary .ts-label { color: var(--text-mute); font-size: 12px; }
-.tx-summary .ts-value { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.tx-summary .ts-value.ok { color: var(--ok); }
-.tx-summary .ts-value.danger { color: var(--danger-text); }
+/* 交易汇总卡（rant 2026-09-11T16:23:43 第 7 节：原型 .stat-grid + .stat-card 取代旧 inline 汇总条；
+   .stat-grid 的 auto-fit 栅格已在上方定义，卡片内不再需要底部分隔线） */
 
-/* 交易趋势图（rant 2026-08-23T16:01:07 需求 2）：SVG 折线图，无外部依赖 */
-.tx-trend { padding: 8px 16px 6px; border-bottom: 1px solid var(--border); }
-.tx-trend-title { color: var(--text-mute); font-size: 11px; margin-bottom: 1px; }
-/* 指标切换（rant 2026-08-23T16:17:18 需求 2） */
-.tx-trend-switch { display: flex; gap: 5px; margin: 4px 0 6px; flex-wrap: wrap; }
-.tsw-btn {
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-dim);
-  padding: 2px 10px;
-  border-radius: 999px;
-  cursor: pointer;
-  font-size: 11px;
-}
-.tsw-btn:hover { color: var(--text); }
-.tsw-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
-.tx-trend-chart { position: relative; }
-.tx-trend svg { width: 100%; height: auto; display: block; }
-.tx-trend-axis { fill: var(--text-mute); font-size: 8px; }
-/* 平滑折线 + 渐变面积（sparkline 化，rant 2026-08-24T10:51:57.821209：
-   无网格线、无数据点圆、渐变 0.35→0、teal 主题色系——消费用主强调色区分） */
-.tx-trend svg .trend-line { fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
-.tx-trend svg .trend-area { stroke: none; }
-/* 悬停引导线 + tooltip */
-.tx-trend-guide { position: absolute; top: 2px; bottom: 6px; width: 1px; background: var(--text-dim); opacity: 0.45; display: none; pointer-events: none; }
-.tx-trend-tip {
-  position: absolute; display: none; pointer-events: none;
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
-  padding: 6px 9px; font-size: 12px; color: var(--text);
-  box-shadow: var(--shadow); z-index: 5; white-space: nowrap; line-height: 1.5;
-}
-.tx-trend-tip b { color: var(--accent-text); font-weight: 600; }
-.tx-trend-legend { display: flex; gap: 10px; font-size: 10px; color: var(--text-mute); padding-top: 2px; align-items: center; }
-.tx-trend-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
-.tx-trend-dot.exp { background: var(--accent); }
-.tx-trend-dot.inc { background: var(--ok); }
-.tx-trend-dot.net { background: var(--accent-text); }
-.tx-trend-dot.tok { background: var(--warn); }
-.tx-trend-empty { color: var(--text-mute); font-size: 13px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+/* 交易趋势卡（rant 2026-09-11T16:23:43 第 7 节）：改用原型 .trend 双色柱状图渲染
+   （renderTxTrend → .trend-col/.trend-pair/.trend-bar，类定义见上方「图表」节），
+   旧 SVG 折线图（.tx-trend-title / .tx-trend-switch / .tsw-btn / .tx-trend-chart /
+   .tx-trend-axis / .trend-line / .trend-area / 悬停 guide+tip / .tx-trend-legend/dot）
+   及 .tx-trend-empty 随之移除——趋势空态复用 .empty.compact。
+   .trend 高度固定（150px），窄屏由媒体查询收窄。 */
+
 
 .table-wrap { overflow-x: auto; }
 .table-wrap.compact { margin-top: 4px; }
@@ -409,9 +372,7 @@ select.input option { background: var(--bg-card); }
 .table th.num { text-align: right; }
 .table th.num .th-sort { text-align: right; }
 /* Token 用量明细（rant 2026-08-21T14:53:20：输入/缓存命中/输出 随行展示，等宽小字） */
-.tx-brk { margin-top: 2px; font-size: 11px; line-height: 1.2; color: var(--text-dim); white-space: nowrap; }
-.tx-brk .brk-c { color: var(--accent); }
-.tx-brk .brk-o { color: var(--ok); }
+
 /* 斑马纹（rant 15:50:05 A.3：行 hover 高亮保留，hover 覆盖斑马纹） */
 .table tbody tr:nth-child(even) { background: var(--table-stripe); }
 .table tbody tr:hover { background: var(--bg-hover); }
@@ -453,8 +414,11 @@ select.input option { background: var(--bg-card); }
 .badge.accent { color: var(--accent-text); border-color: color-mix(in oklch, var(--accent) 40%, transparent); background: var(--accent-soft); }
 .badge.dim { color: var(--text-mute); }
 
-.toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .toolbar .input { max-width: 240px; }
+/* 工具栏内的下拉不得占满整行：.th-filter 的 width:100% 是给表头列筛选行的，
+   直接放进 flex 工具栏会被拉伸到整宽（C1978 视觉复查发现）。工具栏直属 select 一律按内容宽度。 */
+.toolbar > select { width: auto; max-width: 240px; }
 .toolbar-count { align-self: center; color: var(--text-mute); font-size: 12px; margin-left: auto; }
 
 /* 搜索增强（rant 18:06:09 D：清空 × 按钮 + <mark> 关键词高亮；
@@ -849,10 +813,22 @@ mark {
 .page-head p { color: var(--text-mute); margin-top: 2px; }
 
 .wallet-hero { display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; }
-.balance-big { font-size: 42px; font-weight: 800; color: var(--accent-text); line-height: 1.2; }
+.balance-big {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: clamp(34px, 5vw, 54px); font-weight: 800; letter-spacing: -0.03em; line-height: 1;
+  color: var(--accent-text); margin-top: 8px;
+}
+.balance-big .unit { font-size: 16px; font-weight: 500; color: var(--text-mute); margin-left: 6px; }
+/* wallet-hero 的标签/提示（原型 h3 12px muted + hint 行；rant 2026-09-11T16:23:43 第 6 节） */
+.wallet-hero-label { font-size: 12px; color: var(--text-mute); margin-bottom: 0; }
+.wallet-hero-hint { display: block; margin-top: 10px; }
+.wallet-hero-hint b { color: var(--text); font-weight: 600; }
+.wallet-hero-note { display: block; margin-top: 10px; }
 .wallet-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .wallet-note { font-size: 12px; }
 .wallet-hint { color: var(--text-mute); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 充值/加额表单动作行（原型 .row：横向按钮排布，不占满整行） */
+.form .row, .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 /* ---------- 消费模拟（聊天 Mock · US-6） ---------- */
 
@@ -875,10 +851,10 @@ mark {
 .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .modal-head h3 { font-size: 16px; margin: 0; }
 
-/* 模态框操作行 / 充值预设（US-4） */
-.topup-presets { display: flex; gap: 8px; margin-top: 6px; }
-.topup-presets .btn { min-width: 72px; }
-.topup-presets .btn.active { background: var(--accent-soft); border-color: color-mix(in oklch, var(--accent) 50%, transparent); color: var(--accent-text); }
+/* 模态框操作行 / 充值预设（US-4；rant 2026-09-11T16:23:43 第 6 节：改用原型 .chip + .on 选中态）*/
+.topup-presets { gap: 8px; margin-top: 2px; }
+.topup-presets .chip { min-width: 64px; justify-content: center; }
+.topup-presets .chip.on { border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); }
 .chat-log {
   flex: 1; overflow-y: auto;
   background: var(--bg-soft); border: 1px solid var(--border);
@@ -1189,9 +1165,8 @@ textarea.input:focus { border-color: var(--accent); }
   /* 网关端点卡片窄屏：chip 与 URL 上下排（原型 responsive 规则） */
   .gw-ep { grid-template-columns: 1fr; gap: 6px; }
   .gw-chip { justify-self: start; }
-  /* 交易汇总条窄屏（rant 20:39:30 B） */
-  .tx-summary { gap: 18px; padding: 10px 12px 8px; }
-  .tx-summary .ts-value { font-size: 16px; }
+  /* 交易汇总卡窄屏（rant 2026-09-11T16:23:43 第 7 节：stat-grid 两列，与仪表盘一致） */
+  .tx-summary { padding: 0; }
   /* 移动端表格卡片化（rant 18:06:09 C：隐藏表头，行 → label:value 卡片，不再横滚） */
   .table { display: block; }
   .table thead { display: none; }

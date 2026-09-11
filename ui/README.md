@@ -175,18 +175,21 @@ ui/
 - **刷新恢复**：DOMContentLoaded 先 `pendingHashView = viewFromHash()`；登录成功恢复 `pendingHashView || "dashboard"`（游客浏览 / 未登录态不冲突）；
 - **游客拦截**：游客访问受限 hash（如 `#/settings`）→ `switchView` 内 `GUEST_VIEWS` 拦截（toast 提示），视图与 URL 均保持原状、不入栈新条目。
 
-## 交易汇总条约定（v1.19，rant 2026-08-17T20:39:30 B）
+## 交易汇总卡约定（v1.19 → v1.23 改版，rant 2026-09-11T16:23:43 第 7 节）
 
-- 交易记录页卡片顶部（表格上方）有**紧凑汇总条** `#tx-summary`（`.tx-summary`，三列 inline，不引入新布局）：**总收入 / 总支出 / 净变化**，正数 `+` 绿（`var(--ok)`）、负数 `-` 红（`var(--danger-text)`）、零值中性显示 `0`；
-- **随 tab 过滤联动**：切换「全部 / 消费 / 收益」tab 即时重算；且与表格**列筛选**一致——汇总基于 `filterRows(list, TX_COLUMNS, txTable.filters)`（`buildDataTable` 的筛选逻辑抽出的公共函数），反映与表格可见行相同的过滤集，**不受分页影响**；
-- 窄屏（≤560px）自动收窄间距 / 字号，`flex-wrap` 换行兜底。
+- 交易记录页顶部为**汇总卡** `#tx-summary`（`.stat-grid` + 5 张 `.stat-card`，改用 PR3 通用组件层）：**消费 / 收益 / 点数变化 / Token 合计 / 记录数**，正数 `var(--ok)`、负数 `var(--danger-text)`、零值中性；
+- **口径不变**（数据契约未动）：汇总值来自后端 `summary` 全量 SQL 聚合（`filterRows(list, TX_COLUMNS, txTable.filters)` 为无 summary 时的兜底），**不受分页影响**；「记录数」取后端 `total`（真分页下即当前筛选条件的全量条数）；
+- 工具栏右侧 `#tx-count` 同步显示 `tx.pager.count`（共 N 条），与汇总卡的记录数同源；
+- 图表：`#tx-trend` 改用原型 `.trend` 双色柱状（消费 / 收益两柱 + `.legend`），数据源仍是 `/api/transactions/trend`；**x 轴按请求窗口补零，保证左→右时间递增且柱距恒定**（后端 GROUP BY 只返回有交易的桶，缺行会导致柱子左移——原型同款 bug 的根因）；
+- 窄屏（≤560px）`.stat-grid` 两列、`.trend` 高度收紧。
 
 ## select 美化约定（v1.19，rant 2026-08-17T20:39:30 C）
 
 - 全站 `select` **移除原生箭头**（`appearance:none` + `-webkit-appearance:none`），改用**自定义 SVG 下拉箭头**：`--select-arrow` CSS 变量（内联 data-URI，深色主题浅色箭头 `#aab6c8`、亮色主题深色箭头 `#55627a`，`url("data:image/svg+xml,…")` 内空格须 `%20` 编码）；
 - `padding-right` 预留箭头空间（`select.input` 30px / `.th-filter` 24px / page-size 22px）；**hover / focus 边框同 input**（`var(--accent)`，focus 加 `box-shadow: 0 0 0 1px var(--accent)` 光圈）；`disabled` 态 `opacity:.55` + `not-allowed`；
 - **覆盖所有 select 来源**：静态 `.input`（市场筛选、共享表单三级联动、设置页）、动态 `select.th-filter`（表格列筛选）、`select[data-page-size]`（分页器每页条数）；
-- ⚠️ 注意：这些选择器的规则**必须用 `background-color` 而非 `background` 简写**（简写会把 `background-image` 置 none 抹掉箭头）；`select.input option { background: var(--bg-card) }`（下拉项深色）与 `select.input.input-error`（错误红边框）保持不动。
+- ⚠️ 注意：这些选择器的规则**必须用 `background-color` 而非 `background` 简写**（简写会把 `background-image` 置 none 抹掉箭头）；`select.input option { background: var(--bg-card) }`（下拉项深色）与 `select.input.input-error`（错误红边框）保持不动；
+- ⚠️ `.th-filter` 自带 `width:100%`（表头列筛选需要撑满单元格），因此**工具栏里的直属 select 必须显式 `width:auto`**（`.toolbar > select`）——否则交易页时间范围下拉会拉伸到整行（C1978 视觉复查发现）。
 
 ## toast 队列约定（v1.19，rant 2026-08-17T20:39:30 D）
 
@@ -259,7 +262,7 @@ ui/
 
 ## 交易记录导出 CSV 约定（v1.20，rant 2026-08-17T20:46:57 E）
 
-- 入口：交易页 tab 下右对齐 **`#tx-export-btn`「导出 CSV」**（`.toolbar` justify-end + `btn-ghost`），`bindEvents` 绑 `exportTxCsv`；
+- 入口：交易页 page-head 右上 **`#tx-export-btn`「导出 CSV」**（`.btn.btn-secondary.btn-sm`），`bindEvents` 绑 `exportTxCsv`；
 - 数据范围：**当前筛选可见行** = tab（全部/消费/收益）→ `filterRows(list, TX_COLUMNS, txTable.filters)`（与表格、汇总条同一数据源）；无数据 → toast info 不导出；
 - 格式：**UTF-8 BOM**（`"\uFEFF"` 前缀）+ `\r\n` 换行 + 表头 `时间,类型,模型 / Key,Token 用量,点数,状态`；类型用 `TX_TYPE` 中文映射；点数正负号原值；字段含 `,`/`"`/换行按 RFC4180 双引号转义（`cell()` 助手）；
 - 下载：`Blob(type="text/csv;charset=utf-8")` → `URL.createObjectURL` → 临时 `<a download>` click → `remove()` → `setTimeout 1s` revoke；文件名 **`aitokenpool-transactions-YYYYMMDD.csv`**（`new Date()` 本地日期）；
@@ -304,7 +307,7 @@ ui/
 
 ## 界面国际化 i18n 约定（v1.21.1，rant 2026-08-18T20:49:22 + 21:40:10 去中英混排）
 
-- **语言包**：`ui/js/i18n.js` 零依赖 IIFE，`I18N = { zh, en }` 双词典（563 键 ×2，覆盖导航/登录/视图标题/通用/仪表盘/市场/共享/钱包/交易/设置/管理/运营/聊天/游客/相对时间/帮助/tour/主题/错误映射）；`window.t(key, vars)` 查当前语言，**缺失回退 zh，再缺回退 key 本身**；`{var}` 占位符插值；
+- **语言包**：`ui/js/i18n.js` 零依赖 IIFE，`I18N = { zh, en }` 双词典（733 键 ×2，覆盖导航/登录/视图标题/通用/仪表盘/市场/共享/钱包/交易/设置/管理/运营/聊天/游客/相对时间/帮助/tour/主题/错误映射）；`window.t(key, vars)` 查当前语言，**缺失回退 zh，再缺回退 key 本身**；`{var}` 占位符插值；
 - **切换机制**：设置页「偏好 → 界面语言」下拉（`#prefs-lang`，zh/en）→ `I18n.setLang()`：写 `localStorage('atp_lang')` + `document.documentElement.lang` 同步（zh→`zh-CN` / en→`en`）+ 派发 `atp:langchange` → app.js 重渲染 `renderNav()` + `renderView(activeView)` + `document.title`（引导中额外 `renderTourStep()`）；**首载**：localStorage → `navigator.language` 前缀（`zh*`→zh，否则 en）→ 默认 zh；切换即时生效无需刷新；
 - **静态文案**：`index.html` 内静态中文用 `data-i18n` / `data-i18n-ph`（placeholder）/ `data-i18n-title`（title）标记，`applyStatic()` 启动时与每次切换时批量替换；**容器含表单控件的 `<label>` 用 `<label><span data-i18n="KEY">文本</span><input…></label>` 结构**（避免 innerHTML 替换销毁控件）；
 - **动态文案**：`app.js` 面向用户字符串全部走 `t('key')`；**语言敏感常量存 key 而非文案**（NAV/VIEW_TITLE/TOUR_STEPS/HELP_KEYS 存 key，渲染时 `T()` 解析；SHARE_STATUS/RAISE_STATUS 的 `text` 为函数；TX_COLUMNS 的 `title`/`options` 为函数；`DAY_LABELS` 动态 `T("share.day."+n)`）——保证切换语言后重渲染即时生效；

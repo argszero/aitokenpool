@@ -345,66 +345,72 @@
     <!-- 钱包 Wallet -->
     <section class="view hidden" id="view-wallet">
       <header class="page-head">
-        <h2 data-i18n="view.wallet">钱包</h2>
-        <p data-i18n="view.wallet.sub">点数余额 · 充值 / 提现（收支明细见【交易记录】）</p>
+        <div>
+          <div class="crumb" data-i18n="wallet.crumb">/ 钱包</div>
+          <h2 data-i18n="view.wallet">钱包</h2>
+          <p data-i18n="view.wallet.sub">点数余额 · 充值 / 申请加额（收支明细见【交易记录】）</p>
+        </div>
       </header>
       <div class="card wallet-hero">
         <div>
-          <h3 data-i18n="wallet.balance">点数余额</h3>
-          <div class="balance-big" id="wallet-balance">0</div>
+          <h3 class="wallet-hero-label" data-i18n="wallet.balance">点数余额</h3>
+          <div class="balance-big"><span id="wallet-balance">0</span><span class="unit" data-i18n="common.points">点</span></div>
+          <p class="hint wallet-hero-hint"><span data-i18n="wallet.forever">永久点数</span>
+            <b class="num" id="wallet-forever">0</b>
+            <span data-i18n="wallet.gift.note">· 每日赠送点数当日有效</span></p>
         </div>
         <div class="wallet-actions">
           <button class="btn btn-primary" id="topup-btn" data-i18n="wallet.topup">充值</button>
-          <button class="btn btn-ghost" id="raise-btn" data-i18n="wallet.raise">申请加额</button>
-          <button class="btn btn-ghost" id="withdraw-btn" disabled data-i18n="wallet.withdraw">提现</button>
-          <span class="muted wallet-note" data-i18n="wallet.note">充值（演示流程，真实支付后续接入） · 提现暂不支持</span>
+          <button class="btn btn-secondary" id="raise-btn" data-i18n="wallet.raise">申请加额</button>
+          <button class="btn btn-secondary" id="withdraw-btn" disabled data-i18n="wallet.withdraw">提现</button>
         </div>
       </div>
+      <p class="hint wallet-hero-note" data-i18n="wallet.note">充值（演示流程，真实支付后续接入） · 提现暂不支持</p>
       <!-- 充值：行内展开卡片（US-4 · 少用弹窗原则 v1.13：充值改行内，替代原 topup-modal） -->
-      <div class="card" id="topup-card" hidden>
+      <div class="card mt16" id="topup-card" hidden>
         <h3 data-i18n="wallet.topup.title">充值点数</h3>
-        <p class="muted" style="margin-bottom:12px" data-i18n="wallet.topup.sub">演示流程：真实支付通道后续接入。</p>
+        <p class="card-sub" data-i18n="wallet.topup.sub">演示流程：真实支付通道后续接入。</p>
         <div class="form">
-          <label><span data-i18n="wallet.topup.choose">选择金额（点数）</span>
-            <div class="topup-presets">
-              <button type="button" class="btn btn-ghost" data-topup-amt="100">100</button>
-              <button type="button" class="btn btn-ghost" data-topup-amt="500">500</button>
-              <button type="button" class="btn btn-ghost" data-topup-amt="1000">1000</button>
-            </div>
-          </label>
-          <label><span data-i18n="wallet.topup.custom">或自定义金额</span>
+          <label class="f" data-i18n="wallet.topup.choose">选择金额（点数）</label>
+          <div class="chips topup-presets">
+            <button type="button" class="chip" data-topup-amt="100">100</button>
+            <button type="button" class="chip" data-topup-amt="500">500</button>
+            <button type="button" class="chip" data-topup-amt="1000">1000</button>
+            <button type="button" class="chip" data-topup-amt="5000">5000</button>
+          </div>
+          <label class="f"><span data-i18n="wallet.topup.custom">或自定义金额</span>
             <input id="topup-custom" type="number" min="1" step="0.01" class="input" data-i18n-ph="wallet.topup.ph" placeholder="如 300 或 25.5">
           </label>
-          <div class="form-row">
+          <div class="row">
             <button type="button" class="btn btn-primary" id="topup-confirm" data-i18n="wallet.topup.confirm">确认充值</button>
             <button type="button" class="btn btn-ghost" id="topup-cancel" data-i18n="wallet.topup.cancel">取消</button>
           </div>
         </div>
       </div>
       <!-- 申请加额：行内展开卡片（US-20 · 少用弹窗原则：替代原 raise-modal） -->
-      <div class="card" id="raise-card" hidden>
+      <div class="card mt16" id="raise-card" hidden>
         <h3 data-i18n="wallet.raise.title">申请加额</h3>
-        <p class="muted" style="margin-bottom:12px" data-i18n="wallet.raise.sub">余额低时可申请更多点数，提交后等待管理员审批（US-20）。</p>
+        <p class="card-sub" data-i18n="wallet.raise.sub">余额低时可申请更多点数，提交后等待管理员审批（US-20）。</p>
         <div class="form">
-          <label><span data-i18n="wallet.raise.amount">申请点数</span>
+          <label class="f"><span data-i18n="wallet.raise.amount">申请点数</span>
             <input id="raise-amount" type="number" min="1" step="1" class="input" data-i18n-ph="wallet.raise.amount.ph" placeholder="如 5000">
           </label>
-          <label><span data-i18n="wallet.raise.reason">申请原因</span>
+          <label class="f"><span data-i18n="wallet.raise.reason">申请原因</span>
             <input id="raise-reason" class="input" data-i18n-ph="wallet.raise.reason.ph" placeholder="如：本月配额已用完，需要继续开发">
           </label>
-          <div class="form-row">
+          <div class="row">
             <button type="button" class="btn btn-primary" id="raise-confirm" data-i18n="wallet.raise.submit">提交申请</button>
             <button type="button" class="btn btn-ghost" id="raise-cancel" data-i18n="wallet.raise.cancel">取消</button>
           </div>
         </div>
       </div>
-      <div class="card">
+      <div class="card mt16">
         <h3 data-i18n="wallet.month">本月点数变化</h3>
         <div class="mini-list" id="month-changes"></div>
       </div>
-      <div class="card">
+      <div class="card mt16">
         <p class="wallet-hint"><span data-i18n="wallet.hint">收支明细已统一到</span>
-          <button class="btn btn-ghost" id="wallet-goto-tx" data-i18n="wallet.tx">交易记录</button>
+          <button class="btn btn-ghost btn-sm" id="wallet-goto-tx" data-i18n="wallet.tx">交易记录</button>
           <span data-i18n="wallet.hint.suffix">——涵盖消费、收益、充值、提现、赠送</span></p>
       </div>
     </section>
@@ -412,15 +418,20 @@
     <!-- 交易记录 Transactions -->
     <section class="view hidden" id="view-transactions">
       <header class="page-head">
-        <h2 data-i18n="view.transactions">交易记录</h2>
-        <p data-i18n="view.transactions.sub">涵盖消费、收益、充值、提现、赠送</p>
+        <div>
+          <div class="crumb" data-i18n="tx.crumb">/ 交易记录</div>
+          <h2 data-i18n="view.transactions">交易记录</h2>
+          <p data-i18n="view.transactions.sub">涵盖消费、收益、充值、提现、赠送 · 三档 token 明细透明可见</p>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="tx-export-btn" data-i18n-title="tx.export.title" data-i18n="tx.export" title="导出当前筛选的交易记录为 CSV">导出 CSV</button>
       </header>
       <div class="tabs" id="tx-tabs">
         <button class="tab active" data-tx-tab="all" data-i18n="tx.tab.all">全部</button>
         <button class="tab" data-tx-tab="consume" data-i18n="tx.tab.consume">消费</button>
         <button class="tab" data-tx-tab="earn" data-i18n="tx.tab.earn">收益</button>
       </div>
-      <div class="toolbar" style="justify-content:flex-end">
+      <!-- 工具栏：时间范围（含原型未体现的 24h / 自定义，不得删减）+ 记录数 -->
+      <div class="toolbar">
         <select id="tx-range" class="th-filter" data-i18n-title="tx.range.title" title="时间范围">
           <option value="24h" data-i18n="tx.range.24h">最近 24 小时</option>
           <option value="7d" data-i18n="tx.range.7d">最近 7 天</option>
@@ -430,11 +441,27 @@
         </select>
         <input type="datetime-local" id="tx-range-start" class="tx-range-input" style="display:none" data-i18n-title="tx.range.start" title="开始时间">
         <input type="datetime-local" id="tx-range-end" class="tx-range-input" style="display:none" data-i18n-title="tx.range.end" title="结束时间">
-        <button type="button" class="btn btn-ghost" id="tx-export-btn" data-i18n-title="tx.export.title" data-i18n="tx.export" title="导出当前筛选的交易记录为 CSV">导出 CSV</button>
+        <span class="grow"></span>
+        <span class="num muted tx-count" id="tx-count"></span>
       </div>
+      <!-- 汇总卡（.stat-grid）：消费 / 收益 / 点数变化 / Token 合计 / 记录数 -->
       <div class="card">
-        <div class="tx-summary" id="tx-summary"></div>
-        <div class="tx-trend" id="tx-trend"></div>
+        <div class="stat-grid" id="tx-summary"></div>
+      </div>
+      <!-- 每日消费 / 收益（.trend 双色柱状，x 轴左→右时间递增） -->
+      <div class="card mt16">
+        <h3 data-i18n="tx.trend.card">每日消费 / 收益</h3>
+        <p class="card-sub" data-i18n="tx.trend.card.sub">单位：点数 · 随上方时间段与筛选联动</p>
+        <div class="trend" id="tx-trend"></div>
+        <div class="legend">
+          <span><i class="consume"></i><span data-i18n="tx.trend.metric.expense">消费</span></span>
+          <span><i class="earn"></i><span data-i18n="tx.trend.metric.income">收入</span></span>
+        </div>
+      </div>
+      <!-- 明细：表头排序 + 列筛选行 + 后端真分页（#tx-table 由 buildDataTable 渲染，勿改为静态 table） -->
+      <div class="card mt16">
+        <h3 data-i18n="tx.detail">明细</h3>
+        <p class="card-sub" data-i18n="tx.detail.sub">输入（非缓存）/ 缓存命中 / 输出 三档 token</p>
         <div class="table-wrap compact" id="tx-table"></div>
       </div>
     </section>

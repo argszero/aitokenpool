@@ -17,7 +17,6 @@
   let txRange = "24h"; // 交易时间段快捷范围：24h / 7d / 30d / all / custom（默认最近 24 小时，rant 2026-08-22T10:50:00）
   let txCustomStart = ""; // 自定义开始（datetime-local 值，本地时区）
   let txCustomEnd = ""; // 自定义结束
-  let txTrendMetric = "expense"; // 趋势图指标（rant 2026-08-23T16:17:18 需求 2）：expense / income / net / tokens，默认消费点数
   let isGuest = false; // 游客模式（US-1：未登录可浏览市场）
   let pendingHashView = null; // URL hash 路由（rant 20:39:30 A）：刷新后登录时恢复上次视图
   let mkExpanded = null; // 市场行展开（rant 20:39:30 F）：当前展开的模型 id，null=全部收起；仅展开当前行
@@ -1138,6 +1137,12 @@
     // 钱包只做余额与资金操作；收支明细统一到【交易记录】（见 index.html wallet-hint）
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     $("#wallet-balance").textContent = D.fmt(D.USER.balance);
+    // 永久点数（原型 wallet-hero hint）：/api/wallet 的 balance 即永久余额（available = 永久 + 当日赠送）
+    const fv = $("#wallet-forever");
+    if (fv) {
+      const w = Live.wallet;
+      fv.textContent = D.fmt(w && typeof w.balance === "number" ? w.balance : D.USER.balance);
+    }
     // 本月点数变化（近 1 月按类型汇总收支，与仪表盘一致）
     renderMonthChanges();
   }
@@ -1146,7 +1151,7 @@
 
   function openTopup() {
     $("#topup-custom").value = "";
-    $$("#topup-card .topup-presets .btn").forEach((b) => b.classList.remove("active"));
+    $$("#topup-card .topup-presets .chip").forEach((b) => b.classList.remove("on"));
     $("#topup-card").hidden = false;
     $("#raise-card").hidden = true; // 互斥：开充值收起加额
     clearFieldError($("#topup-custom"));
@@ -1158,7 +1163,7 @@
   }
 
   function confirmTopup() {
-    const preset = document.querySelector("#topup-card .topup-presets .btn.active");
+    const preset = document.querySelector("#topup-card .topup-presets .chip.on");
     const customRaw = $("#topup-custom").value;
     let amt;
     if (preset && !customRaw) amt = Number(preset.dataset.topupAmt);
@@ -1306,14 +1311,16 @@
       render: (t) => t.status === "处理中" ? '<span class="pill pill-warn">' + esc(txStatus(t.status)) + "</span>" : esc(txStatus(t.status)) },
   ];
 
-  // 交易汇总条（rant 20:39:30 B + 00:04:21 + 00:07:08：改用后端 summary 全量 SQL 聚合，
-  // 不再对当前页本地加总；口径 = income 白名单（earn/topup/gift）为正、consume 为负；
-  // 附带 Token 统计 总/输入/缓存/输出，M 单位）
+  // 交易汇总卡（rant 2026-09-11T16:23:43 第 7 节：改用原型 .stat-grid + .stat-card；
+  // 数据口径不变 —— 后端 summary 全量 SQL 聚合（含列筛选），不再对当前页本地加总；
+  // 口径 = income 白名单（earn/topup/gift）为正、consume 为负；附带 Token 总/输入/缓存/输出）
   function renderTxSummary(list) {
+    const el = $("#tx-summary");
+    if (!el) return;
     const s = (Live.transactions && Live.transactions.summary) ? Live.transactions.summary : null;
     // rant 2026-08-25T10:33:26：后端 summary 已随列筛选全量 SQL 聚合（income 白名单 earn/topup/gift
     // 为正、consume 为负；token 口径一致）——登录态一律用后端 summary，本地加总仅作无 summary 的兜底。
-    let income = 0, expense = 0, tokens = 0, inputT = 0, cachedT = 0, outputT = 0;
+    let income = 0, expense = 0, tokens = 0, inputT = 0, cachedT = 0, outputT = 0, count = 0;
     if (s) {
       income = s.income_pts || 0;
       expense = s.expense_pts || 0;
@@ -1332,132 +1339,97 @@
         if (typeof t.outputRaw === "number") outputT += t.outputRaw;
       });
     }
+    // 记录数 = 后端 total（真分页下即筛选项下的全量条数；无 total 时退化为当前可见行数）
+    count = (Live.transactions && typeof Live.transactions.total === "number")
+      ? Live.transactions.total
+      : list.length;
     const net = income - expense;
-    const cls = (n) => (n > 0 ? "ok" : n < 0 ? "danger" : "");
-    const fmt = (n) => (n > 0 ? "+" : n < 0 ? "-" : "") + D.fmt(Math.abs(n));
+    const signed = (n) => (n > 0 ? "+" : n < 0 ? "-" : "") + D.fmt(Math.abs(n));
+    const colour = (n) => (n > 0 ? "var(--ok)" : n < 0 ? "var(--danger-text)" : "inherit");
     const fmtM = (n) => (n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : (n >= 1000 ? Math.round(n / 1000) + "K" : String(Math.round(n))));
-    let html =
-      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.income") + "</span><span class='ts-value num ' + cls(income) + '\'>" + fmt(income) + "</span></div>" +
-      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.expense") + "</span><span class='ts-value num ' + cls(-expense) + '\'>" + fmt(-expense) + "</span></div>" +
-      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.net") + "</span><span class='ts-value num ' + cls(net) + '\'>" + fmt(net) + "</span></div>";
-    // Token 统计：总 / 输入 / 缓存 / 输出（后端 summary 或本地筛选后加总均可提供）
-    html +=
-      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.tokens") + "</span><span class='ts-value num '>" + fmtM(tokens) + "</span></div>" +
-      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.input") + "</span><span class='ts-value num '>" + fmtM(inputT) + "</span></div>" +
-      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.cached") + "</span><span class='ts-value num '>" + fmtM(cachedT) + "</span></div>" +
-      '<div class="ts-item"><span class="ts-label">' + T("tx.summary.output") + "</span><span class='ts-value num '>" + fmtM(outputT) + "</span></div>";
-    $("#tx-summary").innerHTML = html;
+    // 复用 PR4 的 stat()（.stat-card）与原型卡片顺序：消费 / 收益 / 点数变化 / Token 合计 / 记录数；
+    // Token 卡的 sub 承载输入·缓存·输出三档明细（原型「三档 token 之和」口径）
+    el.innerHTML =
+      stat(T("tx.summary.expense"), D.fmt(Math.abs(expense)), T("tx.summary.expense.sub")) +
+      stat(T("tx.summary.income"), '<span style="color:' + colour(income) + '">' + signed(income) + "</span>", T("tx.summary.income.sub")) +
+      stat(T("tx.summary.net"), '<span style="color:' + colour(net) + '">' + signed(net) + "</span>", T("tx.summary.net.sub")) +
+      stat(T("tx.summary.tokens"), fmtM(tokens),
+        T("tx.summary.brk", { i: fmtM(inputT), c: fmtM(cachedT), o: fmtM(outputT) })) +
+      stat(T("tx.summary.count"), D.fmt(count), T("tx.summary.count.sub"));
   }
 
-  // 交易趋势图（rant 2026-08-23T16:01:07 需求 2 + 16:17:18 优化 + 2026-08-24T10:51:57 重做）：
-  // 参考仪表盘 sparkline()：渐变面积（0.35→0）、连续平滑曲线（round 连接）、无网格极简坐标、
-  // teal 主题配色、紧凑高度（viewBox 85，原 170 减半，rant 10:51:57.821928）；
-  // 保留指标切换（消费/收入/净变化/Token，默认消费）与悬停 tooltip。
-  let _trendCtx = null; // 悬停 tooltip 上下文（renderTxTrend 写入，事件委托读取）
+  // 每日消费/收益趋势（rant 2026-09-11T16:23:43 第 7 节 + PR4 的 renderDashTrend 先例）：
+  // 改用原型 .trend 双色柱状图（消费 = accent、收益 = ok），柱高按当日 max 归一、最小 2%；
+  // 数据源仍是 /api/transactions/trend（与列表同 type/时间段/列筛选口径）。
+  // GROUP BY 只返回有交易的桶（无交易的日子缺行）→ 按请求窗口补 0，保持 x 轴左→右时间递增、
+  // 柱距恒定（原型 x 轴递增 bug 的根因即「缺行导致柱子左移」，此处一并规避）。
+  const TX_TREND_MAX_COLS = 40; // 桶数上限（hour 桶 24h 窗口 + 余量），超出则抽稀标签
+  function txTrendDays(buckets, bucket) {
+    const byKey = new Map();
+    const keyOf = (d) => {
+      const p = (n) => String(n).padStart(2, "0");
+      const md = d.getUTCFullYear() + "-" + p(d.getUTCMonth() + 1) + "-" + p(d.getUTCDate());
+      return bucket === "hour" ? md + "-" + p(d.getUTCHours()) : md;
+    };
+    buckets.forEach((b) => {
+      const d = new Date(b.t);
+      if (!isNaN(d.getTime())) byKey.set(keyOf(d), b);
+    });
+    const now = new Date();
+    // 窗口右端：custom/end 已指定则用 end，否则用「现在」（UTC 对齐到桶，与后端 strftime 口径一致）
+    let end;
+    if (txRange === "custom" && txCustomEnd) {
+      end = new Date(txCustomEnd);
+      if (isNaN(end.getTime())) end = now;
+    } else {
+      end = now;
+    }
+    const p = (n) => String(n).padStart(2, "0");
+    const utcFloor = (d) => bucket === "hour"
+      ? Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours())
+      : Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    const step = bucket === "hour" ? 36e5 : bucket === "week" ? 7 * 864e5 : 864e5;
+    // 窗口长度：跟随实际数据跨度（先算最早桶到右端的桶数），避免 24h/自定义短窗口补出几百根空柱
+    const earliest = buckets.length
+      ? buckets.reduce((min, b) => { const t = new Date(b.t).getTime(); return isNaN(t) ? min : Math.min(min, t); }, Infinity)
+      : NaN;
+    let cols = isFinite(earliest) ? Math.round((utcFloor(end) - utcFloor(new Date(earliest))) / step) + 1 : 1;
+    cols = Math.max(1, Math.min(cols, TX_TREND_MAX_COLS));
+    const start = utcFloor(end) - (cols - 1) * step;
+    const days = [];
+    for (let i = 0; i < cols; i++) {
+      const d = new Date(start + i * step);
+      const key = keyOf(d);
+      const b = byKey.get(key);
+      days.push(b ? Object.assign({ t: d.toISOString() }, b) : { t: d.toISOString(), income: 0, expense: 0, tokens: 0, count: 0 });
+    }
+    return days;
+  }
+
   function renderTxTrend() {
     const el = $("#tx-trend");
+    if (!el) return;
     const tr = (Live.transactions && Live.transactions.trend) ? Live.transactions.trend : null;
-    const buckets = (tr && Array.isArray(tr.buckets)) ? tr.buckets : [];
-    if (!buckets.length) {
-      el.innerHTML = '<div class="tx-trend-empty">' + esc(T("tx.trend.empty")) + "</div>";
-      _trendCtx = null;
+    const raw = (tr && Array.isArray(tr.buckets)) ? tr.buckets : [];
+    if (!raw.length) {
+      // 空态：未加载 / 加载失败 / 窗口内无交易，三者文案区分（零 mock 语义）
+      el.innerHTML = '<div class="empty compact">' +
+        esc(tr === null ? T("dash.trend.fail") : T("tx.trend.empty")) + "</div>";
       return;
     }
     const bucket = tr.bucket || "day";
-    const METRICS = [
-      { key: "expense", label: T("tx.trend.metric.expense"), pick: (b) => b.expense || 0, cls: "exp", stroke: "var(--accent)" },
-      { key: "income", label: T("tx.trend.metric.income"), pick: (b) => b.income || 0, cls: "inc", stroke: "var(--ok)" },
-      { key: "net", label: T("tx.trend.metric.net"), pick: (b) => (b.net === undefined ? (b.income || 0) - (b.expense || 0) : b.net) || 0, cls: "net", signed: true, stroke: "var(--accent-text)" },
-      { key: "tokens", label: T("tx.trend.metric.tokens"), pick: (b) => b.tokens || 0, cls: "tok", stroke: "var(--warn)" },
-    ];
-    const m = METRICS.find((x) => x.key === txTrendMetric) || METRICS[0];
-    const vals = buckets.map(m.pick);
-    const lbl = (b) => bucketLabel(b.t, bucket);
-    const fmtSigned = (n) => (n > 0 ? "+" : n < 0 ? "-" : "") + D.fmt(Math.abs(n));
-    const fmtAxis = (n) => {
-      const a = Math.abs(n);
-      const s = a >= 1e6 ? (a / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M"
-        : a >= 1000 ? Math.round(a / 1000) + "K"
-        : (Math.round(a * 10) / 10).toString();
-      return (n < 0 ? "-" : "") + s;
-    };
-    // 自适应刻度：nice 上限（1/2/5×10^n）；负值指标（净变化）±maxV 对称，零轴居中
-    const neg = vals.some((v) => v < 0);
-    const absMax = Math.max(0, ...vals.map((v) => Math.abs(v)));
-    const np = Math.pow(10, Math.floor(Math.log10(Math.max(absMax, 1e-9))));
-    const nm = Math.max(absMax, 1e-9) / np;
-    const maxV = Math.max((nm <= 1 ? 1 : nm <= 2 ? 2 : nm <= 5 ? 5 : 10) * np, 4);
-    const minV = neg ? -maxV : 0;
-    // 紧凑几何 + 动态 viewBox（rant 2026-08-24T14:29:57 真正根因）：SVG width:100% 在宽容器
-    // 会被等比放大 ~2.4x（1534px 容器 / 640 viewBox → canvasScale 2.397），使 CSS 像素
-    // （stroke-width 1.4 / font-size 8px）实际渲染 ≈3.4px / ≈19px——v0.7.15→v0.7.16 调细后
-    // "看起来没变化"即被此放大吞掉。修复：viewBox 宽 = 容器宽 → 1 viewBox 单位 ≈ 1 物理像素，
-    // 线宽/字号按 CSS 值真实呈现；窄屏（容器 ≤ 设计宽 640）保持 s=1 原样等比缩小，避免变形。
-    const DW = 640, DH = 85;
-    const cw = el.clientWidth - 32; // .tx-trend 水平 padding 16px*2 → svg 实际可用宽
-    const s = Math.max(1, (cw > 0 ? cw : DW) / DW);
-    const W = DW * s, H = DH * s, PL = 32 * s, PR = 8 * s, PT = 6 * s, PB = 14 * s;
-    const iw = W - PL - PR, ih = H - PT - PB;
-    const X = (i) => PL + (buckets.length === 1 ? iw / 2 : iw * i / (buckets.length - 1));
-    const Y = (v) => PT + ih * (maxV - v) / (maxV - minV || 1);
-    const pts = vals.map((v, i) => [X(i), Y(v)]);
-    // 平滑折线（Catmull-Rom → 三次贝塞尔，单点退化为点）
-    const smoothPath = (p) => {
-      if (!p.length) return "";
-      if (p.length === 1) return "M" + p[0][0].toFixed(1) + "," + p[0][1].toFixed(1) + " L" + (p[0][0] + 1).toFixed(1) + "," + p[0][1].toFixed(1);
-      let d = "M" + p[0][0].toFixed(1) + "," + p[0][1].toFixed(1);
-      for (let i = 0; i < p.length - 1; i++) {
-        const p0 = p[Math.max(0, i - 1)], p1 = p[i], p2 = p[i + 1], p3 = p[Math.min(p.length - 1, i + 2)];
-        const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
-        const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
-        d += " C" + c1x.toFixed(1) + "," + c1y.toFixed(1) + " " + c2x.toFixed(1) + "," + c2y.toFixed(1) + " " + p2[0].toFixed(1) + "," + p2[1].toFixed(1);
-      }
-      return d;
-    };
-    // 极简坐标（rant 10:51:57.821209：去生硬网格）：仅顶/底 2 个纵轴刻度标签，无网格线
-    let axis =
-      '<text class="tx-trend-axis" x="' + (PL - 4) + '" y="' + (PT + 3).toFixed(1) + '" text-anchor="end">' + fmtAxis(maxV) + "</text>" +
-      '<text class="tx-trend-axis" x="' + (PL - 4) + '" y="' + (H - PB + 3).toFixed(1) + '" text-anchor="end">' + fmtAxis(minV) + "</text>";
-    // 横轴标签：首 / 中 / 尾（紧凑小字号）
-    const idxs = [0, Math.floor((buckets.length - 1) / 2), buckets.length - 1].filter((v, i, a) => a.indexOf(v) === i);
-    let xlabels = "";
-    idxs.forEach((i) => {
-      xlabels += '<text class="tx-trend-axis" x="' + X(i).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + esc(lbl(buckets[i])) + "</text>";
-    });
-    // 渐变面积（基线：负值指标取零轴，正值指标取图表底）+ 平滑曲线；
-    // 不画数据点圆（rant 10:51:57.821209：空白圆点造成折线断点/锯齿，sparkline 化优雅降级）
-    const yBase = Y(neg ? 0 : minV);
-    const areaPath = pts.length
-      ? smoothPath(pts) + " L" + pts[pts.length - 1][0].toFixed(1) + "," + yBase.toFixed(1) + " L" + pts[0][0].toFixed(1) + "," + yBase.toFixed(1) + " Z"
-      : "";
-    const switchHtml =
-      '<div class="tx-trend-switch" role="tablist" aria-label="' + esc(T("tx.trend.metricLabel")) + '">' +
-      METRICS.map((x) =>
-        '<button type="button" class="tsw-btn' + (x.key === m.key ? " active" : "") + '" data-metric="' + x.key + '" role="tab" aria-selected="' + (x.key === m.key) + '">' + esc(x.label) + "</button>"
-      ).join("") +
-      "</div>";
-    const stroke = m.stroke || "var(--accent)";
-    const gid = "spark-grad-" + (++_sparkId); // 每实例唯一 id，防多次渲染/多图冲突（rant 12:32:18：CSS class 设 stop 色在 Chrome 不可靠 → 内联属性）
-    const total = vals.reduce((a, b) => a + b, 0);
-    const html =
-      '<div class="tx-trend-title">' + esc(T("tx.trend.title")) + "</div>" +
-      switchHtml +
-      '<div class="tx-trend-chart">' +
-      '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(T("tx.trend.title")) + '">' +
-      '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
-      '<stop offset="0%" stop-color="' + stroke + '" stop-opacity="0.35"/>' +
-      '<stop offset="100%" stop-color="' + stroke + '" stop-opacity="0"/>' +
-      "</linearGradient></defs>" +
-      axis + xlabels +
-      '<path class="trend-area" d="' + areaPath + '" fill="url(#' + gid + ')"/>' +
-      '<path class="trend-line" d="' + smoothPath(pts) + '" stroke="' + stroke + '"/>' +
-      "</svg>" +
-      '<div class="tx-trend-guide" id="tx-trend-guide"></div>' +
-      '<div class="tx-trend-tip" id="tx-trend-tip"></div>' +
-      "</div>" +
-      '<div class="tx-trend-legend"><i class="tx-trend-dot ' + m.cls + '"></i><span>' + esc(m.label) + " · " + (m.signed ? fmtSigned(total) : D.fmt(total)) + "</span></div>";
-    el.innerHTML = html;
-    _trendCtx = { buckets, vals, m, lbl, X, iw, W, PL };
+    const days = txTrendDays(raw, bucket);
+    const max = Math.max(1, ...days.map((b) => Math.max(b.expense || 0, b.income || 0)));
+    el.innerHTML = days.map((b) => {
+      const c = b.expense || 0, e = b.income || 0;
+      const lbl = bucketLabel(b.t, bucket);
+      const h = (v) => Math.max(2, (v / max) * 100).toFixed(1);
+      const tip = lbl + " " + T("tx.trend.metric.expense") + " " + D.fmt(c) + " / " + T("tx.trend.metric.income") + " " + D.fmt(e);
+      return '<div class="trend-col" title="' + esc(tip) + '"><div class="trend-pair">' +
+        '<div class="trend-bar consume" style="height:' + h(c) + '%"></div>' +
+        '<div class="trend-bar earn" style="height:' + h(e) + '%"></div>' +
+        '</div><span class="trend-x">' + esc(lbl) + "</span></div>";
+    }).join("");
   }
 
   // 趋势桶标签：hour → "MM-DD HH:00"；day/week → "MM-DD"（bucket 起点均为 UTC，转本地显示）
@@ -1495,6 +1467,8 @@
     if (loggedIn() && !Live.transactions) {
       renderTxSummary([]);
       renderTxTrend();
+      const c = $("#tx-count");
+      if (c) c.textContent = "";
       $("#tx-table").innerHTML = loadErrorHtml(T("tx.loadFail"), null, T("err.loadFail"));
       return;
     }
@@ -1505,8 +1479,16 @@
       return;
     }
     let list = Live.transactions ? txsToView(Live.transactions.items || []) : [];
-    // 交易汇总条：与 tab + 列筛选联动，与表格可见行一致（rant 20:39:30 B）
+    // 交易汇总卡：与 tab + 列筛选联动，与表格可见行一致（rant 20:39:30 B；记录数走后端 total）
     renderTxSummary(filterRows(list, TX_COLUMNS, txTable.filters));
+    // 记录数（原型 #tx-count）：后端 total（真分页下即筛选后的全量条数）
+    const cntEl = $("#tx-count");
+    if (cntEl) {
+      const n = (Live.transactions && typeof Live.transactions.total === "number")
+        ? Live.transactions.total
+        : filterRows(list, TX_COLUMNS, txTable.filters).length;
+      cntEl.textContent = (Live.transactions || !loggedIn()) ? T("tx.pager.count", { n: n }) : "";
+    }
     // 趋势图：跟随 tab + 外部时间段（rant 2026-08-23T16:01:07 需求 2）
     renderTxTrend();
     buildDataTable({
@@ -3444,10 +3426,10 @@
         if (e.key === "Escape") { document.getElementById(id).hidden = true; }
       });
     });
-    $$("#topup-card .topup-presets .btn").forEach((b) =>
+    $$("#topup-card .topup-presets .chip").forEach((b) =>
       b.addEventListener("click", () => {
-        $$("#topup-card .topup-presets .btn").forEach((x) => x.classList.remove("active"));
-        b.classList.add("active");
+        $$("#topup-card .topup-presets .chip").forEach((x) => x.classList.remove("on"));
+        b.classList.add("on");
         $("#topup-custom").value = "";
       })
     );
@@ -3484,42 +3466,11 @@
       showCustom();
     }
 
-    // 趋势图指标切换 + 悬停 tooltip（rant 2026-08-23T16:17:18 需求 1/2：事件委托，重渲染不丢绑定）
+    // 趋势图：原型 .trend 双色柱状（消费/收益）为纯 CSS 柱 + title 原生 tooltip，
+    // 无需 JS 绑定（旧 SVG 折线图的指标切换/悬停定位/动态 viewBox 随实现一并移除）。
+    // 仅保留 resize 重渲染（窄屏时柱宽由 flex 自适应，重渲染保证标签密度与数据一致）
     const txTrendEl = $("#tx-trend");
     if (txTrendEl) {
-      txTrendEl.addEventListener("click", (e) => {
-        const b = e.target.closest ? e.target.closest(".tsw-btn") : null;
-        if (!b || b.dataset.metric === txTrendMetric) return;
-        txTrendMetric = b.dataset.metric;
-        renderTxTrend();
-      });
-      txTrendEl.addEventListener("mousemove", (e) => {
-        const ctx = _trendCtx;
-        const tip = $("#tx-trend-tip"), guide = $("#tx-trend-guide");
-        const svg = txTrendEl.querySelector("svg"), chartEl = txTrendEl.querySelector(".tx-trend-chart");
-        if (!ctx || !tip || !guide || !svg || !chartEl) return;
-        const rect = svg.getBoundingClientRect();
-        if (!rect.width) return;
-        const vb = svg.getAttribute("viewBox").split(" ").map(Number);
-        const x = (e.clientX - rect.left) / rect.width * vb[2];
-        const step = ctx.buckets.length > 1 ? ctx.X(1) - ctx.X(0) : ctx.iw;
-        const i = Math.max(0, Math.min(ctx.buckets.length - 1, Math.round((x - ctx.PL) / step)));
-        const v = ctx.vals[i];
-        const cr = chartEl.getBoundingClientRect();
-        const valTxt = ctx.m.signed ? (v > 0 ? "+" : v < 0 ? "-" : "") + D.fmt(Math.abs(v)) : D.fmt(v);
-        tip.innerHTML = esc(ctx.lbl(ctx.buckets[i])) + "<br><b>" + esc(ctx.m.label) + " " + valTxt + "</b>";
-        tip.style.display = "block";
-        guide.style.display = "block";
-        guide.style.left = (ctx.X(i) / vb[2] * cr.width) + "px";
-        tip.style.left = Math.min(Math.max(e.clientX - cr.left + 14, 4), Math.max(cr.width - tip.offsetWidth - 4, 4)) + "px";
-        tip.style.top = Math.min(Math.max(e.clientY - cr.top - tip.offsetHeight - 10, 4), Math.max(cr.height - tip.offsetHeight - 4, 4)) + "px";
-      });
-      txTrendEl.addEventListener("mouseleave", () => {
-        const tip = $("#tx-trend-tip"), guide = $("#tx-trend-guide");
-        if (tip) tip.style.display = "none";
-        if (guide) guide.style.display = "none";
-      });
-      // 窗口 resize → 重渲染趋势图（动态 viewBox 需跟随容器宽度，debounce 防抖；视图隐藏时跳过）
       let _txTrendResizeT = null;
       window.addEventListener("resize", () => {
         if (txTrendEl.offsetParent === null) return;
