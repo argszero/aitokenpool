@@ -1,66 +1,88 @@
 /* ============================================================
-   AITokenPool UI Prototype — 设计系统
-   深色主基调 · 克制配色 · 强调色 #4ecdc4（青）
+   AITokenPool UI — 设计系统
+   OKLCH token 体系 · 深色主基调 · 强调色青（oklch 188 色相）
+   设计基线：docs/prototype/aitokenpool-console.html
    ============================================================ */
 
 :root {
-  --bg: #0e1116;
-  --bg-soft: #141922;
-  --bg-card: #1a2029;
-  --bg-hover: #222a36;
-  --border: #2a3342;
-  --text: #e6ebf2;
-  --text-dim: #9aa7b8;
-  --text-mute: #67748a;
-  --accent: #4ecdc4;
-  --accent-soft: rgba(78, 205, 196, 0.12);
-  --accent-text: #6fe0d8;
-  --ok: #3ecf8e;
-  --warn: #e5b45b;
-  --danger: #e5666a;
-  --danger-soft: rgba(229, 102, 106, 0.15);
-  --danger-text: #ff9d9f;
-  --card-hover-border: #3a4a63;
-  --card-shadow: 0 12px 30px rgba(0,0,0,.38);
-  --table-row-border: rgba(42,51,66,.5);
-  --table-stripe: rgba(255,255,255,.018);
-  --spin-track: rgba(255,255,255,.35);
-  --overlay: rgba(14,17,22,.72);
-  --radius: 12px;
-  --radius-sm: 8px;
-  --sidebar-w: 240px;
-  --shadow: 0 8px 24px rgba(0,0,0,.35);
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  /* select 自定义下拉箭头（rant 20:39:30 C：内联 SVG data-URI，深色主题浅色箭头） */
+  /* ---- 核心 token（OKLCH，对齐原型） ---- */
+  --bg:      oklch(17.67% 0.0114 260.64);
+  --surface: oklch(24.17% 0.0194 258.36);
+  --fg:      oklch(93.83% 0.0109 256.70);
+  --muted:   oklch(72.37% 0.0288 255.13);
+  --border:  oklch(31.93% 0.0296 260.54);
+  --accent:  oklch(77.62% 0.1116 188.54);
+
+  /* ---- 派生 token（统一 color-mix，不写死中间色） ---- */
+  --surface-2: color-mix(in oklch, var(--surface) 82%, var(--fg));
+  --surface-3: color-mix(in oklch, var(--surface) 70%, var(--fg));
+  --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+  --fg-soft:     color-mix(in oklch, var(--fg) 6%, transparent);
+  --accent-ink:  oklch(26% 0.045 192);
+  --ok:     oklch(78% 0.15 155);
+  --warn:   oklch(80% 0.11 82);
+  --danger: oklch(70% 0.17 20);
+  --ok-soft:     color-mix(in oklch, var(--ok) 16%, transparent);
+  --warn-soft:   color-mix(in oklch, var(--warn) 16%, transparent);
+  --danger-soft: color-mix(in oklch, var(--danger) 16%, transparent);
+  --overlay: color-mix(in oklch, var(--bg) 76%, transparent);
+
+  /* ---- 字体 ---- */
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-serif: "Iowan Old Style", "Charter", "Songti SC", Georgia, serif;
+
+  /* ---- 圆角 / 尺寸 / 阴影 ---- */
+  --r: 12px; --r-sm: 8px; --r-lg: 16px;
+  --sidebar-w: 250px;
+  --shadow: 0 18px 40px color-mix(in oklch, var(--bg) 62%, transparent);
+
+  /* ---- 兼容别名（旧 token 名 → 新 token；全站引用无需重写） ---- */
+  --font: var(--font-body);
+  --mono: var(--font-mono);
+  --radius: var(--r);
+  --radius-sm: var(--r-sm);
+  --text: var(--fg);
+  --text-dim: var(--muted);
+  /* 以下派生值按原 hex 调色板反解 color-mix 比例，保证 PR1 视觉零跳变 */
+  --text-mute: color-mix(in oklch, var(--muted) 57%, var(--border));
+  --accent-text: color-mix(in oklch, var(--accent) 75%, var(--fg));
+  --danger-text: color-mix(in oklch, var(--danger) 63%, var(--fg));
+  --bg-soft: color-mix(in oklch, var(--bg) 75%, var(--border));
+  --bg-card: var(--surface);
+  --bg-hover: color-mix(in oklch, var(--surface) 48%, var(--border));
+  --card-hover-border: color-mix(in oklch, var(--muted) 20%, var(--border));
+  --card-shadow: var(--shadow);
+  --table-row-border: color-mix(in oklch, var(--border) 55%, transparent);
+  --table-stripe: var(--fg-soft);
+  --spin-track: color-mix(in oklch, var(--fg) 30%, transparent);
+  /* select 自定义下拉箭头（内联 SVG data-URI，深色主题浅色箭头） */
   --select-arrow: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='12'%20height='12'%20viewBox='0%200%2012%2012'%20fill='none'%3E%3Cpath%20d='M2%204l4%204%204-4'%20stroke='%23aab6c8'%20stroke-width='1.6'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
-/* 亮色主题（rant 18:06:09 B：CSS 变量重构，侧边栏切换 + localStorage 记忆 + prefers-color-scheme） */
+/* 亮色主题（侧边栏切换 + localStorage 记忆 + prefers-color-scheme） */
 :root[data-theme="light"] {
-  --bg: #f4f6fa;
-  --bg-soft: #e9edf3;
-  --bg-card: #ffffff;
-  --bg-hover: #e2e8f0;
-  --border: #d5dde8;
-  --text: #1c2330;
-  --text-dim: #55627a;
-  --text-mute: #8a94a6;
-  --accent: #159a92;
-  --accent-soft: rgba(21, 154, 146, 0.12);
-  --accent-text: #0f7f78;
-  --ok: #128a5d;
-  --warn: #b07d1e;
-  --danger: #cf4550;
-  --danger-soft: rgba(207, 69, 80, 0.12);
-  --danger-text: #cf4550;
-  --card-hover-border: #c4cdda;
-  --card-shadow: 0 12px 30px rgba(40,55,80,.14);
-  --table-row-border: rgba(150,165,185,.4);
-  --table-stripe: rgba(25,40,60,.025);
-  --spin-track: rgba(0,0,0,.25);
-  --overlay: rgba(20,26,36,.5);
-  --shadow: 0 8px 24px rgba(40,55,80,.12);
+  --bg:      oklch(97.28% 0.0057 264.53);
+  --surface: oklch(100% 0 0);
+  --fg:      oklch(25.55% 0.0267 262.58);
+  --muted:   oklch(49.45% 0.0418 262.59);
+  --border:  oklch(89.47% 0.0174 256.29);
+  --accent:  oklch(62.02% 0.1042 188.19);
+  --accent-ink: oklch(99% 0.01 190);
+  --ok:     oklch(58% 0.14 156);
+  --warn:   oklch(60% 0.12 75);
+  --danger: oklch(55% 0.19 22);
+  --shadow: 0 16px 36px color-mix(in oklch, var(--fg) 12%, transparent);
+
+  /* 亮色下需要反向取值的别名（同样按原 hex 调色板反解） */
+  --text-mute: color-mix(in oklch, var(--muted) 60%, var(--border));
+  --accent-text: color-mix(in oklch, var(--accent) 78%, var(--fg));
+  --danger-text: color-mix(in oklch, var(--danger) 90%, var(--surface));
+  --bg-soft: color-mix(in oklch, var(--surface) 48%, var(--border));
+  --bg-hover: color-mix(in oklch, var(--bg) 43%, var(--border));
+  --card-hover-border: color-mix(in oklch, var(--muted) 13%, var(--border));
+  --table-stripe: color-mix(in oklch, var(--fg) 3%, transparent);
+  --spin-track: color-mix(in oklch, var(--fg) 25%, transparent);
   /* select 自定义下拉箭头（亮色主题深色箭头） */
   --select-arrow: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='12'%20height='12'%20viewBox='0%200%2012%2012'%20fill='none'%3E%3Cpath%20d='M2%204l4%204%204-4'%20stroke='%2355627a'%20stroke-width='1.6'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E");
 }
@@ -107,21 +129,21 @@ body {
   font-size: 14px;
   transition: all .15s;
 }
-.btn:hover { background: var(--bg-hover); border-color: #3a4658; }
+.btn:hover { background: var(--bg-hover); border-color: var(--card-hover-border); }
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #062021;
+  color: var(--accent-ink);
   font-weight: 600;
 }
-.btn-primary:hover { background: #63ded6; }
+.btn-primary:hover { background: color-mix(in oklch, var(--accent) 86%, var(--fg)); }
 .btn-ghost { background: transparent; }
 .btn-danger {
   background: transparent;
   border-color: transparent;
   color: var(--danger);
 }
-.btn-danger:hover { background: rgba(229, 102, 106, 0.12); border-color: var(--danger); }
+.btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); }
 .btn-block { width: 100%; }
 .btn:disabled { opacity: .5; cursor: not-allowed; pointer-events: none; }
 /* 按钮按压反馈（rant 18:06:09 E：:active 轻微下压；disabled 不触发） */
@@ -227,7 +249,7 @@ select.input option { background: var(--bg-card); }
   background: none;
   border: none;
   padding: 0;
-  color: var(--accent, #2a9d8f);
+  color: var(--accent);
   cursor: pointer;
   font: inherit;
   text-decoration: underline;
@@ -420,10 +442,10 @@ select.input option { background: var(--bg-card); }
   width: 6px; height: 6px; border-radius: 50%;
   background: currentColor; opacity: .85; flex-shrink: 0;
 }
-.badge.ok { color: var(--ok); border-color: rgba(62,207,142,.4); background: rgba(62,207,142,.08); }
-.badge.warn { color: var(--warn); border-color: rgba(229,180,91,.4); background: rgba(229,180,91,.08); }
-.badge.danger { color: var(--danger); border-color: rgba(229,102,106,.4); background: rgba(229,102,106,.08); }
-.badge.accent { color: var(--accent-text); border-color: rgba(78,205,196,.4); background: var(--accent-soft); }
+.badge.ok { color: var(--ok); border-color: color-mix(in oklch, var(--ok) 40%, transparent); background: var(--ok-soft); }
+.badge.warn { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 40%, transparent); background: var(--warn-soft); }
+.badge.danger { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 40%, transparent); background: var(--danger-soft); }
+.badge.accent { color: var(--accent-text); border-color: color-mix(in oklch, var(--accent) 40%, transparent); background: var(--accent-soft); }
 .badge.dim { color: var(--text-mute); }
 
 .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -591,7 +613,7 @@ mark {
   height: 8px; border-radius: 999px;
   background: var(--bg-hover); overflow: hidden;
 }
-.bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #7ee8b8); border-radius: 999px; }
+.bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), color-mix(in oklch, var(--accent) 55%, var(--ok))); border-radius: 999px; }
 
 /* 空状态（rant 15:50:05 A.4：图标 + 文案 + 可选行动按钮） */
 .empty-state {
@@ -616,16 +638,16 @@ mark {
   padding: 24px;
   position: relative; overflow: hidden;
   background:
-    radial-gradient(600px 300px at 20% 0%, rgba(78,205,196,.08), transparent 60%),
-    radial-gradient(600px 400px at 90% 100%, rgba(78,205,196,.06), transparent 60%),
+    radial-gradient(600px 300px at 20% 0%, color-mix(in oklch, var(--accent) 8%, transparent), transparent 60%),
+    radial-gradient(600px 400px at 90% 100%, color-mix(in oklch, var(--accent) 6%, transparent), transparent 60%),
     var(--bg);
 }
 /* 品牌氛围（rant 20:46:57 G：渐变网格 + 微光浮动；reduced-motion 下静止由全局规则覆盖） */
 .login-view::before {
   content: ""; position: absolute; inset: 0;
   background:
-    linear-gradient(rgba(78,205,196,.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(78,205,196,.05) 1px, transparent 1px);
+    linear-gradient(color-mix(in oklch, var(--accent) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklch, var(--accent) 5%, transparent) 1px, transparent 1px);
   background-size: 44px 44px;
   -webkit-mask-image: radial-gradient(ellipse 85% 75% at 50% 42%, #000 25%, transparent 72%);
   mask-image: radial-gradient(ellipse 85% 75% at 50% 42%, #000 25%, transparent 72%);
@@ -635,7 +657,7 @@ mark {
   content: ""; position: absolute;
   width: 440px; height: 440px; border-radius: 50%;
   top: -140px; right: -110px;
-  background: radial-gradient(circle, rgba(78,205,196,.16), transparent 65%);
+  background: radial-gradient(circle, color-mix(in oklch, var(--accent) 16%, transparent), transparent 65%);
   animation: login-float 10s ease-in-out infinite alternate;
   pointer-events: none;
 }
@@ -658,12 +680,12 @@ mark {
 
 .logo {
   width: 40px; height: 40px; border-radius: 10px;
-  background: linear-gradient(135deg, #4ecdc4, #2a9d8f);
-  color: #062021; font-weight: 800;
+  background: linear-gradient(135deg, color-mix(in oklch, var(--accent) 92%, var(--fg)), color-mix(in oklch, var(--accent) 62%, var(--bg)));
+  color: var(--accent-ink); font-weight: 800;
   display: flex; align-items: center; justify-content: center;
   font-size: 16px; flex-shrink: 0;
   position: relative;
-  box-shadow: 0 0 0 1.5px rgba(78,205,196,.45), 0 0 14px rgba(78,205,196,.35);
+  box-shadow: 0 0 0 1.5px color-mix(in oklch, var(--accent) 45%, transparent), 0 0 14px color-mix(in oklch, var(--accent) 35%, transparent);
 }
 /* 渐变描边质感（rant 20:46:57 G：顶部内高光 + 底部内阴影） */
 .logo::after {
@@ -673,7 +695,7 @@ mark {
 /* 登录页 logo 加大 + 微光（rant 20:39:30 G） */
 .login-card .logo {
   width: 52px; height: 52px; border-radius: 13px; font-size: 20px;
-  box-shadow: 0 0 0 1px rgba(78,205,196,.35), 0 0 18px rgba(78,205,196,.35);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent) 35%, transparent), 0 0 18px color-mix(in oklch, var(--accent) 35%, transparent);
 }
 .login-brand h1 { font-size: 22px; line-height: 1.25; }
 .login-brand p { font-size: 12px; line-height: 1.5; }
@@ -749,7 +771,7 @@ mark {
   font-size: 10px;
   padding: 1px 7px;
   border-radius: 999px;
-  border: 1px solid rgba(78,205,196,.4);
+  border: 1px solid color-mix(in oklch, var(--accent) 40%, transparent);
   color: var(--accent-text);
   background: var(--accent-soft);
 }
@@ -797,8 +819,8 @@ mark {
 }
 .user-chip .avatar {
   width: 32px; height: 32px; border-radius: 50%;
-  background: linear-gradient(135deg, #4ecdc4, #2a9d8f);
-  color: #062021; font-weight: 700;
+  background: linear-gradient(135deg, color-mix(in oklch, var(--accent) 92%, var(--fg)), color-mix(in oklch, var(--accent) 62%, var(--bg)));
+  color: var(--accent-ink); font-weight: 700;
   display: flex; align-items: center; justify-content: center;
 }
 .user-chip strong { font-size: 13px; display: block; }
@@ -841,7 +863,7 @@ mark {
 /* 模态框操作行 / 充值预设（US-4） */
 .topup-presets { display: flex; gap: 8px; margin-top: 6px; }
 .topup-presets .btn { min-width: 72px; }
-.topup-presets .btn.active { background: var(--accent-soft); border-color: rgba(78,205,196,.5); color: var(--accent-text); }
+.topup-presets .btn.active { background: var(--accent-soft); border-color: color-mix(in oklch, var(--accent) 50%, transparent); color: var(--accent-text); }
 .chat-log {
   flex: 1; overflow-y: auto;
   background: var(--bg-soft); border: 1px solid var(--border);
@@ -859,7 +881,7 @@ mark {
   border: 1px solid var(--border); background: var(--bg-card);
   color: var(--text); white-space: pre-wrap; word-break: break-word;
 }
-.chat-msg.user .bubble { background: var(--accent-soft); border-color: rgba(78,205,196,.4); color: var(--accent-text); }
+.chat-msg.user .bubble { background: var(--accent-soft); border-color: color-mix(in oklch, var(--accent) 40%, transparent); color: var(--accent-text); }
 .chat-input-row { display: flex; gap: 10px; align-items: center; }
 .chat-input-row .input { flex: 1; }
 
@@ -892,12 +914,12 @@ mark {
   background: var(--accent-soft); color: var(--accent-text);
   font-size: 12px; cursor: pointer; white-space: nowrap;
 }
-.toast-action:hover { background: var(--accent); color: #062021; }
+.toast-action:hover { background: var(--accent); color: var(--accent-ink); }
 /* 端点卡片高亮闪烁（rant 20:46:57 B：跳转后引导用户注意） */
 .ep-flash { animation: ep-flash 0.8s ease-in-out 2; }
 @keyframes ep-flash {
   0%, 100% { box-shadow: none; border-color: var(--border); }
-  50% { box-shadow: 0 0 0 3px var(--accent-soft), 0 0 20px rgba(78,205,196,.4); border-color: var(--accent); }
+  50% { box-shadow: 0 0 0 3px var(--accent-soft), 0 0 20px color-mix(in oklch, var(--accent) 40%, transparent); border-color: var(--accent); }
 }
 
 /* 快捷键帮助面板（rant 20:39:30 E：行内卡片非 modal，右上角浮层，无遮罩） */
@@ -936,17 +958,17 @@ mark {
 /* 首次引导 tour（rant 20:46:57 A：非 modal 浮层 + 目标 accent 高亮环；reduced-motion 静止） */
 #tour-overlay {
   position: fixed; inset: 0; z-index: 940;
-  background: rgba(14, 17, 22, .45); cursor: pointer;
+  background: color-mix(in oklch, var(--bg) 55%, transparent); cursor: pointer;
 }
 #tour-ring {
   position: fixed; z-index: 941; pointer-events: none;
   border: 2px solid var(--accent); border-radius: 8px;
-  box-shadow: 0 0 0 4px var(--accent-soft), 0 0 24px rgba(78,205,196,.35);
+  box-shadow: 0 0 0 4px var(--accent-soft), 0 0 24px color-mix(in oklch, var(--accent) 35%, transparent);
   animation: tour-pulse 1.2s ease-in-out infinite;
 }
 @keyframes tour-pulse {
-  0%, 100% { box-shadow: 0 0 0 4px var(--accent-soft), 0 0 24px rgba(78,205,196,.35); }
-  50% { box-shadow: 0 0 0 8px var(--accent-soft), 0 0 32px rgba(78,205,196,.5); }
+  0%, 100% { box-shadow: 0 0 0 4px var(--accent-soft), 0 0 24px color-mix(in oklch, var(--accent) 35%, transparent); }
+  50% { box-shadow: 0 0 0 8px var(--accent-soft), 0 0 32px color-mix(in oklch, var(--accent) 50%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) {
   #tour-ring { animation: none; }
