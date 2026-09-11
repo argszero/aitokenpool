@@ -1243,7 +1243,14 @@
       el.innerHTML = loadErrorHtml(T("admin.raise.loadFail"), null, T("err.loadFail"));
       return;
     }
-    el.innerHTML = (list.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
+    // 表头在渲染期取 i18n（本表由 JS 在 boot 之后注入，无 data-i18n 钩子可走）：
+    // 既保证首屏语言正确，也让 atp:langchange → renderView 能实时换语言
+    el.innerHTML = (list.length ? '<div class="table-wrap compact"><table class="table"><thead><tr>' +
+      '<th>' + esc(T("admin.raise.col.member")) + "</th>" +
+      '<th class="num">' + esc(T("admin.raise.col.amount")) + "</th>" +
+      "<th>" + esc(T("admin.raise.col.reason")) + "</th>" +
+      "<th>" + esc(T("admin.raise.col.status")) + "</th>" +
+      "<th></th></tr></thead><tbody>" +
       list.map((r, i) =>
         "<tr><td data-label='" + T('admin.raise.col.member') + "'><strong>" + esc(r.name || r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
         '<td class="num" data-label="' + T("admin.raise.col.amount") + '">+' + D.fmt(r.amount) + " " + T("common.points") + "</td>" +
