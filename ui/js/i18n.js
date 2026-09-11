@@ -1604,29 +1604,32 @@
   };
 
   // 后端中文错误 → en 键（lang=en 时对已知错误做映射；未知原样返回）
+  // ⚠️ 顺序无关：mapErr 取**最长匹配**，不依赖本表次序。此处按字面量长度降序排列
+  // 只是为了让人读起来「最具体的在最前」，避免后续插条时又互相遮蔽（如
+  // 「不存在」遮蔽「验证码不存在或已过期」、「验证码错误」遮蔽「验证码错误次数过多」）。
   var ERR_MAP = [
     ["该模型暂无可用 key", "err.noAvailableKey"],
-    ["点数余额不足", "err.insufficient"],
-    ["余额不足", "err.insufficient"],
+    ["API Key 不存在", "err.keyNotFound"],
+    ["验证码不存在或已过期", "err.codeExpired"],
+    ["验证码错误次数过多", "err.codeLocked"],
+    ["密码至少 8 位", "err.weakPassword"],
     ["需要管理员权限", "err.adminRequired"],
     ["需要运营者权限", "err.opsRequired"],
-    ["需要登录", "err.authRequired"],
-    ["未登录", "err.authRequired"],
-    ["API Key 不存在", "err.keyNotFound"],
     ["key 不存在", "err.keyNotFound"],
-    ["已失效", "err.keyNotFound"],
-    ["请求过于频繁", "err.rateLimit"],
-    ["参数错误", "err.invalidParam"],
-    ["不存在", "err.notFound"],
     ["服务器内部错误", "err.serverError"],
-    ["内部错误", "err.serverError"],
+    ["邮箱格式不正确", "err.badEmail"],
+    ["点数余额不足", "err.insufficient"],
+    ["请求过于频繁", "err.rateLimit"],
     ["该邮箱已注册", "err.emailTaken"],
     ["邮箱未验证", "err.emailUnverified"],
     ["验证码错误", "err.badCode"],
-    ["验证码不存在或已过期", "err.codeExpired"],
-    ["验证码错误次数过多", "err.codeLocked"],
-    ["邮箱格式不正确", "err.badEmail"],
-    ["密码至少 8 位", "err.weakPassword"],
+    ["余额不足", "err.insufficient"],
+    ["需要登录", "err.authRequired"],
+    ["参数错误", "err.invalidParam"],
+    ["内部错误", "err.serverError"],
+    ["未登录", "err.authRequired"],
+    ["已失效", "err.keyNotFound"],
+    ["不存在", "err.notFound"],
   ];
 
   var current = "zh";
@@ -1680,13 +1683,20 @@
   }
 
   // 后端中文错误 → 当前语言（en 下映射为英文；zh 下原样返回）
+  // 取**最长匹配**而不是首个匹配：ERR_MAP 是子串表，通用条目（如「不存在」）
+  // 会遮蔽更具体的条目（如「验证码不存在或已过期」），首个匹配即返回会让后者的
+  // 译文永远不可达。取最长匹配后本表顺序不再影响结果。
   function mapErr(msg) {
     if (!msg || typeof msg !== "string") return msg;
     if (current !== "en") return msg;
+    var best = -1, bestLen = -1;
     for (var i = 0; i < ERR_MAP.length; i++) {
-      if (msg.indexOf(ERR_MAP[i][0]) !== -1) return t(ERR_MAP[i][1]);
+      if (msg.indexOf(ERR_MAP[i][0]) !== -1 && ERR_MAP[i][0].length > bestLen) {
+        bestLen = ERR_MAP[i][0].length;
+        best = i;
+      }
     }
-    return msg;
+    return best === -1 ? msg : t(ERR_MAP[best][1]);
   }
 
   // 静态文案批量替换：[data-i18n] 文本 + [data-i18n-ph] placeholder + [data-i18n-title] title
