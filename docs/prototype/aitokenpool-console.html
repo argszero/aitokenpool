@@ -1,0 +1,1672 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AITokenPool · AI Token 共享池 — 产品原型</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234ecdc4'/%3E%3Cstop offset='1' stop-color='%232a9d8f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Ctext x='32' y='43' font-family='-apple-system,Segoe UI,Arial,sans-serif' font-size='30' font-weight='800' text-anchor='middle' fill='%23062021'%3EAT%3C/text%3E%3C/svg%3E">
+<style>
+/* ─── tokens · AITokenPool brand (see brand-spec.md) ───────────────── */
+:root {
+  --bg:      oklch(17.67% 0.0114 260.64);
+  --surface: oklch(24.17% 0.0194 258.36);
+  --fg:      oklch(93.83% 0.0109 256.70);
+  --muted:   oklch(72.37% 0.0288 255.13);
+  --border:  oklch(31.93% 0.0296 260.54);
+  --accent:  oklch(77.62% 0.1116 188.54);
+
+  --surface-2: color-mix(in oklch, var(--surface) 82%, var(--fg));
+  --surface-3: color-mix(in oklch, var(--surface) 70%, var(--fg));
+  --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+  --fg-soft:     color-mix(in oklch, var(--fg) 6%, transparent);
+  --accent-ink:  oklch(26% 0.045 192);
+  --ok:     oklch(78% 0.15 155);
+  --warn:   oklch(80% 0.11 82);
+  --danger: oklch(70% 0.17 20);
+  --ok-soft:     color-mix(in oklch, var(--ok) 16%, transparent);
+  --warn-soft:   color-mix(in oklch, var(--warn) 16%, transparent);
+  --danger-soft: color-mix(in oklch, var(--danger) 16%, transparent);
+  --overlay: color-mix(in oklch, var(--bg) 76%, transparent);
+
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-serif: "Iowan Old Style", "Charter", "Songti SC", Georgia, serif;
+
+  --r: 12px; --r-sm: 8px; --r-lg: 16px;
+  --sidebar-w: 250px;
+  --shadow: 0 18px 40px color-mix(in oklch, var(--bg) 62%, transparent);
+}
+:root[data-theme="light"] {
+  --bg:      oklch(97.28% 0.0057 264.53);
+  --surface: oklch(100% 0 0);
+  --fg:      oklch(25.55% 0.0267 262.58);
+  --muted:   oklch(49.45% 0.0418 262.59);
+  --border:  oklch(89.47% 0.0174 256.29);
+  --accent:  oklch(62.02% 0.1042 188.19);
+  --accent-ink: oklch(99% 0.01 190);
+  --ok:     oklch(58% 0.14 156);
+  --warn:   oklch(60% 0.12 75);
+  --danger: oklch(55% 0.19 22);
+  --shadow: 0 16px 36px color-mix(in oklch, var(--fg) 12%, transparent);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+* { margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+img, svg { display: block; max-width: 100%; }
+a { color: inherit; text-decoration: none; }
+button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; }
+input, select, textarea { font: inherit; }
+p { text-wrap: pretty; }
+h1, h2, h3 { text-wrap: balance; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.hidden { display: none !important; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.ok { color: var(--ok); } .warn { color: var(--warn); } .danger { color: var(--danger); }
+.eyebrow {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--accent);
+}
+
+/* ─── buttons ──────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  min-height: 40px; padding: 0 16px; border-radius: var(--r-sm);
+  border: 1px solid transparent; font-size: 13.5px; font-weight: 600;
+  letter-spacing: 0.01em; transition: background .15s ease, border-color .15s ease, transform .05s ease;
+  white-space: nowrap;
+}
+.btn:active { transform: translateY(1px); }
+.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover { background: color-mix(in oklch, var(--accent) 86%, var(--fg)); }
+.btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+.btn-secondary:hover { border-color: color-mix(in oklch, var(--accent) 55%, var(--border)); background: var(--accent-soft); }
+.btn-ghost { background: transparent; color: var(--muted); padding-inline: 10px; }
+.btn-ghost:hover { color: var(--fg); background: var(--fg-soft); }
+.btn-danger { background: transparent; color: var(--danger); border-color: color-mix(in oklch, var(--danger) 45%, var(--border)); }
+.btn-danger:hover { background: var(--danger-soft); }
+.btn-sm { min-height: 32px; padding: 0 11px; font-size: 12.5px; }
+.btn-block { width: 100%; }
+.btn[disabled] { opacity: .45; cursor: not-allowed; }
+
+/* ─── pills / chips / tags ─────────────────────────────────────────── */
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; font-family: var(--font-mono); letter-spacing: .03em; }
+.pill-ok { background: var(--ok-soft); color: var(--ok); }
+.pill-warn { background: var(--warn-soft); color: var(--warn); }
+.pill-danger { background: var(--danger-soft); color: var(--danger); }
+.pill-muted { background: var(--fg-soft); color: var(--muted); }
+.pill-accent { background: var(--accent-soft); color: var(--accent); }
+.tag { display: inline-flex; align-items: center; padding: 2px 9px; border: 1px solid var(--border); border-radius: 999px; font-size: 11.5px; color: var(--muted); }
+.tag-accent { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); color: var(--accent); }
+
+/* ─── login ────────────────────────────────────────────────────────── */
+.login { height: 100vh; display: grid; grid-template-columns: 1.15fr 0.85fr; position: relative; overflow: hidden; }
+.login-theme { position: absolute; top: 20px; right: 24px; z-index: 5; background: color-mix(in oklch, var(--surface) 70%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.login-brand {
+  position: relative; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; -ms-overflow-style: none; padding: clamp(26px, 5vh, 56px) clamp(30px, 4vw, 60px); display: flex; flex-direction: column; justify-content: safe center;
+  background:
+    radial-gradient(120% 90% at 8% 0%, color-mix(in oklch, var(--accent) 12%, transparent), transparent 60%),
+    var(--bg);
+  border-right: 1px solid var(--border);
+}
+.login-brand::-webkit-scrollbar { width: 0; height: 0; }
+.lb-top { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; }
+.logo-tile {
+  width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; flex: none;
+  background: linear-gradient(135deg, color-mix(in oklch, var(--accent) 92%, var(--fg)), color-mix(in oklch, var(--accent) 62%, var(--bg)));
+  color: var(--accent-ink); font-weight: 800; font-size: 16px; letter-spacing: -0.02em;
+}
+.lb-headline {
+  font-family: var(--font-serif); font-size: clamp(30px, min(4.4vw, 6.2vh), 54px); line-height: 1.06;
+  letter-spacing: -0.02em; margin: clamp(14px, 3vh, 30px) 0 clamp(9px, 1.6vh, 16px); max-width: 15ch;
+}
+.nb { white-space: nowrap; }
+.lb-sub { color: var(--muted); font-size: 15.5px; max-width: 52ch; }
+.lb-points { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin-top: clamp(12px, 2.4vh, 26px); }
+.lb-points li { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 4px 11px; }
+.gw { margin-top: clamp(14px, 2.8vh, 34px); border: 1px solid var(--border); background: color-mix(in oklch, var(--surface) 82%, transparent); border-radius: var(--r-lg); padding: 18px; max-width: 520px; }
+.gw-lead { font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-bottom: 12px; }
+.gw-ep { display: grid; grid-template-columns: 138px 1fr; gap: 12px; align-items: center; padding: 9px 12px; border-radius: var(--r-sm); background: var(--fg-soft); border: 1px solid var(--border); }
+.gw-ep + .gw-ep { margin-top: 7px; }
+.gw-chip { font-family: var(--font-mono); font-size: 11px; padding: 4px 9px; border-radius: 6px; background: var(--surface); color: var(--fg); border: 1px solid var(--border); text-align: center; }
+.gw-ep code { font-family: var(--font-mono); font-size: 11.5px; color: var(--accent); min-width: 0; overflow-wrap: anywhere; }
+.gw-mid { display: flex; align-items: center; gap: 10px; margin: 12px 0; color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
+.gw-mid .line { flex: 1; height: 1px; background: var(--border); }
+.gw-models { display: flex; flex-wrap: wrap; gap: 6px; }
+.gw-models span { font-size: 11px; color: color-mix(in oklch, var(--muted) 88%, transparent); }
+.lb-meta { margin-top: clamp(12px, 2.4vh, 26px); font-family: var(--font-mono); font-size: 11px; color: color-mix(in oklch, var(--muted) 80%, transparent); }
+
+.login-panel { display: grid; place-items: center; align-content: safe center; padding: clamp(22px, 4vh, 40px) 32px; background: var(--surface); overflow-y: auto; }
+.login-card { width: 100%; max-width: 380px; }
+.login-card h2 { font-size: 24px; letter-spacing: -0.01em; }
+.login-card > p.sub { color: var(--muted); margin: 6px 0 22px; }
+.auth-tabs { display: flex; gap: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; padding: 4px; margin-bottom: 20px; }
+.auth-tabs button { flex: 1; padding: 8px 0; border-radius: 999px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.auth-tabs button.on { background: var(--accent); color: var(--accent-ink); }
+.login-form { display: flex; flex-direction: column; gap: 14px; }
+.login-foot { margin-top: 16px; font-size: 12.5px; color: var(--muted); text-align: center; }
+.login-foot a { color: var(--accent); }
+.login-tip { margin-top: 18px; font-size: 11.5px; color: color-mix(in oklch, var(--muted) 82%, transparent); text-align: center; border-top: 1px solid var(--border); padding-top: 14px; }
+.divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 11px; margin: 18px 0; }
+.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.demo-role { display: flex; gap: 8px; margin-top: 14px; }
+.demo-role button { flex: 1; padding: 8px 0; font-size: 12px; border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--muted); }
+.demo-role button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+/* ─── app shell ────────────────────────────────────────────────────── */
+.app { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar-w) 1fr; }
+.sidebar {
+  position: sticky; top: 0; align-self: start; height: 100vh; display: flex; flex-direction: column;
+  background: var(--surface); border-right: 1px solid var(--border); padding: 18px 14px;
+}
+.sb-brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px 16px; }
+.sb-brand strong { font-size: 15px; }
+.sb-brand span { display: block; font-size: 11px; color: var(--muted); }
+.demo-badge { margin: 0 6px 14px; font-family: var(--font-mono); font-size: 10.5px; color: var(--warn); background: var(--warn-soft); border-radius: 6px; padding: 4px 8px; text-align: center; }
+.nav { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; flex: 1; }
+.nav-group { font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: color-mix(in oklch, var(--muted) 72%, transparent); padding: 14px 10px 6px; }
+.nav button {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 9px 11px; border-radius: var(--r-sm); color: var(--muted); font-size: 13.5px; font-weight: 500;
+}
+.nav button:hover { background: var(--fg-soft); color: var(--fg); }
+.nav button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav button svg { width: 16px; height: 16px; flex: none; }
+.nav button .badge { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); }
+.sb-foot { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+.role-switch { display: flex; gap: 3px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 3px; }
+.role-switch button { flex: 1; padding: 6px 0; font-size: 11px; border-radius: 6px; color: var(--muted); }
+.role-switch button.on { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.user-chip { display: flex; align-items: center; gap: 10px; padding: 8px 6px; }
+.avatar { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; flex: none; font-size: 13px; }
+.user-chip strong { font-size: 13px; display: block; }
+.user-chip span { font-size: 11.5px; color: var(--muted); }
+.icon-btn { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); border: 1px solid var(--border); }
+.icon-btn:hover { color: var(--fg); border-color: color-mix(in oklch, var(--accent) 50%, var(--border)); }
+.icon-btn svg { width: 16px; height: 16px; }
+
+.main { padding: 26px 30px 60px; min-width: 0; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+.page-head h2 { font-size: 23px; letter-spacing: -0.015em; }
+.page-head p { color: var(--muted); font-size: 13px; margin-top: 3px; }
+.crumb { font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+
+/* ─── cards & grids ────────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 20px; }
+.card + .card { margin-top: 16px; }
+.split > .card + .card, .card-grid > .card + .card, .card-grid-3 > .card + .card { margin-top: 0; }
+.card h3 { font-size: 15px; margin-bottom: 2px; }
+.card .card-sub { color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
+.card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+.card-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 18px 18px 16px; }
+.stat-card .label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.stat-card .value { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 30px; line-height: 1.15; letter-spacing: -0.02em; margin: 10px 0 6px; }
+.stat-card .value .unit { font-size: 13px; color: var(--muted); margin-left: 4px; }
+.stat-card .delta { font-size: 11.5px; font-family: var(--font-mono); }
+.stat-card.accent { border-color: color-mix(in oklch, var(--accent) 40%, var(--border)); background: linear-gradient(180deg, var(--accent-soft), transparent 70%), var(--surface); }
+
+/* ─── tables ───────────────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); }
+table.dt { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+table.dt th, table.dt td { padding: 11px 14px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+table.dt thead th { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 500; background: color-mix(in oklch, var(--surface) 70%, var(--bg)); position: sticky; top: 0; }
+table.dt tbody tr:hover { background: var(--fg-soft); }
+table.dt tbody tr:last-child td { border-bottom: 0; }
+table.dt td.num, table.dt th.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+table.dt td .model-name { font-family: var(--font-mono); font-size: 12.5px; }
+table.dt .provider-cell { display: flex; align-items: center; gap: 9px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.dot.muted { background: var(--muted); }
+
+/* ─── toolbar / tabs / chips ───────────────────────────────────────── */
+.toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
+.toolbar .grow { flex: 1; }
+.search { position: relative; flex: 1; min-width: 180px; max-width: 320px; }
+.search input { width: 100%; padding: 10px 34px 10px 13px; }
+.search .clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 16px; line-height: 1; padding: 4px; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; flex-wrap: wrap; }
+.tabs button { padding: 10px 14px; font-size: 13px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; }
+.tabs button:hover { color: var(--fg); }
+.tabs button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; font-size: 12.5px; color: var(--muted); background: transparent; }
+.chip:hover { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); color: var(--fg); }
+.chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.recent-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; }
+.recent-row .cap { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+
+/* ─── forms ────────────────────────────────────────────────────────── */
+.form { display: flex; flex-direction: column; gap: 14px; }
+.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+label.f { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--muted); }
+input.i, select.i, textarea.i {
+  width: 100%; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--r-sm); color: var(--fg); font-size: 13.5px; transition: border-color .15s ease;
+}
+input.i::placeholder, textarea.i::placeholder { color: color-mix(in oklch, var(--muted) 68%, transparent); }
+input.i:focus, select.i:focus, textarea.i:focus { border-color: var(--accent); outline: 2px solid var(--accent-soft); }
+select.i { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M2 4l4 4 4-4' stroke='%239aa7b8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 11px center; padding-right: 30px; }
+.hint { font-size: 11.5px; color: color-mix(in oklch, var(--muted) 82%, transparent); }
+.check-line { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg); }
+.check-line input { accent-color: var(--accent); width: 15px; height: 15px; }
+.inline-edit { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.price-view { font-family: var(--font-mono); font-size: 13px; color: var(--accent); }
+.field-error { color: var(--danger); font-size: 12px; }
+
+/* ─── bar charts (filled encoding) ─────────────────────────────────── */
+.bar-list { display: flex; flex-direction: column; gap: 13px; }
+.bar-row .bar-top { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px; }
+.bar-row .bar-top .k { color: var(--fg); display: flex; align-items: center; gap: 7px; }
+.bar-track { height: 8px; border-radius: 999px; background: var(--fg-soft); overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 999px; background: var(--accent); }
+.bar-fill.alt { background: color-mix(in oklch, var(--accent) 45%, var(--muted)); }
+.trend { display: flex; align-items: flex-end; gap: 10px; height: 150px; padding-top: 10px; }
+.trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+.trend-pair { display: flex; align-items: flex-end; gap: 3px; height: 118px; width: 100%; justify-content: center; }
+.trend-bar { width: 9px; border-radius: 3px 3px 0 0; min-height: 2px; }
+.trend-bar.consume { background: var(--accent); }
+.trend-bar.earn { background: color-mix(in oklch, var(--ok) 80%, var(--muted)); }
+.trend-x { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+.legend { display: flex; gap: 16px; font-size: 11.5px; color: var(--muted); margin-top: 10px; }
+.legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px; }
+
+/* ─── wallet ───────────────────────────────────────────────────────── */
+.wallet-hero { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.balance-big { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: clamp(34px, 5vw, 54px); letter-spacing: -0.03em; line-height: 1; margin-top: 8px; }
+.balance-big .unit { font-size: 16px; color: var(--muted); margin-left: 6px; }
+.wallet-actions { display: flex; gap: 9px; flex-wrap: wrap; align-items: center; }
+.endpoint-row { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.endpoint-row:last-of-type { border-bottom: 0; }
+.ep-tag { font-family: var(--font-mono); font-size: 10.5px; color: var(--accent); background: var(--accent-soft); border-radius: 5px; padding: 3px 8px; }
+.ep-url { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg); overflow-x: auto; }
+.ep-desc { grid-column: 2 / -1; font-size: 11.5px; color: var(--muted); }
+
+/* ─── mini list ────────────────────────────────────────────────────── */
+.mini-list { display: flex; flex-direction: column; }
+.mini { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+.mini:last-child { border-bottom: 0; }
+.mini .m-main { min-width: 0; }
+.mini .m-main strong { font-size: 13px; display: block; }
+.mini .m-main span { font-size: 11.5px; color: var(--muted); }
+.mini .m-val { font-family: var(--font-mono); font-size: 13px; text-align: right; flex: none; }
+
+/* ─── modal ────────────────────────────────────────────────────────── */
+.modal-overlay { position: fixed; inset: 0; background: var(--overlay); backdrop-filter: blur(3px); display: grid; place-items: center; z-index: 60; padding: 20px; }
+.modal { width: 100%; max-width: 560px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); display: flex; flex-direction: column; max-height: 86vh; overflow: hidden; }
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+.modal-head h3 { font-size: 16px; }
+.modal-head .close { color: var(--muted); font-size: 18px; line-height: 1; padding: 4px; }
+.modal-body { padding: 16px 20px; overflow-y: auto; }
+.chat-log { display: flex; flex-direction: column; gap: 10px; min-height: 120px; }
+.msg { max-width: 82%; padding: 9px 13px; border-radius: 12px; font-size: 13px; }
+.msg.user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 3px; }
+.msg.bot { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
+.msg .usage { display: block; font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); margin-top: 6px; }
+.chat-input-row { display: flex; gap: 9px; padding: 14px 20px; border-top: 1px solid var(--border); }
+
+/* ─── toast ────────────────────────────────────────────────────────── */
+#toast-wrap { position: fixed; right: 22px; bottom: 22px; display: flex; flex-direction: column; gap: 9px; z-index: 90; }
+.toast { display: flex; align-items: center; gap: 10px; padding: 11px 15px; background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--r-sm); box-shadow: var(--shadow); font-size: 13px; animation: toastin .2s ease; max-width: 360px; }
+.toast.ok { border-left-color: var(--ok); }
+.toast.warn { border-left-color: var(--warn); }
+@keyframes toastin { from { opacity: 0; transform: translateY(8px); } }
+
+/* ─── misc ─────────────────────────────────────────────────────────── */
+.empty { text-align: center; color: var(--muted); padding: 40px 20px; font-size: 13px; }
+.split { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; align-items: start; }
+.mt16 { margin-top: 16px; } .mb16 { margin-bottom: 16px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.spread { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+hr.rule { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+
+/* ─── responsive ───────────────────────────────────────────────────── */
+@media (max-width: 1080px) {
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .card-grid, .card-grid-3, .split { grid-template-columns: 1fr; }
+}
+@media (max-width: 900px) {
+  .login { grid-template-columns: 1fr; }
+  .login-brand { display: none; }
+  .app { grid-template-columns: 1fr; }
+  .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+  .nav { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
+  .nav-group { display: none; }
+  .nav button { white-space: nowrap; }
+  .main { padding: 20px 16px 48px; }
+}
+@media (max-width: 560px) {
+  .stat-grid { grid-template-columns: 1fr; }
+  .gw-ep { grid-template-columns: 1fr; gap: 6px; }
+  .gw-chip { justify-self: start; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════ LOGIN ═══════════════════════ -->
+<div id="login-view" class="login" data-od-id="login">
+  <button type="button" class="icon-btn login-theme" id="login-theme-toggle" title="切换亮色 / 深色主题" aria-label="切换主题">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+  <section class="login-brand">
+    <div class="lb-top"><span class="logo-tile">AT</span> AITokenPool</div>
+    <p class="eyebrow" style="margin-top:clamp(14px, 3vh, 28px)">AI TOKEN 共享池 · 多模型网关</p>
+    <h1 class="lb-headline">不要让 <span class="nb">token plan</span> 白白浪费。</h1>
+    <p class="lb-sub">把 Claude / ChatGPT / GLM / DeepSeek 的闲置额度共享出去赚点数，需要时也能用别人的。三种 API 类型各一个统一端点，每类端点都能调用全部厂商模型。</p>
+    <ul class="lb-points">
+      <li>多协议网关互转</li>
+      <li>输入 / 缓存 / 输出 三档透明计费</li>
+      <li>共享分成 90 / 10</li>
+      <li>企业点数管控</li>
+    </ul>
+    <div class="gw" aria-hidden="true">
+      <p class="gw-lead">三种 API 类型 · 每类一个统一端点 · 每类均可用全部模型</p>
+      <div class="gw-ep">
+        <span class="gw-chip">OpenAI Chat</span>
+        <code>POST /v1/chat/completions</code>
+      </div>
+      <div class="gw-ep">
+        <span class="gw-chip">OpenAI Responses</span>
+        <code>POST /v1/responses</code>
+      </div>
+      <div class="gw-ep">
+        <span class="gw-chip">Anthropic Messages</span>
+        <code>POST /anthropic/v1/messages</code>
+      </div>
+      <div class="gw-mid"><span>任意端点 · 全部厂商模型</span><span class="line"></span><span>SSE / 非流式</span></div>
+      <div class="gw-models">
+        <span>DeepSeek</span><span>·</span><span>智谱 GLM</span><span>·</span><span>Claude</span><span>·</span><span>GPT</span><span>·</span><span>Gemini</span><span>·</span><span>Qwen</span><span>·</span><span>Kimi</span>
+      </div>
+    </div>
+    <p class="lb-meta">单 Rust 二进制 + SQLite · Docker 一键启动 · 中英双语前端</p>
+  </section>
+
+  <section class="login-panel">
+    <div class="login-card">
+      <h2 id="auth-title">进入平台</h2>
+      <p class="sub" id="auth-sub">登录后使用真实网关数据 · 管理员可见管理视图</p>
+
+      <div class="auth-tabs" id="auth-tabs">
+        <button type="button" class="on" data-auth="login">登录</button>
+        <button type="button" data-auth="register">注册</button>
+      </div>
+
+      <form id="login-form" class="login-form" novalidate>
+        <label class="f">邮箱<input id="login-email" class="i" type="email" value="dev@aitokenpool.local" /></label>
+        <label class="f">密码<input id="login-pass" class="i" type="password" value="demo1234" /></label>
+        <label class="check-line"><input type="checkbox" checked /> 记住我</label>
+        <button type="submit" class="btn btn-primary btn-block">进入平台</button>
+      </form>
+
+      <form id="register-form" class="login-form hidden" novalidate>
+        <label class="f">昵称（可选）<input id="reg-name" class="i" type="text" placeholder="如：小林" /></label>
+        <label class="f">邮箱<input id="reg-email" class="i" type="email" placeholder="you@company.com" /></label>
+        <label class="f">密码<input id="reg-pass" class="i" type="password" placeholder="至少 8 位" /></label>
+        <label class="f">确认密码<input id="reg-pass2" class="i" type="password" placeholder="再次输入" /></label>
+        <p id="reg-error" class="field-error hidden"></p>
+        <button type="submit" class="btn btn-primary btn-block">注册并发送验证码</button>
+      </form>
+
+      <div class="divider">或</div>
+      <button type="button" class="btn btn-secondary btn-block" id="guest-btn">先逛逛模型市场</button>
+
+      <p class="login-foot">登录后可在设置页生成 API Key 接入 Cursor / Cline / Claude Code</p>
+      <p class="login-tip">产品原型 · 演示数据 · 任意邮箱密码可登录</p>
+    </div>
+  </section>
+</div>
+
+<!-- ═══════════════════════ APP ═══════════════════════ -->
+<div id="app" class="app hidden">
+  <aside class="sidebar" data-od-id="sidebar">
+    <div class="sb-brand">
+      <span class="logo-tile">AT</span>
+      <div><strong>AITokenPool</strong><span id="mode-label">共享市场 · 普通用户</span></div>
+    </div>
+    <div class="demo-badge">演示数据 · PROTOTYPE</div>
+    <nav class="nav" id="nav"></nav>
+    <div class="sb-foot">
+      <div>
+        <div class="cap" style="font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-bottom:6px;">切换角色视图（演示）</div>
+        <div class="role-switch" id="role-switch">
+          <button type="button" data-role="user">普通用户</button>
+          <button type="button" data-role="admin">管理员</button>
+          <button type="button" data-role="ops">运营者</button>
+        </div>
+      </div>
+      <div class="user-chip">
+        <div class="avatar" id="side-avatar">访</div>
+        <div style="flex:1;min-width:0"><strong id="side-name">访客</strong><span>点数余额 <b id="side-balance" class="num">0</b></span></div>
+        <button type="button" class="icon-btn" id="theme-toggle" title="切换亮色 / 深色主题" aria-label="切换主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+      </div>
+      <button type="button" class="btn btn-secondary btn-block btn-sm" id="logout-btn">退出登录</button>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <!-- 仪表盘 -->
+    <section class="view" id="view-dashboard" data-od-id="dashboard">
+      <header class="page-head">
+        <div><div class="crumb">/ 仪表盘</div><h2>仪表盘</h2><p>总览你的点数、用量与共享收益</p></div>
+        <button class="btn btn-secondary btn-sm" data-goto="marketplace">去市场调用模型</button>
+      </header>
+      <div class="stat-grid" id="dash-stats"></div>
+      <div class="split mt16">
+        <div class="card">
+          <div class="spread"><div><h3>近 14 天消耗与收益</h3><p class="card-sub">单位：点数 · 每日合计</p></div></div>
+          <div class="trend" id="dash-trend"></div>
+          <div class="legend"><span><i style="background:var(--accent)"></i>消费</span><span><i style="background:color-mix(in oklch, var(--ok) 80%, var(--muted))"></i>共享收益</span></div>
+        </div>
+        <div class="card">
+          <h3>本月点数变化</h3>
+          <p class="card-sub">最近几笔累计</p>
+          <div class="mini-list" id="dash-month"></div>
+        </div>
+      </div>
+      <div class="card mt16">
+        <div class="spread"><div><h3>我的共享</h3><p class="card-sub">上架中的 key 与实时用量</p></div><button class="btn btn-ghost btn-sm" data-goto="sharing">管理共享</button></div>
+        <div class="mini-list" id="dash-sharings"></div>
+      </div>
+    </section>
+
+    <!-- 模型市场 -->
+    <section class="view hidden" id="view-marketplace" data-od-id="marketplace">
+      <header class="page-head">
+        <div><div class="crumb">/ 模型市场</div><h2>模型市场</h2><p>浏览 / 搜索各家模型，按点数计价 · 按客户端原生协议选端点，每类端点均可调用全部厂商模型</p></div>
+      </header>
+      <div class="toolbar">
+        <span class="search"><input id="mk-search" class="i" placeholder="搜索模型名 / 厂商…" /><button class="clear hidden" id="mk-clear" aria-label="清空搜索">×</button></span>
+        <select id="mk-provider" class="i" style="width:auto;min-width:150px"></select>
+        <select id="mk-sort" class="i" style="width:auto;min-width:160px">
+          <option value="default">默认排序</option>
+          <option value="in-asc">输入价 低 → 高</option>
+          <option value="in-desc">输入价 高 → 低</option>
+          <option value="ctx-desc">上下文 大 → 小</option>
+        </select>
+        <select id="mk-avail" class="i" style="width:auto;min-width:130px">
+          <option value="all">全部可用性</option>
+          <option value="yes">仅可用</option>
+        </select>
+        <span class="grow"></span>
+        <span class="num muted" id="mk-count" style="font-size:12px"></span>
+      </div>
+      <div class="recent-row hidden" id="mk-recent">
+        <span class="cap">最近使用</span>
+        <span class="chips" id="mk-recent-chips"></span>
+        <button class="btn btn-ghost btn-sm" id="mk-recent-clear">清空</button>
+      </div>
+      <div class="table-wrap">
+        <table class="dt">
+          <thead><tr>
+            <th>厂商 / 模型</th><th class="num">输入价 /1M</th><th class="num">输出价 /1M</th>
+            <th class="num">上下文</th><th>能力</th><th>可用性</th><th></th>
+          </tr></thead>
+          <tbody id="mk-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 共享管理 -->
+    <section class="view hidden" id="view-sharing" data-od-id="sharing">
+      <header class="page-head">
+        <div><div class="crumb">/ 共享管理</div><h2>共享管理</h2><p>上架闲置 key 赚点数 · 分成 90 / 10 · 分成为永久点数</p></div>
+        <button class="btn btn-primary btn-sm" id="share-add-btn">＋ 上架新 key</button>
+      </header>
+      <div class="stat-grid" id="share-stats"></div>
+      <div class="card mt16 hidden" id="share-form-card">
+        <h3>上架新 key</h3>
+        <p class="card-sub">key 由平台 AES-256-GCM 加密托管，仅用于代理调用，不会展示给其他用户</p>
+        <form class="form" id="share-form">
+          <div class="form-row">
+            <label class="f">厂商<select id="sf-provider" class="i"></select></label>
+            <label class="f">Plan<select id="sf-plan" class="i"></select></label>
+          </div>
+          <p class="hint" id="sf-plan-hint"></p>
+          <div class="form-row">
+            <label class="f">模型<select id="sf-model" class="i"></select></label>
+            <label class="f">参考单价（点数 / 1M 输出）<span class="price-view" id="sf-price-view">选择模型后自动计算</span></label>
+          </div>
+          <div class="form-row">
+            <label class="f">API Key<input id="sf-key" class="i" type="password" placeholder="sk-xxx" /></label>
+            <label class="f">声明额度（点数）<input id="sf-quota" class="i" type="number" value="5000" min="1" /></label>
+          </div>
+          <label class="f">可用时间段（可选，不选星期 = 全天不限）
+            <span class="chips" id="sf-days">
+              <button type="button" class="chip" data-day="1">周一</button>
+              <button type="button" class="chip" data-day="2">周二</button>
+              <button type="button" class="chip" data-day="3">周三</button>
+              <button type="button" class="chip" data-day="4">周四</button>
+              <button type="button" class="chip" data-day="5">周五</button>
+              <button type="button" class="chip" data-day="6">周六</button>
+              <button type="button" class="chip" data-day="7">周日</button>
+              <button type="button" class="chip" data-day="all">每天</button>
+            </span>
+          </label>
+          <div class="form-row">
+            <label class="f">开始时间<input id="sf-start" class="i" type="time" value="09:00" /></label>
+            <label class="f">结束时间<input id="sf-end" class="i" type="time" value="23:00" /></label>
+          </div>
+          <label class="f">备注（可选）<input id="sf-note" class="i" placeholder="纯文本说明，不影响生效规则" /></label>
+          <div class="row">
+            <button type="submit" class="btn btn-primary">上架</button>
+            <button type="button" class="btn btn-ghost" id="sf-cancel">取消</button>
+          </div>
+        </form>
+      </div>
+      <div class="card mt16">
+        <h3>我的共享列表</h3>
+        <p class="card-sub">收益已到账 · 可暂停 / 下线</p>
+        <div class="table-wrap">
+          <table class="dt">
+            <thead><tr><th>厂商 · Plan / 模型</th><th>Key</th><th class="num">已用 / 额度</th><th class="num">单价</th><th class="num">收益</th><th>可用时段</th><th>状态</th><th></th></tr></thead>
+            <tbody id="share-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 钱包 -->
+    <section class="view hidden" id="view-wallet" data-od-id="wallet">
+      <header class="page-head">
+        <div><div class="crumb">/ 钱包</div><h2>钱包</h2><p>点数余额 · 充值 / 申请加额（明细见交易记录）</p></div>
+      </header>
+      <div class="card wallet-hero">
+        <div>
+          <h3 class="muted" style="font-size:12px">点数余额</h3>
+          <div class="balance-big"><span id="wallet-balance">0</span><span class="unit">点</span></div>
+          <p class="hint mt16" style="display:block;margin-top:10px">永久点数 <b class="num" id="wallet-forever">0</b> · 每日赠送点数当日有效</p>
+        </div>
+        <div class="wallet-actions">
+          <button class="btn btn-primary" id="topup-btn">充值</button>
+          <button class="btn btn-secondary" id="raise-btn">申请加额</button>
+          <button class="btn btn-secondary" id="withdraw-btn" disabled>提现</button>
+        </div>
+      </div>
+      <p class="hint" style="display:block;margin-top:10px">充值（演示流程，真实支付后续接入） · 提现暂不支持</p>
+
+      <div class="card mt16 hidden" id="topup-card">
+        <h3>充值点数</h3>
+        <p class="card-sub">演示流程：真实支付通道后续接入</p>
+        <div class="form">
+          <label class="f">选择金额（点数）</label>
+          <div class="chips">
+            <button type="button" class="chip" data-topup="100">100</button>
+            <button type="button" class="chip" data-topup="500">500</button>
+            <button type="button" class="chip" data-topup="1000">1000</button>
+            <button type="button" class="chip" data-topup="5000">5000</button>
+          </div>
+          <label class="f">或自定义金额<input id="topup-custom" class="i" type="number" min="1" placeholder="如 300 或 25.5" /></label>
+          <div class="row">
+            <button type="button" class="btn btn-primary" id="topup-confirm">确认充值</button>
+            <button type="button" class="btn btn-ghost" id="topup-cancel">取消</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt16 hidden" id="raise-card">
+        <h3>申请加额</h3>
+        <p class="card-sub">余额低时可申请更多点数，提交后等待管理员审批</p>
+        <div class="form">
+          <label class="f">申请点数<input id="raise-amount" class="i" type="number" min="1" placeholder="如 5000" /></label>
+          <label class="f">申请原因<input id="raise-reason" class="i" placeholder="如：本月配额已用完，需要继续开发" /></label>
+          <div class="row">
+            <button type="button" class="btn btn-primary" id="raise-confirm">提交申请</button>
+            <button type="button" class="btn btn-ghost" id="raise-cancel">取消</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt16">
+        <h3>本月点数变化</h3>
+        <div class="mini-list" id="wallet-month"></div>
+      </div>
+    </section>
+
+    <!-- 交易记录 -->
+    <section class="view hidden" id="view-transactions" data-od-id="transactions">
+      <header class="page-head">
+        <div><div class="crumb">/ 交易记录</div><h2>交易记录</h2><p>涵盖消费、收益、充值、赠送 · 三档 token 明细透明可见</p></div>
+        <button class="btn btn-secondary btn-sm" id="tx-export">导出 CSV</button>
+      </header>
+      <div class="tabs" id="tx-tabs">
+        <button class="on" data-tx="all">全部</button>
+        <button data-tx="consume">消费</button>
+        <button data-tx="earn">收益</button>
+      </div>
+      <div class="toolbar">
+        <select id="tx-range" class="i" style="width:auto;min-width:150px">
+          <option value="7d">最近 7 天</option>
+          <option value="30d" selected>最近 30 天</option>
+          <option value="all">全部时间</option>
+        </select>
+        <span class="grow"></span>
+        <span class="num muted" id="tx-count" style="font-size:12px"></span>
+      </div>
+      <div class="card">
+        <div class="stat-grid" id="tx-summary"></div>
+      </div>
+      <div class="card mt16">
+        <h3>每日消费 / 收益</h3>
+        <p class="card-sub">单位：点数</p>
+        <div class="trend" id="tx-trend"></div>
+        <div class="legend"><span><i style="background:var(--accent)"></i>消费</span><span><i style="background:color-mix(in oklch, var(--ok) 80%, var(--muted))"></i>收益</span></div>
+      </div>
+      <div class="card mt16">
+        <h3>明细</h3>
+        <p class="card-sub">输入（非缓存）/ 缓存命中 / 输出 三档 token</p>
+        <div class="table-wrap">
+          <table class="dt">
+            <thead><tr><th>时间</th><th>类型</th><th>模型 / Key</th><th class="num">输入</th><th class="num">缓存</th><th class="num">输出</th><th class="num">合计 Token</th><th class="num">点数</th></tr></thead>
+            <tbody id="tx-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="view hidden" id="view-settings" data-od-id="settings">
+      <header class="page-head">
+        <div><div class="crumb">/ 设置</div><h2>设置</h2><p>账户 · 接入方式 · API Key · 通知与偏好</p></div>
+      </header>
+      <div class="card">
+        <h3>接入方式</h3>
+        <p class="card-sub">生成 API Key 后，按客户端原生协议选择端点，填入 Cursor / Cline / Codex / Claude Code 等工具的 Base URL。每个端点均可调用全部厂商模型。</p>
+        <div class="endpoint-row">
+          <span class="ep-tag">OpenAI Chat</span>
+          <code class="ep-url">https://gateway.aitokenpool.local/v1</code>
+          <button class="btn btn-ghost btn-sm" data-copy="https://gateway.aitokenpool.local/v1">复制</button>
+          <span class="ep-desc">POST /v1/chat/completions · Cursor / Cline / Roo Code / OpenAI SDK</span>
+        </div>
+        <div class="endpoint-row">
+          <span class="ep-tag">OpenAI Responses</span>
+          <code class="ep-url">https://gateway.aitokenpool.local/v1</code>
+          <button class="btn btn-ghost btn-sm" data-copy="https://gateway.aitokenpool.local/v1">复制</button>
+          <span class="ep-desc">POST /v1/responses · Codex / OpenAI Responses SDK</span>
+        </div>
+        <div class="endpoint-row">
+          <span class="ep-tag">Anthropic Messages</span>
+          <code class="ep-url">https://gateway.aitokenpool.local/anthropic</code>
+          <button class="btn btn-ghost btn-sm" data-copy="https://gateway.aitokenpool.local/anthropic">复制</button>
+          <span class="ep-desc">POST /anthropic/v1/messages · Claude Code / Goose / OpenClaw</span>
+        </div>
+        <p class="hint" style="display:block;margin-top:12px">部署后替换为你的网关域名（原型占位说明）</p>
+      </div>
+
+      <div class="card mt16">
+        <div class="spread">
+          <div><h3>API Key</h3><p class="card-sub">用于本地工具 / 代码接入平台的密钥</p></div>
+          <button class="btn btn-primary btn-sm" id="ak-new-btn">生成新 Key</button>
+        </div>
+        <div class="inline-edit hidden" id="ak-new-inline">
+          <input id="ak-new-name" class="i" placeholder="key 名字（留空默认「未命名」）" style="max-width:280px" />
+          <button class="btn btn-primary btn-sm" id="ak-new-ok">确认</button>
+          <button class="btn btn-ghost btn-sm" id="ak-new-cancel">取消</button>
+        </div>
+        <div class="table-wrap mt16">
+          <table class="dt">
+            <thead><tr><th>名字</th><th>Key</th><th>创建时间</th><th>最近使用</th><th>状态</th><th></th></tr></thead>
+            <tbody id="ak-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card-grid-3 mt16">
+        <div class="card" style="margin-top:0">
+          <h3>账户</h3>
+          <div class="form mt16">
+            <label class="f">昵称<input id="set-nickname" class="i" value="小林" /></label>
+            <label class="f">邮箱<input class="i" value="dev@aitokenpool.local" /></label>
+            <button class="btn btn-primary btn-sm" id="save-account">保存</button>
+          </div>
+        </div>
+        <div class="card" style="margin-top:0">
+          <h3>通知</h3>
+          <div class="form mt16">
+            <label class="check-line"><input type="checkbox" checked /> 点数余额低于阈值时提醒</label>
+            <label class="check-line"><input type="checkbox" checked /> 共享 key 被消费时通知</label>
+            <label class="check-line"><input type="checkbox" /> 每周用量报告邮件</label>
+          </div>
+        </div>
+        <div class="card" style="margin-top:0">
+          <h3>偏好</h3>
+          <div class="form mt16">
+            <label class="f">界面语言<select class="i"><option>中文（简体）</option><option>English</option></select></label>
+            <label class="f">默认模型<select class="i"><option>deepseek-v4-flash</option><option>glm-5.3</option><option>claude-opus-5</option></select></label>
+            <label class="f">主题<select class="i" id="pref-theme"><option value="light">浅色（默认）</option><option value="dark">深色</option></select></label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 管理视图 -->
+    <section class="view hidden" id="view-admin" data-od-id="admin">
+      <header class="page-head">
+        <div><div class="crumb">/ 管理视图</div><h2>管理视图</h2><p>管理员角色专属：成员点数 · 用量报表 · 组织 · 模型管理</p></div>
+      </header>
+      <div class="tabs" id="admin-tabs">
+        <button class="on" data-adm="employees">成员管理</button>
+        <button data-adm="usage">用量报表</button>
+        <button data-adm="org">组织管理</button>
+        <button data-adm="models">模型管理</button>
+      </div>
+
+      <div class="pane" data-pane="employees">
+        <div class="stat-grid" id="emp-stats"></div>
+        <div class="card mt16">
+          <div class="spread mb16"><div><h3>成员列表</h3><p class="card-sub">配额 / 已用 / 剩余</p></div>
+            <span class="search"><input id="emp-search" class="i" placeholder="搜索成员 / 部门…" /></span>
+          </div>
+          <div class="table-wrap">
+            <table class="dt"><thead><tr><th>成员</th><th>部门</th><th class="num">配额</th><th class="num">已用</th><th class="num">剩余</th><th>状态</th><th></th></tr></thead>
+            <tbody id="emp-body"></tbody></table>
+          </div>
+        </div>
+        <div class="card mt16">
+          <h3>加额申请</h3>
+          <p class="card-sub">成员申请 → 管理员批准 / 驳回</p>
+          <div id="raise-list"></div>
+        </div>
+      </div>
+
+      <div class="pane hidden" data-pane="usage">
+        <div class="card-grid-3">
+          <div class="card" style="margin-top:0"><h3>按模型用量</h3><div class="bar-list mt16" id="use-model"></div></div>
+          <div class="card" style="margin-top:0"><h3>按成员用量</h3><div class="bar-list mt16" id="use-emp"></div></div>
+          <div class="card" style="margin-top:0"><h3>按部门用量</h3><div class="bar-list mt16" id="use-dept"></div></div>
+        </div>
+      </div>
+
+      <div class="pane hidden" data-pane="org">
+        <div class="stat-grid" id="dept-stats"></div>
+        <div class="toolbar">
+          <span class="search"><input id="dept-search" class="i" placeholder="搜索部门…" /></span>
+          <span class="grow"></span>
+          <button class="btn btn-primary btn-sm" id="dept-add-btn">添加部门</button>
+        </div>
+        <div class="card hidden" id="dept-form-card" style="margin-top:0">
+          <h3 id="dept-form-title">添加部门</h3>
+          <div class="form mt16">
+            <div class="form-row">
+              <label class="f">部门名称<input id="dept-name" class="i" placeholder="如：研发" /></label>
+              <label class="f">每月点数分配<input id="dept-quota" class="i" type="number" min="1" placeholder="如 20000" /></label>
+            </div>
+            <div class="row">
+              <button class="btn btn-primary btn-sm" id="dept-ok">确认</button>
+              <button class="btn btn-ghost btn-sm" id="dept-cancel">取消</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>部门列表</h3>
+          <div class="table-wrap mt16">
+            <table class="dt"><thead><tr><th>部门</th><th class="num">成员数</th><th class="num">月分配</th><th class="num">已用</th><th class="num">剩余</th><th>状态</th><th></th></tr></thead>
+            <tbody id="dept-body"></tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <div class="pane hidden" data-pane="models">
+        <div class="toolbar">
+          <span class="search"><input id="mod-search" class="i" placeholder="搜索模型 / 厂商…" /></span>
+          <span class="grow"></span>
+          <button class="btn btn-primary btn-sm" id="mod-add-btn">添加模型</button>
+        </div>
+        <div class="card hidden" id="mod-form-card" style="margin-top:0">
+          <h3 id="mod-form-title">添加模型</h3>
+          <div class="form mt16">
+            <div class="form-row">
+              <label class="f">厂商<input id="mod-provider" class="i" placeholder="如 deepseek" /></label>
+              <label class="f">模型名<input id="mod-model" class="i" placeholder="如 deepseek-v5" /></label>
+              <label class="f">输入价（点 / 1M）<input id="mod-in" class="i" type="number" step="0.001" value="0" /></label>
+              <label class="f">输出价（点 / 1M）<input id="mod-out" class="i" type="number" step="0.001" value="0" /></label>
+            </div>
+            <div class="row">
+              <button class="btn btn-primary btn-sm" id="mod-ok">确认</button>
+              <button class="btn btn-ghost btn-sm" id="mod-cancel">取消</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>模型列表</h3>
+          <p class="card-sub">厂商 / 模型 / 价格 / 上下文 · 增删改即时生效</p>
+          <div class="table-wrap mt16">
+            <table class="dt"><thead><tr><th>厂商</th><th>模型</th><th class="num">输入价</th><th class="num">输出价</th><th class="num">上下文</th><th>能力</th><th></th></tr></thead>
+            <tbody id="mod-body"></tbody></table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 运营视图 -->
+    <section class="view hidden" id="view-ops" data-od-id="ops">
+      <header class="page-head">
+        <div><div class="crumb">/ 运营视图</div><h2>运营视图</h2><p>运营者角色专属：平台运行概览 · 成员充值</p></div>
+      </header>
+      <div class="tabs" id="ops-tabs">
+        <button class="on" data-ops="runtime">运行概览</button>
+        <button data-ops="users">成员充值</button>
+      </div>
+      <div class="pane" data-opspane="runtime">
+        <div class="stat-grid" id="ops-stats"></div>
+        <div class="card-grid mt16">
+          <div class="card" style="margin-top:0"><h3>今日调用量（按小时）</h3><div class="bar-list mt16" id="ops-hours"></div></div>
+          <div class="card" style="margin-top:0"><h3>上游 key 健康</h3><div class="mini-list mt16" id="ops-keys"></div></div>
+        </div>
+      </div>
+      <div class="pane hidden" data-opspane="users">
+        <div class="card">
+          <div class="spread mb16"><div><h3>用户充值</h3><p class="card-sub">按用户名 / 邮箱定位用户 → 输入点数金额 → 余额增加永久点数</p></div>
+            <span class="search"><input id="ops-search" class="i" placeholder="搜索用户名 / 邮箱…" /></span>
+          </div>
+          <div class="table-wrap">
+            <table class="dt"><thead><tr><th>用户</th><th>邮箱</th><th class="num">余额（点数）</th><th></th></tr></thead>
+            <tbody id="ops-body"></tbody></table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- 消费模拟 -->
+<div id="chat-modal" class="modal-overlay hidden" data-od-id="chat-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <div><h3 id="chat-title">使用模型</h3><p class="hint" id="chat-meta" style="display:block;margin-top:4px"></p></div>
+      <button class="close" id="chat-close" aria-label="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button>
+    </div>
+    <div class="modal-body"><div class="chat-log" id="chat-log"></div></div>
+    <div class="chat-input-row">
+      <input id="chat-input" class="i" placeholder="输入内容，回车发送（模拟调用）…" autocomplete="off" />
+      <button class="btn btn-primary" id="chat-send">发送</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-wrap"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ─── data ─────────────────────────────────────────────────────── */
+  var PROVIDER = {
+    deepseek: "DeepSeek", zhipu: "智谱", openai: "OpenAI", anthropic: "Anthropic",
+    google: "Google", xai: "xAI", moonshot: "Kimi 月之暗面", "bytedance-ark": "火山方舟",
+    minimax: "MiniMax", "aliyun-bailian": "阿里云百炼"
+  };
+  // points per 1M tokens (CNY-anchored; USD models ×7.2) — mirrors config.toml official pricing
+  var MODELS = [
+    { p: "deepseek", m: "deepseek-v4-pro", in: 4.5, out: 13.5, ctx: 1048576, tag: "推理", vision: false, keys: 4 },
+    { p: "deepseek", m: "deepseek-v4-flash", in: 1.5, out: 4.5, ctx: 1048576, tag: "通用", vision: false, keys: 9 },
+    { p: "zhipu", m: "glm-5.3", in: 8, out: 28, ctx: 1048576, tag: "旗舰", vision: true, keys: 3 },
+    { p: "openai", m: "gpt-5.6-sol", in: 36, out: 216, ctx: 1050000, tag: "旗舰", vision: true, keys: 2 },
+    { p: "anthropic", m: "claude-opus-5", in: 36, out: 180, ctx: 1000000, tag: "旗舰", vision: true, keys: 5 },
+    { p: "google", m: "gemini-3.1-pro", in: 14.4, out: 86.4, ctx: 1048576, tag: "多模态", vision: true, keys: 3 },
+    { p: "google", m: "gemini-3.5-flash-lite", in: 2.16, out: 18, ctx: 1048576, tag: "轻量", vision: true, keys: 6 },
+    { p: "xai", m: "grok-4.6", in: 14.4, out: 43.2, ctx: 500000, tag: "通用", vision: false, keys: 1 },
+    { p: "moonshot", m: "kimi-k3", in: 20, out: 100, ctx: 1048576, tag: "长文", vision: false, keys: 2 },
+    { p: "bytedance-ark", m: "doubao-seed-evolving", in: 6, out: 30, ctx: 1048576, tag: "旗舰", vision: true, keys: 2 },
+    { p: "minimax", m: "minimax-m3", in: 2.1, out: 8.4, ctx: 1048576, tag: "轻量", vision: false, keys: 4 },
+    { p: "aliyun-bailian", m: "qwen3.8-max", in: 12, out: 36, ctx: 1048576, tag: "旗舰", vision: true, keys: 3 },
+    { p: "aliyun-bailian", m: "qwen3.7-flash", in: 0.2, out: 0.8, ctx: 1048576, tag: "轻量", vision: false, keys: 8 },
+    { p: "aliyun-bailian", m: "qwen3.7-plus", in: 2, out: 8, ctx: 1048576, tag: "通用", vision: false, keys: 5 }
+  ];
+  var PLANS = [
+    { id: "deepseek-paygo", p: "deepseek", name: "API（按量）", type: "paygo" },
+    { id: "zhipu-coding", p: "zhipu", name: "GLM Coding Plan", type: "coding" },
+    { id: "zhipu-paygo", p: "zhipu", name: "API（按量）", type: "paygo" },
+    { id: "aliyun-token-plan", p: "aliyun-bailian", name: "Token Plan", type: "token" },
+    { id: "ark-coding", p: "bytedance-ark", name: "Coding Plan", type: "coding" },
+    { id: "ark-paygo", p: "bytedance-ark", name: "API（按量）", type: "paygo" },
+    { id: "kimi-code", p: "moonshot", name: "Kimi Code 会员", type: "coding" },
+    { id: "minimax-paygo", p: "minimax", name: "API（按量）", type: "paygo" }
+  ];
+
+  var state = {
+    role: "user", view: "dashboard", theme: "light",
+    txTab: "all", txRange: "30d", adminTab: "employees", opsTab: "runtime",
+    recent: ["deepseek-v4-flash", "claude-opus-5"],
+    balance: 12480.5, forever: 6213.0,
+    user: { name: "小林", email: "dev@aitokenpool.local" }
+  };
+  var sharings = [
+    { id: 1, p: "deepseek", plan: "API（按量）", m: "deepseek-v4-flash", masked: "sk-••••7f2a", used: 1820, quota: 5000, price: 4.5, earn: 546.0, days: "每天 09:00–23:00", status: "on" },
+    { id: 2, p: "zhipu", plan: "GLM Coding Plan", m: "glm-5.3", masked: "sk-••••1c9d", used: 640, quota: 3000, price: 28, earn: 336.0, days: "工作日 10:00–22:00", status: "on" },
+    { id: 3, p: "anthropic", plan: "API（按量）", m: "claude-opus-5", masked: "sk-ant-••••x8", used: 1210, quota: 2000, price: 180, earn: 154.2, days: "全天不限", status: "paused" }
+  ];
+  var departments = [
+    { name: "研发", members: 12, quota: 60000, used: 41200, status: "on" },
+    { name: "产品", members: 5, quota: 20000, used: 8600, status: "on" },
+    { name: "设计", members: 3, quota: 12000, used: 5400, status: "on" },
+    { name: "市场", members: 4, quota: 15000, used: 3300, status: "paused" }
+  ];
+  var members = [
+    { name: "林昭", dept: "研发", quota: 8000, used: 5120, role: "工程师", status: "on" },
+    { name: "陈遇", dept: "研发", quota: 8000, used: 7640, role: "工程师", status: "on" },
+    { name: "苏蔓", dept: "产品", quota: 6000, used: 2210, role: "产品经理", status: "on" },
+    { name: "周决", dept: "研发", quota: 10000, used: 9880, role: "架构师", status: "on" },
+    { name: "何安", dept: "设计", quota: 5000, used: 1900, role: "设计师", status: "on" },
+    { name: "顾清", dept: "市场", quota: 5000, used: 4020, role: "运营", status: "warn" },
+    { name: "叶知", dept: "研发", quota: 8000, used: 1340, role: "工程师", status: "on" },
+    { name: "沈砚", dept: "产品", quota: 5000, used: 4980, role: "产品经理", status: "danger" }
+  ];
+  var apiKeys = [
+    { name: "本地 Cursor", key: "atp-sk-••••a31f", created: "2026-08-21 10:12", last: "5 分钟前", status: "on" },
+    { name: "Claude Code", key: "atp-sk-••••9d02", created: "2026-08-19 20:40", last: "昨天 18:03", status: "on" },
+    { name: "CI 流水线", key: "atp-sk-••••4b77", created: "2026-08-11 09:05", last: "从未", status: "revoked" }
+  ];
+  var users = [
+    { name: "林昭", email: "linzhao@corp.local", balance: 2880 },
+    { name: "陈遇", email: "chenyu@corp.local", balance: 360 },
+    { name: "苏蔓", email: "suman@corp.local", balance: 3790 },
+    { name: "周决", email: "zhoujue@corp.local", balance: 120 },
+    { name: "何安", email: "hean@corp.local", balance: 3100 }
+  ];
+
+  function fmt(n) {
+    var x = Number(n) || 0;
+    var s = x.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 3 });
+    return s;
+  }
+  function ctxFmt(n) { return n >= 1000000 ? (n / 1000000).toFixed(1) + "M" : fmt(n); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+
+  /* deterministic pseudo data for charts */
+  function seeded(i, min, max) { var v = Math.sin(i * 12.9898) * 43758.5453; return min + (v - Math.floor(v)) * (max - min); }
+  var trendDays = [];
+  (function () {
+    for (var i = 0; i < 14; i++) {
+      trendDays.push({ x: (i + 1) + "日", consume: Math.round(seeded(i + 1, 20, 260)), earn: Math.round(seeded(i + 40, 0, 110)) });
+    }
+  })();
+
+  var txRows = [];
+  (function () {
+    var tpl = [
+      { t: "consume", p: "deepseek", m: "deepseek-v4-flash", i: 128400, c: 96200, o: 22100 },
+      { t: "earn", p: "deepseek", m: "deepseek-v4-flash", i: 84200, c: 51000, o: 18300 },
+      { t: "consume", p: "anthropic", m: "claude-opus-5", i: 42100, c: 38000, o: 9600 },
+      { t: "consume", p: "zhipu", m: "glm-5.3", i: 61300, c: 0, o: 14200 },
+      { t: "earn", p: "zhipu", m: "glm-5.3", i: 22800, c: 0, o: 6100 },
+      { t: "consume", p: "aliyun-bailian", m: "qwen3.7-flash", i: 302400, c: 180000, o: 51200 },
+      { t: "gift", p: "系统", m: "每日赠送", i: 0, c: 0, o: 0 },
+      { t: "consume", p: "google", m: "gemini-3.1-pro", i: 78200, c: 40000, o: 15600 },
+      { t: "topup", p: "系统", m: "充值", i: 0, c: 0, o: 0 },
+      { t: "earn", p: "anthropic", m: "claude-opus-5", i: 15400, c: 12000, o: 4200 },
+      { t: "consume", p: "openai", m: "gpt-5.6-sol", i: 22100, c: 18000, o: 6400 },
+      { t: "consume", p: "deepseek", m: "deepseek-v4-pro", i: 96500, c: 74000, o: 28800 }
+    ];
+    tpl.forEach(function (r, i) {
+      var total = r.i + r.c + r.o;
+      var model = MODELS.filter(function (x) { return x.m === r.m; })[0];
+      var pts = 0;
+      if (r.t === "consume" && model) pts = r.i / 1e6 * model.in + r.o / 1e6 * model.out;
+      else if (r.t === "earn" && model) pts = (r.i / 1e6 * model.in + r.o / 1e6 * model.out) * 0.9;
+      else if (r.t === "gift") pts = 1;
+      else if (r.t === "topup") pts = 500;
+      var d = new Date(); d.setDate(d.getDate() - i);
+      txRows.push({
+        time: d.toISOString().slice(0, 10) + " " + String(9 + (i % 12)).padStart(2, "0") + ":" + String((i * 7) % 60).padStart(2, "0"),
+        t: r.t, p: r.p, m: r.m, masked: r.t === "consume" ? "atp-sk-••" + (100 + i) : "—",
+        i: r.i, c: r.c, o: r.o, total: total, pts: Math.round(pts * 100) / 100
+      });
+    });
+  })();
+
+  var TXTYPE = { consume: "消费", earn: "收益", gift: "赠送", topup: "充值" };
+  var STATUS = {
+    on: '<span class="pill pill-ok">正常</span>', paused: '<span class="pill pill-warn">已暂停</span>',
+    off: '<span class="pill pill-muted">已下线</span>', revoked: '<span class="pill pill-muted">已撤销</span>',
+    warn: '<span class="pill pill-warn">接近上限</span>', danger: '<span class="pill pill-danger">已超限</span>',
+    pending: '<span class="pill pill-warn">待审批</span>'
+  };
+
+  /* ─── toast ────────────────────────────────────────────────────── */
+  function toast(msg, kind) {
+    var el = document.createElement("div");
+    el.className = "toast" + (kind ? " " + kind : "");
+    el.textContent = msg;
+    $("#toast-wrap").appendChild(el);
+    setTimeout(function () { el.style.opacity = "0"; el.style.transition = "opacity .3s"; }, 2600);
+    setTimeout(function () { el.remove(); }, 3000);
+  }
+
+  /* ─── charts ───────────────────────────────────────────────────── */
+  function bars(el, rows) {
+    if (!rows.length) { el.innerHTML = '<div class="empty">暂无数据</div>'; return; }
+    var max = Math.max.apply(null, rows.map(function (r) { return r.v; }).concat([1]));
+    el.innerHTML = rows.map(function (r) {
+      return '<div class="bar-row"><div class="bar-top"><span class="k">' + esc(r.k) + '</span><span class="num muted">' + fmt(r.v) + ' 点</span></div>' +
+        '<div class="bar-track"><div class="bar-fill' + (r.alt ? " alt" : "") + '" style="width:' + (r.v / max * 100).toFixed(1) + '%"></div></div></div>';
+    }).join("");
+  }
+  function trend(el, days) {
+    var max = Math.max.apply(null, days.map(function (d) { return Math.max(d.consume, d.earn); }).concat([1]));
+    el.innerHTML = days.map(function (d) {
+      return '<div class="trend-col" title="' + d.x + ' 消费 ' + d.consume + ' / 收益 ' + d.earn + '">' +
+        '<div class="trend-pair">' +
+        '<div class="trend-bar consume" style="height:' + Math.max(2, d.consume / max * 100) + '%"></div>' +
+        '<div class="trend-bar earn" style="height:' + Math.max(2, d.earn / max * 100) + '%"></div>' +
+        '</div><span class="trend-x">' + d.x + '</span></div>';
+    }).join("");
+  }
+
+  /* ─── nav ──────────────────────────────────────────────────────── */
+  var ICON = {
+    dash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
+    market: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 9l2-5h14l2 5"/><path d="M4 9v10h16V9"/><path d="M9 19v-6h6v6"/></svg>',
+    share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.2 10.8l7.6-3.6M8.2 13.2l7.6 3.6"/></svg>',
+    wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18M16 14h2"/></svg>',
+    tx: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h13l-3-3M20 17H7l3 3M4 7l3 3M20 17l-3-3"/></svg>',
+    set: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>',
+    admin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M9.5 12l1.8 1.8 3.4-3.6"/></svg>',
+    ops: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12h4l2-6 3 12 2.5-8 1.5 2h5"/></svg>'
+  };
+  var NAV = [
+    { id: "dashboard", label: "仪表盘", icon: ICON.dash, roles: ["user", "admin", "ops"] },
+    { id: "marketplace", label: "模型市场", icon: ICON.market, roles: ["user", "admin", "ops"] },
+    { id: "sharing", label: "共享管理", icon: ICON.share, roles: ["user", "admin", "ops"] },
+    { id: "wallet", label: "钱包", icon: ICON.wallet, roles: ["user", "admin", "ops"] },
+    { id: "transactions", label: "交易记录", icon: ICON.tx, roles: ["user", "admin", "ops"] },
+    { id: "settings", label: "设置", icon: ICON.set, roles: ["user", "admin", "ops"] },
+    { id: "admin", label: "管理视图", icon: ICON.admin, roles: ["admin"] },
+    { id: "ops", label: "运营视图", icon: ICON.ops, roles: ["ops"] }
+  ];
+  function renderNav() {
+    var html = "";
+    NAV.forEach(function (n) {
+      if (n.roles.indexOf(state.role) < 0) return;
+      if (n.id === "admin" || n.id === "ops") html += '<div class="nav-group">角色专属</div>';
+      html += '<button data-view="' + n.id + '"' + (state.view === n.id ? ' class="on"' : "") + '>' + n.icon + "<span>" + n.label + "</span>" +
+        (n.id === "marketplace" ? '<span class="badge">' + MODELS.length + "</span>" : "") + "</button>";
+    });
+    $("#nav").innerHTML = html;
+  }
+
+  /* ─── view switching ───────────────────────────────────────────── */
+  function showView(id) {
+    if (["admin"].indexOf(id) >= 0 && state.role !== "admin") { toast("当前角色无权访问管理视图", "warn"); return; }
+    if (["ops"].indexOf(id) >= 0 && state.role !== "ops") { toast("当前角色无权访问运营视图", "warn"); return; }
+    state.view = id;
+    $$(".view").forEach(function (v) { v.classList.add("hidden"); });
+    var el = $("#view-" + id);
+    if (el) el.classList.remove("hidden");
+    $$("#nav button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-view") === id); });
+    try { localStorage.setItem("atp.view", id); } catch (e) {}
+    $("#main").scrollTop = 0;
+    window.scrollTo({ top: 0 });
+    if (id === "dashboard") renderDashboard();
+    if (id === "marketplace") renderMarket();
+    if (id === "sharing") renderSharing();
+    if (id === "wallet") renderWallet();
+    if (id === "transactions") renderTx();
+    if (id === "admin") renderAdmin();
+    if (id === "ops") renderOps();
+  }
+
+  /* ─── dashboard ────────────────────────────────────────────────── */
+  function statCard(label, value, unit, delta, deltaKind, accent) {
+    return '<div class="stat-card' + (accent ? " accent" : "") + '"><div class="label">' + label + '</div>' +
+      '<div class="value">' + value + (unit ? '<span class="unit">' + unit + "</span>" : "") + "</div>" +
+      (delta ? '<div class="delta ' + deltaKind + '">' + delta + "</div>" : "") + "</div>";
+  }
+  function renderDashboard() {
+    var monthConsume = txRows.filter(function (r) { return r.t === "consume"; }).reduce(function (a, b) { return a + b.pts; }, 0);
+    $("#dash-stats").innerHTML =
+      statCard("点数余额", fmt(state.balance), "点", "较上周 +8.2%", "ok", true) +
+      statCard("本月消费", fmt(Math.round(monthConsume)), "点", "共 " + txRows.filter(function (r) { return r.t === "consume"; }).length + " 次调用") +
+      statCard("共享收益", fmt(1036.2), "点", "永久点数 · 分成 90%", "ok") +
+      statCard("在架 Key", "2 / 3", "", "1 个已暂停");
+    $("#dash-month").innerHTML = txRows.slice(0, 6).map(function (r) {
+      return '<div class="mini"><div class="m-main"><strong>' + esc(TXTYPE[r.t]) + " · " + esc(r.m) + '</strong><span>' + esc(r.time) + '</span></div>' +
+        '<div class="m-val ' + (r.t === "consume" ? "danger" : "ok") + '">' + (r.t === "consume" ? "-" : "+") + fmt(r.pts) + "</div></div>";
+    }).join("");
+    $("#dash-sharings").innerHTML = sharings.map(function (s) {
+      var pct = Math.round(s.used / s.quota * 100);
+      return '<div class="mini"><div class="m-main"><strong>' + esc(PROVIDER[s.p] || s.p) + " · " + esc(s.m) + '</strong><span>' + esc(s.masked) + " · 已用 " + pct + "%</span></div>" +
+        '<div class="m-val">' + STATUS[s.status] + '<div class="muted" style="font-size:11px;margin-top:3px">+ ' + fmt(s.earn) + "</div></div></div>";
+    }).join("");
+    trend($("#dash-trend"), trendDays);
+  }
+
+  /* ─── marketplace ──────────────────────────────────────────────── */
+  function renderMarket() {
+    var q = ($("#mk-search").value || "").trim().toLowerCase();
+    var pv = $("#mk-provider").value;
+    var sort = $("#mk-sort").value;
+    var avail = $("#mk-avail").value;
+    var list = MODELS.filter(function (m) {
+      if (pv && m.p !== pv) return false;
+      if (avail === "yes" && !m.keys) return false;
+      if (q) {
+        var hay = (m.m + " " + (PROVIDER[m.p] || m.p) + " " + m.tag).toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+    if (sort === "in-asc") list.sort(function (a, b) { return a.in - b.in; });
+    if (sort === "in-desc") list.sort(function (a, b) { return b.in - a.in; });
+    if (sort === "ctx-desc") list.sort(function (a, b) { return b.ctx - a.ctx; });
+    $("#mk-clear").classList.toggle("hidden", !q);
+    $("#mk-count").textContent = "共 " + list.length + " 个模型";
+    if (!list.length) { $("#mk-body").innerHTML = '<tr><td colspan="7"><div class="empty">没有匹配的模型，试试换个关键词</div></td></tr>'; return; }
+    $("#mk-body").innerHTML = list.map(function (m) {
+      return "<tr>" +
+        '<td><div class="provider-cell"><span class="dot' + (m.keys ? "" : " muted") + '"></span><div><div style="font-size:12px;color:var(--muted)">' + esc(PROVIDER[m.p] || m.p) + '</div><span class="model-name">' + esc(m.m) + "</span></div></div></td>" +
+        '<td class="num">' + fmt(m.in) + "</td>" +
+        '<td class="num">' + fmt(m.out) + "</td>" +
+        '<td class="num">' + ctxFmt(m.ctx) + "</td>" +
+        '<td><span class="tag' + (m.tag === "旗舰" || m.tag === "推理" ? " tag-accent" : "") + '">' + esc(m.tag) + "</span>" + (m.vision ? ' <span class="tag">读图</span>' : "") + "</td>" +
+        '<td>' + (m.keys >= 2 ? '<span class="pill pill-ok">可用 · ' + m.keys + " key</span>" : m.keys === 1 ? '<span class="pill pill-warn">紧张</span>' : '<span class="pill pill-muted">无 key</span>') + "</td>" +
+        '<td><button class="btn btn-secondary btn-sm" data-use="' + esc(m.m) + '"' + (m.keys ? "" : " disabled") + ">使用</button></td></tr>";
+    }).join("");
+    renderRecent();
+  }
+  function renderRecent() {
+    var box = $("#mk-recent");
+    if (!state.recent.length) { box.classList.add("hidden"); return; }
+    box.classList.remove("hidden");
+    $("#mk-recent-chips").innerHTML = state.recent.map(function (m) { return '<button class="chip" data-use="' + esc(m) + '">' + esc(m) + "</button>"; }).join("");
+  }
+
+  /* ─── sharing ──────────────────────────────────────────────────── */
+  function renderSharing() {
+    var active = sharings.filter(function (s) { return s.status === "on"; }).length;
+    var used = sharings.reduce(function (a, b) { return a + b.used; }, 0);
+    var earn = sharings.reduce(function (a, b) { return a + b.earn; }, 0);
+    $("#share-stats").innerHTML =
+      statCard("在架 Key", active + " / " + sharings.length, "", "可随时暂停 / 下线") +
+      statCard("累计消耗", fmt(used), "点", "来自其他用户调用") +
+      statCard("累计收益", fmt(earn), "点", "90% 归分享者", "ok", true) +
+      statCard("本月新增", "1", "个", "deepseek-v4-flash");
+    $("#share-body").innerHTML = sharings.map(function (s) {
+      var pct = Math.min(100, Math.round(s.used / s.quota * 100));
+      return "<tr>" +
+        "<td><div>" + esc(PROVIDER[s.p] || s.p) + ' <span class="muted" style="font-size:11.5px">' + esc(s.plan) + '</span><div class="model-name">' + esc(s.m) + "</div></div></td>" +
+        '<td class="num">' + esc(s.masked) + "</td>" +
+        '<td class="num">' + fmt(s.used) + " / " + fmt(s.quota) + '<div class="bar-track" style="margin-top:6px;width:90px"><div class="bar-fill" style="width:' + pct + '%"></div></div></td>' +
+        '<td class="num">' + fmt(s.price) + "</td>" +
+        '<td class="num ok">+' + fmt(s.earn) + "</td>" +
+        "<td>" + esc(s.days) + "</td>" +
+        "<td>" + STATUS[s.status] + "</td>" +
+        '<td><button class="btn btn-ghost btn-sm" data-share-toggle="' + s.id + '">' + (s.status === "on" ? "暂停" : "恢复") + "</button></td></tr>";
+    }).join("");
+    renderPlanOptions();
+  }
+  function renderPlanOptions() {
+    var pv = $("#sf-provider");
+    if (!pv.options.length) {
+      pv.innerHTML = Object.keys(PROVIDER).filter(function (p) { return MODELS.some(function (m) { return m.p === p; }); })
+        .map(function (p) { return '<option value="' + p + '">' + esc(PROVIDER[p]) + "</option>"; }).join("");
+    }
+    var p = pv.value;
+    var plans = PLANS.filter(function (x) { return x.p === p; });
+    if (!plans.length) plans = [{ id: p + "-paygo", name: "API（按量）", type: "paygo" }];
+    $("#sf-plan").innerHTML = plans.map(function (x) { return '<option value="' + esc(x.id) + '">' + esc(x.name) + "</option>"; }).join("");
+    updatePlanHint();
+    var models = MODELS.filter(function (m) { return m.p === p; });
+    $("#sf-model").innerHTML = models.map(function (m) { return '<option value="' + esc(m.m) + '">' + esc(m.m) + "</option>"; }).join("");
+    updateSharePrice();
+  }
+  function updatePlanHint() {
+    var p = $("#sf-provider").value, id = $("#sf-plan").value;
+    var plan = PLANS.filter(function (x) { return x.id === id; })[0];
+    var typeTxt = plan ? { coding: "编码订阅 key", token: "统一计量订阅", paygo: "按量计价 key" }[plan.type] : "";
+    $("#sf-plan-hint").textContent = typeTxt ? "该 Plan 类型：" + typeTxt + "，请确认 key 与端点匹配。" : "";
+  }
+  function updateSharePrice() {
+    var m = $("#sf-model").value;
+    var model = MODELS.filter(function (x) { return x.m === m; })[0];
+    $("#sf-price-view").textContent = model ? fmt(model.out) + " 点 / 1M 输出" : "—";
+  }
+
+  /* ─── wallet ───────────────────────────────────────────────────── */
+  function renderWallet() {
+    $("#wallet-balance").textContent = fmt(state.balance);
+    $("#wallet-forever").textContent = fmt(state.forever);
+    $("#wallet-month").innerHTML = txRows.filter(function (r) { return r.t !== "gift"; }).slice(0, 6).map(function (r) {
+      return '<div class="mini"><div class="m-main"><strong>' + esc(TXTYPE[r.t]) + " · " + esc(r.m) + '</strong><span>' + esc(r.time) + '</span></div>' +
+        '<div class="m-val ' + (r.t === "consume" ? "danger" : "ok") + '">' + (r.t === "consume" ? "-" : "+") + fmt(r.pts) + "</div></div>";
+    }).join("");
+  }
+
+  /* ─── transactions ─────────────────────────────────────────────── */
+  function renderTx() {
+    var rows = txRows.filter(function (r) {
+      if (state.txTab === "consume") return r.t === "consume";
+      if (state.txTab === "earn") return r.t === "earn";
+      return true;
+    });
+    var consume = rows.filter(function (r) { return r.t === "consume"; }).reduce(function (a, b) { return a + b.pts; }, 0);
+    var earn = rows.filter(function (r) { return r.t === "earn"; }).reduce(function (a, b) { return a + b.pts; }, 0);
+    var tokens = rows.reduce(function (a, b) { return a + b.total; }, 0);
+    $("#tx-summary").innerHTML =
+      statCard("消费合计", fmt(Math.round(consume)), "点", "输入 / 缓存 / 输出明细见下表") +
+      statCard("收益合计", fmt(Math.round(earn)), "点", "共享分成 90%", "ok") +
+      statCard("Token 合计", fmt(tokens), "", "三档 token 之和") +
+      statCard("记录数", String(rows.length), "条", "当前筛选");
+    trend($("#tx-trend"), trendDays.slice(-12));
+    $("#tx-count").textContent = "共 " + rows.length + " 条记录";
+    $("#tx-body").innerHTML = rows.map(function (r) {
+      return "<tr>" +
+        '<td class="num">' + esc(r.time) + "</td>" +
+        "<td>" + (r.t === "consume" ? '<span class="pill pill-danger">消费</span>' : r.t === "earn" ? '<span class="pill pill-ok">收益</span>' : '<span class="pill pill-muted">' + esc(TXTYPE[r.t]) + "</span>") + "</td>" +
+        '<td><div class="model-name">' + esc(r.m) + '</div><span class="muted" style="font-size:11px">' + esc(PROVIDER[r.p] || r.p) + " · " + esc(r.masked) + "</span></td>" +
+        '<td class="num">' + (r.i ? fmt(r.i) : "—") + "</td>" +
+        '<td class="num">' + (r.c ? fmt(r.c) : "—") + "</td>" +
+        '<td class="num">' + (r.o ? fmt(r.o) : "—") + "</td>" +
+        '<td class="num">' + (r.total ? fmt(r.total) : "—") + "</td>" +
+        '<td class="num ' + (r.t === "consume" ? "danger" : r.t === "earn" ? "ok" : "") + '">' + (r.t === "consume" ? "-" : r.t === "earn" || r.t === "gift" || r.t === "topup" ? "+" : "") + fmt(r.pts) + "</td></tr>";
+    }).join("") || '<tr><td colspan="8"><div class="empty">当前筛选没有记录</div></td></tr>';
+  }
+  function exportCsv() {
+    var head = ["时间", "类型", "厂商", "模型", "Key", "输入", "缓存", "输出", "合计Token", "点数"];
+    var lines = [head.join(",")].concat(txRows.filter(function (r) {
+      if (state.txTab === "consume") return r.t === "consume";
+      if (state.txTab === "earn") return r.t === "earn";
+      return true;
+    }).map(function (r) { return [r.time, TXTYPE[r.t], r.p, r.m, r.masked, r.i, r.c, r.o, r.total, r.pts].join(","); }));
+    try {
+      var blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "aitokenpool-transactions.csv";
+      document.body.appendChild(a); a.click(); a.remove();
+      toast("已导出 CSV", "ok");
+    } catch (e) { toast("导出失败，请稍后重试", "warn"); }
+  }
+
+  /* ─── settings ─────────────────────────────────────────────────── */
+  function renderKeys() {
+    $("#ak-body").innerHTML = apiKeys.map(function (k, i) {
+      return "<tr>" +
+        "<td>" + esc(k.name) + "</td>" +
+        '<td class="num">' + esc(k.key) + "</td>" +
+        '<td class="num">' + esc(k.created) + "</td>" +
+        '<td class="num">' + esc(k.last) + "</td>" +
+        "<td>" + (k.status === "on" ? '<span class="pill pill-ok">有效</span>' : '<span class="pill pill-muted">已撤销</span>') + "</td>" +
+        '<td>' + (k.status === "on" ? '<button class="btn btn-ghost btn-sm" data-revoke="' + i + '">撤销</button>' : "") + "</td></tr>";
+    }).join("");
+  }
+
+  /* ─── admin ────────────────────────────────────────────────────── */
+  function renderAdmin() {
+    if (state.adminTab === "employees") renderEmployees();
+    if (state.adminTab === "usage") renderUsage();
+    if (state.adminTab === "org") renderOrg();
+    if (state.adminTab === "models") renderModelsTable();
+  }
+  function renderEmployees() {
+    var q = ($("#emp-search").value || "").trim().toLowerCase();
+    var list = members.filter(function (m) { return !q || (m.name + m.dept).toLowerCase().indexOf(q) >= 0; });
+    var totalQuota = members.reduce(function (a, b) { return a + b.quota; }, 0);
+    var totalUsed = members.reduce(function (a, b) { return a + b.used; }, 0);
+    $("#emp-stats").innerHTML =
+      statCard("成员数", String(members.length), "人", "覆盖 4 个部门") +
+      statCard("总配额", fmt(totalQuota), "点", "每月分配") +
+      statCard("已用", fmt(totalUsed), "点", "占比 " + Math.round(totalUsed / totalQuota * 100) + "%", "ok") +
+      statCard("待审批加额", String(members.filter(function (m) { return m.status === "danger"; }).length), "条", "见下方申请列表", "", true);
+    $("#emp-body").innerHTML = list.map(function (m) {
+      var remain = m.quota - m.used;
+      var pct = Math.min(100, Math.round(m.used / m.quota * 100));
+      return "<tr>" +
+        '<td><div class="provider-cell"><span class="avatar" style="width:28px;height:28px;font-size:12px">' + esc(m.name.slice(0, 1)) + '</span><div><div>' + esc(m.name) + '</div><span class="muted" style="font-size:11px">' + esc(m.role) + "</span></div></div></td>" +
+        "<td>" + esc(m.dept) + "</td>" +
+        '<td class="num">' + fmt(m.quota) + "</td>" +
+        '<td class="num">' + fmt(m.used) + '<div class="bar-track" style="margin-top:6px;width:80px"><div class="bar-fill" style="width:' + pct + '%"></div></div></td>' +
+        '<td class="num ' + (remain < 0 ? "danger" : "") + '">' + fmt(remain) + "</td>" +
+        "<td>" + STATUS[m.status] + "</td>" +
+        '<td><button class="btn btn-ghost btn-sm" data-credit="' + esc(m.name) + '">加额</button></td></tr>';
+    }).join("") || '<tr><td colspan="7"><div class="empty">没有匹配的成员</div></td></tr>';
+    $("#raise-list").innerHTML =
+      '<div class="mini"><div class="m-main"><strong>周决 · 研发</strong><span>申请 5,000 点 · 本月配额已用完，需要继续开发</span></div><div class="row">' +
+      '<button class="btn btn-primary btn-sm" data-raise-approve="周决">批准</button><button class="btn btn-ghost btn-sm" data-raise-reject="周决">驳回</button></div></div>' +
+      '<div class="mini"><div class="m-main"><strong>沈砚 · 产品</strong><span>申请 2,000 点 · 大版本上线前压测</span></div><div class="row">' +
+      '<button class="btn btn-primary btn-sm" data-raise-approve="沈砚">批准</button><button class="btn btn-ghost btn-sm" data-raise-reject="沈砚">驳回</button></div></div>';
+  }
+  function renderUsage() {
+    var byModel = {};
+    txRows.filter(function (r) { return r.t === "consume"; }).forEach(function (r) { byModel[r.m] = (byModel[r.m] || 0) + r.pts; });
+    bars($("#use-model"), Object.keys(byModel).sort(function (a, b) { return byModel[b] - byModel[a]; }).map(function (k) { return { k: k, v: Math.round(byModel[k]) }; }));
+    bars($("#use-emp"), members.slice().sort(function (a, b) { return b.used - a.used; }).map(function (m) { return { k: m.name, v: m.used }; }));
+    var byDept = departments.map(function (d) { return { k: d.name, v: d.used, alt: true }; }).sort(function (a, b) { return b.v - a.v; });
+    bars($("#use-dept"), byDept);
+  }
+  function renderOrg() {
+    var q = ($("#dept-search").value || "").trim().toLowerCase();
+    var list = departments.filter(function (d) { return !q || d.name.toLowerCase().indexOf(q) >= 0; });
+    var tq = departments.reduce(function (a, b) { return a + b.quota; }, 0);
+    var tu = departments.reduce(function (a, b) { return a + b.used; }, 0);
+    var tm = departments.reduce(function (a, b) { return a + b.members; }, 0);
+    $("#dept-stats").innerHTML =
+      statCard("部门数", String(departments.length), "个", "") +
+      statCard("成员数", String(tm), "人", "") +
+      statCard("月分配", fmt(tq), "点", "") +
+      statCard("已用", fmt(tu), "点", "占比 " + Math.round(tu / tq * 100) + "%", "ok", true);
+    $("#dept-body").innerHTML = list.map(function (d) {
+      var remain = d.quota - d.used;
+      return "<tr><td>" + esc(d.name) + '</td><td class="num">' + d.members + '</td><td class="num">' + fmt(d.quota) + '</td><td class="num">' + fmt(d.used) + '</td><td class="num ' + (remain < 0 ? "danger" : "") + '">' + fmt(remain) + "</td><td>" + STATUS[d.status] + '</td><td><button class="btn btn-ghost btn-sm" data-dept-del="' + esc(d.name) + '">删除</button></td></tr>';
+    }).join("") || '<tr><td colspan="7"><div class="empty">没有匹配的部门</div></td></tr>';
+  }
+  function renderModelsTable() {
+    var q = ($("#mod-search").value || "").trim().toLowerCase();
+    var list = MODELS.filter(function (m) { return !q || (m.m + " " + m.p).toLowerCase().indexOf(q) >= 0; });
+    $("#mod-body").innerHTML = list.map(function (m) {
+      return "<tr><td>" + esc(PROVIDER[m.p] || m.p) + '</td><td class="model-name">' + esc(m.m) + '</td><td class="num">' + fmt(m.in) + '</td><td class="num">' + fmt(m.out) + '</td><td class="num">' + ctxFmt(m.ctx) + '</td><td><span class="tag">' + esc(m.tag) + "</span>" + (m.vision ? ' <span class="tag">读图</span>' : "") + '</td><td><button class="btn btn-ghost btn-sm" data-mod-del="' + esc(m.m) + '">删除</button></td></tr>';
+    }).join("") || '<tr><td colspan="7"><div class="empty">没有匹配的模型</div></td></tr>';
+  }
+
+  /* ─── ops ──────────────────────────────────────────────────────── */
+  function renderOps() {
+    if (state.opsTab === "users") {
+      var q = ($("#ops-search").value || "").trim().toLowerCase();
+      var list = users.filter(function (u) { return !q || (u.name + u.email).toLowerCase().indexOf(q) >= 0; });
+      $("#ops-body").innerHTML = list.map(function (u) {
+        return "<tr><td>" + esc(u.name) + '</td><td class="num">' + esc(u.email) + '</td><td class="num">' + fmt(u.balance) + '</td><td><button class="btn btn-secondary btn-sm" data-ops-credit="' + esc(u.name) + '">充值</button></td></tr>';
+      }).join("") || '<tr><td colspan="4"><div class="empty">没有匹配的用户</div></td></tr>';
+      return;
+    }
+    $("#ops-stats").innerHTML =
+      statCard("服务版本", "v0.7.20", "", "单二进制运行中", "ok", true) +
+      statCard("运行时长", "6 天 4 小时", "", "SQLite · 无外部依赖") +
+      statCard("今日调用", "3,482", "次", "较昨日 +12%") +
+      statCard("错误率", "0.18%", "", "网关 5xx / 超时");
+    var hours = [];
+    for (var h = 8; h <= 20; h += 2) hours.push({ k: h + ":00", v: Math.round(seeded(h + 3, 40, 320)) });
+    bars($("#ops-hours"), hours);
+    var keys = [
+      { p: "deepseek", n: 9, s: "on" }, { p: "anthropic", n: 5, s: "on" },
+      { p: "zhipu", n: 3, s: "on" }, { p: "openai", n: 2, s: "warn" }, { p: "xai", n: 1, s: "danger" }
+    ];
+    $("#ops-keys").innerHTML = keys.map(function (k) {
+      return '<div class="mini"><div class="m-main"><strong>' + esc(PROVIDER[k.p]) + '</strong><span>' + k.n + " 个上游 key</span></div><div>" + (k.s === "on" ? '<span class="pill pill-ok">健康</span>' : k.s === "warn" ? '<span class="pill pill-warn">1 个异常</span>' : '<span class="pill pill-danger">全部失败</span>') + "</div></div>";
+    }).join("");
+  }
+
+  /* ─── chat modal ───────────────────────────────────────────────── */
+  var chatModel = null;
+  function openChat(modelName) {
+    var m = MODELS.filter(function (x) { return x.m === modelName; })[0];
+    if (!m) return;
+    chatModel = m;
+    $("#chat-title").textContent = "使用 " + m.m;
+    $("#chat-meta").textContent = (PROVIDER[m.p] || m.p) + " · 输入 " + fmt(m.in) + " / 输出 " + fmt(m.out) + " 点每 1M token · 上下文 " + ctxFmt(m.ctx);
+    $("#chat-log").innerHTML = '<div class="msg bot">已通过网关路由到 <b>' + esc(m.m) + '</b>。输入内容即可模拟一次调用，费用按三档 token 实时结算。</div>';
+    $("#chat-modal").classList.remove("hidden");
+    addRecent(m.m);
+    setTimeout(function () { $("#chat-input").focus(); }, 50);
+  }
+  function addRecent(m) {
+    state.recent = [m].concat(state.recent.filter(function (x) { return x !== m; })).slice(0, 5);
+    renderRecent();
+  }
+  function sendChat() {
+    var text = ($("#chat-input").value || "").trim();
+    if (!text || !chatModel) return;
+    var log = $("#chat-log");
+    log.insertAdjacentHTML("beforeend", '<div class="msg user">' + esc(text) + "</div>");
+    $("#chat-input").value = "";
+    var bot = document.createElement("div");
+    bot.className = "msg bot";
+    bot.innerHTML = '<span style="color:var(--muted)">思考中…</span>';
+    log.appendChild(bot);
+    log.scrollTop = log.scrollHeight;
+    setTimeout(function () {
+      var inTok = 820 + Math.round(text.length * 3.2);
+      var outTok = 180 + Math.round(Math.random() * 260);
+      var cache = Math.round(inTok * 0.6);
+      var cost = (inTok - cache) / 1e6 * chatModel.in + cache / 1e6 * chatModel.in * 0.25 + outTok / 1e6 * chatModel.out;
+      cost = Math.round(cost * 1e5) / 1e5;
+      state.balance = Math.round((state.balance - cost) * 1e5) / 1e5;
+      syncUser();
+      bot.innerHTML = "这是一次模拟调用，网关已完成协议转换与计费。<span class=\"usage\">输入 " + fmt(inTok) + " · 缓存 " + fmt(cache) + " · 输出 " + fmt(outTok) + " token · 扣费 " + fmt(cost) + " 点</span>";
+      log.scrollTop = log.scrollHeight;
+    }, 650);
+  }
+
+  /* ─── user sync ────────────────────────────────────────────────── */
+  function syncUser() {
+    $("#side-name").textContent = state.user.name;
+    $("#side-avatar").textContent = state.user.name.slice(0, 1);
+    $("#side-balance").textContent = fmt(state.balance);
+    $("#wallet-balance").textContent = fmt(state.balance);
+  }
+
+  /* ─── role ─────────────────────────────────────────────────────── */
+  function setRole(role) {
+    state.role = role;
+    $$("#role-switch button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-role") === role); });
+    var labels = { user: "共享市场 · 普通用户", admin: "企业管控 · 管理员", ops: "平台运营 · 运营者" };
+    $("#mode-label").textContent = labels[role];
+    if (role === "admin") state.user.name = "管理员";
+    else if (role === "ops") state.user.name = "运营者";
+    else state.user.name = "小林";
+    syncUser();
+    if (NAV.filter(function (n) { return n.id === state.view; })[0] && NAV.filter(function (n) { return n.id === state.view; })[0].roles.indexOf(role) < 0) {
+      state.view = "dashboard";
+    }
+    renderNav();
+    showView(state.view);
+  }
+
+  /* ─── theme ────────────────────────────────────────────────────── */
+  function setTheme(t) {
+    state.theme = t;
+    document.documentElement.setAttribute("data-theme", t);
+    var sel = $("#pref-theme"); if (sel) sel.value = t;
+    try { localStorage.setItem("atp.theme.v2", t); } catch (e) {}
+  }
+
+  /* ─── auth ─────────────────────────────────────────────────────── */
+  function enterApp() {
+    $("#login-view").classList.add("hidden");
+    $("#app").classList.remove("hidden");
+    setRole("user");
+    showView(state.view || "dashboard");
+    syncUser();
+  }
+  function setAuthTab(tab) {
+    $$("#auth-tabs button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-auth") === tab); });
+    $("#login-form").classList.toggle("hidden", tab !== "login");
+    $("#register-form").classList.toggle("hidden", tab !== "register");
+    $("#auth-title").textContent = tab === "login" ? "进入平台" : "创建账号";
+    $("#auth-sub").textContent = tab === "login" ? "登录后使用真实网关数据 · 管理员可见管理视图" : "注册后需邮箱验证码激活，未验证不可登录";
+  }
+
+  /* ─── delegated events ─────────────────────────────────────────── */
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest("[data-view],[data-goto],[data-use],[data-copy],[data-share-toggle],[data-revoke],[data-credit],[data-raise-approve],[data-raise-reject],[data-dept-del],[data-mod-del],[data-ops-credit],[data-topup],[data-day],[data-role],[data-auth],[data-tx],[data-adm],[data-ops]");
+    if (!t) return;
+    if (t.hasAttribute("data-view")) showView(t.getAttribute("data-view"));
+    else if (t.hasAttribute("data-goto")) showView(t.getAttribute("data-goto"));
+    else if (t.hasAttribute("data-use")) openChat(t.getAttribute("data-use"));
+    else if (t.hasAttribute("data-copy")) {
+      var url = t.getAttribute("data-copy");
+      if (navigator.clipboard) navigator.clipboard.writeText(url).then(function () { toast("已复制端点", "ok"); }, function () { toast("已复制：" + url); });
+      else toast("端点：" + url);
+    } else if (t.hasAttribute("data-share-toggle")) {
+      var s = sharings.filter(function (x) { return x.id === +t.getAttribute("data-share-toggle"); })[0];
+      s.status = s.status === "on" ? "paused" : "on";
+      renderSharing(); toast(s.status === "on" ? "已恢复共享" : "已暂停共享", "ok");
+    } else if (t.hasAttribute("data-revoke")) {
+      apiKeys[+t.getAttribute("data-revoke")].status = "revoked"; renderKeys(); toast("已撤销该 Key", "warn");
+    } else if (t.hasAttribute("data-credit") || t.hasAttribute("data-ops-credit")) {
+      var who = t.getAttribute("data-credit") || t.getAttribute("data-ops-credit");
+      toast("已为「" + who + "」登记 1,000 点（演示）", "ok");
+    } else if (t.hasAttribute("data-raise-approve")) {
+      t.closest(".mini").outerHTML = '<div class="mini"><div class="m-main"><strong>' + esc(t.getAttribute("data-raise-approve")) + '</strong><span>申请已批准 · 已发放点数</span></div><span class="pill pill-ok">已批准</span></div>';
+      toast("已批准加额申请", "ok");
+    } else if (t.hasAttribute("data-raise-reject")) {
+      t.closest(".mini").outerHTML = '<div class="mini"><div class="m-main"><strong>' + esc(t.getAttribute("data-raise-reject")) + '</strong><span>申请已驳回</span></div><span class="pill pill-muted">已驳回</span></div>';
+      toast("已驳回加额申请", "warn");
+    } else if (t.hasAttribute("data-dept-del")) {
+      departments = departments.filter(function (d) { return d.name !== t.getAttribute("data-dept-del"); });
+      renderOrg(); toast("已删除部门", "warn");
+    } else if (t.hasAttribute("data-mod-del")) {
+      MODELS = MODELS.filter(function (m) { return m.m !== t.getAttribute("data-mod-del"); });
+      renderModelsTable(); toast("已删除模型", "warn");
+    } else if (t.hasAttribute("data-topup")) {
+      $$("[data-topup]").forEach(function (b) { b.classList.toggle("on", b === t); });
+      $("#topup-custom").value = t.getAttribute("data-topup");
+    } else if (t.hasAttribute("data-day")) {
+      if (t.getAttribute("data-day") === "all") $$("[data-day]").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-day") !== "all"); });
+      else t.classList.toggle("on");
+    } else if (t.hasAttribute("data-role")) setRole(t.getAttribute("data-role"));
+    else if (t.hasAttribute("data-auth")) setAuthTab(t.getAttribute("data-auth"));
+    else if (t.hasAttribute("data-tx")) {
+      state.txTab = t.getAttribute("data-tx");
+      $$("#tx-tabs button").forEach(function (b) { b.classList.toggle("on", b === t); });
+      renderTx();
+    } else if (t.hasAttribute("data-adm")) {
+      state.adminTab = t.getAttribute("data-adm");
+      $$("#admin-tabs button").forEach(function (b) { b.classList.toggle("on", b === t); });
+      $$(".pane", $("#view-admin")).forEach(function (p) { p.classList.toggle("hidden", p.getAttribute("data-pane") !== state.adminTab); });
+      renderAdmin();
+    } else if (t.hasAttribute("data-ops")) {
+      state.opsTab = t.getAttribute("data-ops");
+      $$("#ops-tabs button").forEach(function (b) { b.classList.toggle("on", b === t); });
+      $$(".pane", $("#view-ops")).forEach(function (p) { p.classList.toggle("hidden", p.getAttribute("data-opspane") !== state.opsTab); });
+      renderOps();
+    }
+  });
+
+  /* inputs */
+  $("#mk-search").addEventListener("input", renderMarket);
+  $("#mk-provider").addEventListener("change", renderMarket);
+  $("#mk-sort").addEventListener("change", renderMarket);
+  $("#mk-avail").addEventListener("change", renderMarket);
+  $("#mk-clear").addEventListener("click", function () { $("#mk-search").value = ""; renderMarket(); });
+  $("#mk-recent-clear").addEventListener("click", function () { state.recent = []; renderRecent(); });
+  $("#emp-search").addEventListener("input", renderEmployees);
+  $("#dept-search").addEventListener("input", renderOrg);
+  $("#mod-search").addEventListener("input", renderModelsTable);
+  $("#ops-search").addEventListener("input", renderOps);
+  $("#tx-export").addEventListener("click", exportCsv);
+  $("#tx-range").addEventListener("change", function () { state.txRange = this.value; renderTx(); });
+
+  /* sharing form */
+  $("#share-add-btn").addEventListener("click", function () { $("#share-form-card").classList.toggle("hidden"); });
+  $("#sf-cancel").addEventListener("click", function () { $("#share-form-card").classList.add("hidden"); });
+  $("#sf-provider").addEventListener("change", renderPlanOptions);
+  $("#sf-plan").addEventListener("change", updatePlanHint);
+  $("#sf-model").addEventListener("change", updateSharePrice);
+  $("#share-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var p = $("#sf-provider").value, m = $("#sf-model").value;
+    if (!$("#sf-key").value.trim()) { toast("请先填入 API Key", "warn"); return; }
+    sharings.unshift({ id: Date.now(), p: p, plan: $("#sf-plan").selectedOptions[0].textContent, m: m, masked: "sk-••••" + Math.random().toString(16).slice(2, 6), used: 0, quota: +$("#sf-quota").value || 5000, price: (MODELS.filter(function (x) { return x.m === m; })[0] || {}).out || 0, earn: 0, days: "每天 09:00–23:00", status: "on" });
+    $("#share-form-card").classList.add("hidden");
+    this.reset(); renderPlanOptions(); renderSharing();
+    toast("已上架 " + m, "ok");
+  });
+
+  /* wallet */
+  $("#topup-btn").addEventListener("click", function () { $("#topup-card").classList.toggle("hidden"); $("#raise-card").classList.add("hidden"); });
+  $("#raise-btn").addEventListener("click", function () { $("#raise-card").classList.toggle("hidden"); $("#topup-card").classList.add("hidden"); });
+  $("#topup-cancel").addEventListener("click", function () { $("#topup-card").classList.add("hidden"); });
+  $("#raise-cancel").addEventListener("click", function () { $("#raise-card").classList.add("hidden"); });
+  $("#topup-confirm").addEventListener("click", function () {
+    var amt = parseFloat($("#topup-custom").value);
+    if (!amt || amt <= 0) { toast("请输入有效金额", "warn"); return; }
+    state.balance = Math.round((state.balance + amt) * 1e5) / 1e5;
+    state.forever = Math.round((state.forever + amt) * 1e5) / 1e5;
+    syncUser(); renderWallet(); renderDashboard();
+    $("#topup-card").classList.add("hidden"); $("#topup-custom").value = "";
+    toast("已充值 " + fmt(amt) + " 点（演示）", "ok");
+  });
+  $("#raise-confirm").addEventListener("click", function () {
+    var amt = parseFloat($("#raise-amount").value);
+    if (!amt || amt <= 0) { toast("请输入申请点数", "warn"); return; }
+    $("#raise-card").classList.add("hidden"); $("#raise-amount").value = ""; $("#raise-reason").value = "";
+    toast("加额申请已提交，等待管理员审批", "ok");
+  });
+
+  /* settings */
+  $("#ak-new-btn").addEventListener("click", function () { $("#ak-new-inline").classList.toggle("hidden"); $("#ak-new-name").focus(); });
+  $("#ak-new-cancel").addEventListener("click", function () { $("#ak-new-inline").classList.add("hidden"); });
+  $("#ak-new-ok").addEventListener("click", function () {
+    apiKeys.unshift({ name: $("#ak-new-name").value.trim() || "未命名", key: "atp-sk-••••" + Math.random().toString(16).slice(2, 6), created: new Date().toISOString().slice(0, 16).replace("T", " "), last: "从未", status: "on" });
+    $("#ak-new-name").value = ""; $("#ak-new-inline").classList.add("hidden"); renderKeys();
+    toast("已生成新的 API Key", "ok");
+  });
+  $("#save-account").addEventListener("click", function () {
+    state.user.name = $("#set-nickname").value.trim() || state.user.name;
+    syncUser(); toast("账户信息已保存", "ok");
+  });
+  $("#pref-theme").addEventListener("change", function () { setTheme(this.value); });
+  $("#theme-toggle").addEventListener("click", function () { setTheme(state.theme === "dark" ? "light" : "dark"); });
+  $("#login-theme-toggle").addEventListener("click", function () { setTheme(state.theme === "dark" ? "light" : "dark"); });
+
+  /* admin forms */
+  $("#dept-add-btn").addEventListener("click", function () { $("#dept-form-card").classList.toggle("hidden"); $("#dept-name").focus(); });
+  $("#dept-cancel").addEventListener("click", function () { $("#dept-form-card").classList.add("hidden"); });
+  $("#dept-ok").addEventListener("click", function () {
+    var n = $("#dept-name").value.trim(), q = parseInt($("#dept-quota").value, 10);
+    if (!n) { toast("请输入部门名称", "warn"); return; }
+    departments.push({ name: n, members: 0, quota: q || 10000, used: 0, status: "on" });
+    $("#dept-name").value = ""; $("#dept-quota").value = ""; $("#dept-form-card").classList.add("hidden");
+    renderOrg(); toast("已添加部门「" + n + "」", "ok");
+  });
+  $("#mod-add-btn").addEventListener("click", function () { $("#mod-form-card").classList.toggle("hidden"); $("#mod-provider").focus(); });
+  $("#mod-cancel").addEventListener("click", function () { $("#mod-form-card").classList.add("hidden"); });
+  $("#mod-ok").addEventListener("click", function () {
+    var p = $("#mod-provider").value.trim(), m = $("#mod-model").value.trim();
+    if (!p || !m) { toast("请填写厂商与模型名", "warn"); return; }
+    MODELS.push({ p: p, m: m, in: +$("#mod-in").value || 0, out: +$("#mod-out").value || 0, ctx: 1048576, tag: "通用", vision: false, keys: 0 });
+    $("#mod-provider").value = ""; $("#mod-model").value = ""; $("#mod-form-card").classList.add("hidden");
+    renderModelsTable(); toast("已添加模型 " + m, "ok");
+  });
+
+  /* chat */
+  $("#chat-close").addEventListener("click", function () { $("#chat-modal").classList.add("hidden"); });
+  $("#chat-modal").addEventListener("click", function (e) { if (e.target === this) this.classList.add("hidden"); });
+  $("#chat-send").addEventListener("click", sendChat);
+  $("#chat-input").addEventListener("keydown", function (e) { if (e.key === "Enter") sendChat(); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") { $("#chat-modal").classList.add("hidden"); } });
+
+  /* auth */
+  $("#login-form").addEventListener("submit", function (e) { e.preventDefault(); if (!$("#login-email").value || !$("#login-pass").value) { toast("请输入邮箱与密码", "warn"); return; } enterApp(); });
+  $("#guest-btn").addEventListener("click", function () { enterApp(); state.user.name = "访客"; syncUser(); });
+  $("#register-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var em = $("#reg-email").value.trim(), p1 = $("#reg-pass").value, p2 = $("#reg-pass2").value;
+    var err = $("#reg-error");
+    if (!em || !p1) { err.textContent = "请填写邮箱与密码"; err.classList.remove("hidden"); return; }
+    if (p1 !== p2) { err.textContent = "两次输入的密码不一致"; err.classList.remove("hidden"); return; }
+    err.classList.add("hidden");
+    toast("验证码已发送到 " + em + "（演示：直接进入）", "ok");
+    enterApp();
+  });
+  $("#logout-btn").addEventListener("click", function () {
+    $("#app").classList.add("hidden"); $("#login-view").classList.remove("hidden");
+    setAuthTab("login");
+  });
+
+  /* ─── init ─────────────────────────────────────────────────────── */
+  (function init() {
+    var savedTheme = null, savedView = null;
+    try { savedTheme = localStorage.getItem("atp.theme.v2"); savedView = localStorage.getItem("atp.view"); } catch (e) {}
+    setTheme(savedTheme === "dark" ? "dark" : "light");
+    if (savedView) state.view = savedView;
+    setAuthTab("login");
+  })();
+})();
+</script>
+</body>
+</html>
