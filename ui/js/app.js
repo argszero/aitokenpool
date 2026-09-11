@@ -797,21 +797,21 @@
 
     $("#mk-count").textContent = T("cnt.on", { n: list.length });
     $("#mk-body").innerHTML = guestHint + (list.length ? list.map((m) =>
-      "<tr><td data-label='厂商 / 模型'>" +
+      "<tr><td data-label='" + T('mk.col.providerModel') + "'>" +
       '<div class="provider-cell">' +
       '<button type="button" class="row-expand" data-mk-expand="' + m.id + '" title="' + (mkExpanded === m.id ? T("mk.collapse") : T("mk.expand")) + '">' + (mkExpanded === m.id ? "−" : "+") + "</button>" +
       '<span class="dot' + (m.avail ? "" : " muted") + '"></span>' +
       '<span><span class="muted" style="font-size:11.5px;display:block">' + hl(m.provider, rawQ) + "</span>" +
       '<span class="model-name">' + hl(m.model, rawQ) + "</span></span></div></td>" +
-      '<td class="num" data-label="输入价 /1M">' + D.fmt(m.in) + " " + T("common.points") +
+      '<td class="num" data-label="' + T("mk.col.in") + '">' + D.fmt(m.in) + " " + T("common.points") +
       (m.peak ? ' <span class="tag tag-accent" title="' + esc(T("mk.peak.title", { n: m.peakMult })) + '">' + esc(T("mk.peak.badge", { n: m.peakMult })) + "</span>" : "") + "</td>" +
-      '<td class="num" data-label="输出价 /1M">' + D.fmt(m.out) + " " + T("common.points") + "</td>" +
-      '<td class="num" data-label="上下文">' + D.ctxFmt(m.ctx) + "</td>" +
+      '<td class="num" data-label="' + T("mk.col.out") + '">' + D.fmt(m.out) + " " + T("common.points") + "</td>" +
+      '<td class="num" data-label="' + T("mk.col.ctx") + '">' + D.ctxFmt(m.ctx) + "</td>" +
       // 能力标签（rant 第 4 节：旗舰/推理 tag-accent，读图另加 tag）——仅渲染后端真实字段
-      '<td data-label="能力">' + capabilityTags(m) + "</td>" +
+      '<td data-label="' + T("mk.col.caps") + '">' + capabilityTags(m) + "</td>" +
       // 可用性 pill（rant 第 4 节：keys>=2 可用·N key / keys==1 紧张 / 无 key）
-      "<td data-label='可用性'>" + availPill(m) + "</td>" +
-      "<td data-label='操作'><button class='btn btn-primary btn-sm' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">" + T("mk.use") + "</button>" +
+      "<td data-label='" + T('mk.col.avail') + "'>" + availPill(m) + "</td>" +
+      "<td data-label='" + T('mk.col.action') + "'><button class='btn btn-primary btn-sm' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">" + T("mk.use") + "</button>" +
       // 零 mock：成功率后端暂无字段 → 仅当有真实值时展示（multi/success 已从 data.js 移除）
       (m.success != null ? "<div class='muted' style='margin-top:4px;font-size:12px'>" + T("mk.success", { p: m.success }) + "</div>" : "") + "</td></tr>" +
       (mkExpanded === m.id ? '<tr class="mk-detail"><td colspan="7">' + mkDetailHtml(m) + "</td></tr>" : "")
@@ -941,16 +941,16 @@
     $("#share-body").innerHTML = list.length ? list.map((s, i) => {
       // 已用 / 额度 进度条（rant 2026-09-11T16:23:43 第 5 节：进度条 + 数字）
       const pct = s.quota > 0 ? Math.min(100, Math.round((s.used / s.quota) * 100)) : 0;
-      return "<tr><td data-label='厂商 · Plan / 模型'><strong>" + esc(provLabel(s.provider)) + " · " + esc(s.plan || "API") +
+      return "<tr><td data-label='" + T('share.col.provider') + "'><strong>" + esc(provLabel(s.provider)) + " · " + esc(s.plan || "API") +
       "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + "</div></td>" +
-      "<td data-label='Key' class='mono'>" + esc(maskKey(s.key)) + "</td>" +
-      "<td data-label='已用 / 额度' class='num'>" + D.fmt(s.used) + " / " + D.fmt(s.quota) +
+      "<td data-label='" + T('share.col.key') + "' class='mono'>" + esc(maskKey(s.key)) + "</td>" +
+      "<td data-label='" + T('share.col.used') + "' class='num'>" + D.fmt(s.used) + " / " + D.fmt(s.quota) +
       '<div class="bar-track" style="margin-top:5px"><div class="bar-fill' + (pct >= 100 ? " alt" : "") + '" style="width:' + pct + '%"></div></div></td>' +
-      '<td class="num" data-label="单价">' + D.fmt(s.price) + " " + T("share.priceUnit") + "</td>" +
-      '<td class="num" data-label="收益">+' + D.fmt(s.earned) + " " + T("common.points") + "</td>" +
-      "<td data-label='可用时段'>" + esc(fmtAvailable(s)) + "</td>" +
-      "<td data-label='状态'>" + badge(s.status, SHARE_STATUS) + "</td>" +
-      "<td data-label='操作'><button class='btn btn-ghost btn-sm' data-share-toggle='" + i + "'>" +
+      '<td class="num" data-label="' + T("share.col.price") + '">' + D.fmt(s.price) + " " + T("share.priceUnit") + "</td>" +
+      '<td class="num" data-label="' + T("share.col.earn") + '">+' + D.fmt(s.earned) + " " + T("common.points") + "</td>" +
+      "<td data-label='" + T('share.col.avail') + "'>" + esc(fmtAvailable(s)) + "</td>" +
+      "<td data-label='" + T('share.col.status') + "'>" + badge(s.status, SHARE_STATUS) + "</td>" +
+      "<td data-label='" + T('share.col.action') + "'><button class='btn btn-ghost btn-sm' data-share-toggle='" + i + "'>" +
       (s.status === "on" ? T("share.toggle.pause") : s.status === "paused" ? T("share.toggle.resume") : T("share.toggle.relist")) + "</button> " +
       "<button class='btn btn-danger btn-sm' data-share-delete='" + i + "'>" + T("common.delete") + "</button></td></tr>";
     }).join("") : emptyRow(8, T("share.empty"), T("share.empty.sub"),
@@ -1245,11 +1245,11 @@
     }
     el.innerHTML = (list.length ? '<div class="table-wrap compact"><table class="table"><thead><tr><th>成员</th><th class="num">申请点数</th><th>原因</th><th>状态</th><th></th></tr></thead><tbody>' +
       list.map((r, i) =>
-        "<tr><td data-label='成员'><strong>" + esc(r.name || r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
-        '<td class="num" data-label="申请点数">+' + D.fmt(r.amount) + " " + T("common.points") + "</td>" +
-        "<td data-label='原因'>" + esc(r.reason) + "</td>" +
-        "<td data-label='状态'>" + badge(r.status, RAISE_STATUS) + "</td>" +
-        "<td data-label='操作'>" + (r.status === "pending"
+        "<tr><td data-label='" + T('admin.raise.col.member') + "'><strong>" + esc(r.name || r.user) + "</strong><div class='muted' style='font-size:12px'>" + esc(r.email) + "</div></td>" +
+        '<td class="num" data-label="' + T("admin.raise.col.amount") + '">+' + D.fmt(r.amount) + " " + T("common.points") + "</td>" +
+        "<td data-label='" + T('admin.raise.col.reason') + "'>" + esc(r.reason) + "</td>" +
+        "<td data-label='" + T('admin.raise.col.status') + "'>" + badge(r.status, RAISE_STATUS) + "</td>" +
+        "<td data-label='" + T('admin.raise.col.action') + "'>" + (r.status === "pending"
           ? "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-raise-approve='" + i + "'>" + T("admin.raise.approve") + "</button> " +
             "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>" + T("admin.raise.reject") + "</button>"
           : '<span class="muted" style="font-size:12px">' + esc((r.created_at || "").slice(5, 16)) + "</span>") + "</td></tr>"
@@ -1935,12 +1935,12 @@
     }
     list = list.filter((k) => !q || k.name.toLowerCase().includes(q));
     $("#api-keys").innerHTML = list.length ? list.map((k, i) =>
-      "<tr><td data-label='名字'><strong>" + hl(k.name, rawQ) + "</strong></td>" +
-      "<td data-label='Key'><code>" + esc(Live.apiKeys ? k.key : "") + "</code></td>" +
-      "<td data-label='创建时间'>" + esc(k.created) + "</td>" +
-      "<td data-label='最近使用'>" + (k.last ? timeCell(k.last) : esc(T("settings.ak.last.never"))) + "</td>" +
-      "<td data-label='状态'>" + (k.status === "active" ? '<span class="pill pill-ok">' + T("settings.ak.status.active") + "</span>" : '<span class="pill pill-muted">' + esc(k.status || "—") + "</span>") + "</td>" +
-      "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>" + T("settings.ak.copy") + "</button> " +
+      "<tr><td data-label='" + T('settings.ak.col.name') + "'><strong>" + hl(k.name, rawQ) + "</strong></td>" +
+      "<td data-label='" + T('settings.ak.col.key') + "'><code>" + esc(Live.apiKeys ? k.key : "") + "</code></td>" +
+      "<td data-label='" + T('settings.ak.col.created') + "'>" + esc(k.created) + "</td>" +
+      "<td data-label='" + T('settings.ak.col.last') + "'>" + (k.last ? timeCell(k.last) : esc(T("settings.ak.last.never"))) + "</td>" +
+      "<td data-label='" + T('settings.ak.col.status') + "'>" + (k.status === "active" ? '<span class="pill pill-ok">' + T("settings.ak.status.active") + "</span>" : '<span class="pill pill-muted">' + esc(k.status || "—") + "</span>") + "</td>" +
+      "<td data-label='" + T('settings.ak.col.action') + "'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>" + T("settings.ak.copy") + "</button> " +
       "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>" + T("settings.ak.rename") + "</button> " +
       "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + i + "'>" + T("settings.ak.del") + "</button></td></tr>"
     ).join("") : emptyRow(6, T("settings.ak.empty"), T("settings.ak.empty.sub"),
@@ -2178,14 +2178,14 @@
         (u.dept_name || "").toLowerCase().includes(empQ));
       $("#emp-body").innerHTML = shown.length ? shown.map((u) => {
         const i = users.indexOf(u);
-        return "<tr data-emp-row='" + i + "'><td data-label='成员'><strong>" + hl(u.name || u.email, rawEmpQ) + "</strong>" +
+        return "<tr data-emp-row='" + i + "'><td data-label='" + T('admin.emp.col.member') + "'><strong>" + hl(u.name || u.email, rawEmpQ) + "</strong>" +
         "<div class='muted' style='font-size:12px'>" + hl(u.email, rawEmpQ) + "</div></td>" +
-        "<td data-label='角色'>" + (u.role === "admin" ? '<span class="pill pill-ok">admin</span>' : u.role === "ops" ? '<span class="pill pill-warn">ops</span>' : '<span class="pill pill-muted">user</span>') + "</td>" +
-        "<td data-label='部门'>" + (u.dept_name ? hl(u.dept_name, rawEmpQ) : '<span class="muted">' + T("common.unassigned") + "</span>") + "</td>" +
-        '<td class="num" data-label="永久点数">' + D.fmt(u.balance || 0) + "</td>" +
-        '<td class="num" data-label="赠送点数">' + D.fmt(u.gift_balance || 0) + "</td>" +
-        '<td class="num" data-label="可用">' + D.fmt((u.balance || 0) + (u.gift_balance || 0)) + "</td>" +
-        "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>" + T("admin.emp.dept.change") + "</button> " +
+        "<td data-label='" + T('admin.emp.col.role') + "'>" + (u.role === "admin" ? '<span class="pill pill-ok">admin</span>' : u.role === "ops" ? '<span class="pill pill-warn">ops</span>' : '<span class="pill pill-muted">user</span>') + "</td>" +
+        "<td data-label='" + T('admin.emp.col.dept') + "'>" + (u.dept_name ? hl(u.dept_name, rawEmpQ) : '<span class="muted">' + T("common.unassigned") + "</span>") + "</td>" +
+        '<td class="num" data-label="' + T("admin.emp.col.perm") + '">' + D.fmt(u.balance || 0) + "</td>" +
+        '<td class="num" data-label="' + T("admin.emp.col.gift") + '">' + D.fmt(u.gift_balance || 0) + "</td>" +
+        '<td class="num" data-label="' + T("admin.emp.col.avail") + '">' + D.fmt((u.balance || 0) + (u.gift_balance || 0)) + "</td>" +
+        "<td data-label='" + T('admin.emp.col.action') + "'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-dept='" + i + "'>" + T("admin.emp.dept.change") + "</button> " +
         "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-emp-topup='" + i + "'>" + T("admin.emp.topup") + "</button></td></tr>";
       }).join("") : emptyRow(7, T("admin.emp.empty"), T("admin.emp.empty.sub"));
       pulseTbody($("#emp-body"));
@@ -2241,14 +2241,14 @@
     const list = Live.adminModels.filter((m) => !q ||
       (m.provider || "").toLowerCase().includes(q) || (m.model || "").toLowerCase().includes(q));
     $("#model-body").innerHTML = list.length ? list.map((m, i) =>
-      "<tr data-model-row='" + i + "'><td data-label='厂商'><strong>" + esc(m.provider) + "</strong></td>" +
-      "<td data-label='模型'><code>" + esc(m.model) + "</code></td>" +
-      '<td class="num" data-label="输入价">' + D.fmt(m.input_per_m || 0) + "</td>" +
-      '<td class="num" data-label="输出价">' + D.fmt(m.output_per_m || 0) + "</td>" +
-      '<td class="num" data-label="上下文">' + fmtCtx(m.context_length || m.context_window || 0) + "</td>" +
-      '<td class="num" data-label="最大输出">' + fmtCtx(m.max_output || 0) + "</td>" +
-      "<td data-label='读图'>" + (m.vision ? '<span class="pill pill-ok">' + T("admin.models.vision.yes") + "</span>" : '<span class="pill pill-muted">' + T("admin.models.vision.no") + "</span>") + "</td>" +
-      "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-model-edit='" + i + "'>" + T("admin.models.edit") + "</button> " +
+      "<tr data-model-row='" + i + "'><td data-label='" + T('admin.models.col.provider') + "'><strong>" + esc(m.provider) + "</strong></td>" +
+      "<td data-label='" + T('admin.models.col.model') + "'><code>" + esc(m.model) + "</code></td>" +
+      '<td class="num" data-label="' + T("admin.models.col.in") + '">' + D.fmt(m.input_per_m || 0) + "</td>" +
+      '<td class="num" data-label="' + T("admin.models.col.out") + '">' + D.fmt(m.output_per_m || 0) + "</td>" +
+      '<td class="num" data-label="' + T("admin.models.col.ctx") + '">' + fmtCtx(m.context_length || m.context_window || 0) + "</td>" +
+      '<td class="num" data-label="' + T("admin.models.col.outmax") + '">' + fmtCtx(m.max_output || 0) + "</td>" +
+      "<td data-label='" + T('admin.models.col.vision') + "'>" + (m.vision ? '<span class="pill pill-ok">' + T("admin.models.vision.yes") + "</span>" : '<span class="pill pill-muted">' + T("admin.models.vision.no") + "</span>") + "</td>" +
+      "<td data-label='" + T('admin.models.col.action') + "'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-model-edit='" + i + "'>" + T("admin.models.edit") + "</button> " +
       "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-model-del='" + i + "'>" + T("admin.models.del") + "</button></td></tr>"
     ).join("") : emptyRow(8, T("admin.models.empty"), T("admin.models.empty.sub"));
     pulseTbody($("#model-body"));
@@ -2439,13 +2439,13 @@
       const members = d.member_count || 0;
       const pct = d.quota > 0 ? used / d.quota : 0;
       const st = pct >= 1 ? '<span class="pill pill-danger">' + T("common.exhausted") + "</span>" : pct > 0.9 ? '<span class="pill pill-warn">' + T("common.nearLimit") + "</span>" : '<span class="pill pill-ok">' + T("common.normal") + "</span>";
-      return "<tr><td data-label='部门'><strong>" + hl(d.name, rawQ) + "</strong></td>" +
-        '<td class="num" data-label="成员数">' + T("cnt.members", { n: members }) + "</td>" +
-        '<td class="num" data-label="月分配（点数）">' + D.fmt(d.quota) + " " + T("common.points") + "</td>" +
-        '<td class="num" data-label="已用">' + D.fmt(used) + " " + T("common.points") + "</td>" +
-        '<td class="num" data-label="剩余">' + D.fmt(d.quota - used) + " " + T("common.points") + "</td>" +
-        "<td data-label='状态'>" + st + "</td>" +
-        "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-dept-edit='" + i + "'>" + T("common.edit") + "</button> " +
+      return "<tr><td data-label='" + T('admin.org.col.dept') + "'><strong>" + hl(d.name, rawQ) + "</strong></td>" +
+        '<td class="num" data-label="' + T("admin.org.col.members") + '">' + T("cnt.members", { n: members }) + "</td>" +
+        '<td class="num" data-label="' + T("admin.org.col.quota") + '">' + D.fmt(d.quota) + " " + T("common.points") + "</td>" +
+        '<td class="num" data-label="' + T("admin.org.col.used") + '">' + D.fmt(used) + " " + T("common.points") + "</td>" +
+        '<td class="num" data-label="' + T("admin.org.col.remain") + '">' + D.fmt(d.quota - used) + " " + T("common.points") + "</td>" +
+        "<td data-label='" + T('admin.org.col.status') + "'>" + st + "</td>" +
+        "<td data-label='" + T('admin.org.col.action') + "'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-dept-edit='" + i + "'>" + T("common.edit") + "</button> " +
         "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-dept-del='" + i + "'>" + T("common.delete") + "</button></td></tr>";
     }).join("") : emptyRow(7, T("admin.org.empty"), T("admin.org.empty.sub"),
       '<button type="button" class="btn btn-ghost" data-dept-clear-search>' + T("admin.org.clearSearch") + "</button>");
@@ -2583,10 +2583,10 @@
     const q = rawQ.toLowerCase();
     const list = src.filter((u) => !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
     $("#ops-body").innerHTML = list.length ? list.map((u) =>
-      "<tr><td data-label='用户'><strong>" + hl(u.name, rawQ) + "</strong></td>" +
-      "<td data-label='邮箱'>" + hl(u.email, rawQ) + "</td>" +
-      '<td class="num" data-label="余额（点数）">' + D.fmt(u.balance || 0) + " " + T("common.points") + "</td>" +
-      "<td data-label='操作'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>" + T("ops.users.topup") + "</button></td></tr>"
+      "<tr><td data-label='" + T('ops.users.col.user') + "'><strong>" + hl(u.name, rawQ) + "</strong></td>" +
+      "<td data-label='" + T('ops.users.col.email') + "'>" + hl(u.email, rawQ) + "</td>" +
+      '<td class="num" data-label="' + T("ops.users.col.balance") + '">' + D.fmt(u.balance || 0) + " " + T("common.points") + "</td>" +
+      "<td data-label='" + T('ops.users.col.action') + "'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>" + T("ops.users.topup") + "</button></td></tr>"
     ).join("") : emptyRow(4, T("ops.users.empty"), T("ops.users.empty.sub"));
     pulseTbody($("#ops-body"));
   }
