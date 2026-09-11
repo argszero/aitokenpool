@@ -302,14 +302,18 @@ select.input option { background: var(--bg-card); }
 .api-key-card .table th,
 .api-key-card .table td { white-space: nowrap; }
 
-/* 接入端点卡片（rant 2026-08-17T20:44:18：OpenAI/Anthropic 兼容 base URL） */
+/* 接入端点卡片（rant 2026-08-17T20:44:18：OpenAI/Anthropic 兼容 base URL）
+   rant 2026-09-11T16:23:43（PR6）：改原型的 3 列栅格（tag / url / 复制），
+   描述行由 .ep-desc 跨第 2-3 列独占一行，端点行之间用分隔线 */
 .endpoint-row {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 8px 0;
+  display: grid; grid-template-columns: auto 1fr auto; gap: 12px;
+  align-items: center; padding: 12px 0;
+  border-bottom: 1px solid var(--border);
 }
+.endpoint-row:last-of-type { border-bottom: 0; }
 .ep-tag {
-  flex: 0 0 auto; font-size: 12px; font-weight: 600;
-  padding: 3px 9px; border-radius: 999px;
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  padding: 3px 8px; border-radius: var(--radius-sm);
   background: var(--accent-soft); color: var(--accent-text);
   white-space: nowrap;
 }
@@ -320,7 +324,7 @@ select.input option { background: var(--bg-card); }
   user-select: all; white-space: nowrap; overflow-x: auto; max-width: 100%;
 }
 .ep-copy { padding: 3px 10px; font-size: 12px; }
-.ep-desc { color: var(--text-dim); font-size: 12px; flex-basis: 100%; }
+.ep-desc { grid-column: 2 / -1; color: var(--text-dim); font-size: 12px; }
 .ep-note { color: var(--text-mute); font-size: 12px; margin-top: 6px; }
 .ep-steps {
   display: flex; flex-wrap: wrap; gap: 6px 18px;
