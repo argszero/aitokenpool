@@ -5,19 +5,60 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AITokenPool</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234ecdc4'/%3E%3Cstop offset='1' stop-color='%232a9d8f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Ctext x='32' y='43' font-family='-apple-system,Segoe UI,Arial,sans-serif' font-size='30' font-weight='800' text-anchor='middle' fill='%23062021'%3EAT%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="css/style.css?v=20260911-1">
+<link rel="stylesheet" href="css/style.css?v=20260911-2">
 </head>
 <body>
 
-<!-- ======================= 登录页 ======================= -->
+<!-- ======================= 登录页（rant 2026-09-11T16:23:43：左右分栏 + 品牌叙事 + 端点卡片） ======================= -->
 <div id="login-view" class="login-view">
-  <div class="login-card">
-    <div class="login-brand">
-      <div class="logo">AT</div>
-      <div>
-        <h1>AITokenPool</h1>
-        <p data-i18n="login.subtitle">AI Token 共享平台 · 一套产品，两种部署场景</p>
+  <button type="button" class="icon-btn login-theme" id="login-theme-toggle" data-i18n-title="theme.toggle.title" title="切换亮色 / 深色主题" aria-label="切换主题">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="ico-sun" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="ico-moon" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+  </button>
+
+  <!-- 左侧品牌叙事区（<900px 隐藏，见响应式规则） -->
+  <section class="login-brand">
+    <div class="lb-top"><span class="logo-tile">AT</span> AITokenPool</div>
+    <p class="eyebrow" data-i18n="login.brand.eyebrow">AI TOKEN 共享池 · 多模型网关</p>
+    <h1 class="lb-headline" data-i18n="login.brand.headline">不要让 token plan 白白浪费。</h1>
+    <p class="lb-sub" data-i18n="login.brand.sub">把闲置额度共享出去赚点数，需要时也能用别人的。三种 API 类型各一个统一端点，每类端点都能调用全部厂商模型。</p>
+    <ul class="lb-points">
+      <li data-i18n="login.brand.p1">多协议网关互转</li>
+      <li data-i18n="login.brand.p2">输入 / 缓存 / 输出 三档透明计费</li>
+      <li data-i18n="login.brand.p3">共享分成 90 / 10</li>
+      <li data-i18n="login.brand.p4">企业点数管控</li>
+    </ul>
+    <div class="gw">
+      <p class="gw-lead" data-i18n="login.gw.lead">三种 API 类型 · 每类一个统一端点 · 每类均可用全部模型</p>
+      <div class="gw-ep">
+        <span class="gw-chip" data-i18n="login.gw.chat">OpenAI Chat</span>
+        <code>POST /v1/chat/completions</code>
       </div>
+      <div class="gw-ep">
+        <span class="gw-chip" data-i18n="login.gw.responses">OpenAI Responses</span>
+        <code>POST /v1/responses</code>
+      </div>
+      <div class="gw-ep">
+        <span class="gw-chip" data-i18n="login.gw.anthropic">Anthropic Messages</span>
+        <code>POST /anthropic/v1/messages</code>
+      </div>
+      <div class="gw-mid"><span data-i18n="login.gw.any">任意端点 · 全部厂商模型</span><span class="line"></span><span data-i18n="login.gw.modes">SSE / 非流式</span></div>
+      <div class="gw-models">
+        <span>DeepSeek</span><span>·</span><span data-i18n="login.gw.zhipu">智谱 GLM</span><span>·</span><span>Claude</span><span>·</span><span>GPT</span><span>·</span><span>Gemini</span><span>·</span><span>Qwen</span><span>·</span><span>Kimi</span>
+      </div>
+    </div>
+    <p class="lb-meta" data-i18n="login.brand.meta">单 Rust 二进制 + SQLite · Docker 一键启动 · 中英双语前端</p>
+  </section>
+
+  <!-- 右侧表单区：登录 / 注册 / 验证码 / 找回密码（四个既有流程全部保留） -->
+  <section class="login-panel">
+  <div class="login-card">
+    <h2 id="auth-title" data-i18n="login.title">进入平台</h2>
+    <p class="sub" id="auth-sub" data-i18n="login.panel.sub">登录后使用真实网关数据 · 管理员可见管理视图</p>
+    <!-- 登录 / 注册 tab 切换（rant 2026-09-11T16:23:43；注册流程与既有 #register-form 复用，不新增行为） -->
+    <div class="auth-tabs" id="auth-tabs">
+      <button type="button" class="active" data-auth="login" data-i18n="login.tab.login">登录</button>
+      <button type="button" data-auth="register" data-i18n="login.tab.register">注册</button>
     </div>
     <form id="login-form" class="login-form" novalidate>
       <label><span data-i18n="login.email">邮箱 / 账号</span>
@@ -31,10 +72,13 @@
       </div>
       <button type="submit" class="btn btn-primary btn-block" data-i18n="login.enter">进入平台</button>
     </form>
-    <div class="login-divider"><span data-i18n="login.or">或</span></div>
-    <button type="button" class="btn btn-ghost btn-block" id="guest-browse-btn" data-i18n="login.guest">先逛逛市场</button>
-    <p class="login-foot" data-i18n="login.foot">还没有账号？<a href="#" id="reg-link" data-i18n="login.register">注册</a> · <a href="#" id="forgot-link">找回密码</a></p>
-    <p class="login-tip" data-i18n="login.tip">已对接后端 API · 登录后进入真实数据界面 · 管理员账号登录可见「管理视图」</p>
+    <!-- 仅登录 tab 显示的附加项（分隔线 / 游客入口 / 底部提示）：切到注册等表单时整体隐藏，避免串在注册字段上方 -->
+    <div id="auth-login-extras">
+      <div class="login-divider"><span data-i18n="login.or">或</span></div>
+      <button type="button" class="btn btn-ghost btn-block" id="guest-browse-btn" data-i18n="login.guest">先逛逛市场</button>
+      <p class="login-foot" data-i18n="login.foot">还没有账号？<a href="#" id="reg-link" data-i18n="login.register">注册</a> · <a href="#" id="forgot-link">找回密码</a></p>
+      <p class="login-tip" data-i18n="login.tip">已对接后端 API · 登录后进入真实数据界面 · 管理员账号登录可见「管理视图」</p>
+    </div>
     <!-- 注册表单（rant 2026-08-19T14:36:19：自助注册入口，默认隐藏） -->
     <form id="register-form" class="login-form hidden" novalidate>
       <label><span data-i18n="register.name">昵称（可选）</span>
@@ -86,35 +130,36 @@
       <p class="login-foot"><a href="#" id="forgot-back" data-i18n="register.back">返回登录</a></p>
     </form>
   </div>
+  </section>
 </div>
 
 <!-- ======================= 应用外壳 ======================= -->
 <div id="app" class="app hidden">
 
   <aside class="sidebar">
-    <div class="sidebar-top">
-      <div class="logo">AT</div>
+    <div class="sb-brand">
+      <span class="logo-tile">AT</span>
       <div class="brand-text">
         <strong>AITokenPool</strong>
         <span id="mode-label">共享市场 · 角色视图</span>
       </div>
-      <button type="button" class="theme-toggle" id="theme-toggle" data-i18n-title="theme.toggle.title" title="切换亮色 / 深色主题">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="ico-sun" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="ico-moon" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-      </button>
     </div>
 
     <nav class="nav" id="nav"></nav>
 
-    <div class="sidebar-bottom">
-      <button class="btn btn-ghost btn-block" id="logout-btn" data-i18n="logout.btn">退出登录</button>
+    <div class="sb-foot">
       <div class="user-chip">
         <div class="avatar" id="side-avatar">?</div>
-        <div>
+        <div class="chip-text">
           <strong id="side-name"></strong>
           <span><span data-i18n="common.balance">点数余额</span> <b id="side-balance">0</b></span>
         </div>
+        <button type="button" class="theme-toggle" id="theme-toggle" data-i18n-title="theme.toggle.title" title="切换亮色 / 深色主题" aria-label="切换主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="ico-sun" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="ico-moon" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        </button>
       </div>
+      <button class="btn btn-secondary btn-block btn-sm" id="logout-btn" data-i18n="logout.btn">退出登录</button>
     </div>
   </aside>
 
@@ -683,9 +728,9 @@
   </div>
 </div>
 
-<script src="js/api.js?v=20260911-1"></script>
-<script src="js/data.js?v=20260911-1"></script>
-<script src="js/i18n.js?v=20260911-1"></script>
-<script src="js/app.js?v=20260911-1"></script>
+<script src="js/api.js?v=20260911-2"></script>
+<script src="js/data.js?v=20260911-2"></script>
+<script src="js/i18n.js?v=20260911-2"></script>
+<script src="js/app.js?v=20260911-2"></script>
 </body>
 </html>

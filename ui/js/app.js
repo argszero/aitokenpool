@@ -499,6 +499,16 @@
           tag.textContent = item.role === "ops" ? T("nav.tag.ops") : T("nav.tag.admin");
           b.appendChild(tag);
         }
+        // 模型市场 badge：模型数量（rant 2026-09-11T16:23:43）——与列表同源：登录态 /api/models，游客用兜底市场
+        if (item.id === "marketplace") {
+          const n = Live.models ? Live.models.length : (isGuest ? (D.MARKET || []).length : (D.MODELS || []).length);
+          if (n > 0) {
+            const bg = document.createElement("span");
+            bg.className = "nav-count";
+            bg.textContent = String(n);
+            b.appendChild(bg);
+          }
+        }
         b.addEventListener("click", () => switchView(item.id));
         nav.appendChild(b);
       });
@@ -2659,13 +2669,21 @@
 
   /* ---------------- 游客模式（US-1：未登录浏览市场） ---------------- */
 
+  // 游客模式：只隐藏账号相关控件（用户 chip + 退出登录），主题切换保持可用（原位于顶栏，PR2 迁入底栏）
+  function setGuestSidebar(on) {
+    const chip = document.querySelector(".user-chip");
+    const out = $("#logout-btn");
+    if (chip) chip.classList.toggle("hidden", on);
+    if (out) out.classList.toggle("hidden", on);
+  }
+
   function enterGuest() {
     isGuest = true;
     pendingHashView = null;
     activeView = "marketplace";
     $("#login-view").classList.add("hidden");
     $("#app").classList.remove("hidden");
-    document.querySelector(".user-chip").classList.add("hidden");
+    setGuestSidebar(true);
     renderNav();
     switchView("marketplace");
     toast(T("guest.enter"), "info");
@@ -2674,7 +2692,7 @@
   function exitGuest() {
     isGuest = false;
     $("#app").classList.add("hidden");
-    document.querySelector(".user-chip").classList.remove("hidden");
+    setGuestSidebar(false);
     $("#login-view").classList.remove("hidden");
   }
 
@@ -2711,7 +2729,7 @@
   function enterApp() {
     isGuest = false;
     pendingHashView = null;
-    document.querySelector(".user-chip").classList.remove("hidden");
+    setGuestSidebar(false);
     $("#login-view").classList.add("hidden");
     $("#app").classList.remove("hidden");
     $("#side-balance").textContent = D.fmt(D.USER.balance);
@@ -2966,6 +2984,30 @@
       registerFormEl.classList.toggle("hidden", which !== "register");
       verifyFormEl.classList.toggle("hidden", which !== "verify");
       if (forgotFormEl) forgotFormEl.classList.toggle("hidden", which !== "forgot");
+      // 登录专属附加项（分隔线/游客入口/底部提示）随登录表单一起显隐
+      const extrasEl = $("#auth-login-extras");
+      if (extrasEl) extrasEl.classList.toggle("hidden", which !== "login");
+      // 登录/注册 tab 高亮同步（rant 2026-09-11T16:23:43）；验证码/找回页 tab 全部取消高亮
+      const tabs = document.querySelectorAll("#auth-tabs button");
+      for (let i = 0; i < tabs.length; i++) {
+        tabs[i].classList.toggle("active", tabs[i].dataset.auth === which);
+      }
+      // 标题固定为「进入平台」（原型 .login-card h2；tab 只切换表单区）
+      const tabBar = $("#auth-tabs");
+      if (tabBar) tabBar.classList.toggle("hidden", which === "verify" || which === "forgot");
+    }
+
+    // tab 点击 → 复用既有 showAuthForm（注册流程零改动）
+    const authTabsEl = $("#auth-tabs");
+    if (authTabsEl) {
+      authTabsEl.addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-auth]");
+        if (!b) return;
+        const which = b.dataset.auth;
+        showAuthForm(which);
+        const focusEl = which === "register" ? $("#reg-email") : $("#login-email");
+        if (focusEl) focusEl.focus();
+      });
     }
 
     document.addEventListener("click", (e) => {
@@ -3570,12 +3612,16 @@
       if (tourStep >= 0) renderTourStep(); // 引导中的按钮/文案随语言更新
     });
 
-    $("#theme-toggle").addEventListener("click", () => {
+    // 主题切换（rant 18:06:09 B）：登录页右上角 + 侧边栏底部两处共用同一逻辑
+    function toggleTheme() {
       const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
       document.documentElement.dataset.theme = next;
       try { localStorage.setItem("atp-theme", next); } catch (e) { /* 隐私模式忽略 */ }
       toast(T("theme.switched", { theme: next === "light" ? T("theme.light") : T("theme.dark") }), "info");
-    });
+    }
+    $("#theme-toggle").addEventListener("click", toggleTheme);
+    const loginThemeBtn = $("#login-theme-toggle");
+    if (loginThemeBtn) loginThemeBtn.addEventListener("click", toggleTheme);
 
     // 全局快捷键（rant 16:57:17 D）：/ 聚焦市场搜索；数字 1-7 切换侧边栏视图；Esc 关闭行内新建 key
     // rant 20:39:30 E：? / Shift+/ 开合快捷键帮助面板（Esc 优先关帮助）
