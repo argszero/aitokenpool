@@ -1718,7 +1718,8 @@
     return best === -1 ? msg : t(ERR_MAP[best][1]);
   }
 
-  // 静态文案批量替换：[data-i18n] 文本 + [data-i18n-ph] placeholder + [data-i18n-title] title
+  // 静态文案批量替换：[data-i18n] 文本 + [data-i18n-ph] placeholder
+  // + [data-i18n-title] title + [data-i18n-label] aria-label
   function applyStatic() {
     var i, els, key;
     els = document.querySelectorAll("[data-i18n]");
@@ -1735,6 +1736,13 @@
     for (i = 0; i < els.length; i++) {
       key = els[i].getAttribute("data-i18n-title");
       if (key && ZH[key]) els[i].setAttribute("title", t(key));
+    }
+    // aria-label 是无障碍名的主来源（优先级高于 title），必须与 title 同步语言，
+    // 否则英文模式下屏幕阅读器读到的仍是中文
+    els = document.querySelectorAll("[data-i18n-label]");
+    for (i = 0; i < els.length; i++) {
+      key = els[i].getAttribute("data-i18n-label");
+      if (key && ZH[key]) els[i].setAttribute("aria-label", t(key));
     }
     if (document.documentElement) document.documentElement.setAttribute("lang", current === "en" ? "en" : "zh-CN");
   }
