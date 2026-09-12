@@ -1904,6 +1904,101 @@ mod tests {
         assert_eq!(s, StatusCode::BAD_REQUEST);
     }
 
+    /// `total_txs` —— 运营概览「交易量」卡的数据源。
+    ///
+    /// 这个字段自 `85982e8`（PR #80）起就在算、就在返回（`ops.rs:101`/`:175`），
+    /// 但**两侧都没有任何断言**：v1.22 的零 mock 重构（`89963f3`）删掉 mock 分支的
+    /// 那张卡后，前端漏了重接，而这个字段照旧返回，于是谁都发现不了。
+    /// 本测试把「返回了」与「口径是全库 / 累计全部类型」同时钉住。
+    #[tokio::test]
+    async fn ops_runtime_total_txs_is_global_and_all_types() {
+        let st = test_state("opstxs");
+        let ops_bearer = login_bearer(&st, "ops@aitokenpool.local", "ops1234").await;
+        // 空库 → 0（先证有值，再证口径，避免「恒为 0 也算过」）
+        let (s, body) = get(st.clone(), "/api/ops/runtime", Some(&ops_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "ops runtime 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total_txs"], 0, "空库应为 0: {body}");
+
+        // 造 3 条、**跨两个用户**：admin 的 topup（走真实充值接口）+ demo 的 consume / earn。
+        // 跨用户是刻意的：这样「全局 3」既不同于 demo 自己的 2，也不同于 consume-only 的 1，
+        // 两种退化的口径都能被这条断言抓住。
+        let uid = |email: &str| -> i64 {
+            st.db
+                .lock()
+                .unwrap()
+                .query_row("SELECT id FROM users WHERE email = ?1", [email], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        let demo_id = uid("demo@aitokenpool.local");
+        let admin_id = uid("admin@aitokenpool.local");
+        let (s2, body2) = post(
+            st.clone(),
+            "/api/ops/credits",
+            &format!(r#"{{"user_id":{admin_id},"amount":77}}"#),
+            Some(&ops_bearer),
+        )
+        .await;
+        assert_eq!(s2, StatusCode::OK, "充值应 200: {body2}");
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (?1, 'x', 1, 'm', 10, -2.0, 'consume', '成功')",
+                [demo_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (?1, 'x', 1, 'm', 10, 1.0, 'earn', '成功')",
+                [demo_id],
+            )
+            .unwrap();
+        }
+        let (_, body) = get(st.clone(), "/api/ops/runtime", Some(&ops_bearer)).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            v["total_txs"], 3,
+            "全库 3 条（admin 的 topup + demo 的 consume/earn）——'累计全部类型': {body}"
+        );
+        // 反面一：按 type 过滤 → 只有 1 条
+        let consume_only: i64 = st
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM transactions WHERE type = 'consume'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(consume_only, 1, "前置条件：consume 仅 1 条");
+        assert_ne!(
+            v["total_txs"].as_i64().unwrap(),
+            consume_only,
+            "total_txs 不能退化成按 type 过滤: {body}"
+        );
+        // 反面二：按用户过滤 → 最多 2 条（demo）
+        let max_per_user: i64 = st
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COALESCE(MAX(c), 0) FROM (SELECT COUNT(*) AS c FROM transactions GROUP BY user_id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(max_per_user, 2, "前置条件：单用户最多 2 条");
+        assert_ne!(
+            v["total_txs"].as_i64().unwrap(),
+            max_per_user,
+            "total_txs 不能退化成按用户过滤: {body}"
+        );
+    }
+
     #[tokio::test]
     async fn usage_three_group_aggregation() {
         let st = test_state("usage3");
