@@ -43,12 +43,12 @@ const EN_END: &str = "\n  };";
 /// 是这条阳性对照把 531 报了出来。改动后请以提取器的实际输出校准，再核对是否与 diff 相符。
 /// 本轮实测的校准路径就是这条规则：783/531/426 三处**依次**报出 786 → 535 → 429，
 /// 每一步都是先让门禁报出真值、再照抄，而不是先写一个自己算的数。
-const ZH_KEY_COUNT: usize = 786;
-const EN_KEY_COUNT: usize = 786;
+const ZH_KEY_COUNT: usize = 785;
+const EN_KEY_COUNT: usize = 785;
 const STATIC_ATTR_COUNT: usize = 330;
 const STATIC_ATTR_DISTINCT: usize = 305;
-const T_LITERAL_COUNT: usize = 538;
-const T_LITERAL_DISTINCT: usize = 431;
+const T_LITERAL_COUNT: usize = 537;
+const T_LITERAL_DISTINCT: usize = 430;
 
 /// 切出语言包区段（起点标记 → 终点标记，含起点）。
 fn pack_region<'a>(src: &'a str, start_mark: &str, end_mark: &str) -> &'a str {
