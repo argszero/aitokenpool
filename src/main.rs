@@ -22,6 +22,10 @@ mod gift;
 // 嵌进二进制，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod i18n_pack;
+// 兜底目录同步门禁（C2011）：同样是仅测试期编译 —— data.js 与 config.example.toml
+// 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod catalog_gate;
 mod mail;
 mod protocol;
 mod router;
