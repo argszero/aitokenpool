@@ -89,7 +89,8 @@ ui/
 ## 时间显示约定（v1.17，rant 2026-08-17T16:57:17 B 相对时间）
 
 - **相对时间**：`timeAgo(s)` 支持 `MM-DD HH:mm`（默认今年）与 `YYYY-MM-DD[ HH:mm]`，输出 `刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD`，非标准格式原样返回；`timeCell(s)` 输出带 `title`（完整绝对时间）的 `.timeago` 单元格，hover 显示；
-- **统一使用**：交易列表（时间列）、加额申请列表、共享列表（上架时间列）、API Key 最近使用时间；数据新增 / 生成时间用 `nowTime()`（`MM-DD HH:mm`）写入即可自动相对化。
+- **统一使用**：交易列表（时间列）、加额申请列表、API Key 最近使用时间；数据新增 / 生成时间用 `nowTime()`（`MM-DD HH:mm`）写入即可自动相对化。
+  ⚠️ **不含共享列表**：本行原写「共享列表（上架时间列）」，但该列**从未存在**（原型 `docs/prototype/aitokenpool-console.html:574` 与实现 `ui/index.html:338` 的 thead 均无时间列，`timeCell` 也只有交易/API Key 两个调用点）。后端 `GET /api/sharings` 自 C2015 起才返回 `created_at`，前端把它收进视图行的 `time` 字段（备用），但**未加列**——若要加列，需同时补 `share.col.time` 键与 8 列表头的 `colspan` 对齐。
 
 ## 表格数字列约定（v1.17，rant 2026-08-17T16:57:17 C 数字列对齐）
 
@@ -296,6 +297,17 @@ ui/
 - 上架需提交 API Key（password 输入）：平台加密托管、仅用于代理调用；共享列表只展示脱敏值（如 sk-****1234，前 3 后 4），不展示明文
 - 删除 = 彻底下架（key 从平台移除，不可恢复）；暂停 = 临时不接单，可恢复
 - 登录态数据全部来自后端 API（`ui/js/api.js`）；`data.js` 内嵌数据仅限游客市场浏览与上架表单兜底（见 v1.22 约定），无后端依赖的纯静态浏览不再成立
+
+## 共享页「本月新增」卡约定（v1.24，C2015）
+
+- 共享管理页统计区 `#share-stats` 由 3 张卡扩为 **4 张**（对齐原型 `docs/prototype/aitokenpool-console.html:1197`）：在架 Key / 累计收益 / 已用量 / **本月新增**；
+- **数据源**：`GET /api/sharings` 自本次起返回每行 `created_at`（UTC ISO，带 `Z`；走既有 `dao::utc_iso`，与 `api_keys.created_at` 同口径）；
+  ⚠️ `sharing_row()` **按下标读列**，两个调用点（`list` / `patch`）的 SELECT 列清单必须逐字一致 ⇒ 新增列一律**追加在末尾并同改两处**，否则字段静默错位；
+- **月份口径 = UTC，且只在一处计算**：视图行上的 `month` 由 `utcMonth(created_at)` 取 `YYYY-MM`，与后端 SQL 的 `strftime('%Y-%m', …)` 同源（ops/wallet/admin/org 全站聚合口径一致）；当前月键取 `new Date().toISOString().slice(0,7)`。
+  **不得**改用 `getMonth()`（本地月份）——那会让每月 1 日 00:00–08:00（UTC+8）的本页数字与同页其它统计不一致；
+- **副标题不复刻原型**：原型写死 `deepseek-v4-flash`，而该卡聚合的可能是多个模型（原型自己的表格就渲染多行）⇒ 单个模型时显示该模型名，多个时显示 `share.stats.newthis.sub`（多个模型），为空时显示 `share.stats.newthis.none`；
+- 拿不到 `created_at` 的行**不计入**（宁可少报不误报）；`Live.sharings` 未就绪时统计区整体清空（沿用零 mock 降级）；
+- 新键（zh/en 各 3 个）：`share.stats.newthis{,.sub,.none}`。
 
 ## 登录态零 mock 约定（v1.22，rant 2026-08-19T15:54:06 系统性清理）
 

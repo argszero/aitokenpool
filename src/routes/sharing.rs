@@ -119,6 +119,10 @@ pub async fn create(
 }
 
 /// 单条共享（含收益汇总）；key 先解密再脱敏展示
+///
+/// ⚠️ 本函数**按下标读列**（`r.get(N)`），因此列顺序由调用方的 `SELECT` 决定：
+/// 两个调用点（`list` / `patch`）的列表**必须逐字一致**。只改一处会让所有字段静默错位
+/// （不报错、类型也往往恰好兼容），所以新增列一律**追加在末尾**，并同步改两处。
 fn sharing_row(
     conn: &rusqlite::Connection,
     crypto: &crate::crypto::Crypto,
@@ -136,6 +140,7 @@ fn sharing_row(
     let start: String = r.get(9)?;
     let end: String = r.get(10)?;
     let note: String = r.get(11)?;
+    let created_at: String = r.get(12)?;
     // 解密 → 脱敏（sk-****xxxx）；解密失败展示 ****
     let masked = crypto
         .decrypt(&encrypted_key)
@@ -165,6 +170,8 @@ fn sharing_row(
         "available_start": start,
         "available_end": end,
         "note": note,
+        // 上架时间（UTC 带 Z，与 api_keys 的 created_at 同口径）；前端据此算「本月新增」与表格上架时间列
+        "created_at": crate::dao::utc_iso(&created_at),
     }))
 }
 
@@ -178,7 +185,7 @@ pub async fn list(
     let mut stmt = conn
         .prepare(
             "SELECT id, provider, plan, model, status, encrypted_key, quota, used, \
-                    available_days, available_start, available_end, note \
+                    available_days, available_start, available_end, note, created_at \
              FROM keys WHERE owner_id = ?1 ORDER BY id DESC",
         )
         .map_err(internal)?;
@@ -222,7 +229,7 @@ pub async fn patch(
     let row = conn
         .query_row(
             "SELECT id, provider, plan, model, status, encrypted_key, quota, used, \
-                    available_days, available_start, available_end, note \
+                    available_days, available_start, available_end, note, created_at \
              FROM keys WHERE id = ?1",
             [id],
             |r| sharing_row(&conn, &crypto, r),
@@ -430,6 +437,74 @@ mod tests {
         )
         .await;
         assert_eq!(s, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    /// 上架时间字段（C2015，rant 驱动：共享页「本月新增」卡的数据源）
+    ///
+    /// 锁三件事：
+    /// ① `created_at` 随**两个** SELECT 一起到位（`list` 与 `patch` 走的是两份列清单，
+    ///    而 `sharing_row` 按下标读列 —— 只改一处会让既有字段**静默错位**，故两处都断言）；
+    /// ② 既有字段未因新增列而错位（下标读取的回归护栏）；
+    /// ③ 序列化口径是 **UTC**（带 `Z`）。前端据此算「本月」，用本地时间解析会在月末跨月：
+    ///    本用例把上架时间按到 `2026-08-31 17:30:00Z` —— UTC 月是 8 月，
+    ///    而本地（UTC+8）已是 9 月 1 日 01:30 ⇒ 两种口径**可区分**，不是自证。
+    #[tokio::test]
+    async fn created_at_is_exposed_and_utc_serialized() {
+        let st = test_state("created_at");
+        let key = login(st.clone()).await;
+        let (_, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","model":"deepseek-v4-flash","key":"sk-created1234","used":0,"note":"utc"}"#),
+            &key,
+        )
+        .await;
+        let id: i64 = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+
+        // 回拨到「UTC 月末、本地已跨月」的时刻
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "UPDATE keys SET created_at = '2026-08-31 17:30:00' WHERE id = ?1",
+                [id],
+            )
+            .unwrap();
+        }
+
+        let (s, body) = send(st.clone(), "GET", "/api/sharings", None, &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        let row = arr.iter().find(|r| r["id"] == id).expect("列表应含该行");
+
+        assert_eq!(
+            row["created_at"], "2026-08-31T17:30:00Z",
+            "上架时间应为 UTC ISO（带 Z，且时刻未被平移到本地时区）"
+        );
+        assert_eq!(&row["created_at"].as_str().unwrap()[..7], "2026-08");
+        // 既有字段未错位
+        assert_eq!(row["note"], "utc");
+        assert_eq!(row["provider"], "deepseek");
+        assert_eq!(row["status"], "on");
+        assert_eq!(row["key"], "sk-****1234");
+        assert_eq!(row["used"], 0.0);
+
+        // PATCH 的单条响应走**另一份** SELECT —— 两处不一致时这里会错位
+        let (s, body) = send(
+            st.clone(),
+            "PATCH",
+            &format!("/api/sharings/{id}"),
+            Some(r#"{"status":"paused"}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["created_at"], "2026-08-31T17:30:00Z", "PATCH 响应同样带");
+        assert_eq!(v["note"], "utc");
+        assert_eq!(v["status"], "paused");
     }
 
     #[tokio::test]

@@ -898,11 +898,20 @@
     const on = list.filter((s) => s.status === "on");
     const totalEarned = list.reduce((a, s) => a + s.earned, 0);
     const totalUsed = list.reduce((a, s) => a + s.used, 0);
+    // 本月新增（原型 4 张卡的第 4 张）：按上架时间（UTC）落在本月计数。
+    // 月键与后端 SQL 同源取 created_at；拿不到 created_at 的行**不计入**（宁可少报，不误报）。
+    const nowMonth = utcMonth(new Date().toISOString());
+    const thisMonth = list.filter((s) => s.month && s.month === nowMonth);
 
     $("#share-stats").innerHTML = [
       stat(T("share.stats.listings"), T("cnt.keys", { n: on.length }), T("cnt.hist", { n: list.length })),
       stat(T("share.stats.earnings"), "+" + D.fmt(totalEarned) + " " + T("common.points"), T("share.stats.earnings.sub")),
       stat(T("share.stats.used"), D.fmt(totalUsed) + " " + T("common.points"), T("cnt.quota", { n: D.fmt(list.reduce((a, s) => a + s.quota, 0)) })),
+      // 副标题**不复刻原型**：原型写死模型名 `deepseek-v4-flash`，而这张卡聚合的可能是多个模型
+      // （原型自己的表格就渲染多行）⇒ 多个时只报计数，单个时才带模型名（见下）
+      stat(T("share.stats.newthis"), T("cnt.keys", { n: thisMonth.length }),
+        thisMonth.length === 1 ? thisMonth[0].model
+          : (thisMonth.length ? T("share.stats.newthis.sub") : T("share.stats.newthis.none"))),
     ].join("");
 
     // 表单下拉（厂商 → Plan → 模型 三级联动；Plan 中「API」= 按量计价的 key）
@@ -3002,7 +3011,15 @@
     });
   }
 
-  // 后端 sharings → 视图行（字段对齐 mock：earned=earn、price 用 autoPrice、time 占位）
+  // 后端 sharings → 视图行（字段对齐 mock：earned=earn、price 用 autoPrice、time=上架时间）
+  // 「本月新增」的**月份口径**在这里算，且只算一次（见 utcMonth）：
+  // 服务端返回的 created_at 是 UTC ISO，全站聚合口径也都是 UTC（ops/wallet/admin/org），
+  // 所以卡片不能改用本地月份——那会在每月 1 日 00:00–08:00（UTC+8）与同页其它数字不一致。
+  function utcMonth(iso) {
+    if (!iso || iso.length < 7) return "";
+    return iso.slice(0, 7);
+  }
+
   function sharingsToView(list) {
     return list.map((s) => {
       let days = [];
@@ -3018,7 +3035,8 @@
         price: autoPrice(s.model),
         earned: s.earn || 0,
         status: s.status,
-        time: "",
+        time: s.created_at || "",
+        month: utcMonth(s.created_at),
         note: s.note || "",
         available: days.length ? { days, start: s.available_start || "", end: s.available_end || "" } : null,
       };
