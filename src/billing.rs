@@ -1,4 +1,4 @@
-//! 计量账本（architecture §4.3/4.4 + P1 点数规则细化）
+//! 计量账本（architecture §3 模块 billing.rs 行 + P1 点数规则细化）
 //!
 //! P0-B（rant 2026-08-18T09:55:57）：
 //! - 成本 = prompt_tokens × input_per_m/1e6 + completion_tokens × output_per_m/1e6

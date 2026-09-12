@@ -1,4 +1,4 @@
-//! 网关兼容端点（architecture §4.1）
+//! 网关兼容端点（architecture §6 API 一览）
 //!
 //! P0-B（rant 2026-08-18T09:55:57）：
 //! - POST /v1/chat/completions（OpenAI 兼容，Bearer atk_ API Key 认证）
