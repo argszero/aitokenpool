@@ -11,8 +11,7 @@
 //! - 响应转换同步完成 usage 字段映射（prompt/completion ↔ input/output），
 //!   网关计量按「上游原始响应」的协议解析（见 gateway::parse_usage），互不影响。
 //!
-//! 流式 SSE 转换留 P3-B（openai delta / anthropic content_block_delta /
-//! responses output_text 事件互转）——本模块只处理非流式。
+//! 流式 SSE 转换不在本模块，见 src/sse.rs（P3-B 已实现；本模块只处理非流式）。
 
 use serde_json::{json, Value};
 
