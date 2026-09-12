@@ -51,6 +51,25 @@ const api = (() => {
     if (window.__atpLogout) window.__atpLogout();
   }
 
+  // 本文件**自己的**错误文案一律按 key 取，不写中文原文（C2029）。
+  //
+  // 为什么必须这样：`src/i18n_pack.rs` 的三条门禁只读 i18n.js / index.html / app.js，
+  // **不读本文件**；而本文件的匹配形态「mapErr + 中文原文」也不是门禁认得的「T + 键字面量」。
+  // 因此在这里写中文原文 = 同时逃过「键存在 / 键被正确使用 / 占位符」三道断言，
+  // 且 en 模式下会直接把中文抛给用户（实测 8 种真实后端响应形态里 6 种如此）。
+  //
+  // ⚠️ 必须是**函数声明**，不能写成 `const T = window.t`（app.js 的写法）：index.html 里
+  // 本文件在 i18n.js **之前**加载，模块级捕获会永久绑到 undefined；函数声明则被提升，
+  // 且每次调用才现取，与加载顺序无关。
+  // ⚠️ 也不能直接调 `window.t(...)`：那是 app.js 的局部别名，全局并不存在。
+  // 真正稳定的全局是 i18n.js 导出的 `window.I18n`。
+  // ⚠️ 刻意沿用 `T` 这个名字：`src/i18n_pack.rs` 的键扫描器只认这一种调用形态，
+  // 换个名字就得再写一份识别规则 —— 规则一旦分叉，两条门禁统计的就不再是同一批调用点（坑 75）。
+  function T(key, vars) {
+    if (window.I18n) return window.I18n.t(key, vars);
+    return window.t ? window.t(key, vars) : key;
+  }
+
   async function request(method, path, body) {
     const headers = { "content-type": "application/json" };
     const token = getToken();
@@ -63,11 +82,11 @@ const api = (() => {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (e) {
-      throw { status: 0, message: (window.I18n ? window.I18n.mapErr("网络不可用，请检查后端服务是否启动") : "网络不可用，请检查后端服务是否启动") };
+      throw { status: 0, message: T("err.network") };
     }
     if (resp.status === 401) {
       handleUnauthorized();
-      throw { status: 401, message: (window.I18n ? window.I18n.mapErr("登录已过期，请重新登录") : "登录已过期，请重新登录") };
+      throw { status: 401, message: T("login.session.expired") };
     }
     const text = await resp.text();
     let data = null;
@@ -76,8 +95,10 @@ const api = (() => {
     }
     if (!resp.ok) {
       // 取后端 error.message 或 error 字段
-      const message = (data && (data.error && (data.error.message || data.error))) || (data && data.message) || ("请求失败（HTTP " + resp.status + "）");
-      const errMsg = window.I18n ? window.I18n.mapErr(message) : message;
+      // 后端文案是**未知散文**，只能过 mapErr 词表；本文件自己的兜底文案走 tr()，
+      // 因为 mapErr 以 `t(key)`（无 vars）收尾，带 `{n}` 的值经它只会原样输出花括号。
+      const raw = (data && (data.error && (data.error.message || data.error))) || (data && data.message);
+      const errMsg = raw ? (window.I18n ? window.I18n.mapErr(raw) : raw) : T("err.http", { n: resp.status });
       const err = new Error(errMsg);
       err.status = resp.status;
       throw err;
