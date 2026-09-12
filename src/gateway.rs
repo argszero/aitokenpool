@@ -50,7 +50,9 @@ fn extract_model(body: &str) -> Option<String> {
 
 /// 解析上游响应中的 usage → (uncached_input_tokens, cached_tokens, output_tokens)
 ///（rant 2026-08-20T10:17:27：输入区分「缓存命中/未命中」——
-///  openai_chat → usage.prompt_tokens_details.cached_tokens（prompt_tokens 含命中，需减除）；
+///  openai_chat → usage.prompt_cache_hit_tokens（DeepSeek 原生顶层拼写）
+///                或 usage.prompt_tokens_details.cached_tokens（OpenAI 拼写）
+///                （prompt_tokens 含命中，需减除；优先级同 `UsageCapture::finish` / `sse.rs`）；
 ///  anthropic  → usage.cache_read_input_tokens（input_tokens 已不含命中，不减）；
 ///  responses  → usage.input_tokens_details.cached_tokens（input_tokens 含命中，需减除））
 fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64, f64) {
@@ -94,9 +96,16 @@ fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64, f64) {
                 .and_then(|u| u.get("prompt_tokens"))
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0);
+            // cached 两拼写兼容（同 `UsageCapture::finish` / `sse.rs::extract_cache_read_tokens`，
+            // rant 2026-08-23T14:05:02）：DeepSeek 原生顶层 → OpenAI details
             let cached = usage
-                .and_then(|u| u.pointer("/prompt_tokens_details/cached_tokens"))
+                .and_then(|u| u.get("prompt_cache_hit_tokens"))
                 .and_then(|x| x.as_f64())
+                .or_else(|| {
+                    usage
+                        .and_then(|u| u.pointer("/prompt_tokens_details/cached_tokens"))
+                        .and_then(|x| x.as_f64())
+                })
                 .unwrap_or(0.0);
             let output = usage
                 .and_then(|u| u.get("completion_tokens"))
@@ -939,6 +948,69 @@ mod tests {
         assert_eq!(output, 10.0);
     }
 
+    /// rant 2026-08-23T08:20:38 / 2026-08-23T14:05:02：DeepSeek 原生顶层缓存拼写
+    /// `prompt_cache_hit_tokens` 对**非流式**响应同样必须被识别（此前只有流式的
+    /// `UsageCapture::finish` 与 `sse.rs` 认它，非流式按未命中全价计费 → 多收 5.5x）。
+    #[test]
+    fn parse_usage_openai_deepseek_native_cache_spelling() {
+        // DeepSeek 原生顶层拼写：prompt_tokens 含命中，仍需减除
+        let body = br#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_cache_hit_tokens":900}}"#;
+        let (input, cached, output) = parse_usage(body, "openai_chat");
+        assert_eq!(input, 100.0, "未命中 = prompt_tokens - 命中");
+        assert_eq!(cached, 900.0, "DeepSeek 原生拼写必须被识别");
+        assert_eq!(output, 50.0);
+
+        // 阳性对照：OpenAI 拼写（`prompt_tokens_details.cached_tokens`）不受影响
+        let body = br#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":900}}}"#;
+        let (input, cached, output) = parse_usage(body, "openai_chat");
+        assert_eq!(input, 100.0);
+        assert_eq!(cached, 900.0);
+        assert_eq!(output, 50.0);
+
+        // 两拼写并存 → 与流式同优先级：DeepSeek 原生优先
+        let body = br#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_cache_hit_tokens":900,"prompt_tokens_details":{"cached_tokens":800}}}"#;
+        let (input, cached, output) = parse_usage(body, "openai_chat");
+        assert_eq!(input, 100.0, "未命中 = 1000 - 900");
+        assert_eq!(
+            cached, 900.0,
+            "双拼写并存时 DeepSeek 原生优先（同 UsageCapture）"
+        );
+        assert_eq!(output, 50.0);
+    }
+
+    /// 同一条 usage 无论走流式 `UsageCapture::finish` 还是非流式 `parse_usage`，
+    /// 必须解析出**完全相同**的三元组。C2037 修了流式的「无 usage」分支，
+    /// C2039 修的是非流式的缓存拼写分支 —— 这条断言把两者钉在一起，防止再次分叉。
+    #[test]
+    fn usage_parsers_agree_on_cache_spelling() {
+        let cases: [(&str, (f64, f64, f64)); 3] = [
+            // DeepSeek 原生顶层拼写（此前非流式漏认）
+            (
+                r#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_cache_hit_tokens":900}}"#,
+                (100.0, 900.0, 50.0),
+            ),
+            // OpenAI 拼写
+            (
+                r#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":900}}}"#,
+                (100.0, 900.0, 50.0),
+            ),
+            // 无任何缓存字段 → 全部按未命中（缺数据即 0，并非 C2037 的「无 usage」）
+            (
+                r#"{"usage":{"prompt_tokens":1000,"completion_tokens":50}}"#,
+                (1000.0, 0.0, 50.0),
+            ),
+        ];
+        for (body, expected) in cases {
+            let non_stream = parse_usage(body.as_bytes(), "openai_chat");
+            let mut cap = UsageCapture::new("openai_chat");
+            cap.push(format!("data: {body}\n\n").as_bytes());
+            let stream = cap.finish();
+            assert_eq!(non_stream, expected, "非流式解析 {body}");
+            assert_eq!(stream, expected, "流式解析 {body}");
+            assert_eq!(non_stream, stream, "两条解析路径对同一 usage 必须一致");
+        }
+    }
+
     /// 测试状态：config.example + 追加本地 test plan；db 开库 + seed models + 注入测试 key
     fn test_state(tag: &str, plan_id: &str, base_url: &str) -> AppState {
         test_state_eps(tag, plan_id, &["openai_chat", "anthropic"], base_url)
@@ -1354,6 +1426,109 @@ mod tests {
         // cost = 100×10/1e6 + 900×2/1e6 + 50×20/1e6 = 0.0038 USD → CNY 锚定 ×7.2 = 0.02736
         assert!((cost - 0.02736).abs() < 1e-9, "cost={cost}");
         // 消费者扣 0.02736 点；属主得 round5(0.02736×0.9) = round5(0.024624) = 0.02462（90%）
+        let (bal_c, bal_o): (f64, f64) = {
+            let conn = st.db.lock().unwrap();
+            let c = conn
+                .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let o = conn
+                .query_row("SELECT balance FROM quotas WHERE user_id = 2", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            (c, o)
+        };
+        assert!(
+            (bal_c - (12471.0 - 0.02736)).abs() < 1e-9,
+            "consumer={bal_c}"
+        );
+        assert!((bal_o - 0.02462).abs() < 1e-9, "owner={bal_o}");
+
+        up.abort();
+    }
+
+    /// 假上游：返回 **DeepSeek 原生**拼写的非流式 usage（顶层 `prompt_cache_hit_tokens`）
+    async fn fake_upstream_deepseek_cached(listener: tokio::net::TcpListener) {
+        let app = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(|_body: String| async {
+                Json(serde_json::json!({
+                    "id": "cmpl-ds-cached",
+                    "object": "chat.completion",
+                    "model": "test-model",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 50,
+                        "prompt_cache_hit_tokens": 900
+                    }
+                }))
+            }),
+        );
+        axum::serve(listener, app).await.unwrap();
+    }
+
+    /// C2039：非流式响应若只带 DeepSeek 原生拼写，也必须按「未命中×价 + 命中×命中价」计费。
+    /// 与 `e2e_cache_hit_billing_split` 唯一的差别是 usage 的**拼写**，因此两者的
+    /// cached/tokens/cost 断言必须完全一致 —— 修前此用例读到 cached=0、cost=0.0792
+    /// （1000 全按未命中价：1000×10/1e6 + 50×20/1e6 = 0.011 USD → ×7.2），即本夹具下多收 2.9x。
+    #[tokio::test]
+    async fn e2e_nonstream_deepseek_cache_spelling_billing() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let up = tokio::spawn(fake_upstream_deepseek_cached(listener));
+        let base = format!("http://127.0.0.1:{port}");
+
+        let st = test_state("e2edscache", "test-local", &base);
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO models (provider, model, currency, input_per_m, output_per_m, cache_hit_input_per_m) \
+                 VALUES ('test', 'test-model', 'USD', 10.0, 20.0, 2.0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, email, password_hash, name, role) VALUES (2, 'owner@t.local', 'x', '分享者', 'user')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (2, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        insert_key(&st, 300, 2, "test-model", "test-local");
+        insert_key(&st, 301, 2, "test-model", "test-local");
+
+        let key = login_key(st.clone()).await;
+        let (s, _) = post_raw(
+            st.clone(),
+            "/v1/chat/completions",
+            r#"{"model":"test-model","messages":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+
+        let (cached, tokens, cost): (f64, f64, f64) = {
+            let conn = st.db.lock().unwrap();
+            conn.query_row(
+                "SELECT cached_tokens, tokens, cost FROM usage_records ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(cached, 900.0, "DeepSeek 原生拼写必须记入缓存命中");
+        assert_eq!(tokens, 1050.0);
+        // 与 OpenAI 拼写用例同值：100×10/1e6 + 900×2/1e6 + 50×20/1e6 = 0.0038 USD → ×7.2 = 0.02736
+        assert!((cost - 0.02736).abs() < 1e-9, "cost={cost}");
         let (bal_c, bal_o): (f64, f64) = {
             let conn = st.db.lock().unwrap();
             let c = conn
