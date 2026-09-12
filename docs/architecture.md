@@ -16,7 +16,7 @@
 | 层 | 选型 |
 |---|---|
 | 后端 | **Rust**（`rust-version 1.86`）+ axum + tokio + rusqlite |
-| 数据库 | **SQLite**（单文件，`data/aitokenpool.db`，迁移 v10） |
+| 数据库 | **SQLite**（单文件，`data/aitokenpool.db`，幂等迁移至 v12，见 `src/db.rs` 的 `SCHEMA_VERSION`） |
 | 加密 | AES-256-GCM（上游 key，`src/crypto.rs`）、argon2（密码哈希） |
 | 上游调用 | reqwest（非流式）+ SSE 流式转发（`src/sse.rs` 跨协议转换） |
 | 前端 | **原生 JS** 静态页（`ui/`，无构建步骤；i18n 中英双语） |

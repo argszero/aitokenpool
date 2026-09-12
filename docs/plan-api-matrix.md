@@ -32,4 +32,4 @@ Base URL 统一由 AITokenPool 提供（`[server].public_url` 配置），设置
 
 ## 4. 模型目录
 
-当前内置 13 个模型（DeepSeek / GLM / GPT / Claude / Gemini / 豆包 / MiniMax / 通义等），含 context window、vision 支持、缓存价与高峰价字段。模型列表可经管理端「模型管理」页 CRUD（需 admin 角色）。
+当前内置 14 个模型（DeepSeek / GLM / GPT / Claude / Gemini / 豆包 / MiniMax / 通义等），含 context window、vision 支持、缓存价与高峰价字段（数量与明细以 `config/config.example.toml` 的 `[[models]]` 为唯一真源，由 `src/catalog_gate.rs` 的 `MODEL_COUNT` 守卫）。模型列表可经管理端「模型管理」页 CRUD（需 admin 角色）。
