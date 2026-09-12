@@ -137,9 +137,12 @@ pub async fn login(
     State(st): State<AppState>,
     Json(req): Json<LoginReq>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
+    // 与其他收邮箱的 handler 一致：邮箱归一化为小写再查（users.email 无 COLLATE NOCASE，
+    // 注册时已 deflate 为小写；此处不归一化会让大小写变体登录失败）
+    let email = req.email.trim().to_lowercase();
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     let user_id =
-        dao::verify_user_password(&conn, &req.email, &req.password).map_err(|_| unauthorized())?;
+        dao::verify_user_password(&conn, &email, &req.password).map_err(|_| unauthorized())?;
     if !dao::user_verified(&conn, user_id) {
         return Err((
             StatusCode::FORBIDDEN,
@@ -1309,6 +1312,60 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["balance"], 0.0, "永久余额 0: {body}");
         assert_eq!(v["gift_balance"], 1.0, "每日赠送 1 点: {body}");
+    }
+
+    /// 登录必须对邮箱做大小写归一化（与 register/verify/resend/forgot/reset 五个 handler 一致）：
+    /// 注册会把邮箱 deflate 为小写存库，`users.email` 无 COLLATE NOCASE，故 login 若原样比较，
+    /// 大小写变体（如移动端键盘首字母自动大写）会被判为「用户不存在」→ 401。
+    #[tokio::test]
+    async fn login_normalizes_email_case() {
+        let st = test_state("logincase");
+        // 用混合大小写注册；响应里的 email 即为落库的规范形式
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"name":"大小写","email":"MixedCase@Example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "注册应 201: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            v["email"], "mixedcase@example.com",
+            "注册后应落库为小写规范形式: {body}"
+        );
+        let code = v["dev_code"].as_str().expect("dev 模式返回验证码");
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/verify",
+            &format!(r#"{{"email":"MixedCase@Example.com","code":"{code}"}}"#),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "验证应 200: {body}");
+        // 阳性对照：规范小写登录必须成功（保证下面的断言不是「什么都放行」）
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/login",
+            r#"{"email":"mixedcase@example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "小写邮箱登录应 200: {body}");
+        // 待测性质：大小写变体登录必须同样成功
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/login",
+            r#"{"email":"MixedCase@Example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "大小写变体登录应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            v["api_key"].as_str().unwrap().starts_with("atk_live_"),
+            "应返回 api_key: {body}"
+        );
     }
 
     #[tokio::test]
