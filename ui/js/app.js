@@ -1308,8 +1308,10 @@
     // rant 2026-08-23T16:01:07：列表内移除 time 列筛选（外部 tx-range 已有时间段筛选，两套并存冗余）
     { key: "time", title: () => T("tx.col.time"), sort: "string", render: (t) => timeCell(t.time, true) },
     { key: "type", title: () => T("tx.col.type"), sort: "string", filter: "select",
-      options: () => ["consume", "earn", "topup", "withdraw", "gift"].map(txType),
-      filterVal: (t) => txType(t.type),
+      // C2031：选项「值」与「文案」分离 —— value 恒为数据库值（语言无关），label 才随语言变。
+      // 这样筛选状态存的是 DB 值，切换语言后 filterVal 仍能匹配（此前状态存本地化文案 ⇒ 切语言即失配，表格变空）
+      options: () => ["consume", "earn", "topup", "withdraw", "gift"].map((k) => ({ value: k, label: txType(k) })),
+      filterVal: (t) => t.type,
       render: (t) => t.type === "earn" ? '<span class="pill pill-ok">' + T("tx.type.earn") + "</span>" : t.type === "consume" ? '<span class="pill pill-accent">' + T("tx.type.consume") + "</span>" : t.type === "gift" ? '<span class="pill pill-ok">' + T("tx.type.gift") + "</span>" : '<span class="pill pill-muted">' + esc(txType(t.type)) + "</span>" },
     // rant 2026-08-22T17:21:39 需求 2：新增「用户」列（transactions.user_id JOIN users 取用户名）
     { key: "user", title: () => T("tx.col.user"), sort: "string", filter: "text" },
@@ -1327,8 +1329,9 @@
     { key: "pts", title: () => T("tx.col.pts"), sort: "number", filter: "number-range", align: "num",
       render: (t) => '<span style="color:' + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ';font-weight:600">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span>" },
     { key: "status", title: () => T("tx.col.status"), sort: "string", filter: "select",
-      options: () => ["成功", "入账", "处理中"].map(txStatus),
-      filterVal: (t) => txStatus(t.status),
+      // C2031：同 type —— value 是库内值（成功/入账/处理中，语言无关），label 随语言变
+      options: () => ["成功", "入账", "处理中"].map((s) => ({ value: s, label: txStatus(s) })),
+      filterVal: (t) => t.status,
       render: (t) => t.status === "处理中" ? '<span class="pill pill-warn">' + esc(txStatus(t.status)) + "</span>" : esc(txStatus(t.status)) },
   ];
 
@@ -1542,12 +1545,11 @@
   }
 
   // 列筛选 → 后端全量过滤查询参数（rant 2026-08-25T10:33:26：列筛选不再只过滤当前加载页）。
-  // 列 key → 后端参数：user→user_name、key→key_name、pts 区间→pts_min/pts_max、status 精确；
-  // select 列（type/status）筛选值为 i18n 文案，反查英文 key / 库内中文值后发送。
-  const TX_TYPE_INV = {};
-  Object.keys(TX_TYPE).forEach((k) => { TX_TYPE_INV[txType(k)] = k; });
-  const TX_STATUS_INV = {};
-  ["成功", "入账", "处理中"].forEach((s) => { TX_STATUS_INV[txStatus(s)] = s; });
+  // 列 key → 后端参数：user→user_name、key→key_name、pts 区间→pts_min/pts_max、status 精确。
+  // select 列（type/status）的筛选值**恒为库内值**（C2031：选项 value 与 i18n 文案分离），直接发送。
+  // ⚠️ 这里曾有 TX_TYPE_INV / TX_STATUS_INV 两张「显示文案 → 库内值」反查表；它们以**运行期语言输出**为键，
+  //    只能表达「按下拉当前显示的文案反查」，而筛选状态一旦存文案，切换语言就会与重新本地化的比较值失配
+  //    （表格变空）。改成「状态存库内值」后反查表无事可做，故整体删除 —— 消除该类，而非修个例。
   function txFilterParams() {
     const f = txTable.filters || {};
     const p = [];
@@ -1560,7 +1562,7 @@
       if (parts[0] !== "") add("pts_min", parts[0]);
       if (parts[1] !== "" && parts[1] != null) add("pts_max", parts[1]);
     }
-    if (f.status) add("status", TX_STATUS_INV[f.status] || f.status);
+    if (f.status) add("status", f.status);
     return p.join("&");
   }
   // 列筛选签名：筛选条件变化 → renderTransactions 触发重拉（rant 2026-08-25T10:33:26）
@@ -1573,8 +1575,9 @@
   // loadedPage/loadedPageSize 记录已加载页，renderTransactions 发现页码不一致时自动重拉）
   async function loadTransactions() {
     if (!loggedIn()) return;
-    // 类型：列筛选 type（select）优先于顶部 tab（tab=all 时即列筛选值）；列筛选后端化后同走 type 参数
-    const colType = (txTable.filters && txTable.filters.type) ? (TX_TYPE_INV[txTable.filters.type] || txTable.filters.type) : "";
+    // 类型：列筛选 type（select）优先于顶部 tab（tab=all 时即列筛选值）；列筛选后端化后同走 type 参数。
+    // C2031：筛选状态即库内值（consume/earn/…），直接发送，无需反查。
+    const colType = (txTable.filters && txTable.filters.type) ? txTable.filters.type : "";
     const type = colType || (txTab === "all" ? "" : txTab);
     const range = txRangeParams();
     const cols = txFilterParams(); // rant 2026-08-25T10:33:26：列筛选随请求发出，后端全量过滤
@@ -1734,8 +1737,13 @@
     columns.forEach((col) => {
       const fv = state.filters[col.key] != null ? String(state.filters[col.key]) : "";
       if (col.filter === "select") {
-        const opts = (typeof col.options === "function" ? col.options() : (col.options || [])).map((o) =>
-          '<option value="' + esc(o) + '"' + (fv === String(o) ? " selected" : "") + ">" + esc(o) + "</option>").join("");
+        // 选项可为 {value, label}（value=语言无关的库内值，label=当前语言文案）或纯字符串（value==label）。
+        // C2031：分离二者，筛选状态才能存库内值 —— 见 TX_COLUMNS 里 type/status 的注释
+        const opts = (typeof col.options === "function" ? col.options() : (col.options || [])).map((o) => {
+          const val = (o && typeof o === "object") ? o.value : o;
+          const lbl = (o && typeof o === "object") ? o.label : o;
+          return '<option value="' + esc(val) + '"' + (fv === String(val) ? " selected" : "") + ">" + esc(lbl) + "</option>";
+        }).join("");
         html += '<td><select class="th-filter" data-filter-key="' + esc(col.key) + '"><option value="">' + T("common.all") + "</option>" + opts + "</select></td>";
       } else if (col.filter === "number-range") {
         const p = fv ? fv.split(":") : ["", ""];
@@ -1796,6 +1804,8 @@
     // 4) 表头 + 筛选行：仅在容器无 <table> 时渲染一次（rant 2026-08-25T11:15:16：
     //    整表重建改为只重建数据行 + 分页器，筛选输入框 DOM 永不销毁 → 输入焦点天然保留；
     //    输入框值即 DOM 状态源，数据行重建读 state.filters，二者一致）
+    //    C2031：切换语言时表头/下拉会「卡」在旧语言（列标题与选项文案都不会自己变），
+    //    因此由 atp:langchange 处理器先移除 table 再重绘（见下方 rebuildDataTableHeader 调用点）。
     let table = container.querySelector("table");
     if (!table) {
       container.innerHTML = '<table class="table"></table>';
@@ -1913,6 +1923,22 @@
 
     // 7) 记录最新配置，供容器级事件委托读取
     container._dt = { state, onState };
+  }
+
+  // 语言切换时强制重建表头 + 筛选行（C2031）。
+  // 为什么需要：buildDataTable 只在容器无 <table> 时建 thead（rant 2026-08-25T11:15:16 为保输入焦点），
+  // 所以列标题（col.title()）与下拉选项文案（options().label）都是**一次性**的 —— 切语言后不会更新，
+  // 表格会「一半英文一半中文」。这里移除 <table>，让下一次 buildDataTable 重新构建 thead。
+  // 保留 #148 的性质：重建后 <select> 的值取 state.filters（即库内值）⇒ 用户已选的筛选**不丢**；
+  // 文本筛选框同理由 state.filters 回填（焦点会丢，但切换语言本就是一次显式的全局操作）。
+  function rebuildDataTableHeader(container) {
+    if (!container) return;
+    const table = container.querySelector("table");
+    if (table) table.remove();
+    const pager = container.querySelector(".pager");
+    if (pager) pager.remove();
+    const pagerSize = container.querySelector(".pager-size");
+    if (pagerSize) pagerSize.remove();
   }
 
   /* --- 设置 --- */
@@ -3786,6 +3812,9 @@
     document.addEventListener("atp:langchange", () => {
       if (langSel) langSel.value = I18n.getLang();
       renderNav();
+      // C2031：数据表的表头/筛选行是一次性构建的（见 rebuildDataTableHeader），切语言时先拆除，
+      // 由随后的 renderView → renderTransactions 重建成当前语言；筛选值存在 state 里，不会丢失。
+      rebuildDataTableHeader($("#tx-table"));
       if (activeView) renderView(activeView);
       document.title = (VIEW_TITLE[activeView] ? T(VIEW_TITLE[activeView]) + " · AITokenPool" : "AITokenPool");
       if (tourStep >= 0) renderTourStep(); // 引导中的按钮/文案随语言更新
