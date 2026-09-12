@@ -18,6 +18,14 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 const I18N_JS: &str = include_str!("../ui/js/i18n.js");
 const INDEX_HTML: &str = include_str!("../ui/index.html");
 const APP_JS: &str = include_str!("../ui/js/app.js");
+/// `ui/js/api.js` —— 请求咽喉，**唯一**既构造错误文案又调用 `mapErr` 的地方。
+///
+/// ⚠️ 本文件长期**不在**本模块的输入面里（C2028）：它一次逃过三道断言且理由各异 ——
+/// 键存在门禁看到两个包都**有**该键；键使用门禁只认 `T("字面量")`，不认 `mapErr("中文")`；
+/// 占位符门禁压根不打开它。于是 `mapErr("登录已过期，请重新登录")` 这类中文原文可以在
+/// en 模式下直接抛给用户，而 `cargo test` 全程是绿的（实测 8 种真实后端响应形态里 6 种如此）。
+/// 三条断言见 `api_client_error_text_is_key_based`。
+const API_JS: &str = include_str!("../ui/js/api.js");
 
 /// 语言包区段的起止标记。
 ///
@@ -48,8 +56,8 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 785;
-const EN_KEY_COUNT: usize = 785;
+const ZH_KEY_COUNT: usize = 786;
+const EN_KEY_COUNT: usize = 786;
 const STATIC_ATTR_COUNT: usize = 330;
 const STATIC_ATTR_DISTINCT: usize = 305;
 const T_LITERAL_COUNT: usize = 537;
@@ -446,6 +454,62 @@ fn obj_var_names(body: &str) -> Vec<String> {
     vars
 }
 
+/// 剥掉 JS 源码里的**注释**，只留代码（供「字面量里不许有中文」这类断言使用）。
+///
+/// 为什么必须剥：`ui/js/api.js` 的注释本来就是中文，而注释不是用户可见文案。
+/// **不能**按「行里含中文就跳过该行」来近似 —— 那样会放过 `const a = "中文"; // note`
+/// 这种同行混合，正是要抓的形态之一。
+///
+/// 处理范围是刻意最小的：`"…"` / `'…'` / `` `…` ``（含转义）**逐字透传**，
+/// `//…` 到行尾与 `/* … */` 整段丢弃。其余字节原样保留。
+fn strip_js_comments(src: &str) -> String {
+    let b = src.as_bytes();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(b.len());
+            continue;
+        }
+        if c == b'"' || c == b'\'' || c == b'`' {
+            let quote = c;
+            out.push(c as char);
+            i += 1;
+            while i < b.len() {
+                if b[i] == b'\\' {
+                    out.push(b[i] as char);
+                    if i + 1 < b.len() {
+                        out.push(b[i + 1] as char);
+                    }
+                    i += 2;
+                    continue;
+                }
+                out.push(b[i] as char);
+                if b[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        out.push(c as char);
+        i += 1;
+    }
+    out
+}
+
 /// 收集既不在中文包、也不在英文包中的键（即会被原样显示给用户的键名）。
 fn unresolved<'a>(
     keys: impl IntoIterator<Item = &'a String>,
@@ -787,6 +851,149 @@ mod tests {
             sites[0].vars,
             vec!["n".to_string(), "m".to_string()],
             "字符串内部的 `x, y: z` 不应被当作变量名"
+        );
+    }
+
+    /// `ui/js/api.js` 的错误文案必须**按 key 取**，不得内嵌中文原文（C2029）。
+    ///
+    /// 为什么单独为它写一条：`api.js` 是请求咽喉（全部 `api.*` 调用点都流经它），却是本模块
+    /// 之外的文件，而它喂给 `mapErr` 的形态 `mapErr("中文")` 又**不是**键使用门禁认得的
+    /// `T("字面量")` ⇒ 中文原文可在 en 模式下直接抛给用户，而 `cargo test` 全绿（C2028 实测
+    /// 8 种真实后端响应形态里 6 种泄漏中文）。三条断言分别对应三条门禁的失效点：
+    /// ① 与键存在门禁对应（不写原文，改取键）；② 与键使用门禁对应（取到的键必须存在）；
+    /// ③ 与占位符门禁对应（`{n}` 必须由 `vars` 供给）。
+    #[test]
+    fn api_client_error_text_is_key_based() {
+        let LanguagePacks { zh, en, .. } = packs();
+        let code = strip_js_comments(API_JS);
+
+        // ① 代码（注释之外）里不得出现任何非 ASCII 字符。
+        //    注释本就该是中文，`strip_js_comments` 已剥掉；剩下还带 CJK 的只可能是字面量。
+        let offenders: Vec<(usize, &str)> = code
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| !l.is_ascii())
+            .map(|(n, l)| (n + 1, l.trim()))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "ui/js/api.js 的代码里出现非 ASCII 字符（用户可见文案必须走键，注释请用 //）：\n  - {}",
+            offenders
+                .iter()
+                .map(|(n, l)| format!("L{n}: {l}"))
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        );
+
+        // ② 本文件写的每个键字面量，都必须在**两个包**里都存在。
+        //    与 app.js 共用同一个 `T("字面量")` 识别规则（坑 75：规则一旦分叉，
+        //    两条门禁统计的就不再是同一批调用点）。
+        let keys = scan_t_literals(API_JS);
+        assert!(
+            !keys.is_empty(),
+            "ui/js/api.js 未扫到任何 T() 键字面量 —— 提取器已失真或本文件已不再取键，拒绝继续"
+        );
+        let distinct: BTreeSet<String> = keys.iter().cloned().collect();
+        let missing = unresolved(
+            distinct.iter(),
+            &zh.keys().cloned().collect(),
+            &en.keys().cloned().collect(),
+        );
+        assert!(
+            missing.is_empty(),
+            "ui/js/api.js 引用了语言包里不存在的键（界面会原样显示键名）：{missing:?}"
+        );
+
+        // ③ 本文件用到的每个键，其文案里的 `{name}` 都必须由调用点供给。
+        //    `mapErr` 是反例：它以 `t(key)`（无 vars）收尾，带占位符的值经它只会原样
+        //    输出花括号 —— 所以兜底文案必须走 `tr("err.http", { n: … })`，不能进 ERR_MAP。
+        for key in &distinct {
+            let mut needed = placeholders(zh.get(key).map(String::as_str).unwrap_or(""));
+            needed.extend(placeholders(en.get(key).map(String::as_str).unwrap_or("")));
+            needed.sort();
+            needed.dedup();
+            if needed.is_empty() {
+                continue;
+            }
+            // 调用点必须为每个占位符提供变量：在源码里找 `T("key", { … })` 形态
+            let needle = format!("T(\"{key}\"");
+            let supplied = code.contains(&format!("{needle}, {{"));
+            assert!(
+                supplied,
+                "ui/js/api.js 的 T(\"{key}\") 文案含占位符 {needed:?}，但调用点未提供 vars 对象 —— \
+                 界面会原样显示花括号"
+            );
+        }
+    }
+
+    /// 阴性对照：上面三条断言必须真的会失败（否则等于没写）。
+    ///
+    /// ⚠️ 语料**计数中性**地注入：只往对照语料里加缺陷，不改变真实文件，
+    /// 因此它证明的是「检查器有牙齿」，而不是「本次改动没引入缺陷」（坑 85）。
+    #[test]
+    fn api_js_checker_detects_injected_defects() {
+        let LanguagePacks { zh, en, .. } = packs();
+
+        // ① 中文原文（原封不动地模拟 C2028 修前的 `api.js:66` 那一行）必须被判为违规
+        let bad = "throw { status: 0, message: mapErr(\"网络不可用，请检查后端服务是否启动\") };";
+        assert!(
+            !strip_js_comments(bad).is_ascii(),
+            "阴性对照失败：中文原文未被判出"
+        );
+        // 同行混合（代码 + 注释）也必须判出 —— 这是「按行跳过」式近似会漏掉的形态
+        let mixed = "const s = \"中文\"; // 说明";
+        assert!(
+            !strip_js_comments(mixed).is_ascii(),
+            "阴性对照失败：代码+注释同行时漏判"
+        );
+        // 注释本身不得被判出（否则本断言会永远为红）
+        let commented = "// 这里是中文注释\nconst s = \"ok\";";
+        assert!(
+            strip_js_comments(commented).is_ascii(),
+            "阳性对照失败：注释被误判为字面量"
+        );
+        // 块注释同理
+        let block = "/* 中文块注释 */ const s = \"ok\";";
+        assert!(
+            strip_js_comments(block).is_ascii(),
+            "阳性对照失败：块注释被误判"
+        );
+
+        // ② 拼错的键必须被报出（真实文件里存在的键作为阳性对照）
+        let zh_keys: BTreeSet<String> = zh.keys().cloned().collect();
+        let en_keys: BTreeSet<String> = en.keys().cloned().collect();
+        let typo = ["err.nettwork".to_string()];
+        assert_eq!(
+            unresolved(typo.iter(), &zh_keys, &en_keys).len(),
+            1,
+            "阴性对照失败：拼错的键未被报出"
+        );
+        let real = [String::from("err.network")];
+        assert!(
+            unresolved(real.iter(), &zh_keys, &en_keys).is_empty(),
+            "阳性对照失败：真实存在的键被判为缺失"
+        );
+
+        // ③ 占位符：`err.http` 确实需要 `n`（前置条件），缺 vars 必须被检出
+        assert_eq!(
+            placeholders(zh.get("err.http").expect("基准包应有 err.http")),
+            vec!["n".to_string()],
+            "前置条件：err.http 的中文文案应恰含一个占位符 n"
+        );
+        assert!(
+            placeholders(en.get("err.http").map(String::as_str).unwrap_or(""))
+                == vec!["n".to_string()],
+            "前置条件：err.http 的英文文案应恰含一个占位符 n"
+        );
+        let without_vars = "T(\"err.http\")";
+        assert!(
+            !without_vars.contains(", {"),
+            "阴性对照失败：缺 vars 的调用点被判为合法"
+        );
+        let with_vars = "T(\"err.http\", { n: resp.status })";
+        assert!(
+            with_vars.contains(", {"),
+            "阳性对照失败：带 vars 的调用点被判为非法"
         );
     }
 
