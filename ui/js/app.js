@@ -2546,6 +2546,10 @@
       const rt = Live.opsRuntime;
       $("#ops-stats").innerHTML = [
         stat(T("ops.stats.status"), '<span class="pill pill-ok">' + T("common.online") + "</span>", T("ops.stats.status.sub")),
+        // 服务版本 / 运行时长：版本来自后端 env!("CARGO_PKG_VERSION")（与 /healthz 同源），
+        // 绝不在前端写死——原型那张卡里的 "v0.7.20" 是一写就过期的字面量。
+        stat(T("ops.stats.version"), "v" + esc(rt.version || ""), T("ops.stats.version.sub")),
+        stat(T("ops.stats.uptime"), esc(fmtUptime(rt)), T("ops.stats.uptime.sub")),
         stat(T("ops.stats.users"), T("cnt.people", { n: rt.users }), T("ops.stats.users.sub")),
         stat(T("ops.stats.keys"), T("cnt.keys", { n: rt.active_keys }), T("ops.stats.keys.sub.on")),
         stat(T("ops.stats.calls"), T("cnt.calls", { n: rt.month_calls }), T("ops.stats.calls.sub")),
@@ -2696,6 +2700,20 @@
       return p2(+m[1]) + "-" + p2(+m[2]);
     }
     return full;
+  }
+
+  // 运行时长（运营概览「运行时长」卡）：后端给分解好的 days/hours/minutes/secs_rest
+  // （进位在后端做，前端只挑单位——两语言各写一遍进位没必要）。
+  // 取最高两个非零位：天+小时 / 小时+分 / 分+秒 / 秒（刚启动）。
+  function fmtUptime(rt) {
+    const d = rt.uptime_days || 0;
+    const h = rt.uptime_hours || 0;
+    const m = rt.uptime_minutes || 0;
+    const s = rt.uptime_secs_rest || 0;
+    if (d > 0) return T("ops.uptime.days", { n: d }) + (h > 0 ? " " + T("ops.uptime.hours", { n: h }) : "");
+    if (h > 0) return T("ops.uptime.hours", { n: h }) + (m > 0 ? " " + T("ops.uptime.minutes", { n: m }) : "");
+    if (m > 0) return T("ops.uptime.minutes", { n: m }) + (s > 0 ? " " + T("ops.uptime.seconds", { n: s }) : "");
+    return T("ops.uptime.seconds", { n: s });
   }
 
   // 精确本地时间（YYYY-MM-DD HH:MM:SS，到秒）——交易列表时间列（rant 2026-08-24T12:38:44）
