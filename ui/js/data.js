@@ -18,11 +18,11 @@
   const MODELS = [
     { provider: "deepseek", model: "deepseek-v4-pro",  in: CNY(4.5),   out: CNY(13.5),  ctx: 1048576, max: 384000, tag: "推理" },
     { provider: "deepseek", model: "deepseek-v4-flash", in: CNY(1.5),   out: CNY(4.5),   ctx: 1048576, max: 384000, tag: "通用" },
+    { provider: "deepseek", model: "deepseek-v4-flash-vision-exp", in: CNY(1.5), out: CNY(4.5), ctx: 1048576, max: 384000, tag: "读图" },
     { provider: "zhipu",    model: "glm-5.3",          in: CNY(8.0),   out: CNY(28.0),  ctx: 1048576, max: 131072, tag: "旗舰" },
     { provider: "openai",   model: "gpt-5.6-sol",      in: USD(5.0),   out: USD(30.0),  ctx: 1050000, max: null,   tag: "旗舰" },
     { provider: "anthropic",model: "claude-opus-5",     in: USD(5.0),   out: USD(25.0),  ctx: 1000000, max: null,   tag: "旗舰" },
     { provider: "google",   model: "gemini-3.1-pro",   in: USD(2.0),   out: USD(12.0),  ctx: 1048576, max: null,   tag: "多模态" },
-    { provider: "google",   model: "gemini-3.5-flash-lite", in: USD(0.3),  out: USD(2.5),  ctx: 1048576, max: null,   tag: "轻量" },
     { provider: "xai",      model: "grok-4.6",         in: USD(2.0),   out: USD(6.0),   ctx: 500000,  max: null,   tag: "通用" },
     { provider: "moonshot", model: "kimi-k3",          in: CNY(20.0),  out: CNY(100.0), ctx: 1048576, max: null,   tag: "长文" },
     { provider: "bytedance-ark", model: "doubao-seed-evolving", in: CNY(6.0), out: CNY(30.0), ctx: 1048576, max: 262144, tag: "旗舰" },
@@ -79,10 +79,10 @@
     // 市场在售 key（游客浏览用；rant 2026-08-19T15:54:06：multi/success 为虚构数据已移除；
     // 登录态用 GET /api/models 真实数据，multi=available_keys>=2、ctx=context_window）
     MARKET: [
-      { id: 1, provider: "deepseek", model: "deepseek-v4-flash", in: USD(0.14), out: USD(0.28), ctx: 1048576, avail: true, peak: true, peakIn: USD(0.28), peakOut: USD(0.56), peakMult: 2 },
-      { id: 2, provider: "zhipu",    model: "glm-5.2",           in: CNY(8.0),  out: CNY(28.0),  ctx: 1048576, avail: true },
-      { id: 3, provider: "openai",   model: "gpt-5.5-pro",       in: USD(30.0), out: USD(180.0), ctx: 1050000, avail: true },
-      { id: 4, provider: "anthropic",model: "claude-opus-4.7",    in: USD(5.0),  out: USD(25.0),  ctx: 1000000, avail: false },
+      { id: 1, provider: "deepseek", model: "deepseek-v4-flash", in: CNY(1.5),  out: CNY(4.5),   ctx: 1048576, avail: true, peak: true, peakIn: CNY(3.0), peakOut: CNY(9.0), peakMult: 2 },
+      { id: 2, provider: "zhipu",    model: "glm-5.3",           in: CNY(8.0),  out: CNY(28.0),  ctx: 1048576, avail: true },
+      { id: 3, provider: "openai",   model: "gpt-5.6-sol",       in: USD(5.0),  out: USD(30.0),  ctx: 1050000, avail: true },
+      { id: 4, provider: "anthropic",model: "claude-opus-5",     in: USD(5.0),  out: USD(25.0),  ctx: 1000000, avail: false },
       { id: 5, provider: "google",   model: "gemini-3.1-pro",    in: USD(2.0),  out: USD(12.0),  ctx: 1048576, avail: true },
       { id: 6, provider: "moonshot", model: "kimi-k3",           in: CNY(20.0), out: CNY(100.0), ctx: 1048576, avail: true },
       { id: 7, provider: "xai",      model: "grok-4.6",          in: USD(2.0),  out: USD(6.0),   ctx: 500000,  avail: true },
