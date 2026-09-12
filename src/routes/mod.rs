@@ -34,7 +34,7 @@ use crate::dao;
 use crate::gateway;
 use crate::router::RouterState;
 
-/// 共享状态：数据库连接 + 配置 + 路由状态 + HTTP 客户端 + 密钥加密器
+/// 共享状态：数据库连接 + 配置 + 路由状态 + HTTP 客户端 + 密钥加密器 + 进程启动时刻
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
@@ -42,6 +42,9 @@ pub struct AppState {
     pub router: Arc<RouterState>,
     pub http: reqwest::Client,
     pub crypto: Crypto,
+    /// 进程启动时刻（单调时钟）：`/api/ops/runtime` 用它算运行时长。
+    /// 取 `Instant` 而非墙上时间——运行时长不怕系统时钟被调整。
+    pub started_at: std::time::Instant,
 }
 
 impl AppState {
@@ -55,6 +58,7 @@ impl AppState {
                 .build()
                 .expect("reqwest client 构建失败"),
             crypto,
+            started_at: std::time::Instant::now(),
         }
     }
 }
@@ -1846,6 +1850,27 @@ mod tests {
         let kh = v["key_health"].as_array().expect("key_health 数组");
         assert!(!kh.is_empty(), "至少有 seed 的上游 key: {body}");
         assert!(kh.iter().all(|k| k["off"] == 0), "seed key 均为 on: {body}");
+        // 服务版本 / 运行时长（原型「服务版本」「运行时长」两张卡）
+        assert_eq!(
+            v["version"],
+            env!("CARGO_PKG_VERSION"),
+            "version 应与 /healthz 同源: {body}"
+        );
+        let secs = v["uptime_secs"].as_u64().expect("uptime_secs: {body}");
+        let d = v["uptime_days"].as_u64().expect("uptime_days");
+        let h = v["uptime_hours"].as_u64().expect("uptime_hours");
+        let m = v["uptime_minutes"].as_u64().expect("uptime_minutes");
+        let s = v["uptime_secs_rest"].as_u64().expect("uptime_secs_rest");
+        assert_eq!(
+            d * 86400 + h * 3600 + m * 60 + s,
+            secs,
+            "四位分解应能拼回 uptime_secs: {body}"
+        );
+        assert!(h < 24 && m < 60 && s < 60, "各位未归一（进位漏了）: {body}");
+        assert!(
+            secs < 60,
+            "AppState 刚构造，运行时长应 < 60s，实得 {secs}s —— 取错了起点？ {body}"
+        );
         // users 列表（含余额）
         let (s, body) = get(st.clone(), "/api/ops/users", Some(&ops_bearer)).await;
         assert_eq!(s, StatusCode::OK);

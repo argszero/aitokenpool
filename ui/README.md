@@ -333,5 +333,5 @@ ui/
 
 - **page-head crumb**：8 个视图统一 `.crumb`（`/ 设置` `/ 管理视图` `/ 运营视图`），与仪表盘/市场/共享/钱包/交易一致；
 - **管理视图**（4 tab 不变）：成员管理 pane 增加 `#emp-search` 成员搜索（成员名 / 邮箱 / 部门，`hl()` 高亮）+ 表格「角色 / 部门 / 永久点数 / 赠送点数 / 可用」列；用量报表用 `.card-grid-3` 三栏；组织管理与模型管理的工具栏为「搜索 + `.grow` + 主按钮（`btn-sm`）」，与原型一致；
-- **运营视图**（2 tab 不变）：运行概览新增两张卡片——**今日调用量（按小时）** `.bar-list`（`/api/ops/runtime` 的 `today_hours`，服务端 0-23 全量补零；GROUP BY 会省略无调用的小时，不补零会让柱子整体左移，与交易页 `txTrendDays` 同款坑）与**上游 key 健康** `.mini-list`（`key_health` 按厂商聚合 total/on/off，三态 pill：健康 / N 个异常 / 全部失败）；成员充值的搜索框移到卡片标题行右侧（原型 `.spread`）；
+- **运营视图**（2 tab 不变）：运行概览新增四张卡片——**服务版本**（`/api/ops/runtime` 的 `version`，取自 `env!("CARGO_PKG_VERSION")`，与 `/healthz` 同源；前端**不得**写死版本号）与**运行时长**（`uptime_secs` / `uptime_days` / `uptime_hours` / `uptime_minutes` / `uptime_secs_rest`，进位在后端 `split_uptime` 完成，前端 `fmtUptime` 只挑「最高两个非零位」并取 `ops.uptime.{days,hours,minutes,seconds}` 单位）、**今日调用量（按小时）** `.bar-list`（`today_hours`，服务端 0-23 全量补零；GROUP BY 会省略无调用的小时，不补零会让柱子整体左移，与交易页 `txTrendDays` 同款坑）与**上游 key 健康** `.mini-list`（`key_health` 按厂商聚合 total/on/off，三态 pill：健康 / N 个异常 / 全部失败）；成员充值的搜索框移到卡片标题行右侧（原型 `.spread`）；
 - **零 mock 不破**：以上数据全部来自真实端点，加载失败仍走空态 + 重试（`.mini-item` / `.bar-row` 只在有真实数据时才渲染）。

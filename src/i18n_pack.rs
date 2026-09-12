@@ -31,12 +31,22 @@ const EN_END: &str = "\n  };";
 
 /// 阳性对照真值：**改动语言包/前端文案时应刻意更新这些数字**。
 /// 它们的作用是把「提取器静默失真」与「语言包真的变了」区分开（见 `packs()`）。
-const ZH_KEY_COUNT: usize = 775;
-const EN_KEY_COUNT: usize = 775;
+///
+/// 本次更新（运营概览「服务版本 / 运行时长」两张卡）：775 → 783 = **+8 键**
+/// （`ops.stats.version{,.sub}` / `ops.stats.uptime{,.sub}` / `ops.uptime.{days,hours,minutes,seconds}`），
+/// 520 → 531 / 418 → 426 = **+11 个 `T()` 字面量调用点 / +8 个去重键**
+/// （两张卡各 1 个 + `fmtUptime` 的 8 处：name/sub 各 1，四个单位里 `days` 1 处、
+/// `hours`/`minutes`/`seconds` 各 2 处 ⇒ 11 处调用只有 8 个不同键）。
+/// `STATIC_ATTR_*` 不变：本次未改 `ui/index.html` 的静态属性。
+///
+/// ⚠️ 加数时**别口算**：C2013 我先把增量估成 +6（漏了 `fmtUptime` 里的重复调用），
+/// 是这条阳性对照把 531 报了出来。改动后请以提取器的实际输出校准，再核对是否与 diff 相符。
+const ZH_KEY_COUNT: usize = 783;
+const EN_KEY_COUNT: usize = 783;
 const STATIC_ATTR_COUNT: usize = 330;
 const STATIC_ATTR_DISTINCT: usize = 305;
-const T_LITERAL_COUNT: usize = 520;
-const T_LITERAL_DISTINCT: usize = 418;
+const T_LITERAL_COUNT: usize = 531;
+const T_LITERAL_DISTINCT: usize = 426;
 
 /// 切出语言包区段（起点标记 → 终点标记，含起点）。
 fn pack_region<'a>(src: &'a str, start_mark: &str, end_mark: &str) -> &'a str {
