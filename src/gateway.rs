@@ -10,7 +10,9 @@
 //! - 三协议互转：入站 openai_chat / anthropic / responses 可调用只暴露
 //!   其他协议端点的 plan（协议自动转换，见 src/protocol.rs）；出站协议选择
 //!   同协议优先 → anthropic → openai_chat → responses；跨协议才转换（同协议透传零损耗）。
-//! - 流式 SSE 转换留 P3-B：流式请求仅支持同协议透传，跨协议 → 400 明确报错。
+//! - 流式 SSE 跨协议转换（P3-B）：stream:true 的跨协议请求同样转换，同协议透传。
+//!   转换器清单、以及尚未覆盖的协议对（会明确返回 400），以 src/sse.rs 与
+//!   forward_stream 的转换器分派为准，此处不重复列举。
 //!
 //! 流程：请求体取 model → 路由选 key（粘性/随机/冷却/3 次切换）→
 //! 按 plan 可用端点定出站协议（需要时转换请求体）→ reqwest 转发到 plan 对应
