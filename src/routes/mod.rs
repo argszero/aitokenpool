@@ -308,12 +308,22 @@ pub async fn verify(
     Ok(Json(serde_json::json!({ "status": "ok", "email": email })))
 }
 
-/// POST /api/auth/resend-code：{email} → 60 秒限频 → 重新生成并发送验证码
+/// POST /api/auth/resend-code：{email} → 邮箱从未注册 → 统一返回 ok（不发送，防枚举，
+/// 同 forgot-password）；否则 60 秒限频 → 重新生成并发送验证码
 pub async fn resend_code(
     State(st): State<AppState>,
     Json(req): Json<ResendReq>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
     let email = req.email.trim().to_lowercase();
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    // 防枚举：邮箱从未注册过就统一返回 ok（不发送、不建验证码记录），与 forgot-password 一致。
+    // 只按「用户是否存在」判断，不看 verified：重发按钮本身就是「没收到码」的补救路径，
+    // 用户此刻必然还是 verified=0。
+    let exists = dao::find_user_by_email(&conn, &email).is_some();
+    drop(conn);
+    if !exists {
+        return Ok(Json(serde_json::json!({ "status": "ok", "email": email })));
+    }
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     if dao::resend_too_soon(&conn, &email) {
         return Err((
@@ -1658,6 +1668,69 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "限频应 429: {body}");
+    }
+
+    #[tokio::test]
+    async fn resend_code_unknown_email_not_sent() {
+        // 防枚举：从未注册过的邮箱 → 统一返回 ok（不发送、不建验证码记录），与 forgot-password 一致。
+        // 未修前该分支会走到 send_code（dev 模式回带 dev_code）＝把任意地址变成免费发信原语。
+        let st = test_state("regunknown");
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/resend-code",
+            r#"{"email":"ghost@example.com"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "未注册邮箱也应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            v.get("dev_code").is_none(),
+            "未注册邮箱不应发码（更不能建记录）: {body}"
+        );
+        // 未建记录 ⇒ 立即再发一次仍是 200，而不是 429（限频只应作用于真实重发）
+        let (s2, body2) = post(
+            st.clone(),
+            "/api/auth/resend-code",
+            r#"{"email":"ghost@example.com"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(
+            s2,
+            StatusCode::OK,
+            "未注册邮箱不应进入限频（无记录）: {body2}"
+        );
+        // 阳性对照：真实账号重发必须仍然发码（否则测试可被「永远返回 ok」蒙混通过）
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"email":"known@example.com","password":"pass1234"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "注册应 201: {body}");
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "DELETE FROM email_verifications WHERE email = 'known@example.com'",
+                [],
+            )
+            .unwrap();
+        }
+        let (s, body) = post(
+            st,
+            "/api/auth/resend-code",
+            r#"{"email":"known@example.com"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "真实账号重发应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            v["dev_code"].is_string(),
+            "真实账号重发必须发码（阳性对照）: {body}"
+        );
     }
 
     /* ---- P2-C：部门管理 / 加额审批 / 运营者 / 用量三组聚合 ---- */
