@@ -993,18 +993,32 @@ fn map_tool_choice(tool_choice: &Value) -> Value {
 }
 
 /// openai usage（prompt/completion + cached）→ anthropic usage（input/output + cache_*）
+///
+/// 缓存命中拼写优先级（与流式同族实现 `sse::extract_cache_read_tokens` 一致，
+/// rant 2026-08-23T08:20:38）：DeepSeek 原生顶层 `prompt_cache_hit_tokens`
+/// → Anthropic `cache_read_input_tokens` → OpenAI `prompt_tokens_details.cached_tokens`。
+/// 值为 0 的拼写视为「未上报」，继续向后回落，因此同一份上游 usage 无论走流式
+/// 还是非流式转换，都会得到相同的 `(input, cached)` 分解。
 fn build_anthropic_usage(usage: Option<&Value>) -> Value {
     let Some(usage) = usage else {
         return json!({"input_tokens": 0, "output_tokens": 0});
     };
 
     let cached = usage
-        .get("cache_read_input_tokens")
+        .get("prompt_cache_hit_tokens")
         .and_then(serde_json::Value::as_u64)
+        .filter(|&v| v > 0)
+        .or_else(|| {
+            usage
+                .get("cache_read_input_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|&v| v > 0)
+        })
         .or_else(|| {
             usage
                 .pointer("/prompt_tokens_details/cached_tokens")
                 .and_then(serde_json::Value::as_u64)
+                .filter(|&v| v > 0)
         })
         .unwrap_or(0);
     let cache_creation = usage
@@ -1301,6 +1315,165 @@ mod tests {
         assert_eq!(out["stop_reason"], "end_turn");
         assert_eq!(out["usage"]["input_tokens"], 10);
         assert_eq!(out["usage"]["output_tokens"], 5);
+    }
+
+    /// 把一份上游 `usage` 装进最小可用的 openai_chat 响应体，返回翻译后的 anthropic usage。
+    fn anthropic_usage_of(usage: Value) -> Value {
+        openai_chat_to_anthropic_resp(&json!({
+            "id": "chatcmpl-1",
+            "model": "m",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop"
+            }],
+            "usage": usage
+        }))["usage"]
+            .clone()
+    }
+
+    /// 非流式 openai_chat → anthropic 翻译必须识别 DeepSeek 原生顶层拼写
+    /// `prompt_cache_hit_tokens`（本缺陷的轴），并使命中量与 `input_tokens` 互斥。
+    ///
+    /// 夹具沿用流式同族测试 `sse::tests::deepseek_cache_hit_tokens_spelling` 的数字：
+    /// `prompt_tokens=100` 含 90 命中 → `input=10 / cached=90 / output=50`。
+    #[test]
+    fn openai_chat_resp_to_anthropic_deepseek_cache_spelling() {
+        let ds = anthropic_usage_of(json!({
+            "prompt_tokens": 100,
+            "prompt_cache_hit_tokens": 90,
+            "completion_tokens": 50
+        }));
+        assert_eq!(ds["cache_read_input_tokens"], 90, "hit forwarded: {ds}");
+        assert_eq!(ds["input_tokens"], 10, "input disjoint: {ds}");
+        assert_eq!(ds["output_tokens"], 50, "output: {ds}");
+
+        // 优先级与 sse.rs 一致：DeepSeek 原生在前
+        let both = anthropic_usage_of(json!({
+            "prompt_tokens": 100,
+            "prompt_cache_hit_tokens": 80,
+            "prompt_tokens_details": {"cached_tokens": 90},
+            "completion_tokens": 50
+        }));
+        assert_eq!(both["cache_read_input_tokens"], 80, "deepseek wins: {both}");
+        assert_eq!(both["input_tokens"], 20, "input disjoint: {both}");
+
+        // 值为 0 的拼写＝未上报，继续回落（与 sse.rs 的 `> 0` 语义一致）
+        let zero = anthropic_usage_of(json!({
+            "prompt_tokens": 100,
+            "prompt_cache_hit_tokens": 0,
+            "prompt_tokens_details": {"cached_tokens": 90},
+            "completion_tokens": 50
+        }));
+        assert_eq!(
+            zero["cache_read_input_tokens"], 90,
+            "zero falls through: {zero}"
+        );
+        assert_eq!(zero["input_tokens"], 10, "input disjoint: {zero}");
+    }
+
+    /// 阳性对照：OpenAI 拼写 `prompt_tokens_details.cached_tokens` 与 Anthropic 拼写
+    /// `cache_read_input_tokens` 在**修复前后都必须绿**——否则上面那条红不构成证据。
+    #[test]
+    fn openai_chat_resp_to_anthropic_other_cache_spellings() {
+        let openai = anthropic_usage_of(json!({
+            "prompt_tokens": 100,
+            "prompt_tokens_details": {"cached_tokens": 90},
+            "completion_tokens": 50
+        }));
+        assert_eq!(openai["cache_read_input_tokens"], 90, "hit: {openai}");
+        assert_eq!(openai["input_tokens"], 10, "input disjoint: {openai}");
+
+        let anthropic = anthropic_usage_of(json!({
+            "prompt_tokens": 100,
+            "cache_read_input_tokens": 90,
+            "completion_tokens": 50
+        }));
+        assert_eq!(anthropic["cache_read_input_tokens"], 90, "hit: {anthropic}");
+        assert_eq!(anthropic["input_tokens"], 10, "input disjoint: {anthropic}");
+    }
+
+    /// 跨路径一致性：同一份上游 usage，流式转换器（`sse.rs`）与非流式翻译器
+    /// （本模块）必须报出**相同**的缓存命中分解。
+    ///
+    /// 这正是当初能拦住「只认两种拼写」的结构性约束——两条路径各自演化时，
+    /// 任何一条漏掉某个拼写都会在这里对不上。
+    #[test]
+    fn anthropic_usage_breakdown_agrees_across_transports() {
+        use crate::sse::{openai_sse_to_anthropic, usage_slot};
+        use futures_util::StreamExt;
+
+        let usage = json!({
+            "prompt_tokens": 100,
+            "prompt_cache_hit_tokens": 90,
+            "completion_tokens": 50
+        });
+
+        // ── 非流式：整份响应一次到达 ─────────────────────────────────────
+        let non_stream = openai_chat_to_anthropic_resp(&json!({
+            "id": "c1",
+            "model": "m1",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "x"},
+                "finish_reason": "stop"
+            }],
+            "usage": usage.clone()
+        }))["usage"]
+            .clone();
+
+        // ── 流式：同一份 usage 装进一个 SSE chunk ────────────────────────
+        let slot = usage_slot();
+        let chunk = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            json!({
+                "id": "c1",
+                "model": "m1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": usage.clone()
+            })
+        );
+        let inbound =
+            futures_util::stream::iter(vec![Ok::<_, std::io::Error>(bytes::Bytes::from(chunk))]);
+        let streamed = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut text = String::new();
+                let mut out = std::pin::pin!(openai_sse_to_anthropic(inbound, slot.clone()));
+                while let Some(item) = out.next().await {
+                    if let Ok(b) = item {
+                        text.push_str(&String::from_utf8_lossy(&b));
+                    }
+                }
+                text
+            });
+
+        // 流式 usage 落在结尾的 message_delta（message_start 早于 usage 到达）
+        let stream_usage = streamed
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+            .find(|e| e["type"] == "message_delta")
+            .map(|e| e["usage"].clone())
+            .unwrap_or_else(|| panic!("no message_delta usage in stream: {streamed}"));
+
+        let Some(captured) = *slot.lock().unwrap() else {
+            panic!("streaming usage slot is empty");
+        };
+        assert_eq!((10.0, 90.0, 50.0), captured, "streaming capture");
+
+        // ── 两条路径必须逐字段一致 ───────────────────────────────────────
+        for field in ["input_tokens", "cache_read_input_tokens", "output_tokens"] {
+            assert_eq!(
+                stream_usage[field], non_stream[field],
+                "stream vs non-stream disagree on {field}: \
+                 stream={stream_usage} non-stream={non_stream}"
+            );
+        }
+        assert_eq!(non_stream["cache_read_input_tokens"], 90, "{non_stream}");
+        assert_eq!(non_stream["input_tokens"], 10, "{non_stream}");
     }
 
     #[test]
