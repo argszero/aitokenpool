@@ -72,7 +72,7 @@
   // 快捷键帮助面板（rant 20:39:30 E：行内卡片非 modal；? / Shift+/ 开合，Esc 或再按 ? 关闭）
   const HELP_KEYS = [
     ["/", "help.k1"],
-    ["1–7", "help.k2"],
+    ["1–8", "help.k2"],
     ["Esc", "help.k3"],
     ["?", "help.k4"],
   ];
@@ -431,7 +431,7 @@
     ]},
   ];
 
-  // 侧边栏视图顺序（rant 16:57:17 D：数字 1-7 切换对应视图，title 提示快捷键）
+  // 侧边栏视图顺序（rant 16:57:17 D：数字键 1..N 切换对应视图，N = 本数组长度，title 提示快捷键）
   const NAV_ORDER = NAV.flatMap((g) => g.items);
 
   const VIEW_TITLE = {
@@ -493,7 +493,7 @@
         const b = document.createElement("button");
         b.className = "nav-item" + (item.id === activeView ? " active" : "");
         b.dataset.view = item.id;
-        const short = NAV_ORDER.indexOf(item) + 1; // 1-7
+        const short = NAV_ORDER.indexOf(item) + 1;
         b.title = T("nav.shortcut", { n: short, label: T(item.label) });
         b.innerHTML = '<span class="ico">' + (ICONS[item.icon] || "") + '</span><span class="label">' + esc(T(item.label)) + "</span>" +
           (item.role ? "" : '<span class="nav-key">' + short + "</span>");
@@ -3814,7 +3814,7 @@
       themeSel.addEventListener("change", () => applyTheme(themeSel.value));
     }
 
-    // 全局快捷键（rant 16:57:17 D）：/ 聚焦市场搜索；数字 1-7 切换侧边栏视图；Esc 关闭行内新建 key
+    // 全局快捷键（rant 16:57:17 D）：/ 聚焦市场搜索；数字键切换侧边栏视图（1..NAV_ORDER.length）；Esc 关闭行内新建 key
     // rant 20:39:30 E：? / Shift+/ 开合快捷键帮助面板（Esc 优先关帮助）
     // rant 20:46:57 A：引导中 Esc 优先关引导
     document.addEventListener("keydown", (e) => {
@@ -3842,7 +3842,9 @@
         $("#mk-search").focus();
         return;
       }
-      if (e.key >= "1" && e.key <= "7") {
+      // 数字键切换视图：不再写死上限——角标是 NAV_ORDER 下标 +1，这里用同一数组取项，
+      // 越界数字自然落空，视图增删后两者自动保持一致（原先写死 "7"，插入 ops 后 settings 角标成了 8）
+      if (/^[0-9]$/.test(e.key)) {
         const item = NAV_ORDER[Number(e.key) - 1];
         if (item && (!item.role || D.USER.role === item.role)) switchView(item.id);
       }
