@@ -378,6 +378,39 @@ type SseStream = std::pin::Pin<
     Box<dyn futures_util::Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send>,
 >;
 
+/// 出站流式请求体：为 openai_chat 上游主动打开 usage 上报（否则该协议下流内
+/// 根本没有 usage，见 `UsageCapture` 注释），同协议透传与跨协议转换两条路径共用。
+///
+/// - 只看**出站**协议：anthropic 的 `message_start` 与 responses 的
+///   `response.completed` 恒带 usage，无需（也无处）请求
+/// - 客户端已显式设置 `stream_options.include_usage` 时保留其值（含 `false`）
+/// - body 非法 JSON（服务端兜底透传）时原样返回，不阻断转发
+fn with_include_usage(body: &str, outbound: &str) -> String {
+    if outbound != "openai_chat" {
+        return body.to_string();
+    }
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return body.to_string();
+    };
+    let Some(obj) = v.as_object_mut() else {
+        return body.to_string();
+    };
+    match obj.get_mut("stream_options") {
+        Some(so) => {
+            if let Some(so) = so.as_object_mut() {
+                so.entry("include_usage").or_insert(serde_json::json!(true));
+            }
+        }
+        None => {
+            obj.insert(
+                "stream_options".to_string(),
+                serde_json::json!({ "include_usage": true }),
+            );
+        }
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| body.to_string())
+}
+
 /// SSE 流式转发（P0-C 透传 + P3-B 跨协议转换）：请求体带 stream:true 时走此分支。
 ///
 /// 流程：余额预检 → 路由选 key（初始连接失败可故障转移，最高 3 次）→ 拿到 200 后
@@ -440,19 +473,20 @@ async fn forward_stream(
         };
 
         // 跨协议 → 转换请求体（P3-A transform_request 已处理 stream:true）；同协议原样透传
+        // 两条路径都补 openai_chat 出站的 usage 上报开关
         let up_body = if needs_transform {
             match serde_json::from_str::<serde_json::Value>(&body) {
                 Ok(v) => {
                     let transformed = crate::protocol::transform_request(&v, protocol, outbound);
                     match serde_json::to_string(&transformed) {
-                        Ok(s) => s,
-                        Err(_) => body.clone(),
+                        Ok(s) => with_include_usage(&s, outbound),
+                        Err(_) => with_include_usage(&body, outbound),
                     }
                 }
-                Err(_) => body.clone(),
+                Err(_) => with_include_usage(&body, outbound),
             }
         } else {
-            body.clone()
+            with_include_usage(&body, outbound)
         };
 
         let resp = if outbound == "anthropic" {
@@ -543,10 +577,18 @@ async fn forward_stream(
             };
             let slot_final = usage_slot.clone();
             let finalize = futures_util::stream::once(async move {
-                let (input, cached, output) = slot_final
-                    .lock()
-                    .map(|s| s.unwrap_or((0.0, 0.0, 0.0)))
-                    .unwrap_or((0.0, 0.0, 0.0));
+                // None = 转换器从未记录 usage（与「记录到 0」不同），同下面同协议路径的
+                // `usage_seen`：本次调用无计量依据，留痕但不估算
+                let slot = slot_final.lock().ok().and_then(|s| *s);
+                if slot.is_none() {
+                    log::error!(
+                        "流式响应（跨协议）未上报 usage，本次调用无法计量（未入账）: key_id={} model={} protocol={}",
+                        key.id,
+                        model,
+                        protocol
+                    );
+                }
+                let (input, cached, output) = slot.unwrap_or((0.0, 0.0, 0.0));
                 settle_usage(&st, auth, &key, &model, input, cached, output);
                 Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::new())
             });
@@ -564,10 +606,21 @@ async fn forward_stream(
                 item.map_err(|e| -> std::io::Error { std::io::Error::other(e) })
             });
             let finalize = futures_util::stream::once(async move {
-                let (input, cached, output) = {
+                let (input, cached, output, seen) = {
                     let mut cap = capture.lock().expect("usage capture lock");
-                    cap.finish()
+                    let (i, c, o) = cap.finish();
+                    (i, c, o, cap.usage_seen)
                 };
+                if !seen {
+                    // 未入账且**非**「上游报了 0」——本次调用没有任何计量依据。
+                    // 记录以便发现：不做估算（新计价机制，非修复），也不改客户端可见行为。
+                    log::error!(
+                        "流式响应未上报 usage，本次调用无法计量（未入账）: key_id={} model={} protocol={}",
+                        key.id,
+                        model,
+                        protocol
+                    );
+                }
                 settle_usage(&st, auth, &key, &model, input, cached, output);
                 Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::new())
             });
@@ -595,6 +648,14 @@ struct UsageCapture {
     tail: Vec<u8>,
     input_tokens: f64,
     cached_tokens: f64,
+    /// 是否**见到过** usage 对象
+    ///
+    /// 用于区分「上游报了 0」与「上游什么都没报」——两者在
+    /// `(input, cached, output)` 三元组上都退化为全 0，而后者意味着本次调用
+    /// **完全没有计量依据**（openai 协议下 usage 需 `stream_options.include_usage`
+    /// 才下发，见 `with_include_usage`）。与 `Ok(None)` 槽同源：语义是
+    /// 「没有数据」，不是「数据为 0」。
+    usage_seen: bool,
 }
 
 impl UsageCapture {
@@ -604,6 +665,7 @@ impl UsageCapture {
             tail: Vec::new(),
             input_tokens: 0.0,
             cached_tokens: 0.0,
+            usage_seen: false,
         }
     }
 
@@ -614,6 +676,7 @@ impl UsageCapture {
             if let Some((input, cached)) = parse_anthropic_usage(chunk) {
                 self.input_tokens = input;
                 self.cached_tokens = cached;
+                self.usage_seen = true;
             }
         }
         self.tail.extend_from_slice(chunk);
@@ -635,6 +698,10 @@ impl UsageCapture {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
                 continue;
             };
+            // 任意协议：只要出现 usage 对象即视为「有数据」（值全 0 也算）
+            if v.get("usage").is_some() {
+                self.usage_seen = true;
+            }
             if self.protocol == "anthropic" {
                 if let Some(u) = v.get("usage") {
                     // message_delta / message_start 均带 usage 字段
@@ -1771,6 +1838,171 @@ mod tests {
             }),
         );
         axum::serve(listener, app).await.unwrap();
+    }
+
+    /// 假上游：SSE 流式但不带任何 usage，同时记录收到的请求体
+    /// （验证网关是否请求了 `stream_options.include_usage`）
+    async fn fake_sse_upstream_no_usage(
+        listener: tokio::net::TcpListener,
+        received: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    ) {
+        let app = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(move |body: String| async move {
+                if let Ok(mut r) = received.lock() {
+                    *r = Some(body);
+                }
+                let body = "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+                            data: [DONE]\n\n";
+                (
+                    [("content-type", "text/event-stream")],
+                    axum::body::Body::from(body),
+                )
+            }),
+        );
+        axum::serve(listener, app).await.unwrap();
+    }
+
+    /// 出站流式请求必须主动要求 usage：openai_chat 下 usage 是**opt-in**，
+    /// 不设置 `stream_options.include_usage` 上游就不会下发 → 本次调用静默不计费。
+    /// 客户端已设置时保留其值；anthropic/responses 出站不添加（它们恒带 usage）。
+    #[test]
+    fn with_include_usage_sets_flag_for_openai_only() {
+        let out = with_include_usage(r#"{"model":"m","stream":true}"#, "openai_chat");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["stream_options"]["include_usage"], true, "out={out}");
+
+        // 客户端自己的设置优先（含 false）
+        let out = with_include_usage(
+            r#"{"model":"m","stream":true,"stream_options":{"include_usage":false}}"#,
+            "openai_chat",
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["stream_options"]["include_usage"], false, "out={out}");
+
+        // 同 key 合并，不覆盖客户端其它 stream_options
+        let out = with_include_usage(
+            r#"{"model":"m","stream":true,"stream_options":{"foo":1}}"#,
+            "openai_chat",
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["stream_options"]["include_usage"], true);
+        assert_eq!(v["stream_options"]["foo"], 1, "out={out}");
+
+        // 非 openai_chat 出站：原样返回（anthropic 的 message_start、responses 的
+        // response.completed 都恒带 usage）
+        for ob in ["anthropic", "responses"] {
+            let src = r#"{"model":"m","stream":true}"#;
+            assert_eq!(with_include_usage(src, ob), src, "outbound={ob}");
+        }
+
+        // 非法 JSON：原样返回，不阻断转发
+        assert_eq!(with_include_usage("not json", "openai_chat"), "not json");
+    }
+
+    /// 回归：无 usage 的 openai 流必须让上游**被请求**上报 usage
+    /// （修复前 outbound body 原样透传，没有 stream_options）
+    #[tokio::test]
+    async fn sse_openai_stream_requests_usage_from_upstream() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let recv2 = std::sync::Arc::clone(&received);
+        let up = tokio::spawn(fake_sse_upstream_no_usage(listener, recv2));
+        let base = format!("http://127.0.0.1:{port}");
+
+        let st = test_state("sse_iu", "test-sse-iu", &base);
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+        }
+        insert_key(&st, 310, 1, "test-model", "test-sse-iu");
+        let key = login_key(st.clone()).await;
+
+        let (s, _body) = post_raw(
+            st.clone(),
+            "/v1/chat/completions",
+            r#"{"model":"test-model","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+
+        let out = received.lock().unwrap().clone().expect("upstream got body");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["stream_options"]["include_usage"], true,
+            "出站流式请求必须带上 include_usage: {out}"
+        );
+        up.abort();
+    }
+
+    /// 无 usage 的流：仍不入账（不估算），且 capture 能区分「没见到」与「见到 0」
+    #[tokio::test]
+    async fn sse_stream_without_usage_is_not_billed_but_flagged() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let recv2 = std::sync::Arc::clone(&received);
+        let up = tokio::spawn(fake_sse_upstream_no_usage(listener, recv2));
+        let base = format!("http://127.0.0.1:{port}");
+
+        let st = test_state("sse_nu", "test-sse-nu", &base);
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+        }
+        insert_key(&st, 311, 1, "test-model", "test-sse-nu");
+        let key = login_key(st.clone()).await;
+
+        let (s, body) = post_raw(
+            st.clone(),
+            "/v1/chat/completions",
+            r#"{"model":"test-model","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::OK,
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
+
+        let conn = st.db.lock().unwrap();
+        let bal: f64 = conn
+            .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!((bal - 12471.0).abs() < 1e-9, "无 usage 不入账: {bal}");
+        let n_ur: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_records", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_ur, 0, "无 usage 无 usage_records");
+        let n_tx: i64 = conn
+            .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_tx, 0, "无 usage 无 transactions");
+        drop(conn);
+        up.abort();
+
+        // 「没见到 usage」必须与「见到了 usage=0」可区分——这是 fail-closed 留痕的依据
+        let mut cap = UsageCapture::new("openai_chat");
+        cap.push(br#"data: {"choices":[{"delta":{"content":"hi"}}]}"#);
+        cap.push(b"\n\n");
+        cap.push(br#"data: [DONE]"#);
+        let _ = cap.finish();
+        assert!(!cap.usage_seen, "全程无 usage 对象 → usage_seen=false");
+
+        let mut cap = UsageCapture::new("openai_chat");
+        cap.push(br#"data: {"usage":{"prompt_tokens":0,"completion_tokens":0},"choices":[]}"#);
+        let _ = cap.finish();
+        assert!(cap.usage_seen, "带 usage（即便全 0）→ usage_seen=true");
     }
 
     /// 假上游：SSE 流式（anthropic 风格：message_start 带 input，message_delta 带 output）
