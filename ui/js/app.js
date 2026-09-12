@@ -390,15 +390,17 @@
     }
   }
 
-  // Plan 提示：按量/订阅 + 专属端点说明（来自 PLANS；登录后为 /api/plans）
+  // Plan 提示：按量/订阅（来自 PLANS；登录后为 /api/plans）
+  // 注：曾拼接 ` · {note}`（data.js 的端点说明），但 /api/plans 从不返回 note
+  //（config [[plans]] 与 Plan 结构体均无该字段）⇒ 登录态（唯一可达路径）恒为 undefined，
+  // 该后缀永不显示 ⇒ 已移除读点与 i18n 键 `share.plan.note`（同 44a3040 清 keyPrefix 的先例）。
   function showPlanHint(planId) {
     const el = $("#sf-plan-hint");
     if (!el) return;
     const plans = Live.plans || D.PLANS;
     const pl = plans.find((x) => x.id === planId);
     if (!pl) { el.textContent = ""; return; }
-    el.textContent = (pl.type === "paygo" ? T("share.plan.paygo") : T("share.plan.sub")) +
-      (pl.note ? T("share.plan.note", { note: pl.note }) : "");
+    el.textContent = pl.type === "paygo" ? T("share.plan.paygo") : T("share.plan.sub");
   }
 
   /* ---------------- 导航 ---------------- */
