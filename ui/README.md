@@ -103,7 +103,7 @@ ui/
 - **焦点环**：全局 `:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }`；输入类控件（`.input` / `.th-filter`）已有边框高亮，`outline: none` 不叠加；
 - **全局快捷键**（`document` keydown，输入框内不触发、Cmd/Ctrl/Alt 组合不劫持）：
   - `/` → 聚焦市场搜索 `#mk-search`；
-  - 数字 **1-7** → 切换侧边栏视图（`NAV_ORDER` 顺序：仪表盘/市场/共享/钱包/交易/管理/设置；游客模式由 `switchView` 拦截提示登录）；
+  - 数字 **1-8** → 切换侧边栏视图（键位 = `NAV_ORDER` 下标 +1，范围由该数组长度决定：仪表盘/市场/共享/钱包/交易/管理/运营/设置；游客模式由 `switchView` 拦截提示登录）；
   - Esc → 关闭行内新建 Key（`#ak-new-inline`）；
 - **导航提示**：nav-item 补 `title`（"快捷键 N · 名称"）+ 右侧 `.nav-key` 键位角标（管理视图带「管理员」tag 时省略角标）。
 
@@ -156,7 +156,7 @@ ui/
 
 ## 动态文档标题约定（v1.18，rant 2026-08-17T18:06:09 F）
 
-- `document.title` **跟随视图切换**：`switchView` 内统一设置「`VIEW_TITLE[id]` · AITokenPool」（如「模型市场 Marketplace · AITokenPool」）；7 个视图全覆盖，未知视图回退「AITokenPool」；
+- `document.title` **跟随视图切换**：`switchView` 内统一设置「`VIEW_TITLE[id]` · AITokenPool」（如「模型市场 Marketplace · AITokenPool」）；8 个视图全覆盖，未知视图回退「AITokenPool」；
 - **默认「AITokenPool」**：DOMContentLoaded 初始化与登录页/无视图态回默认；HTML `<title>` 即「AITokenPool」；
 - 游客受限视图被 `GUEST_VIEWS` 拦截时 `switchView` 提前 return → 标题保持不变。
 
@@ -197,14 +197,14 @@ ui/
 - 单例 `#toast` 已废弃 → 改为**队列容器** `#toast-wrap`（`index.html` 底部，初始为空）：`position:fixed; bottom:28px; left:50%; translateX(-50%)`，`flex-direction:column` 纵向堆叠，`gap:10px`，`pointer-events:none`（不拦截页面点击）；
 - `toast(msg, type)` **每次创建独立 `.toast` 元素**（`document.createElement` + `appendChild`），不再覆盖旧消息；**上限 `TOAST_MAX = 3`**——超限同步移除最旧一条（`wrap.children[0]`）腾位；
 - **独立生命周期**：每条到时（`TOAST_MS=2600`）加 `.out` 触发 `toast-out` 淡出动画（`TOAST_OUT_MS=200`）后 `removeChild`；互不影响、不共享定时器；
-- **分级样式保留**：`.toast.success/.error/.info` 边框色 + 文字色与 v1.16 一致，39 个 `toast()` 调用点零改动；`.toast` 自身 `pointer-events:auto`（容器 none），为可交互 toast（如按钮）预留；
+- **分级样式保留**：`.toast.success/.error/.info` 边框色 + 文字色与 v1.16 一致，75 个 `toast()` 调用点零改动；`.toast` 自身 `pointer-events:auto`（容器 none），为可交互 toast（如按钮）预留；
 - 冒烟测试注意：DOM-stub 的 `classList.add` 只更新 `_classes` 集合、不同步 `className` 字符串——断言淡出态用 `_classes.has("out")`。
 
 ## 快捷键帮助面板约定（v1.19，rant 2026-08-17T20:39:30 E）
 
 - **触发**：按 `?`（或 `Shift+/`，浏览器会给出 `e.key === "?"`）开合右上角行内卡片 `#help-panel`；**Esc 或再按 `?` 关闭**；关闭按钮 × 同效；
 - **形态**：`position:fixed; top:76px; right:24px` 浮层卡片（非 modal、无遮罩、`z-index:950` 低于 toast），入场 `help-in` 动画；窄屏（≤560px）左右 12px 全宽、`top:68px`；
-- **内容**：`renderHelp()` 渲染 4 行快捷键（`/` 搜索、`1–7` 视图、`Esc` 关闭/取消、`?` 帮助）+ 底部上下文行（当前视图 `VIEW_TITLE[activeView]` + 亮/深色主题）；
+- **内容**：`renderHelp()` 渲染 4 行快捷键（`/` 搜索、`1–8` 视图、`Esc` 关闭/取消、`?` 帮助）+ 底部上下文行（当前视图 `VIEW_TITLE[activeView]` + 亮/深色主题）；
 - **优先级**：全局 keydown 里帮助打开时 **Esc 先关帮助**（再关行内新建 Key），`?` 在 typing 守卫之后（输入框内不劫持）；`toggleHelp(force)` 支持强制开/关（close 按钮用 `toggleHelp(false)`）；
 - **kbd 键帽**：`.kbd` 样式（等宽、边框、底部 2px 立体），与 `.nav-key` 视觉一致。
 
@@ -277,7 +277,7 @@ ui/
 - **作用表**（`KBD_TABLE_IDS`）：`mk-body` / `share-body` / `api-keys` / `emp-body` / `dept-body` / `ops-body`（tbody）+ `tx-table`（div 包 table）；
 - **激活**：① 点击表格行（容器 click 委托，`e.target.closest("tr")`，跳过 `.mk-detail`）；② 直接按 ↑/↓——`kbdContainerFrom(t)` 沿 `closest("tbody")`（id 匹配）或 `closest("table").parentNode`（#tx-table）解析当前表格，找不到沿用 `kbd.c`；
 - **键位**：`ArrowDown/Up` → `kbdMove(dir, c)` 行高亮 `.row-active`（accent 左侧竖条 `inset 3px 0 0` + `--accent-soft` 底），未激活时 ↓ 首行 / ↑ 末行，`scrollIntoView({block:"nearest"})`；`Enter` → `kbdEnter()` 点击行内首个可用 `button.btn:not(.row-expand)`（disabled 不触发）；`Esc` → `kbdClear()`（无高亮时落到原逻辑：关帮助/行内表单/引导）；
-- **守卫**：typing（INPUT/TEXTAREA/SELECT/contentEditable）与 meta/ctrl/alt 组合键不拦截；`?`、1-7 视图切换、Esc 原有优先级（引导 > 帮助 > 行内新建 Key > 表格高亮）均不受影响；
+- **守卫**：typing（INPUT/TEXTAREA/SELECT/contentEditable）与 meta/ctrl/alt 组合键不拦截；`?`、数字键视图切换、Esc 原有优先级（引导 > 帮助 > 行内新建 Key > 表格高亮）均不受影响；
 - 冒烟测试注意：`qs(sel)` 的 stub id 会带 `#` 前缀——`kbdContainerFrom` 依赖真实无 `#` 的 id（如 `tx-table`），须手动修正；Esc 分支链依赖 `#ak-new-inline`、`#help-panel` hidden 预置 + `atp-tour-done=1`（防 tour 拦截）。
 
 ## 品牌与登录页氛围约定（v1.20，rant 2026-08-17T20:46:57 G）
@@ -322,14 +322,14 @@ ui/
 
 ## 界面国际化 i18n 约定（v1.21.1，rant 2026-08-18T20:49:22 + 21:40:10 去中英混排）
 
-- **语言包**：`ui/js/i18n.js` 零依赖 IIFE，`I18N = { zh, en }` 双词典（733 键 ×2，覆盖导航/登录/视图标题/通用/仪表盘/市场/共享/钱包/交易/设置/管理/运营/聊天/游客/相对时间/帮助/tour/主题/错误映射）；`window.t(key, vars)` 查当前语言，**缺失回退 zh，再缺回退 key 本身**；`{var}` 占位符插值；
+- **语言包**：`ui/js/i18n.js` 零依赖 IIFE，`I18N = { zh, en }` 双词典（785 键 ×2，覆盖导航/登录/视图标题/通用/仪表盘/市场/共享/钱包/交易/设置/管理/运营/聊天/游客/相对时间/帮助/tour/主题/错误映射）；`window.t(key, vars)` 查当前语言，**缺失回退 zh，再缺回退 key 本身**；`{var}` 占位符插值；
 - **切换机制**：设置页「偏好 → 界面语言」下拉（`#prefs-lang`，zh/en）→ `I18n.setLang()`：写 `localStorage('atp_lang')` + `document.documentElement.lang` 同步（zh→`zh-CN` / en→`en`）+ 派发 `atp:langchange` → app.js 重渲染 `renderNav()` + `renderView(activeView)` + `document.title`（引导中额外 `renderTourStep()`）；**首载**：localStorage → `navigator.language` 前缀（`zh*`→zh，否则 en）→ 默认 zh；切换即时生效无需刷新；
 - **静态文案**：`index.html` 内静态中文用 `data-i18n` / `data-i18n-ph`（placeholder）/ `data-i18n-title`（title）标记，`applyStatic()` 启动时与每次切换时批量替换；**容器含表单控件的 `<label>` 用 `<label><span data-i18n="KEY">文本</span><input…></label>` 结构**（避免 innerHTML 替换销毁控件）；
 - **动态文案**：`app.js` 面向用户字符串全部走 `t('key')`；**语言敏感常量存 key 而非文案**（NAV/VIEW_TITLE/TOUR_STEPS/HELP_KEYS 存 key，渲染时 `T()` 解析；SHARE_STATUS/RAISE_STATUS 的 `text` 为函数；TX_COLUMNS 的 `title`/`options` 为函数；`DAY_LABELS` 动态 `T("share.day."+n)`）——保证切换语言后重渲染即时生效；
 - **数字/时间本地化**：`I18n.fmtNum`（zh→`zh-CN` / en→`en-US` `toLocaleString`）；`I18n.fmtRelTime`（刚刚/N 分钟前/N 小时前/昨天 ↔ just now/N min ago/N hr ago/yesterday）；数量单位（人/个/笔/次）用 `cnt.*` 键（zh 带量词，en 纯数字）；
 - **后端错误映射**：`api.js` 抛错前过 `I18n.mapErr()`——en 模式下已知中文错误（「该模型暂无可用 key」「点数余额不足」「需要管理员权限」等 15 组）映射为英文，未知原样返回；zh 模式原样透传；
 - **单语原则（v1.21.1 去混排）**：zh 词典值一律纯中文（仅保留 API/Key/Plan/tokens/CSV 等专有名词、键盘快捷键与占位符），不再内联英文注释；`index.html` 已移除全部 `<span class="en">` 静态小字（55 处）；`.en` CSS 样式已删除；en 词典保持纯英文；
-- 冒烟测试：node 无 DOM 桩跑 i18n.js（t/setLang/mapErr/fmtNum/fmtRelTime 断言，见开发记录）；Key 一致性扫描（app.js+index.html 引用的 496 键全部存在于 ZH/EN）。
+- 冒烟测试：node 无 DOM 桩跑 i18n.js（t/setLang/mapErr/fmtNum/fmtRelTime 断言，见开发记录）；Key 一致性扫描（`src/i18n_pack.rs` 门禁：app.js 的 `T()` 字面量 430 个、index.html 的 `data-i18n*` 305 个，去重并集 680 键全部存在于 ZH/EN）。
 
 ## 仪表盘「我的共享」数据源与降级约定（v1.21.2，rant 2026-08-19T15:48:17 BUG）
 
