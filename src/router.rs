@@ -1,4 +1,4 @@
-//! 路由与故障转移（architecture §4.2.1 七条定案）
+//! 路由与故障转移（architecture §3 模块 router.rs 行；原 4.2.1 节七条定案已并入该行）
 //!
 //! P0-B（rant 2026-08-18T09:55:57）：
 //! - 初始随机：从模型 M 的健康 key（status='on' 且不在冷却期）中随机选一
@@ -14,7 +14,7 @@ use rand::seq::SliceRandom;
 
 use crate::dao::KeyRow;
 
-/// 默认冷却时长（architecture §4.2.1 定案：5 秒）
+/// 默认冷却时长（architecture §3 模块 router.rs 行：5 秒）
 pub const COOLDOWN_SECS: u64 = 5;
 /// 每次路由最多尝试的 key 数（初始 + 2 次切换）
 pub const MAX_SWITCHES: usize = 3;
