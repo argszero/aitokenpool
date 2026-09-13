@@ -118,6 +118,15 @@ pub async fn create(
 }
 
 /// PATCH /api/admin/departments/:id：改名 / 改月分配（重名 → 409）
+///
+/// 两条不变量，都由**校验口径与写入口径一致**保证（约定同 `admin_models::patch` 的
+/// 「合并 → 校验 → 写回」）：
+/// - **被拒绝的请求不留副作用**：本函数有两条写语句（改名 / 改配额），quota 的校验必须在
+///   **任何写语句之前**。原实现先改名、后校验 quota ⇒ `{"name":"研发中心","quota":0}` 返回 400，
+///   而名字已经被改掉：调用方以为什么都没变，库里却已经不是原来那个部门。
+/// - **name 的「空」判断读的就是要落库的那个值**：`create` 明令 name 不能为空，而写入用的是
+///   `trim()` 后的值。若用**未 trim** 的输入做判断，`{"name":"   "}` 会通过 `!name.is_empty()`
+///   并把部门名写成空串（`""` 写入后连重名检查也管不到它）。trim 一次、判断与写入共用同一个值。
 pub async fn patch(
     State(st): State<AppState>,
     auth: AuthUser,
@@ -125,6 +134,16 @@ pub async fn patch(
     Json(req): Json<DeptPatch>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
     require_admin(&auth)?;
+    // 校验（不写库）：name 只 trim 一次，空白名 = 未提供（与 `#[serde(default)]` 省略同义）
+    let name = req.name.trim().to_string();
+    if let Some(q) = req.quota {
+        if q <= 0.0 {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "quota 必须大于 0" })),
+            ));
+        }
+    }
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     let exists: bool = conn
         .query_row(
@@ -139,33 +158,27 @@ pub async fn patch(
             Json(serde_json::json!({ "error": "部门不存在" })),
         ));
     }
-    if !req.name.is_empty() {
+    if !name.is_empty() {
         let dup: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM departments WHERE name = ?1 AND id != ?2)",
-                params![req.name.trim(), id],
+                params![name, id],
                 |r| r.get(0),
             )
             .unwrap_or(false);
         if dup {
             return Err((
                 axum::http::StatusCode::CONFLICT,
-                Json(serde_json::json!({ "error": format!("部门「{}」已存在", req.name.trim()) })),
+                Json(serde_json::json!({ "error": format!("部门「{name}」已存在") })),
             ));
         }
         conn.execute(
             "UPDATE departments SET name = ?1 WHERE id = ?2",
-            params![req.name.trim(), id],
+            params![name, id],
         )
         .map_err(internal)?;
     }
     if let Some(q) = req.quota {
-        if q <= 0.0 {
-            return Err((
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "quota 必须大于 0" })),
-            ));
-        }
         conn.execute(
             "UPDATE departments SET quota = ?1 WHERE id = ?2",
             params![q, id],
