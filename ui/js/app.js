@@ -1018,7 +1018,7 @@
   // 点数方向由 `type` 决定，不由 `pts` 的符号决定（C2047）：
   // 账本按 type 编码方向，所有生产 writer 都把 pts 存成非负数 —— `billing::settle` 的
   // consume 行存正数、随后的 earn 行也存正数（src/billing.rs），符号只表示「数值」，不表示「收支」。
-  // 服务端每个聚合都是按 type 判方向（src/routes/wallet.rs:230-232 / 403-405 / 473、src/routes/ops.rs:94/103），
+  // 服务端每个聚合都是按 type 判方向（src/routes/wallet.rs 的 TX_INCOME_TYPES / TX_EXPENSE_TYPES、src/routes/ops.rs:94/103），
   // 前端必须用同一约定，否则「消费」在汇总卡里是支出（`expense_pts`）、在明细行里却被渲染成绿色的 `+3.7`。
   const PTS_INCOME_TYPES = { earn: true, topup: true, gift: true };
   const signedPts = (type, pts) => (PTS_INCOME_TYPES[type] === true ? pts : -pts);

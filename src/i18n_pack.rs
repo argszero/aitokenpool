@@ -934,7 +934,7 @@ mod tests {
     fn api_js_checker_detects_injected_defects() {
         let LanguagePacks { zh, en, .. } = packs();
 
-        // ① 中文原文（原封不动地模拟 C2028 修前的 `api.js:66` 那一行）必须被判为违规
+        // ① 中文原文（原封不动地模拟 C2028 修前 `api.js` 里的那一行）必须被判为违规
         let bad = "throw { status: 0, message: mapErr(\"网络不可用，请检查后端服务是否启动\") };";
         assert!(
             !strip_js_comments(bad).is_ascii(),
