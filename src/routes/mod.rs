@@ -2181,6 +2181,123 @@ mod tests {
         assert_eq!(s, StatusCode::NOT_FOUND);
     }
 
+    /// 部门 PATCH：**被拒绝的请求不留副作用**，且 name 的「空」判断读的就是要落库的那个值。
+    ///
+    /// 三条断言对应两条不变量（`org::patch` 的文档注释）：
+    /// - quota 非法（≤ 0）→ **400**，且名字/配额都必须保持原样 —— 原实现先改名、后校验 quota，
+    ///   这个 400 是**带着已生效的改名**返回的（调用方以为什么都没变）。
+    /// - 纯空白 name → 视为未提供（与 `#[serde(default)]` 省略同义），部门名**不许被写空** ——
+    ///   原实现用未 trim 的输入做「非空」判断、用 trim 后的值落库，于是 `{"name":"   "}` 把名字写成 `""`。
+    /// - 重名（409）这条腿本来就写在写语句之前 ⇒ 改前也通过，作为**阴性对照**证明本测试不是
+    ///   「凡 PATCH 皆红」。
+    #[tokio::test]
+    async fn dept_patch_rejected_requests_leave_no_trace() {
+        let st = test_state("deptpatch");
+        let admin = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/departments",
+            r#"{"name":"研发","quota":80000}"#,
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "建部门应 200: {body}");
+        let dept_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let url = format!("/api/admin/departments/{dept_id}");
+        // 助手：读回该部门，断言 (name, quota) —— 每次拒绝后都用它验证「什么都没变」
+        async fn dept_of(st: AppState, admin: &str, dept_id: i64) -> (String, f64) {
+            let (s, body) = get(st, "/api/admin/departments", Some(admin)).await;
+            assert_eq!(s, StatusCode::OK, "列表应 200: {body}");
+            let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+            let d = arr
+                .iter()
+                .find(|d| d["id"].as_i64() == Some(dept_id))
+                .expect("部门仍在列表里");
+            (
+                d["name"].as_str().unwrap().to_string(),
+                d["quota"].as_f64().unwrap(),
+            )
+        }
+
+        // ① quota = 0 → 400，且**名字不许被改掉**（原实现此时已把名字改成「研发中心」）
+        let (s, body) = patch(
+            st.clone(),
+            &url,
+            r#"{"name":"研发中心","quota":0}"#,
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "quota=0 应 400: {body}");
+        assert_eq!(
+            dept_of(st.clone(), &admin, dept_id).await,
+            ("研发".to_string(), 80000.0),
+            "被拒绝的 PATCH 不许留下任何已生效的改动"
+        );
+
+        // ② 纯空白 name → 视为未提供：quota 照常生效，名字保持「研发」（原实现把名字写成空串）
+        let (s, body) = patch(
+            st.clone(),
+            &url,
+            r#"{"name":"   ","quota":100}"#,
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "空白 name 视为未提供应 200: {body}");
+        assert_eq!(
+            dept_of(st.clone(), &admin, dept_id).await,
+            ("研发".to_string(), 100.0),
+            "空白 name 不许把部门名写空（create 明令 name 不能为空）"
+        );
+
+        // ③ 阴性对照：重名 409 这条腿本来就在写语句之前
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/departments",
+            r#"{"name":"市场","quota":1000}"#,
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "建第二个部门应 200: {body}");
+        let (s, body) = patch(
+            st.clone(),
+            &url,
+            r#"{"name":"市场","quota":90000}"#,
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "重名应 409: {body}");
+        assert_eq!(
+            dept_of(st.clone(), &admin, dept_id).await,
+            ("研发".to_string(), 100.0),
+            "409 同样不许留下任何已生效的改动"
+        );
+
+        // ④ 阳性对照：合法请求两处都要真的写进去
+        let (s, body) = patch(
+            st.clone(),
+            &url,
+            r#"{"name":"研发中心","quota":90000}"#,
+            Some(&admin),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "合法 PATCH 应 200: {body}");
+        assert_eq!(
+            dept_of(st.clone(), &admin, dept_id).await,
+            ("研发中心".to_string(), 90000.0),
+            "合法请求必须改名 + 改配额"
+        );
+        // 只给 quota（name 省略）→ 只改配额
+        let (s, body) = patch(st.clone(), &url, r#"{"quota":95000}"#, Some(&admin)).await;
+        assert_eq!(s, StatusCode::OK, "省略 name 应 200: {body}");
+        assert_eq!(
+            dept_of(st, &admin, dept_id).await,
+            ("研发中心".to_string(), 95000.0),
+            "省略 name 不许清空名字"
+        );
+    }
+
     #[tokio::test]
     async fn raise_request_apply_dup_approve_reject() {
         let st = test_state("raise");
