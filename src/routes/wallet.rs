@@ -13,6 +13,35 @@ use serde::Deserialize;
 use crate::dao;
 use crate::routes::{internal, ApiErr, AppState, AuthUser};
 
+/// 交易 `type` 过滤器的**唯一真源** —— 凡是受理 `type` 查询参数的端点都用它校验。
+///
+/// 前端交易页「类型」列筛选的选项即此集合（`ui/js/app.js` 的 tx type options），且前端把
+/// **同一个** `type` 值同时发给 `/api/transactions` 与 `/api/transactions/trend`
+/// （`app.js` 的 `loadTransactions`）⇒ 两个端点必须接受**完全相同**的取值集合，否则同一个
+/// 筛选值会在一端 200、另一端 400（C2052：趋势端点曾漏 `expire`，列表正常而趋势图只显示
+/// 「趋势数据加载失败」）。**新增类型时只改这里。**
+///
+/// ⚠️ 这是「**受理哪些值**」的集合，不是「值算收入还是支出」的**方向**集合 —— 方向在各自的
+/// SQL 里书写（收入 `IN ('earn','topup','gift')` / 支出 `IN ('consume','expire','withdraw')`），
+/// 两者概念不同，勿混用（`withdraw` 受理但尚无 writer：受理集合与方向集合本就不是同一件事）。
+pub const TX_FILTER_TYPES: [&str; 6] = ["consume", "earn", "topup", "gift", "expire", "withdraw"];
+
+/// 解析 `type` 查询参数：`""` / `"all"` → `None`（不筛），[`TX_FILTER_TYPES`] 成员 → `Some(成员)`，
+/// 其余 → 400（文案由 [`TX_FILTER_TYPES`] **派生**，因此不可能再与集合分叉）。
+/// `/api/transactions` 与 `/api/transactions/trend` 共用此函数。
+fn parse_tx_type(raw: &str) -> Result<Option<String>, ApiErr> {
+    match raw {
+        "" | "all" => Ok(None),
+        t if TX_FILTER_TYPES.contains(&t) => Ok(Some(t.to_string())),
+        _ => Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("type 必须为 {} / all", TX_FILTER_TYPES.join(" / ")),
+            })),
+        )),
+    }
+}
+
 /// GET /api/wallet
 pub async fn wallet(
     State(st): State<AppState>,
@@ -70,7 +99,7 @@ pub struct TxColFilters {
 /// GET /api/transactions 查询参数
 #[derive(Debug, Deserialize)]
 pub struct TxQuery {
-    /// consume / earn / all（缺省 all）
+    /// 交易类型过滤（缺省 `all` 不筛）；取值见 [`TX_FILTER_TYPES`]，非法值 400
     #[serde(default)]
     pub r#type: String,
     #[serde(default = "default_page")]
@@ -189,20 +218,9 @@ pub async fn transactions(
 ) -> Result<Json<serde_json::Value>, ApiErr> {
     let page = q.page.max(1);
     let page_size = q.page_size.clamp(1, 100);
-    let type_filter = match q.r#type.as_str() {
-        "" | "all" => None,
-        // 列筛选 select 含 withdraw（rant 2026-08-25T10:33.26：列筛选后端化后 UI 选项须全被 API 接受）
-        // expire 同列（C2050：赠送过期的账本行，见 gift::expire_past_gifts）
-        t @ ("consume" | "earn" | "topup" | "gift" | "expire" | "withdraw") => Some(t.to_string()),
-        _ => {
-            return Err((
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(
-                    serde_json::json!({ "error": "type 必须为 consume / earn / topup / gift / expire / withdraw / all" }),
-                ),
-            ))
-        }
-    };
+    // 类型过滤：取值集合与 400 文案均来自 TX_FILTER_TYPES（列筛选 select 含 withdraw，
+    // rant 2026-08-25T10:33.26：列筛选后端化后 UI 选项须全被 API 接受）。
+    let type_filter = parse_tx_type(&q.r#type)?;
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     // start/end（rant 2026-08-22T10:50:00）：RFC3339/ISO 8601 → 规范化为 UTC "YYYY-MM-DD HH:MM:SS"
     // （与库内 datetime('now') 一致，字符串比较即时间比较）；非法格式 400。
@@ -330,7 +348,8 @@ pub async fn transactions(
 /// GET /api/transactions/trend 查询参数
 #[derive(Debug, Deserialize)]
 pub struct TxTrendQuery {
-    /// consume / earn / topup / gift / expire / withdraw / all（缺省 all）
+    /// 交易类型过滤（缺省 `all` 不筛）；取值见 [`TX_FILTER_TYPES`]，非法值 400 ——
+    /// 与 `/api/transactions` 同一集合（前端把同一个值发给两个端点）
     #[serde(default)]
     pub r#type: String,
     /// 起始时间（同 /api/transactions，ISO 8601 UTC）
@@ -346,7 +365,8 @@ pub struct TxTrendQuery {
 }
 
 /// GET /api/transactions/trend（rant 2026-08-23T16:01:07：交易页趋势图数据源）
-/// 按时间桶聚合，口径与 summary 一致（income 白名单 earn/topup/gift 为正、consume 为负；
+/// 按时间桶聚合，口径与 summary 一致（income 白名单 earn/topup/gift 为正、其余支出类型为负 ——
+/// 方向由 `type` 决定，不是 `pts` 的符号；
 /// token 字段：tokens 总 / input = tokens − cached − output / cached / output）。
 /// 返回仅含非空桶，按时间升序；前端负责连续时间轴补齐。
 pub async fn transactions_trend(
@@ -354,19 +374,9 @@ pub async fn transactions_trend(
     auth: AuthUser,
     Query(q): Query<TxTrendQuery>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
-    let type_filter = match q.r#type.as_str() {
-        "" | "all" => None,
-        // 与 /api/transactions 一致：列筛选 select 含 withdraw（rant 2026-08-25T10:33:26）
-        t @ ("consume" | "earn" | "topup" | "gift" | "withdraw") => Some(t.to_string()),
-        _ => {
-            return Err((
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(
-                    serde_json::json!({ "error": "type 必须为 consume / earn / topup / gift / withdraw / all" }),
-                ),
-            ))
-        }
-    };
+    // 与 /api/transactions **共用**同一解析（C2052：此处曾是一个手写的白名单副本，
+    // C2051 给类型集合加 `expire` 时只改了列表端点 ⇒ 同一筛选值在列表 200、在趋势 400）。
+    let type_filter = parse_tx_type(&q.r#type)?;
     let bucket = match q.bucket.as_str() {
         "hour" | "day" | "week" => q.bucket.clone(),
         _ => "day".to_string(),
@@ -1427,5 +1437,59 @@ mod tests {
         let buckets = v["buckets"].as_array().unwrap();
         let sum_exp: f64 = buckets.iter().map(|b| b["expense"].as_f64().unwrap()).sum();
         assert!(sum_exp >= 1.0, "趋势支出应含过期的 1 点: {sum_exp}");
+    }
+
+    #[tokio::test]
+    async fn every_accepted_type_filter_value_is_accepted_by_both_transaction_endpoints() {
+        // C2052 规格：前端把**同一个** `type` 值同时发给 /api/transactions 与
+        // /api/transactions/trend（app.js 的 loadTransactions）⇒ 两个端点必须接受**完全相同**的
+        // 取值集合。否则同一个筛选值会在一端 200、另一端 400，而前端把趋势请求的失败吞成
+        // `trend = null` ⇒ 列表正确、趋势图只显示「趋势数据加载失败」。C2051 给集合加 `expire`
+        // 时只在列表端点补了它，正是这么坏的。
+        // 断言打在**单真源**（TX_FILTER_TYPES）上：以后新增类型若只改一个端点，此测试必红。
+        let st = test_state("txfilterparity");
+        let key = login(st.clone()).await;
+
+        // 1) 集合里的每个成员，两个端点都必须接受
+        for t in TX_FILTER_TYPES {
+            for uri in [
+                format!("/api/transactions?type={t}"),
+                format!("/api/transactions/trend?type={t}&bucket=day"),
+            ] {
+                let (s, body) = get(st.clone(), &uri, &key).await;
+                assert_eq!(
+                    s,
+                    axum::http::StatusCode::OK,
+                    "`{t}` 应被两个端点接受（{uri}）: {body}"
+                );
+            }
+        }
+
+        // 2) 缺省与 all（不筛）两端皆 200
+        for uri in [
+            "/api/transactions",
+            "/api/transactions/trend",
+            "/api/transactions?type=all",
+            "/api/transactions/trend?type=all",
+        ] {
+            let (s, body) = get(st.clone(), uri, &key).await;
+            assert_eq!(s, axum::http::StatusCode::OK, "`{uri}` 应 200: {body}");
+        }
+
+        // 3) 阳性对照：集合之外的取值两端皆 400，且文案列出**同一份**清单（文案由集合派生）
+        for uri in [
+            "/api/transactions?type=refund",
+            "/api/transactions/trend?type=refund&bucket=day",
+        ] {
+            let (s, body) = get(st.clone(), uri, &key).await;
+            assert_eq!(
+                s,
+                axum::http::StatusCode::BAD_REQUEST,
+                "`{uri}` 应 400: {body}"
+            );
+            for t in TX_FILTER_TYPES {
+                assert!(body.contains(t), "400 文案应列出 `{t}`（{uri}）: {body}");
+            }
+        }
     }
 }
