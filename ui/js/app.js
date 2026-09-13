@@ -2431,16 +2431,17 @@
       context_length: ctx || 0, max_output: outmax || 0,
       vision: $("#model-form-vision").checked ? 1 : 0,
     };
-    const btn = $("#model-confirm");
-    withLoading(btn, () => {
-      const req = editingId ? api.patch("/api/admin/models/" + editingId, body) : api.post("/api/admin/models", body);
-      req.then(async () => {
-        await loadAdmin();
-        $("#model-form-card").hidden = true;
-        toast(editingId ? T("admin.models.saved") : T("admin.models.added"), "success");
-      }).catch((err) => {
-        toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.models.fail"), "error");
-      });
+    // 忙碌态由点击监听器统一施加（`withLoading(e.currentTarget, confirmModel)`，与 confirmDept /
+    // confirmRaise / confirmTopup 同款）。这里**不能**再嵌一层 withLoading：内层第一行的守卫
+    // `if (!btn || btn.dataset.loading) return;` 会因外层已在点击瞬间置位而直接返回
+    // ⇒ 新增/编辑模型的请求永不发出（#97 写下即死）。
+    const req = editingId ? api.patch("/api/admin/models/" + editingId, body) : api.post("/api/admin/models", body);
+    req.then(async () => {
+      await loadAdmin();
+      $("#model-form-card").hidden = true;
+      toast(editingId ? T("admin.models.saved") : T("admin.models.added"), "success");
+    }).catch((err) => {
+      toast((err && err.message) ? I18n.mapErr(err.message) : T("admin.models.fail"), "error");
     });
   }
 
