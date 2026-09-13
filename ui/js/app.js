@@ -1015,6 +1015,14 @@
 
   /* --- 本月点数变化（rant 10:45:27：近 1 月按类型汇总收支，取代静态"点数来源"分组） --- */
 
+  // 点数方向由 `type` 决定，不由 `pts` 的符号决定（C2047）：
+  // 账本按 type 编码方向，所有生产 writer 都把 pts 存成非负数 —— `billing::settle` 的
+  // consume 行存正数、随后的 earn 行也存正数（src/billing.rs），符号只表示「数值」，不表示「收支」。
+  // 服务端每个聚合都是按 type 判方向（src/routes/wallet.rs:230-232 / 403-405 / 473、src/routes/ops.rs:94/103），
+  // 前端必须用同一约定，否则「消费」在汇总卡里是支出（`expense_pts`）、在明细行里却被渲染成绿色的 `+3.7`。
+  const PTS_INCOME_TYPES = { earn: true, topup: true, gift: true };
+  const signedPts = (type, pts) => (PTS_INCOME_TYPES[type] === true ? pts : -pts);
+
   const MONTH_TYPE_LABELS = [
     ["gift", () => T("tx.type.gift")],
     ["expire", () => T("tx.type.expire")],
@@ -1108,10 +1116,12 @@
       // P2-B：/api/dashboard month 聚合 + series
       const sums = {};
       (Live.dashboard.month || []).forEach((m) => { sums[m.type] = (sums[m.type] || 0) + (m.pts || 0); });
+      // C2047：服务端 net 已是「收入 − 消费」的有符号值，不能再取反
       net = Live.dashboard.net || 0;
+      // C2047：逐类型求和后先转成带符号的值再交给 monthChangeItem（它按符号渲染，本来就正确）
       rowsHtml = MONTH_TYPE_LABELS
         .filter(([k]) => sums[k])
-        .map(([k, label]) => monthChangeItem(label(), sums[k], false)).join("");
+        .map(([k, label]) => monthChangeItem(label(), signedPts(k, sums[k]), false)).join("");
       const series = Live.dashboard.series || [];
       sparkData = series.map((s) => s.pts || 0);
       sparkLabels = series.map((s) => localMD(String(s.date || "")));
@@ -1120,10 +1130,11 @@
       const txs = D.TRANSACTIONS || [];
       const sums = {};
       txs.forEach((t) => { sums[t.type] = (sums[t.type] || 0) + t.pts; });
-      net = txs.reduce((a, t) => a + t.pts, 0);
+      // C2047：同一约定 —— 逐类型转符号后求和（未来若 mock 里出现未知类型，按服务端的 `ELSE -pts` 口径视为支出）
+      net = Object.keys(sums).reduce((a, k) => a + signedPts(k, sums[k]), 0);
       rowsHtml = MONTH_TYPE_LABELS
         .filter(([k]) => sums[k])
-        .map(([k, label]) => monthChangeItem(label(), sums[k], false)).join("");
+        .map(([k, label]) => monthChangeItem(label(), signedPts(k, sums[k]), false)).join("");
       const days = lastDayLabels(7);
       sparkData = dailySeries(days);
       sparkLabels = days;
@@ -1327,7 +1338,11 @@
     { key: "tokens", title: () => T("tx.col.tokens"), sort: "number", align: "num",
       render: (t) => '<span' + t.tokenBrk(T("tx.col.tokens"), t.tokensRaw) + '>' + t.tokens + "</span>" },
     { key: "pts", title: () => T("tx.col.pts"), sort: "number", filter: "number-range", align: "num",
-      render: (t) => '<span style="color:' + (t.pts > 0 ? "var(--ok)" : "var(--text)") + ';font-weight:600">' + (t.pts > 0 ? "+" : "") + D.fmt(t.pts) + "</span>" },
+      // C2047：方向取自 type（signedPts），不能按 pts 的符号判 —— 所有 writer 都存正数 ⇒ 消费会显示成绿色的 +N
+      render: (t) => {
+        const v = signedPts(t.type, t.pts);
+        return '<span style="color:' + (v > 0 ? "var(--ok)" : v < 0 ? "var(--danger)" : "var(--text)") + ';font-weight:600">' + (v > 0 ? "+" : "") + D.fmt(v) + "</span>";
+      } },
     { key: "status", title: () => T("tx.col.status"), sort: "string", filter: "select",
       // C2031：同 type —— value 是库内值（成功/入账/处理中，语言无关），label 随语言变
       options: () => ["成功", "入账", "处理中"].map((s) => ({ value: s, label: txStatus(s) })),
