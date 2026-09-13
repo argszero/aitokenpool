@@ -100,7 +100,7 @@ pub async fn runtime(
     let month_out: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(pts), 0) FROM transactions \
-             WHERE type IN ('consume', 'withdraw') \
+             WHERE type IN ('consume', 'expire', 'withdraw') \
                AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
             [],
             |r| r.get(0),

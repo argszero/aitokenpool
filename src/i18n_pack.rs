@@ -60,7 +60,7 @@ const ZH_KEY_COUNT: usize = 786;
 const EN_KEY_COUNT: usize = 786;
 const STATIC_ATTR_COUNT: usize = 330;
 const STATIC_ATTR_DISTINCT: usize = 305;
-const T_LITERAL_COUNT: usize = 537;
+const T_LITERAL_COUNT: usize = 538;
 const T_LITERAL_DISTINCT: usize = 430;
 
 /// 切出语言包区段（起点标记 → 终点标记，含起点）。
