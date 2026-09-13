@@ -634,8 +634,17 @@ fn build_message_delta_event(stop_reason: Option<&String>, usage_json: Option<Va
 #[derive(Default)]
 struct ResponsesStreamState {
     initialized: bool,
-    tool_output_index: usize,
-    emitted_tool_calls: std::collections::HashSet<String>,
+    /// 下一个可用的 `output_index`。**唯一且按宣布顺序单调递增**。
+    ///
+    /// 修复前这里是两个各自从 0 起算的计数器：message 条目的索引写死 0（初始化块），
+    /// `tool_output_index` 也从 0 起 ⇒ 一次响应同时含文本与工具调用时，两个不同条目都被
+    /// 宣布在 `output_index: 0`，客户端按 `output_index` 跟踪条目（协议给它就是这个用途）
+    /// 时后一个覆盖前一个 —— 通常丢掉的是 agent 客户端正在等的 `function_call`。
+    next_output_index: usize,
+    /// message 条目被宣布时拿到的索引（从未宣布过 = `None`）。
+    message_output_index: Option<usize>,
+    /// `call_id` → 该 `function_call` 条目被宣布时拿到的索引。
+    tool_call_indices: HashMap<String, usize>,
     upstream_id: String,
     model: String,
     text: String,
@@ -645,15 +654,74 @@ struct ResponsesStreamState {
 }
 
 impl ResponsesStreamState {
+    /// 给一个**即将宣布**的条目分配 `output_index`（唯一、单调递增）。
+    fn next_index(&mut self) -> usize {
+        let index = self.next_output_index;
+        self.next_output_index += 1;
+        index
+    }
+
+    /// 宣布 message 条目：返回 (它的 `output_index`, 事件文本)。
+    ///
+    /// 事件文本含 `response.output_item.added` + `response.content_part.added` 两条。
+    /// 同一个条目只拿到一个索引（第二次调用沿用第一次的索引、不再递增计数器）；调用方只在
+    /// `message_output_index` 还是 `None` 时调用它（即第一次拿到文本时），因此事件只发一次。
+    fn announce_message_item(&mut self, item_id: &str) -> (usize, String) {
+        let index = match self.message_output_index {
+            Some(index) => index,
+            None => {
+                let index = self.next_index();
+                self.message_output_index = Some(index);
+                index
+            }
+        };
+        let mut events = String::new();
+        let _ = write!(
+            events,
+            "event: response.output_item.added\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "response.output_item.added",
+                "output_index": index,
+                "item": {
+                    "id": item_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": []
+                }
+            }))
+            .unwrap_or_default()
+        );
+        let _ = write!(
+            events,
+            "event: response.content_part.added\ndata: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "response.content_part.added",
+                "item_id": item_id,
+                "output_index": index,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "", "annotations": []}
+            }))
+            .unwrap_or_default()
+        );
+        (index, events)
+    }
+
     /// 终局 `response.completed` 的 `response` 对象。
     ///
-    /// 形状与整包路径**同源**（`protocol::openai_chat_message_to_responses_output` /
-    /// `protocol::openai_usage_to_responses_usage`），因此两条路径给出同一组字段：
-    /// `id` / `object` / `model` / `output` / `usage`。
+    /// 条目**形状**与整包路径**同源**（`protocol::openai_chat_message_item` /
+    /// `protocol::openai_chat_tool_call_item` / `protocol::openai_usage_to_responses_usage`），
+    /// 因此两条路径给出同一组字段：`id` / `object` / `model` / `output` / `usage`。
     ///
-    /// 两处**已记录**的分叉（本次改动不动它们）：① `id` 带 `resp_` 前缀（增量事件用的是
-    /// 同一个 id，客户端只可能看到一条路径）；② message item 的 id 用 `msg_…` —— 必须与
-    /// 本路径已发出的 `response.output_item.added` / 增量事件的 `item_id` 一致。
+    /// 条目**顺序**则按本路径自己的权威：**宣布顺序**（各条目在流里被
+    /// `response.output_item.added` 宣布时拿到的 `output_index` 升序）。整包路径的顺序是
+    /// 它的既有约定（`function_call` 在前、`message` 在后）—— 两条路径的顺序本就不同，
+    /// 但各自与自己的权威一致；流式若照抄整包的顺序，终局就会与自己已发出的增量事件矛盾。
+    ///
+    /// 三处**已记录**的分叉：① `id` 带 `resp_` 前缀（增量事件用的是同一个 id，客户端只可能
+    /// 看到一条路径）；② message item 的 id 用 `msg_…` —— 必须与本路径已发出的
+    /// `response.output_item.added` / 增量事件的 `item_id` 一致；③ **不变式**：终局列出的条目
+    /// == 本流宣布过的条目（message 条目在第一次拿到文本时才宣布 ⇒ 没有文本就没有它，
+    /// 与整包路径一致）。
     /// `status` 是流式独有的字段（整包路径没有；截断语义属宿主裁定族，此处沿用
     /// `completed`，不引入 `incomplete`）。
     fn terminal_response(&self) -> Value {
@@ -661,14 +729,30 @@ impl ResponsesStreamState {
         if !self.tool_calls.is_empty() {
             message["tool_calls"] = Value::Array(self.tool_calls.clone());
         }
+        // 终局 output = 本流**宣布过的**条目，按各自的 output_index 升序排列
+        let mut announced: Vec<(usize, Value)> = Vec::new();
+        if let Some(index) = self.message_output_index {
+            if let Some(item) = crate::protocol::openai_chat_message_item(
+                &format!("msg_{}", self.upstream_id),
+                message.get("content"),
+            ) {
+                announced.push((index, item));
+            }
+        }
+        for tc in &self.tool_calls {
+            let call_id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            if let Some(index) = self.tool_call_indices.get(call_id) {
+                announced.push((*index, crate::protocol::openai_chat_tool_call_item(tc)));
+            }
+        }
+        announced.sort_by_key(|(index, _)| *index);
+        let output: Vec<Value> = announced.into_iter().map(|(_, item)| item).collect();
+
         json!({
             "id": format!("resp_{}", self.upstream_id),
             "object": "response",
             "model": self.model,
-            "output": crate::protocol::openai_chat_message_to_responses_output(
-                &message,
-                &format!("msg_{}", self.upstream_id)
-            ),
+            "output": output,
             "usage": crate::protocol::openai_usage_to_responses_usage(self.usage.as_ref()),
             "status": "completed"
         })
@@ -775,6 +859,12 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                     let delta_role = delta.and_then(|d| d.get("role")).and_then(|r| r.as_str());
 
                     // 首个内容 chunk 发初始事件
+                    //
+                    // message 条目**不在这里**宣布：声明「流宣布过的条目」与终局 `output`
+                    // 的内容必须一致，而终局里的 message 条目由文本决定（没有文本 ⇒ 整包路径
+                    // 也没有这个条目）。宣布改在真正拿到文本的地方（内容增量块），于是
+                    // 「宣布过的条目」与「终局列出的条目」是同一个集合，`output_index` 也就是
+                    // 该条目在 `output` 数组里的位置。
                     if !state.initialized && delta_role != Some("assistant") {
                         state.initialized = true;
                         let mut events = String::new();
@@ -792,31 +882,6 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                                 }
                             })).unwrap_or_default()
                         );
-                        let _ = write!(
-                            events,
-                            "event: response.output_item.added\ndata: {}\n\n",
-                            serde_json::to_string(&json!({
-                                "type": "response.output_item.added",
-                                "output_index": 0,
-                                "item": {
-                                    "id": format!("msg_{id}"),
-                                    "type": "message",
-                                    "role": "assistant",
-                                    "content": []
-                                }
-                            })).unwrap_or_default()
-                        );
-                        let _ = write!(
-                            events,
-                            "event: response.content_part.added\ndata: {}\n\n",
-                            serde_json::to_string(&json!({
-                                "type": "response.content_part.added",
-                                "item_id": format!("msg_{id}"),
-                                "output_index": 0,
-                                "content_index": 0,
-                                "part": {"type": "output_text", "text": "", "annotations": []}
-                            })).unwrap_or_default()
-                        );
                         yield Ok(Bytes::from(events));
                     }
 
@@ -825,14 +890,29 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                         if let Some(text) = delta.and_then(|d| d.get("content")).and_then(|c| c.as_str()) {
                             if !text.is_empty() {
                                 state.text.push_str(text);
-                                let data = serde_json::to_string(&json!({
-                                    "type": "response.output_text.delta",
-                                    "item_id": format!("msg_{id}"),
-                                    "output_index": 0,
-                                    "content_index": 0,
-                                    "delta": text
-                                })).unwrap_or_default();
-                                yield Ok(Bytes::from(format!("event: response.output_text.delta\ndata: {data}\n\n")));
+                                let mut events = String::new();
+                                // message 条目在**第一次有文本时**宣布：拿到自己的 `output_index`
+                                // （与工具调用条目共用同一个单调计数器 ⇒ 不会撞车）。
+                                let msg_index = match state.message_output_index {
+                                    Some(index) => index,
+                                    None => {
+                                        let (index, announce) = state.announce_message_item(&format!("msg_{id}"));
+                                        events.push_str(&announce);
+                                        index
+                                    }
+                                };
+                                let _ = write!(
+                                    events,
+                                    "event: response.output_text.delta\ndata: {}\n\n",
+                                    serde_json::to_string(&json!({
+                                        "type": "response.output_text.delta",
+                                        "item_id": format!("msg_{id}"),
+                                        "output_index": msg_index,
+                                        "content_index": 0,
+                                        "delta": text
+                                    })).unwrap_or_default()
+                                );
+                                yield Ok(Bytes::from(events));
                             }
                         }
                     }
@@ -880,30 +960,36 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                                     "function": {"name": tc_name, "arguments": tc_args}
                                 })),
                             }
+                            // 首次见到该 call id ⇒ 宣布它的条目，并从**同一个**单调计数器拿到
+                            // `output_index`（与 message 条目共用一个计数器 ⇒ 每个条目唯一）。
                             let key = tc_id.to_string();
-                            if !state.emitted_tool_calls.contains(&key) {
-                                state.emitted_tool_calls.insert(key);
-                                let output_index = state.tool_output_index;
-                                state.tool_output_index += 1;
-                                let item_id = format!("fc_{tc_id}");
-                                let data = serde_json::to_string(&json!({
-                                    "type": "response.output_item.added",
-                                    "output_index": output_index,
-                                    "item": {
-                                        "id": item_id,
-                                        "type": "function_call",
-                                        "call_id": tc_id,
-                                        "name": tc_name,
-                                        "arguments": tc_args
-                                    }
-                                })).unwrap_or_default();
-                                yield Ok(Bytes::from(format!("event: response.output_item.added\ndata: {data}\n\n")));
-                            }
                             let item_id = format!("fc_{tc_id}");
+                            let output_index = match state.tool_call_indices.get(&key) {
+                                Some(index) => *index,
+                                None => {
+                                    let index = state.next_index();
+                                    state.tool_call_indices.insert(key, index);
+                                    let data = serde_json::to_string(&json!({
+                                        "type": "response.output_item.added",
+                                        "output_index": index,
+                                        "item": {
+                                            "id": item_id,
+                                            "type": "function_call",
+                                            "call_id": tc_id,
+                                            "name": tc_name,
+                                            "arguments": tc_args
+                                        }
+                                    })).unwrap_or_default();
+                                    yield Ok(Bytes::from(format!("event: response.output_item.added\ndata: {data}\n\n")));
+                                    index
+                                }
+                            };
+                            // 增量事件用**该条目自己的**索引（同一 chunk 里多个 tool_call、或
+                            // 同一个 call id 的续块，都不能靠「刚宣布的那个」推出来）
                             let data = serde_json::to_string(&json!({
                                 "type": "response.function_call_arguments.delta",
                                 "item_id": item_id,
-                                "output_index": state.tool_output_index.saturating_sub(1),
+                                "output_index": output_index,
                                 "delta": tc_args
                             })).unwrap_or_default();
                             yield Ok(Bytes::from(format!("event: response.function_call_arguments.delta\ndata: {data}\n\n")));
@@ -1961,18 +2047,24 @@ mod tests {
             2,
             "一个 function_call + 一个 message：{terminal}"
         );
-        assert_eq!(output[0]["type"], "function_call");
-        assert_eq!(output[0]["id"], "fc_call_1");
-        assert_eq!(output[0]["call_id"], "call_1");
-        assert_eq!(output[0]["name"], "get_weather");
+        // 顺序 = **宣布顺序**：本流的文本先到（message 条目先被宣布 ⇒ 索引 0），工具调用后到
         assert_eq!(
-            output[0]["arguments"], "{\"city\":\"SF\"}",
+            output_type_sequence(&terminal["output"]),
+            vec!["message", "function_call"],
+            "终局条目顺序必须与流自己的宣布顺序一致：{terminal}"
+        );
+        assert_eq!(output[0]["type"], "message");
+        assert_eq!(output[0]["id"], "msg_c1", "必须与增量事件的 item_id 一致");
+        assert_eq!(output[0]["content"][0]["type"], "output_text");
+        assert_eq!(output[0]["content"][0]["text"], "Hello");
+        assert_eq!(output[1]["type"], "function_call");
+        assert_eq!(output[1]["id"], "fc_call_1");
+        assert_eq!(output[1]["call_id"], "call_1");
+        assert_eq!(output[1]["name"], "get_weather");
+        assert_eq!(
+            output[1]["arguments"], "{\"city\":\"SF\"}",
             "arguments 增量必须拼接成完整 JSON（并与整包路径同样做一次 parse → 紧凑序列化）"
         );
-        assert_eq!(output[1]["type"], "message");
-        assert_eq!(output[1]["id"], "msg_c1", "必须与增量事件的 item_id 一致");
-        assert_eq!(output[1]["content"][0]["type"], "output_text");
-        assert_eq!(output[1]["content"][0]["text"], "Hello");
         assert!(!out.contains("data: {}"), "不得再有空负载的终局事件：{out}");
     }
 
@@ -2123,30 +2215,47 @@ mod tests {
                 w_out.len()
             ));
         }
-        for (i, (s, w)) in s_out.iter().zip(w_out.iter()).enumerate() {
+        // 条目形状**按身份比，不按下标比**：两条路径的**顺序规则刻意不同**（流式＝宣布顺序，
+        // 整包＝function_call 在前、message 在后，见各自的断言），按下标比会把「顺序规则
+        // 不同」误报成「形状不同」，也会把「形状不同」漏报成「顺序不同」。
+        let (s_items, w_items) = (
+            output_items_by_identity(s_out),
+            output_items_by_identity(w_out),
+        );
+        if s_items.len() != w_items.len() {
+            return Some(format!(
+                "条目身份集合不同：{:?} vs {:?}",
+                s_items.keys().collect::<Vec<_>>(),
+                w_items.keys().collect::<Vec<_>>()
+            ));
+        }
+        for (key, s) in &s_items {
+            let Some(w) = w_items.get(key) else {
+                return Some(format!("整包路径缺少条目 {key}"));
+            };
             if s["type"] != w["type"] {
                 return Some(format!(
-                    "output[{i}].type 不同：{:?} vs {:?}",
+                    "条目 {key} 的 type 不同：{:?} vs {:?}",
                     s["type"], w["type"]
                 ));
             }
             match s["type"].as_str() {
                 Some("function_call") => {
-                    for key in ["id", "call_id", "name", "arguments"] {
-                        if s[key] != w[key] {
+                    for field in ["id", "call_id", "name", "arguments"] {
+                        if s[field] != w[field] {
                             return Some(format!(
-                                "output[{i}].{key} 不同：{:?} vs {:?}",
-                                s[key], w[key]
+                                "条目 {key} 的 {field} 不同：{:?} vs {:?}",
+                                s[field], w[field]
                             ));
                         }
                     }
                 }
                 Some("message") => {
-                    for key in ["role", "content"] {
-                        if s[key] != w[key] {
+                    for field in ["role", "content"] {
+                        if s[field] != w[field] {
                             return Some(format!(
-                                "output[{i}].{key} 不同：{:?} vs {:?}",
-                                s[key], w[key]
+                                "条目 {key} 的 {field} 不同：{:?} vs {:?}",
+                                s[field], w[field]
                             ));
                         }
                     }
@@ -2156,17 +2265,50 @@ mod tests {
                     );
                     if si != format!("msg_{wi}") {
                         return Some(format!(
-                            "output[{i}].id 前缀分叉不再是已记录的关系：{si} vs {wi}"
+                            "message 条目 id 前缀分叉不再是已记录的关系：{si} vs {wi}"
                         ));
                     }
                 }
-                other => return Some(format!("output[{i}].type 未知：{other:?}")),
+                other => return Some(format!("条目 {key} 的 type 未知：{other:?}")),
             }
         }
         None
     }
 
+    /// 终局 `output` → 身份键 → 条目。
+    ///
+    /// 身份键：`message` 条目用 `"message"`（本形状下每个响应至多一个 message 条目）；
+    /// `function_call` 条目用协议自己用来关联工具调用的 `call_id`。
+    fn output_items_by_identity(output: &[Value]) -> std::collections::BTreeMap<String, &Value> {
+        let mut map = std::collections::BTreeMap::new();
+        for item in output {
+            let key = match item["type"].as_str().unwrap_or("") {
+                "message" => "message".to_string(),
+                "function_call" => {
+                    format!("function_call:{}", item["call_id"].as_str().unwrap_or(""))
+                }
+                other => format!("unknown:{other}"),
+            };
+            map.insert(key, item);
+        }
+        map
+    }
+
+    /// 终局 `output` 的条目类型序列（用来把两条路径各自的**顺序规则**钉成显式断言）。
+    fn output_type_sequence(output: &Value) -> Vec<String> {
+        output
+            .as_array()
+            .expect("output 是数组")
+            .iter()
+            .map(|item| item["type"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
     /// 同一份上游内容：流式终局对象与整包对象必须同形（形状字段，不只完成信号）
+    ///
+    /// 两件事同时成立：① 条目**形状**按身份逐字段相同；② 两条路径各自遵守自己的
+    /// **顺序规则**（流式＝宣布顺序 ⇒ 有文本时 message 在前；整包＝既有约定 ⇒ function_call
+    /// 在前）—— 规则不同是刻意的，这里把两条都写成显式断言，而不是把整包也改掉。
     #[test]
     fn responses_terminal_shape_agrees_between_stream_and_whole_body() {
         let cases: Vec<(&str, Vec<Value>, Option<Value>)> = vec![
@@ -2180,6 +2322,16 @@ mod tests {
                 vec![json!({"id": "call_1", "type": "function",
                     "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}})],
                 Some(json!({"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13})),
+            ),
+            (
+                "两个工具调用",
+                vec![
+                    json!({"id": "call_1", "type": "function",
+                        "function": {"name": "a", "arguments": "{\"x\":1}"}}),
+                    json!({"id": "call_2", "type": "function",
+                        "function": {"name": "b", "arguments": "{}"}}),
+                ],
+                Some(json!({"prompt_tokens": 11, "completion_tokens": 6, "total_tokens": 17})),
             ),
             (
                 "",
@@ -2196,10 +2348,229 @@ mod tests {
                 usage.clone(),
             ));
             let whole = whole_body_responses(text, &tool_calls, usage);
+
+            // 不变式：流**宣布过的条目** == 终局 `output` 的条目（同集合、同顺序）
+            let announced = announced_items(&out);
+            assert_eq!(
+                announced
+                    .iter()
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>(),
+                output_item_ids(&streamed["output"]),
+                "终局 output 必须恰好是本流宣布过的条目、且按宣布顺序（{text:?}）：{out}"
+            );
+
+            // 顺序规则：流式＝宣布顺序（有文本时 message 先），整包＝既有约定（工具调用先）
+            let mut expected_streamed: Vec<&str> = vec!["function_call"; tool_calls.len()];
+            let mut expected_whole: Vec<&str> = expected_streamed.clone();
+            if !text.is_empty() {
+                // 流式：message 条目在文本到达时先被宣布 ⇒ 排在前面
+                expected_streamed.insert(0, "message");
+                // 整包：既有约定是工具调用在前、message 在后
+                expected_whole.push("message");
+            }
+            assert_eq!(
+                output_type_sequence(&streamed["output"]),
+                expected_streamed,
+                "流式顺序规则 = 宣布顺序（{text:?}）"
+            );
+            assert_eq!(
+                output_type_sequence(&whole["output"]),
+                expected_whole,
+                "整包顺序规则 = 工具调用在前（{text:?}）"
+            );
+
             if let Some(diff) = responses_parity_diff(&streamed, &whole) {
                 panic!("流式与整包形状不一致（{text:?}）：{diff}\n流式：{streamed}\n整包：{whole}\n{out}");
             }
         }
+    }
+
+    // ── 轴：条目的身份（`output_index`）与终局顺序（C2077/C2078）──────────────
+
+    /// 流里 `response.output_item.added` 事件按发出顺序的 `(item id, output_index)`
+    fn announced_items(out: &str) -> Vec<(String, usize)> {
+        sse_events(out)
+            .into_iter()
+            .filter(|(name, _)| name == "response.output_item.added")
+            .map(|(_, data)| {
+                let v: Value = serde_json::from_str(&data)
+                    .unwrap_or_else(|e| panic!("条目宣布事件负载必须是 JSON（{e}）：{data}"));
+                let id = v["item"]["id"].as_str().unwrap_or("").to_string();
+                let index = v["output_index"]
+                    .as_u64()
+                    .unwrap_or_else(|| panic!("output_index 必须是整数：{v}"))
+                    as usize;
+                (id, index)
+            })
+            .collect()
+    }
+
+    /// 终局 `output` 的条目 id 序列
+    fn output_item_ids(output: &Value) -> Vec<String> {
+        output
+            .as_array()
+            .expect("output 是数组")
+            .iter()
+            .map(|item| item["id"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// 轴：每个被宣布的条目拿到**唯一**的 `output_index`，按宣布顺序单调递增，且终局
+    /// `output` 按同一顺序列出它们。
+    ///
+    /// 修复前（C2077 量到）：message 条目的索引写死 0，而 `tool_output_index` 从 0 起 ⇒
+    /// 「文本 + 工具调用」的响应里 message 与第一个 function_call **都是 0**，客户端按
+    /// `output_index` 跟踪条目时后一个覆盖前一个（通常丢掉 agent 客户端在等的工具调用）。
+    #[test]
+    fn responses_item_indices_are_unique_and_match_the_announced_order() {
+        let chunks = vec![
+            chat_chunk(json!({"role": "assistant", "content": ""}), None, None),
+            chat_chunk(json!({"content": "Hello"}), None, None),
+            // 同一个 chunk 里两个工具调用（索引必须各自分配）
+            chat_chunk(
+                json!({"tool_calls": [
+                    {"index": 0, "id": "call_1", "type": "function",
+                     "function": {"name": "a", "arguments": "{\"x\":"}},
+                    {"index": 1, "id": "call_2", "type": "function",
+                     "function": {"name": "b", "arguments": "{}"}}
+                ]}),
+                None,
+                None,
+            ),
+            // 第一个工具调用的**续块**：增量事件必须仍用它自己的索引（不能靠「刚宣布的那个」）
+            chat_chunk(
+                json!({"tool_calls": [
+                    {"index": 0, "id": "call_1", "type": "function", "function": {"arguments": "1}"}}
+                ]}),
+                None,
+                None,
+            ),
+            chat_chunk(json!({}), Some("tool_calls"), None),
+        ];
+        let (terminal, out) = streamed_responses_terminal(chunks);
+
+        // ① 三个条目、索引恰好 {0,1,2}（断言**多重集**，不只断长度）
+        let announced = announced_items(&out);
+        assert_eq!(
+            announced
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["msg_c1", "fc_call_1", "fc_call_2"],
+            "宣布顺序：message 先（文本先到），随后各 function_call：{out}"
+        );
+        let indices: Vec<usize> = announced.iter().map(|(_, index)| *index).collect();
+        let mut sorted = indices.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            vec![0, 1, 2],
+            "索引必须互不相同：{indices:?}\n{out}"
+        );
+        assert_eq!(indices, vec![0, 1, 2], "且按宣布顺序单调递增：{indices:?}");
+        assert!(
+            out.contains("\"arguments\":\"{\\\"x\\\":1}\""),
+            "两段参数必须拼成完整 JSON：{out}"
+        );
+
+        // ② 终局 `output` 的顺序 == 宣布顺序（逐项按 id 对齐，不按下标猜）
+        assert_eq!(
+            output_item_ids(&terminal["output"]),
+            announced
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
+            "流宣布了什么顺序，终局就列什么顺序：{terminal}"
+        );
+
+        // ③ 每个参数增量事件必须引用**它自己的**条目索引
+        let mut deltas = 0;
+        for (name, data) in sse_events(&out) {
+            if name != "response.function_call_arguments.delta" {
+                continue;
+            }
+            let v: Value = serde_json::from_str(&data).expect("增量负载是 JSON");
+            let item_id = v["item_id"].as_str().unwrap_or("");
+            let expected = announced
+                .iter()
+                .find(|(id, _)| id == item_id)
+                .map(|(_, index)| *index)
+                .unwrap_or_else(|| panic!("增量事件的 item_id 必须宣布过：{item_id}\n{out}"));
+            assert_eq!(
+                v["output_index"].as_u64().unwrap_or(999) as usize,
+                expected,
+                "参数增量必须引用该条目自己的索引：{v}"
+            );
+            deltas += 1;
+        }
+        assert_eq!(deltas, 3, "call_1 两段 + call_2 一段：{out}");
+    }
+
+    /// 「工具调用先到、文本后到」的流：顺序规则仍然是**宣布顺序**（不是「message 永远第一」）。
+    #[test]
+    fn responses_items_follow_the_announcement_order_when_tool_calls_come_first() {
+        let chunks = vec![
+            chat_chunk(json!({"role": "assistant", "content": ""}), None, None),
+            chat_chunk(
+                json!({"tool_calls": [{"index": 0, "id": "call_9", "type": "function",
+                    "function": {"name": "f", "arguments": "{}"}}]}),
+                None,
+                None,
+            ),
+            chat_chunk(json!({"content": "after"}), None, None),
+            chat_chunk(json!({}), Some("stop"), None),
+        ];
+        let (terminal, out) = streamed_responses_terminal(chunks);
+
+        let announced = announced_items(&out);
+        assert_eq!(
+            announced
+                .iter()
+                .map(|(id, index)| (id.as_str(), *index))
+                .collect::<Vec<_>>(),
+            vec![("fc_call_9", 0), ("msg_c1", 1)],
+            "索引顺序＝宣布顺序（工具调用先到 ⇒ 它先拿索引）：{out}"
+        );
+        assert_eq!(
+            output_item_ids(&terminal["output"]),
+            vec!["fc_call_9".to_string(), "msg_c1".to_string()],
+            "终局顺序跟宣布顺序（不是跟整包的「工具调用在前」）：{terminal}"
+        );
+        assert_eq!(
+            terminal["output"][1]["content"][0]["text"], "after",
+            "文本仍必须送达：{terminal}"
+        );
+
+        let whole = whole_body_responses(
+            "after",
+            &[json!({"id": "call_9", "type": "function",
+                "function": {"name": "f", "arguments": "{}"}})],
+            None,
+        );
+        if let Some(diff) = responses_parity_diff(&terminal, &whole) {
+            panic!("工具调用先到的流也必须与整包同形（按身份比）：{diff}\n流式：{terminal}\n整包：{whole}\n{out}");
+        }
+    }
+
+    /// 没有文本、没有工具调用的流：**不宣布任何条目**，终局 `output` 也是空的 ——
+    /// 「宣布过的条目」与「终局列出的条目」是同一个集合，这条极简流也不例外。
+    #[test]
+    fn responses_stream_without_content_announces_no_items() {
+        let chunks = vec![
+            chat_chunk(json!({"role": "assistant", "content": ""}), None, None),
+            chat_chunk(json!({}), Some("stop"), None),
+        ];
+        let (terminal, out) = streamed_responses_terminal(chunks);
+        assert!(
+            announced_items(&out).is_empty(),
+            "无内容 ⇒ 不宣布条目：{out}"
+        );
+        assert_eq!(
+            terminal["output"],
+            json!([]),
+            "终局 output 与整包路径一致（都为空）：{terminal}"
+        );
     }
 
     /// 阳性对照：parity 比较器必须能拒绝形状不同的对象（否则「一致」是永久免检证）

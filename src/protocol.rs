@@ -632,70 +632,102 @@ pub fn anthropic_to_openai_chat_resp(body: &Value) -> Value {
     })
 }
 
-/// OpenAI Chat 的 `message`（`content` + `tool_calls`）→ Responses 的 `output` 数组。
+/// Responses 的 **`message` 条目**（`type: "message"`）。
 ///
 /// **唯一真源**：整包路径（`openai_chat_to_openai_responses_resp`）与流式终局事件
-/// （`sse::openai_sse_to_openai_responses`）都调用本函数 —— 两条路径各写一份 output
-/// 构造代码，正是「同一协议对两条路径给出不同形状」这类缺陷的来源。
+/// （`sse::ResponsesStreamState::terminal_response`）都调用本函数 —— 两条路径各写一份条目
+/// 形状，正是「同一协议对两条路径给出不同形状」这类缺陷的来源。
 ///
 /// `message_item_id` 由调用方给出：整包路径沿用响应 id（历史行为，勿改），流式路径必须
 /// 用它自己在增量事件里已经发过的 `msg_…` id，否则终局对象与自己的增量自相矛盾。
+///
+/// `content` 为字符串或 content-part 数组；没有任何可输出文本时返回 `None`（整包路径据此
+/// 省略 message 条目，流式路径据此判断该条目是否存在于终局 `output` 里）。
+pub fn openai_chat_message_item(message_item_id: &str, content: Option<&Value>) -> Option<Value> {
+    let mut content_parts = Vec::new();
+
+    match content {
+        Some(Value::String(text)) => {
+            if !text.is_empty() {
+                content_parts.push(json!({"type": "output_text", "text": text, "annotations": []}));
+            }
+        }
+        Some(Value::Array(parts)) => {
+            for part in parts {
+                let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                match part_type {
+                    "text" | "output_text" => {
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            content_parts.push(
+                                json!({"type": "output_text", "text": text, "annotations": []}),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if content_parts.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "id": message_item_id,
+        "type": "message",
+        "role": "assistant",
+        "content": content_parts
+    }))
+}
+
+/// Responses 的 **`function_call` 条目**（`type: "function_call"`）。
+///
+/// **唯一真源**：整包路径与流式终局事件共用。`arguments` 做一次 parse → 紧凑序列化
+/// （上游可能给带空白的 JSON；parse 失败则给 `{}`）。
+pub fn openai_chat_tool_call_item(tool_call: &Value) -> Value {
+    let id = tool_call.get("id").and_then(|i| i.as_str()).unwrap_or("");
+    let func = tool_call.get("function");
+    let name = func
+        .and_then(|f| f.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("");
+    let args = func
+        .and_then(|f| f.get("arguments"))
+        .and_then(|a| a.as_str())
+        .unwrap_or("{}");
+    let arguments: Value = serde_json::from_str(args).unwrap_or(json!({}));
+    json!({
+        "id": format!("fc_{id}"),
+        "type": "function_call",
+        "call_id": id,
+        "name": name,
+        "arguments": serde_json::to_string(&arguments).unwrap_or_default()
+    })
+}
+
+/// OpenAI Chat 的 `message`（`content` + `tool_calls`）→ Responses 的 `output` 数组。
+///
+/// 本函数只负责**整包路径的拼装顺序**（既有约定：`function_call` 在前、`message` 在后）；
+/// 条目形状本身来自上面两个唯一真源函数。
+///
+/// ⚠️ 流式路径**不**走本函数：它按自己的**宣布顺序**拼装终局 `output`
+/// （`sse::ResponsesStreamState::terminal_response`），否则终局顺序会与它已经发出的
+/// `response.output_item.added` 顺序矛盾。顺序规则两条路径各自与自己的权威一致，形状同源。
 pub fn openai_chat_message_to_responses_output(
     message: &Value,
     message_item_id: &str,
 ) -> Vec<Value> {
     let mut output = Vec::new();
-    let mut content_parts = Vec::new();
-
-    if let Some(text) = message.get("content").and_then(|c| c.as_str()) {
-        if !text.is_empty() {
-            content_parts.push(json!({"type": "output_text", "text": text, "annotations": []}));
-        }
-    } else if let Some(parts) = message.get("content").and_then(|c| c.as_array()) {
-        for part in parts {
-            let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            match part_type {
-                "text" | "output_text" => {
-                    if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                        content_parts
-                            .push(json!({"type": "output_text", "text": text, "annotations": []}));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(|t| t.as_array()) {
         for tc in tool_calls {
-            let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
-            let func = tc.get("function");
-            let name = func
-                .and_then(|f| f.get("name"))
-                .and_then(|n| n.as_str())
-                .unwrap_or("");
-            let args = func
-                .and_then(|f| f.get("arguments"))
-                .and_then(|a| a.as_str())
-                .unwrap_or("{}");
-            let arguments: Value = serde_json::from_str(args).unwrap_or(json!({}));
-            output.push(json!({
-                "id": format!("fc_{id}"),
-                "type": "function_call",
-                "call_id": id,
-                "name": name,
-                "arguments": serde_json::to_string(&arguments).unwrap_or_default()
-            }));
+            output.push(openai_chat_tool_call_item(tc));
         }
     }
 
-    if !content_parts.is_empty() {
-        output.push(json!({
-            "id": message_item_id,
-            "type": "message",
-            "role": "assistant",
-            "content": content_parts
-        }));
+    if let Some(item) = openai_chat_message_item(message_item_id, message.get("content")) {
+        output.push(item);
     }
 
     output
