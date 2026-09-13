@@ -339,7 +339,29 @@ async fn forward(
             }
         };
         let status = resp.status();
-        let bytes = resp.bytes().await.unwrap_or_default().to_vec();
+        // 响应体读取失败**不得**折叠成空 body：状态行只说明响应头，不说明 body 到达。
+        // 2xx + 空 body 会以 `200 OK` + `application/json` 交给客户端（不是任何客户端能
+        // 解析的成功），且 parse_usage 得到 (0,0,0) ⇒ settle_usage 提前返回，该次调用
+        // 从账本与运营计数（month_calls = COUNT(*) FROM usage_records）中同时消失 —— 而
+        // 上游已真实消耗 token。缺数据 != 数据为 0（rant 2026-08-23T14:05:02 同款口径）。
+        // 非 2xx 沿用原分流（401/403/429/5xx 换 key、其它 4xx 透传），仍按空体处理。
+        let bytes = match resp.bytes().await {
+            Ok(b) => b.to_vec(),
+            Err(e) => {
+                log::error!(
+                    "上游响应体读取失败 key_id={} status={}: {e}",
+                    key.id,
+                    status
+                );
+                if status.is_success() {
+                    return Err(err_json(
+                        StatusCode::BAD_GATEWAY,
+                        "上游响应读取失败（响应体未完整到达）",
+                    ));
+                }
+                Vec::new()
+            }
+        };
 
         if status.is_success() {
             // 成功：解析 usage（按上游出站协议）→ 计量入账 → 粘性
@@ -2606,6 +2628,206 @@ data: {"type":"message_delta","usage":{"output_tokens":30}}"#,
             0,
             "被截断的流不入账（流尾 finalize 不执行）"
         );
+        up.abort();
+    }
+
+    /// C2086：脚本化 HTTP 上游 —— 每接受一个连接写一条**预先构造**的原始响应后关闭。
+    /// 必须用裸 socket：`fake_upstream` 这类 axum 假上游只能发出格式正确的 body，
+    /// 「状态行 200 但 body 未完整到达」这个形状在它们身上无法表达。
+    async fn scripted_http_upstream(
+        listener: tokio::net::TcpListener,
+        responses: Vec<String>,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut idx = 0usize;
+        loop {
+            let (mut sock, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 8192];
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_millis(300), sock.read(&mut buf))
+                    .await;
+            let pick = idx.min(responses.len() - 1);
+            idx += 1;
+            let _ = sock.write_all(responses[pick].as_bytes()).await;
+            let _ = sock.flush().await;
+            drop(sock);
+        }
+    }
+
+    /// 构造一条原始响应；`claimed_len` 故意大于实发字节数以模拟 body 未完整到达
+    fn scripted_http_response(status: &str, body: &str, claimed_len: Option<usize>) -> String {
+        let n = claimed_len.unwrap_or(body.len());
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {n}\r\nconnection: close\r\n\r\n{body}"
+        )
+    }
+
+    /// C2086 测试状态：单模型定价 + 属主用户，便于同时断言「入账」与「未入账」
+    fn scripted_upstream_state(tag: &str, port: u16, keys: usize) -> AppState {
+        let base = format!("http://127.0.0.1:{port}");
+        let st = test_state_eps(tag, "test-c2086", &["openai_chat"], &base);
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, email, password_hash, name, role) VALUES (2, 'c2086-owner@t.local', 'x', '分享者', 'user')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (2, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        for i in 0..keys {
+            insert_key(&st, 700 + i as i64, 2, "test-model", "test-c2086");
+        }
+        st
+    }
+
+    fn consumer_balance(st: &AppState) -> f64 {
+        let conn = st.db.lock().unwrap();
+        conn.query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    /// C2085 缺陷：状态行 200 而响应体未完整到达时，**不得**把它变成「成功的空响应」。
+    /// 客户端拿到的必须是显式失败（502），且该次调用不得被记成「零用量成功」
+    /// （否则账本与 month_calls 同时漏掉一次真实消耗的调用）。
+    /// 本测试自带阳性对照：同样一条上游，body 完整时仍须 200 且恰好入账一次。
+    #[tokio::test]
+    async fn forward_body_read_failure_is_not_a_success() {
+        const OK_BODY: &str = r#"{"id":"cmpl-c2086","object":"chat.completion","model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50}}"#;
+
+        // ---- 阳性对照：完整 200 + usage → 200 且恰好入账一次 ----
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let up = tokio::spawn(scripted_http_upstream(
+            listener,
+            vec![scripted_http_response("200 OK", OK_BODY, None)],
+            hits.clone(),
+        ));
+        let st = scripted_upstream_state("c2086ok", port, 1);
+        let key = login_key(st.clone()).await;
+        let (s, body) = post_raw(
+            st.clone(),
+            "/v1/chat/completions",
+            r#"{"model":"test-model","messages":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::OK,
+            "阳性对照：body 完整时必须 200，body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(usage_records(&st), 1, "阳性对照：完整响应恰好入账一次");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "阳性对照：只应发出一次上游请求"
+        );
+        assert!(
+            (consumer_balance(&st) - (12471.0 - 0.0144)).abs() < 1e-9,
+            "阳性对照：消费者应按 usage 扣费，实测 {}",
+            consumer_balance(&st)
+        );
+        up.abort();
+
+        // ---- 缺陷臂：content-length 999、实发不足 → 502，不入账、不重试、余额不变 ----
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let up = tokio::spawn(scripted_http_upstream(
+            listener,
+            vec![scripted_http_response("200 OK", OK_BODY, Some(999))],
+            hits.clone(),
+        ));
+        let st = scripted_upstream_state("c2086trunc", port, 2);
+        let key = login_key(st.clone()).await;
+        let before = consumer_balance(&st);
+        let (s, body) = post_raw(
+            st.clone(),
+            "/v1/chat/completions",
+            r#"{"model":"test-model","messages":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::BAD_GATEWAY,
+            "body 未完整到达时必须显式失败，而不是伪造 200 + 空 body；实测 body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert!(
+            String::from_utf8_lossy(&body).contains("上游响应读取失败"),
+            "502 应说明原因，实测 {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(usage_records(&st), 0, "未完成的响应不得入账");
+        assert_eq!(consumer_balance(&st), before, "未完成的响应不得扣费");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "2xx 之后不得重发（上游可能已完成工作，重试可能让 key 属主被双扣）"
+        );
+        up.abort();
+    }
+
+    /// C2086 非目标回归：非 2xx 且 body 读不到时，**原分流必须不变** ——
+    /// 5xx 仍然换 key（可故障转移），全部 key 失败后仍是 503、且不入账。
+    #[tokio::test]
+    async fn unreadable_body_on_a_server_error_still_fails_over() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let up = tokio::spawn(scripted_http_upstream(
+            listener,
+            vec![scripted_http_response(
+                "500 Internal Server Error",
+                r#"{"error":{"message":"upstream-boom"}}"#,
+                Some(999),
+            )],
+            hits.clone(),
+        ));
+        let st = scripted_upstream_state("c2086failover", port, 2);
+        let key = login_key(st.clone()).await;
+        let (s, body) = post_raw(
+            st.clone(),
+            "/v1/chat/completions",
+            r#"{"model":"test-model","messages":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "两个 key 都 5xx 后应 503，body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "5xx 仍须换 key（body 读不到不改变故障转移判定）"
+        );
+        assert_eq!(st.router.cooldown_len(), 2, "失败的 key 仍应进入冷却");
+        assert_eq!(usage_records(&st), 0, "失败的调用不入账");
         up.abort();
     }
 }
