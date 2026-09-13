@@ -91,6 +91,23 @@ pub async fn create(
         None => (String::new(), String::new(), String::new()),
     };
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    // 只能上架平台**能计价**的 (provider, model)：计费按 `keys.provider` + model 查 `models` 行的价
+    // （`dao::get_model_price`：`WHERE provider = ?1 AND model = ?2`），查不到即 0 计费 ——
+    // 一次真实调用会**静默变成免费**（消费者不扣点、分享者无收益）。校验对象是 `models` 行而不是
+    // `[[providers]]` 表：openai / anthropic / google / xai 只有 `[[models]]` 行、没有 provider 行。
+    if conn
+        .query_row(
+            "SELECT 1 FROM models WHERE provider = ?1 AND model = ?2",
+            params![req.provider, req.model],
+            |_| Ok(()),
+        )
+        .is_err()
+    {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "provider 与 model 不在模型目录中，无法计价" })),
+        ));
+    }
     conn.execute(
         "INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key, quota, available_days, available_start, available_end, note) \
          VALUES (?1, ?2, ?3, 'on', ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -555,5 +572,63 @@ mod tests {
         assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["key"], "aa-****中中中中", "非 ASCII key 应正常脱敏");
+    }
+
+    /// 上架只接受平台**能计价**的 (provider, model)（C2065）。
+    ///
+    /// 计费按 `keys.provider` + model 查 `models` 行的价（`dao::get_model_price`），查不到
+    /// `settle_usage` 取 `None => (0.0, 0.0)` ⇒ 一次真实调用会**静默变成免费**：消费者不扣点、
+    /// 分享者无收益、`usage_records.cost=0`，而调用本身 200 正常返回。故入口拒绝。
+    ///
+    /// 本用例锁三件事：① 目录外的 provider → 400；② 同 provider 下拼错的 model → 400；
+    /// ③ **400 时不得落库**（校验必须在 `INSERT` 之前）；④ 阳性对照：目录中的组合 → 200 且落库
+    /// （证明上面的 400 来自这一条规则，不是「上架坏了」）。
+    #[tokio::test]
+    async fn create_rejects_unpriceable_provider_model() {
+        let st = test_state("unpriceable");
+        let key = login(st.clone()).await;
+        let count = |st: &crate::routes::AppState| -> i64 {
+            let conn = st.db.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM keys", [], |r| r.get(0))
+                .unwrap()
+        };
+        let before = count(&st);
+
+        // ① provider 不在模型目录（model 是真实存在的）
+        let (s, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"WRONG","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-wrong1234","quota":100}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::BAD_REQUEST, "body: {body}");
+
+        // ② 同一 provider、model 拼错
+        let (s, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flsh","key":"sk-typo12345","quota":100}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::BAD_REQUEST, "body: {body}");
+
+        // ③ 两次拒绝都不得写入（校验在 INSERT 之前）
+        assert_eq!(count(&st), before, "被拒绝的上架不得落库");
+
+        // ④ 阳性对照：模型目录中的组合 → 200 且落库
+        let (s, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-control1234","quota":100}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        assert_eq!(count(&st), before + 1, "合法上架应落库一行");
     }
 }
