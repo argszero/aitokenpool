@@ -57,11 +57,15 @@
 | `models` | 模型价格（input / output / cache_hit，可选高峰价；config `[[models]]` 为唯一真源） |
 | `quotas` | 点数账户（balance 永久 + gift_balance 有效赠送） |
 | `gift_grants` | 赠送明细（amount / expires_at / status: active\|used\|expired） |
-| `transactions` | 交易流水（type: consume\|earn\|topup\|gift；含 token 明细列） |
+| `transactions` | 交易流水（type 取值以 `src/routes/wallet.rs` 的 `TX_FILTER_TYPES` 为准；含 token 明细列） |
 | `usage_records` | 调用明细（tokens 拆 input / cached / output） |
 | `departments` / `raise_requests` | 部门 + 成员加额申请（企业版） |
+| `email_verifications` | 注册邮箱验证码（与 `users.verified` 配套，v6 起） |
+| `schema_version` | 迁移记录（当前 v12，见 `src/db.rs` 的 `SCHEMA_VERSION`） |
 
 ## 6. API 一览
+
+> 本表按**功能面**归纳，不是逐条路由的完整清单；权威清单以 `src/routes/mod.rs` 的 `router()` 为准。
 
 - `GET /healthz` — 健康检查（返回版本号）
 - `POST /api/auth/register` / `login` / `verify` / `resend-code` / `forgot` / `change-password`
@@ -72,7 +76,9 @@
 - `GET /api/wallet` / `/api/transactions` / `/api/dashboard` — 钱包 / 交易（summary + 明细）/ 仪表盘
 - `POST/GET/PATCH /api/sharings` — key 上架 / 列表 / 暂停下线
 - `POST /api/admin/credits` / `GET /api/admin/users` / `usage` / `models` CRUD — 管理（role=admin）
-- `GET /api/ops/runtime` / `credits` / `users` — 运营者视图（role=ops）
+- `GET/POST /api/admin/departments` + `PATCH/DELETE /api/admin/departments/:id` — 部门管理（role=admin）
+- `POST/GET /api/raise-requests` + `POST /api/admin/raise-requests/:id/{approve,reject}` — 加额申请 / 审批
+- `GET /api/ops/runtime` / `users`，`POST /api/ops/credits` — 运营者视图（role=ops）
 - `GET /api/config` — 前端动态配置（public_url 等）
 
 ## 7. 部署

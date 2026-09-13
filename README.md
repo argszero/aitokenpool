@@ -55,7 +55,7 @@ cargo run   # 首次自动创建 ./data/ 与配置，打开 http://localhost:808
 
 ### 接入方式
 
-OpenAI 兼容网关端点：`POST /v1/chat/completions`、`POST /v1/responses`、`POST /anthropic/v1/messages`、`GET /v1/models`。接入地址在设置页展示，由 `[server].public_url` 配置（生产请设为真实域名）。API 全清单见 [docs/architecture.md](docs/architecture.md)。
+OpenAI 兼容网关端点：`POST /v1/chat/completions`、`POST /v1/responses`、`POST /anthropic/v1/messages`、`GET /v1/models`。接入地址在设置页展示，由 `[server].public_url` 配置（生产请设为真实域名）。API 一览见 [docs/architecture.md](docs/architecture.md)，权威清单以 `src/routes/mod.rs` 的 `router()` 为准。
 
 ## 文档
 
