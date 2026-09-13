@@ -3,7 +3,7 @@
 //! P0-C（rant 2026-08-18T10:36:04）：
 //! - GET /api/wallet → {balance, month_use, month_earn}
 //! - GET /api/transactions?type=&page=&page_size= → 分页 + type 过滤（consume/earn/all）
-//! - GET /api/dashboard → 本月按类型聚合 + 净变化 + 近 N 天序列（sparkline）
+//! - GET /api/dashboard → 本月按类型聚合 + 本月净变化 + 近 7 天净额序列（sparkline）
 
 use axum::extract::{Query, State};
 use axum::Json;
@@ -442,7 +442,11 @@ pub async fn transactions_trend(
     })))
 }
 
-/// GET /api/dashboard：本月按类型聚合 + 净变化 + 近 7 天净额序列
+/// GET /api/dashboard：本月按类型聚合 + 本月净变化 + 近 7 天净额序列。
+///
+/// 两个窗口刻意不同，各自标注清楚（C2049：`net` 曾按 `series` 求和，与它上方的当月行自相矛盾）：
+/// - `month`（逐类型）与 `net`（净变化）＝**本月**（`strftime('%Y-%m', time)`）；`net` 就是 `month` 行的有符号和；
+/// - `series` ＝**近 7 天**（`date(time) >= date('now','-6 days')`），仅供 sparkline 使用。
 pub async fn dashboard(
     State(st): State<AppState>,
     auth: AuthUser,
@@ -487,9 +491,18 @@ pub async fn dashboard(
         .map_err(internal)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(internal)?;
-    let net: f64 = series
+    // 净变化 = 上方逐类型行的有符号和（同一个月窗口）：
+    // earn/topup/gift 为收入、其余为支出 —— 与下方 series 的 CASE、transactions_trend 的 net 列、
+    // routes/ops.rs 的月份流水同口径（付款方同写正数 pts，方向由 type 决定）。
+    let net: f64 = month
         .iter()
-        .map(|s| s["pts"].as_f64().unwrap_or(0.0))
+        .map(|m| {
+            let pts = m["pts"].as_f64().unwrap_or(0.0);
+            match m["type"].as_str().unwrap_or("") {
+                "earn" | "topup" | "gift" => pts,
+                _ => -pts,
+            }
+        })
         .sum();
     Ok(Json(serde_json::json!({
         "month": month,
@@ -689,6 +702,86 @@ mod tests {
         assert!(
             (net - 2000.5).abs() < 1e-9,
             "dashboard net 应含 topup+gift 为正（=2000.5，实际 {net}）"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_net_is_the_month_net_not_the_7_day_series() {
+        // C2049（施工单 fix/dashboard-net-window）：`/api/dashboard` 的 `net` 曾按 `series`
+        // （近 7 天）求和，而它上方的逐类型行是**本月**聚合 ⇒ 面板里「本月净变化」那一行
+        // 不等于它下面那些行之和。断言写的是**规格**（用独立 SQL 算当月有符号和），不是实现里的算式。
+        //
+        // 夹具刻意横跨两个窗口（纯数据，不伪造时钟）：
+        //   A: consume 10.0 @ datetime('now','start of month') —— 必在当月；仅当「日 ≤ 7」才落在近 7 天窗口内
+        //   B: consume  4.0 @ datetime('now','-6 days')        —— 必在近 7 天窗口内；仅当「日 ≥ 7」才落在当月
+        //   C: earn     3.0 @ now                              —— 两个窗口都必含
+        // ⚠️ 校准：两个窗口只在本月第 7 天重合（那天窗口 = 当月 1..7 日 ⊆ 当月），此时**任何**纯数据夹具都
+        // 观测不到差异（坑 144：观测能力有定义域，写出来，不用时钟技巧硬凑）。故本测试在「日 1..6 / 8..31」
+        // 能判别新实现与旧实现，第 7 天两条实现都通过 —— 断言仍是规格，只是当天的数据不具备判别力。
+        let st = test_state("dashmonthnet");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '2', 1, 'm', 150, 10.0, 'consume', '成功', datetime('now','start of month'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '2', 1, 'm', 150, 4.0, 'consume', '成功', datetime('now','-6 days'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '3', 2, 'm', 150, 3.0, 'earn', '成功', datetime('now'))",
+                [],
+            )
+            .unwrap();
+        }
+        let (s, body) = get(st.clone(), "/api/dashboard", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let net = v["net"].as_f64().unwrap();
+        // 独立 SQL：按同一「方向由 type 决定」的约定，分别在本月窗口与近 7 天窗口上求和
+        let (month_spec, series_spec) = {
+            let conn = st.db.lock().unwrap();
+            let sign = "CASE WHEN type IN ('earn','topup','gift') THEN pts ELSE -pts END";
+            let m: f64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COALESCE(SUM({sign}), 0) FROM transactions \
+                         WHERE user_id = 1 AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')"
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let w: f64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COALESCE(SUM({sign}), 0) FROM transactions \
+                         WHERE user_id = 1 AND date(time) >= date('now', '-6 days')"
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            (m, w)
+        };
+        eprintln!(
+            "C2049 dashboard month={} series={} net={} | month_spec={month_spec} series_spec={series_spec} \
+             discriminating_today={}",
+            v["month"],
+            v["series"],
+            v["net"],
+            (month_spec - series_spec).abs() > 1e-9
+        );
+        assert!(
+            (net - month_spec).abs() < 1e-9,
+            "net 必须是本月净变化（= 上方逐类型行之和 = {month_spec}），实际 {net}"
         );
     }
 
