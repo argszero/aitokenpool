@@ -166,9 +166,20 @@ pub async fn login(
     // 与其他收邮箱的 handler 一致：邮箱归一化为小写再查（users.email 无 COLLATE NOCASE，
     // 注册时已 deflate 为小写；此处不归一化会让大小写变体登录失败）
     let email = req.email.trim().to_lowercase();
+    // 口令哈希只在锁内**取出**，argon2 校验放到锁外：KDF 故意昂贵（默认参数实测 ~0.24 s），
+    // 放在共享 DB 互斥量里运行时，一次未认证登录就会让全进程所有 DB 路径排队等这么久
+    // （C2089 实测：`max_lock_wait ≈ 236 ms`；移到锁外后同一读数为 `0.00 ms`）。
+    let found = {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        dao::find_user_by_email(&conn, &email)
+    };
+    let Some((user_id, hash)) = found else {
+        return Err(unauthorized());
+    };
+    if !crate::auth::verify_password(&hash, &req.password) {
+        return Err(unauthorized());
+    }
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    let user_id =
-        dao::verify_user_password(&conn, &email, &req.password).map_err(|_| unauthorized())?;
     if !dao::user_verified(&conn, user_id) {
         return Err((
             StatusCode::FORBIDDEN,
@@ -256,22 +267,35 @@ pub async fn register(
             Json(serde_json::json!({ "error": "密码至少 8 位" })),
         ));
     }
-    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    if dao::email_taken(&conn, &email) {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({ "error": "该邮箱已注册" })),
-        ));
+    // 已注册邮箱快速失败：只读、且能在跑昂贵的 KDF 之前就返回
+    {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        if dao::email_taken(&conn, &email) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "该邮箱已注册" })),
+            ));
+        }
     }
     let name = if req.name.trim().is_empty() {
         email.split('@').next().unwrap_or("用户").to_string()
     } else {
         req.name.trim().to_string()
     };
+    // argon2 在锁外（默认参数实测 ~0.24 s；理由同 login —— 不能占着共享 DB 互斥量算哈希）
     let hash = crate::auth::hash_password(&req.password).map_err(internal)?;
+    let (code, code_hash) = new_verification_code();
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    // 复查：KDF 期间锁已释放，同一邮箱可能已被并发注册（users.email 有 UNIQUE 约束，
+    // 但这里是「已注册」这一语义，应当给出与首次检查一致的 409，而不是让 UNIQUE 变成 500）
+    if dao::email_taken(&conn, &email) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "该邮箱已注册" })),
+        ));
+    }
     let user_id = dao::create_unverified_user(&conn, &email, &name, &hash).map_err(internal)?;
     // 验证码记录与建号在同一锁作用域内写入：不存在「用户已建、码未写」的中间态
-    let (code, code_hash) = new_verification_code();
     dao::store_verification_code(&conn, &email, &code_hash).map_err(internal)?;
     drop(conn);
     let dev = send_code(&st, &email, &code)?;
@@ -427,34 +451,50 @@ pub async fn reset_password(
         ));
     }
     let email = req.email.trim().to_lowercase();
-    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    // 邮箱必须已注册（防任意邮箱开账号）
-    if dao::find_user_by_email(&conn, &email).is_none() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "该邮箱未注册" })),
-        ));
+    // ① 码校验在锁内（不含 KDF）
+    {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        // 邮箱必须已注册（防任意邮箱开账号）
+        if dao::find_user_by_email(&conn, &email).is_none() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "该邮箱未注册" })),
+            ));
+        }
+        let Some((hash, _attempts)) = dao::find_valid_verification(&conn, &email) else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "验证码不存在或已过期，请重新获取" })),
+            ));
+        };
+        if sha2_hex(req.code.trim()) != hash {
+            if dao::bump_verification_attempt(&conn, &email).map_err(internal)? {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "验证码错误次数过多，请重新获取" })),
+                ));
+            }
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "验证码错误" })),
+            ));
+        }
     }
-    let Some((hash, _attempts)) = dao::find_valid_verification(&conn, &email) else {
+    // ② argon2 在锁外（默认参数实测 ~0.24 s；理由同 login）
+    let new_hash = crate::auth::hash_password(&req.new_password).map_err(internal)?;
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    // ③ 落库前复查：KDF 期间码可能已过期/已被消费 —— 写入口令的一刻仍需持有有效授权
+    let code_still_valid = match dao::find_valid_verification(&conn, &email) {
+        Some((hash, _attempts)) => sha2_hex(req.code.trim()) == hash,
+        None => false,
+    };
+    if !code_still_valid {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "验证码不存在或已过期，请重新获取" })),
         ));
-    };
-    if sha2_hex(req.code.trim()) != hash {
-        if dao::bump_verification_attempt(&conn, &email).map_err(internal)? {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "验证码错误次数过多，请重新获取" })),
-            ));
-        }
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "验证码错误" })),
-        ));
     }
     // 重置密码 + 激活（未验证账号由验证码证明所有权后顺带激活）
-    let new_hash = crate::auth::hash_password(&req.new_password).map_err(internal)?;
     conn.execute(
         "UPDATE users SET password_hash = ?1, verified = 1 WHERE email = ?2",
         rusqlite::params![new_hash, email],
@@ -514,18 +554,22 @@ pub async fn change_password(
             Json(serde_json::json!({ "error": "新密码至少 8 位" })),
         ));
     }
-    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    let hash: String = conn
-        .query_row(
+    // 旧哈希只在锁内取出；两次 argon2（校验旧口令 + 生成新哈希）都在锁外
+    // （默认参数实测 ~0.24 s/次；理由同 login）
+    let hash: String = {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        conn.query_row(
             "SELECT password_hash FROM users WHERE id = ?1",
             [auth.user_id],
             |r| r.get(0),
         )
-        .map_err(|_| unauthorized())?;
+        .map_err(|_| unauthorized())?
+    };
     if !crate::auth::verify_password(&hash, &req.old_password) {
         return Err(unauthorized());
     }
     let new_hash = crate::auth::hash_password(&req.new_password).map_err(internal)?;
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     conn.execute(
         "UPDATE users SET password_hash = ?1 WHERE id = ?2",
         rusqlite::params![new_hash, auth.user_id],
@@ -2446,5 +2490,212 @@ mod tests {
             .unwrap();
         assert_eq!(d["tokens"], 1000.0);
         assert_eq!(d["cost"], 2.5);
+    }
+
+    /* ---- C2089：口令 KDF（argon2）必须在共享 DB 互斥量**之外**运行 ---- */
+
+    /// 观测「共享 DB 互斥量是否被某个请求长时间攥住」的计数器：另起一条线程反复 `try_lock`，
+    /// 成功一次计一次。请求期间这个计数接近 0 ⇒ 该请求从第一次查询到最后一次写都占着锁。
+    struct LockWatch {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        hits: Arc<std::sync::atomic::AtomicU64>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    fn spawn_lock_watch(st: &AppState) -> LockWatch {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        let stop = Arc::new(AtomicBool::new(false));
+        let hits = Arc::new(AtomicU64::new(0));
+        let db = st.db.clone();
+        let (s, h) = (stop.clone(), hits.clone());
+        let handle = std::thread::spawn(move || {
+            while !s.load(Ordering::SeqCst) {
+                if db.try_lock().is_ok() {
+                    h.fetch_add(1, Ordering::SeqCst);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        LockWatch {
+            stop,
+            hits,
+            handle: Some(handle),
+        }
+    }
+
+    impl LockWatch {
+        fn hits(&self) -> u64 {
+            self.hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn stop(mut self) -> u64 {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(h) = self.handle.take() {
+                h.join().unwrap();
+            }
+            self.hits()
+        }
+    }
+
+    /// 阳性对照：锁空闲时观测者必须能抢到锁 —— 否则「请求期间 0 次」不可信（可能只是观测器没跑）
+    async fn assert_lock_watch_alive(w: &LockWatch) {
+        let before = w.hits();
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        let got = w.hits() - before;
+        assert!(
+            got >= 3,
+            "阳性对照失败：锁空闲 60ms 内观测者应多次拿到锁，实测 {got} 次 —— 观测器未运行，本次测量无效"
+        );
+    }
+
+    /// 造一个「故意昂贵」的口令哈希：KDF 参数写在 PHC 串里，校验方读串自带的参数 ⇒
+    /// 夹具能自己决定该用户每次校验要花多久（默认参数约 0.24 s，这里约 0.8 s）。
+    fn heavy_password_hash(pw: &str) -> String {
+        use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+        use argon2::{Algorithm, Argon2, Params, Version};
+        let params = Params::new(64 * 1024, 2, 1, None).expect("argon2 params");
+        let a = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+        let salt = SaltString::generate(&mut OsRng);
+        a.hash_password(pw.as_bytes(), &salt)
+            .expect("hash")
+            .to_string()
+    }
+
+    fn set_password_hash(st: &AppState, email: &str, hash: &str) {
+        let conn = st.db.lock().unwrap();
+        conn.execute(
+            "UPDATE users SET password_hash = ?1 WHERE email = ?2",
+            rusqlite::params![hash, email],
+        )
+        .unwrap();
+    }
+
+    /// 登录的 argon2 **校验**必须在锁外。
+    ///
+    /// 判别量是**计数**（请求期间观测者成功获取锁的次数），不是时长阈值：修复前该请求从第一次
+    /// 查询到最后一次写都持有锁 ⇒ 0 次；修复后 KDF 的 ~0.8 s 里锁是空闲的 ⇒ 数百次。夹具的哈希
+    /// 用重参数生成，「校验确实跑了很久」由 PHC 串自身保证。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn login_verifies_the_password_outside_the_db_lock() {
+        let st = test_state("kdf_login");
+        set_password_hash(
+            &st,
+            "demo@aitokenpool.local",
+            &heavy_password_hash("demo1234"),
+        );
+        let watch = spawn_lock_watch(&st);
+        assert_lock_watch_alive(&watch).await;
+        let before = watch.hits();
+
+        let (status, body) = post(
+            st.clone(),
+            "/api/auth/login",
+            r#"{"email":"demo@aitokenpool.local","password":"demo1234"}"#,
+            None,
+        )
+        .await;
+        let during = watch.stop() - before;
+
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "登录应成功（夹具正在跑重参数校验）: {body}"
+        );
+        assert!(
+            during >= 20,
+            "argon2 校验必须在 DB 锁之外运行：请求期间观测者应能拿到锁，实测 {during} 次（修复前为 0 次）"
+        );
+    }
+
+    /// 注册的 argon2 **哈希**必须在锁外。（默认参数 KDF 约 0.24 s；断言同登录。）
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn register_hashes_the_password_outside_the_db_lock() {
+        let st = test_state("kdf_register");
+        let watch = spawn_lock_watch(&st);
+        assert_lock_watch_alive(&watch).await;
+        let before = watch.hits();
+
+        let (status, body) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"name":"kdf","email":"kdf-register@example.com","password":"password-1234"}"#,
+            None,
+        )
+        .await;
+        let during = watch.stop() - before;
+
+        assert_eq!(status, StatusCode::CREATED, "注册应 201: {body}");
+        assert!(
+            during >= 20,
+            "argon2 哈希必须在 DB 锁之外运行：请求期间观测者应能拿到锁，实测 {during} 次（修复前为 0 次）"
+        );
+    }
+
+    /// 重置密码的 argon2 **哈希**必须在锁外（码校验留在锁内，落库前复查码仍有效）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reset_password_hashes_outside_the_db_lock() {
+        let st = test_state("kdf_reset");
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/register",
+            r#"{"name":"r","email":"kdf-reset@example.com","password":"old-password-1"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "注册应 201: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let code = v["dev_code"].as_str().expect("dev 模式返回验证码");
+
+        let watch = spawn_lock_watch(&st);
+        assert_lock_watch_alive(&watch).await;
+        let before = watch.hits();
+
+        let (status, body) = post(
+            st.clone(),
+            "/api/auth/reset-password",
+            &format!(
+                r#"{{"email":"kdf-reset@example.com","code":"{code}","new_password":"new-password-1"}}"#
+            ),
+            None,
+        )
+        .await;
+        let during = watch.stop() - before;
+
+        assert_eq!(status, StatusCode::OK, "重置密码应 200: {body}");
+        assert!(
+            during >= 20,
+            "argon2 哈希必须在 DB 锁之外运行：请求期间观测者应能拿到锁，实测 {during} 次（修复前为 0 次）"
+        );
+    }
+
+    /// 改密的两次 argon2（校验旧口令 + 生成新哈希）必须在锁外。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn change_password_hashes_outside_the_db_lock() {
+        let st = test_state("kdf_change");
+        set_password_hash(
+            &st,
+            "demo@aitokenpool.local",
+            &heavy_password_hash("demo1234"),
+        );
+        let bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+
+        let watch = spawn_lock_watch(&st);
+        assert_lock_watch_alive(&watch).await;
+        let before = watch.hits();
+
+        let (status, body) = post(
+            st.clone(),
+            "/api/auth/change-password",
+            r#"{"old_password":"demo1234","new_password":"demo12345"}"#,
+            Some(&bearer),
+        )
+        .await;
+        let during = watch.stop() - before;
+
+        assert_eq!(status, StatusCode::OK, "改密应 200: {body}");
+        assert!(
+            during >= 20,
+            "argon2 必须在 DB 锁之外运行：请求期间观测者应能拿到锁，实测 {during} 次（修复前为 0 次）"
+        );
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! P0-A（rant 2026-08-17T22:21:52）：认证 + API Key 管理所需的最小查询集。
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use rusqlite::Connection;
 
 use crate::auth;
@@ -320,16 +320,6 @@ pub fn list_models_openai(
         out.push(r?);
     }
     Ok(out)
-}
-
-/// 校验口令（供登录用）
-pub fn verify_user_password(conn: &Connection, email: &str, pw: &str) -> Result<i64> {
-    let (id, hash) = find_user_by_email(conn, email).ok_or_else(|| anyhow!("用户不存在"))?;
-    if auth::verify_password(&hash, pw) {
-        Ok(id)
-    } else {
-        Err(anyhow!("口令错误"))
-    }
 }
 
 /* ---- 注册 / 邮箱验证（rant 2026-08-19T14:36:19 方案 B）---- */
