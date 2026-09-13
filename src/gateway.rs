@@ -499,7 +499,7 @@ async fn forward_stream(
         };
 
         let resp = if outbound == "anthropic" {
-            st.http
+            st.http_stream
                 .post(&url)
                 .header("x-api-key", &plain_key)
                 .header("content-type", "application/json")
@@ -508,7 +508,7 @@ async fn forward_stream(
                 .send()
                 .await
         } else {
-            st.http
+            st.http_stream
                 .post(&url)
                 .header("authorization", format!("Bearer {plain_key}"))
                 .header("content-type", "application/json")
@@ -2434,5 +2434,178 @@ data: {"type":"message_delta","usage":{"output_tokens":30}}"#,
         assert_eq!(i, 10.0, "cache_read 应从 input 扣除（disjoint）");
         assert_eq!(c, 70.0);
         assert_eq!(o, 30.0);
+    }
+
+    // ── 出站超时策略（C2084）：流式**不能**用「总时限」─────────────────────────
+
+    /// 假上游：SSE 慢速滴流 —— 每 100 ms 一帧，共 15 帧，随后一帧带 usage，最后 `[DONE]`。
+    /// 流总时长 ≈1.5 s，用来区分「总时限」与「逐次读取时限」这两种语义。
+    async fn fake_sse_slow_upstream(listener: tokio::net::TcpListener) {
+        let app = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(|_body: String| async {
+                let s = async_stream::stream! {
+                    for i in 1..=15u32 {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        yield Ok::<_, std::io::Error>(axum::body::Bytes::from(format!(
+                            "data: {{\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"delta\":{{\"content\":\"c{i}\"}}}}]}}\n\n"
+                        )));
+                    }
+                    yield Ok(axum::body::Bytes::from_static(
+                        b"data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50}}\n\n",
+                    ));
+                    yield Ok(axum::body::Bytes::from_static(b"data: [DONE]\n\n"));
+                };
+                (
+                    [("content-type", "text/event-stream")],
+                    axum::body::Body::from_stream(s),
+                )
+            }),
+        );
+        axum::serve(listener, app).await.unwrap();
+    }
+
+    /// 读取 SSE 响应直到流结束或出错 —— 返回 (状态码, 已收到的字节, 错误文本)。
+    /// 与 `post_raw` 的区别：出错时**不 panic**，而是把错误交回调用方
+    /// （被总时限截断的现场，只会表现为「流中途出错」）。
+    async fn drain_sse(
+        st: AppState,
+        uri: &str,
+        body: &str,
+        bearer: &str,
+    ) -> (StatusCode, Vec<u8>, Option<String>) {
+        use futures_util::StreamExt;
+        let resp = router()
+            .with_state(st)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let mut out = Vec::new();
+        let mut err = None;
+        let mut stream = resp.into_body().into_data_stream();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(b) => out.extend_from_slice(&b),
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        (status, out, err)
+    }
+
+    fn slow_upstream_state(tag: &str, plan: &str, base: &str, key_id: i64) -> AppState {
+        let st = test_state(tag, plan, base);
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+        }
+        insert_key(&st, key_id, 1, "test-model", plan);
+        st
+    }
+
+    fn sse_req_body() -> &'static str {
+        r#"{"model":"test-model","stream":true,"messages":[{"role":"user","content":"hi"}]}"#
+    }
+
+    fn usage_records(st: &AppState) -> i64 {
+        let conn = st.db.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM usage_records", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// 长流不能被「总时限」截断：流式客户端只有**逐次读取**时限（每次成功读取后重置），
+    /// 所以只要上游还在产出数据，总时长超过该时限的流也必须完整走完、并在流尾入账一次。
+    #[tokio::test]
+    async fn sse_slow_stream_survives_a_read_timeout() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let up = tokio::spawn(fake_sse_slow_upstream(listener));
+        let base = format!("http://127.0.0.1:{port}");
+
+        let mut st = slow_upstream_state("sse_slow", "test-sse-slow", &base, 310);
+        // 生产「流式」客户端工厂：逐次读取时限 200 ms（≪ 流的 1.5 s 总时长）
+        st.http_stream =
+            crate::routes::upstream_stream_client(std::time::Duration::from_millis(200));
+        let key = login_key(st.clone()).await;
+
+        let t0 = std::time::Instant::now();
+        let (s, body, err) =
+            drain_sse(st.clone(), "/v1/chat/completions", sse_req_body(), &key).await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(s, StatusCode::OK, "err={err:?}");
+        assert!(err.is_none(), "有进展的长流不应被截断：err={err:?}");
+        assert!(text.contains("data: [DONE]"), "流必须走到终点");
+        assert_eq!(
+            text.matches("\"content\":\"c").count(),
+            15,
+            "15 帧应全部到达"
+        );
+        // 这条是「总时限 vs 逐次读取时限」的判别式：总时长必须真的超过单次读取间隔
+        assert!(
+            t0.elapsed() >= std::time::Duration::from_millis(1400),
+            "流应当真的持续约 1.5 s，实测 {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(usage_records(&st), 1, "流尾正常结束应入账一次");
+        up.abort();
+    }
+
+    /// 对照组（**已知缺陷注入**）：同一个慢速上游，但把流式客户端换成**非流式**工厂
+    /// —— 它的 `timeout` 是**总**时限，200 ms 就会把这条 1.5 s 的流截断。
+    ///
+    /// 该臂同时证明网关确实在用 `st.http_stream`：若 `forward_stream` 仍读 `st.http`，
+    /// 这里就不会截断（修复前本仓库正是这个行为）。
+    #[tokio::test]
+    async fn sse_slow_stream_is_cut_by_a_total_deadline() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let up = tokio::spawn(fake_sse_slow_upstream(listener));
+        let base = format!("http://127.0.0.1:{port}");
+
+        let mut st = slow_upstream_state("sse_cut", "test-sse-cut", &base, 311);
+        // 非流式工厂 = 总时限客户端（故意注入缺陷策略）
+        st.http_stream = crate::routes::upstream_client(std::time::Duration::from_millis(200));
+        let key = login_key(st.clone()).await;
+
+        let t0 = std::time::Instant::now();
+        let (s, body, err) =
+            drain_sse(st.clone(), "/v1/chat/completions", sse_req_body(), &key).await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(s, StatusCode::OK, "响应头已发出，截断发生在 body 阶段");
+        assert!(
+            !text.contains("data: [DONE]"),
+            "总时限必须截断这条流（err={err:?}）；实际尾部: {}",
+            &text[text.len().saturating_sub(120)..]
+        );
+        assert!(
+            text.matches("\"content\":\"c").count() < 15,
+            "被截断的流不可能收到全部 15 帧"
+        );
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(1000),
+            "200 ms 的总时限应立刻截断，实测 {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(
+            usage_records(&st),
+            0,
+            "被截断的流不入账（流尾 finalize 不执行）"
+        );
+        up.abort();
     }
 }
