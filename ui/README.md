@@ -272,13 +272,13 @@ ui/
 - 下载：`Blob(type="text/csv;charset=utf-8")` → `URL.createObjectURL` → 临时 `<a download>` click → `remove()` → `setTimeout 1s` revoke；文件名 **`aitokenpool-transactions-YYYYMMDD.csv`**（`new Date()` 本地日期）；
 - 冒烟测试注意：stub 需给 `document.createElement("a")` 返回带 `click()`/`remove()` 的元素并捕获 `href`/`download`，`URL.createObjectURL` 捕获 Blob（`arrayBuffer()` 首 3 字节 EF BB BF 验证 BOM——`blob.text()` 会按规范剥掉 BOM）；列筛选联动可注入 `#tx-table` 的 `querySelectorAll(".th-filter")`/`querySelector('[data-filter-key=…]')` 假输入并 fire `input`。
 
-## 数据表格键盘导航约定（v1.20，rant 2026-08-17T20:46:57 F）
+## 数据表格键盘导航约定（v1.20，rant 2026-08-17T20:46:57 F；2026-09-13 改为 DOM 派生，去名册）
 
-- **作用表**（`KBD_TABLE_IDS`）：`mk-body` / `share-body` / `api-keys` / `emp-body` / `dept-body` / `ops-body`（tbody）+ `tx-table`（div 包 table）；
-- **激活**：① 点击表格行（容器 click 委托，`e.target.closest("tr")`，跳过 `.mk-detail`）；② 直接按 ↑/↓——`kbdContainerFrom(t)` 沿 `closest("tbody")`（id 匹配）或 `closest("table").parentNode`（#tx-table）解析当前表格，找不到沿用 `kbd.c`；
+- **作用表 = 从 DOM 派生，不维护名册**：任何 `<tbody>` 里的数据行都可导航（`mk-body` / `share-body` / `api-keys` / `emp-body` / `dept-body` / `model-body` / `ops-body` / JS 建的 `raise-requests` 表，以及 `tx-table` 内动态建出的 tbody）。新增数据表无需登记，重绘也无需重新绑定——此前是一份手写 id 名册，`model-body` 漏登记即导致重试死键 + 无键盘导航；
+- **激活**：① 点击表格行（**document 级**一次性 click 委托，容器 `kbdTbodyOf(e.target)` = `closest("tbody")`，行取 `closest("tr")`，跳过 `.mk-detail`）；② 直接按 ↑/↓——`kbdContainerFrom(t)` 同样按 `closest("tbody")` 解析（键盘事件目标通常是 body ⇒ 沿用 `kbd.c`；`kbd.c` 若已被重建（`isConnected === false`）则视为未激活）；
 - **键位**：`ArrowDown/Up` → `kbdMove(dir, c)` 行高亮 `.row-active`（accent 左侧竖条 `inset 3px 0 0` + `--accent-soft` 底），未激活时 ↓ 首行 / ↑ 末行，`scrollIntoView({block:"nearest"})`；`Enter` → `kbdEnter()` 点击行内首个可用 `button.btn:not(.row-expand)`（disabled 不触发）；`Esc` → `kbdClear()`（无高亮时落到原逻辑：关帮助/行内表单/引导）；
 - **守卫**：typing（INPUT/TEXTAREA/SELECT/contentEditable）与 meta/ctrl/alt 组合键不拦截；`?`、数字键视图切换、Esc 原有优先级（引导 > 帮助 > 行内新建 Key > 表格高亮）均不受影响；
-- 冒烟测试注意：`qs(sel)` 的 stub id 会带 `#` 前缀——`kbdContainerFrom` 依赖真实无 `#` 的 id（如 `tx-table`），须手动修正；Esc 分支链依赖 `#ak-new-inline`、`#help-panel` hidden 预置 + `atp-tour-done=1`（防 tour 拦截）。
+- 冒烟测试注意：导航容器由真实 DOM 的 `closest("tbody")` 解析（不再比对 id）⇒ 旧 stub（`qs(sel)` 返回带 `#` 前缀的假 id）不影响它，但事件目标须是真实 DOM 节点；Esc 分支链依赖 `#ak-new-inline`、`#help-panel` hidden 预置 + `atp-tour-done=1`（防 tour 拦截）。
 
 ## 品牌与登录页氛围约定（v1.20，rant 2026-08-17T20:46:57 G）
 
@@ -312,7 +312,7 @@ ui/
 ## 登录态零 mock 约定（v1.22，rant 2026-08-19T15:54:06 系统性清理）
 
 - **铁律**：登录态（`loggedIn()`）任何视图**不得渲染 `data.js` 的 `D.*` mock 数据**；mock 仅限游客模式（`GUEST_VIEWS = ["marketplace"]`，且市场模型列表登录态用 `GET /api/models` 真实数据）；
-- **统一降级模式**：登录态 `Live.x ? view(Live.x) : loadError(空态+重试)`——绝不 fallback 到 `D.*`；失败渲染 `loadErrorHtml`（div 容器）或 `loadErrorRow`（tbody 容器，`<tr><td class="empty-cell">` 包裹，避免 div 直接进 tbody 被浏览器提升到表外破坏布局与重试委托）；重试按钮 `data-live-retry` 由 `bindLiveRetry` 委托（DOMContentLoaded 一次性绑定，容器级）；
+- **统一降级模式**：登录态 `Live.x ? view(Live.x) : loadError(空态+重试)`——绝不 fallback 到 `D.*`；失败渲染 `loadErrorHtml`（div 容器）或 `loadErrorRow`（tbody 容器，`<tr><td class="empty-cell">` 包裹，避免 div 直接进 tbody 被浏览器提升到表外破坏布局与重试委托）；重试按钮 `data-live-retry` 由 `setLiveError(容器, html, loader)` 委托——**渲染方写下降级态时把 loader 一并交出**，容器上一次性的 click 委托（`WeakMap` 存 loader、`WeakSet` 记已绑定，重建不重绑）负责分发。谁渲染降级态谁负责传 loader ⇒ 新增表格无需在名册里登记（漏登记 = 重试按钮点了没反应）；
 - **已清零路径**（原 10 处 mock 泄漏）：仪表盘统计（`D.TRANSACTIONS` 聚合）→ 登录用 `/api/wallet` + `/api/dashboard`，未就绪显示 0；月度聚合/sparkline → 登录用 `Live.dashboard.series`，未就绪净 0 空行；交易页/CSV 导出 → 登录失败空态；API Key 设置 → 登录失败空态（生成/改名/删除已走真实 API）；管理视图成员 → 登录失败空态；用量报表 → 登录失败空态；部门管理（CRUD 已真实 API，移除本地 push/splice）；运营者（runtime/users）→ 登录失败空态；加额申请（提交/审批已真实 API）；上架表单（登录已 `POST /api/sharings`，游客无上架权限移除 mock 分支）；
 - **`data.js` 保留对象**：`MODELS`（上架表单定价兜底）、`PLANS`（上架表单兜底，登录用 `/api/plans` 单一真源）、`PROVIDERS` / `PROVIDER_LABELS`（厂商枚举/显示名）、`MARKET`（游客市场浏览；`multi`/`success` 虚构字段已移除——登录态 `multi = available_keys >= 2` 真实计算，成功率后端暂无字段不再展示）、`USER`（会话存储：登录后由 `/api/me` + `/api/wallet` 覆盖，初始值不渲染）；
 - **已删除对象**：`TRANSACTIONS` / `SHARINGS` / `API_KEYS` / `EMPLOYEES` / `DEPARTMENTS` / `USAGE_MODEL` / `USAGE_EMP` / `OPERATOR_USERS` / `RAISE_REQUESTS`；
@@ -336,7 +336,7 @@ ui/
 - **数据源**：登录后 `loadDashboard()` 拉取 `/api/wallet` + `/api/dashboard` + **`/api/sharings`**（此前漏拉 sharings → 仪表盘「我的共享」恒显示 `D.SHARINGS` mock，如 GLM/deepseek 假行）；`Live.sharings` 拉取成功后 `renderDashboard()` 用真实数据渲染「厂商 · Plan / 已用 / 额度 / 累计收益」；
 - **降级原则**：**mock 只用于游客模式**——`Live.x ? view(Live.x) : D.x` 的 fallback 在登录态一律不得暴露 mock：
   - 登录态 `Live.sharings` 为空数组（`[]`，上架 0 条）→ 空态「还没有上架的 key」；
-  - 登录态拉取失败（`null`）→ `loadErrorHtml(空态文案, 重试函数, err.loadFail)`：空态 + 「重试」按钮（`data-live-retry` 委托，`bindLiveRetry` 在 DOMContentLoaded 一次性绑定 `#dash-sharings` / `#share-body`），不白屏、不显示 mock；
+  - 登录态拉取失败（`null`）→ `setLiveError($("#dash-sharings"), loadErrorHtml(空态文案, T("err.loadFail")), () => loadDashboard())`：空态 + 「重试」按钮（`data-live-retry` 容器级委托），不白屏、不显示 mock；
   - 游客模式（`loggedIn()` 为假）→ 继续用 `D.SHARINGS` mock 浏览（不变）；
 - **覆盖范围**：仪表盘 `renderDashboard()` 与共享管理 `renderSharing()` 两处 `Live.sharings` 消费点均按此约定（共享页为登录态专属视图，原 mock fallback 只在拉取失败时暴露，同属本 bug 类）；
 - **冒烟测试注意**：登录态断言「我的共享」不得含 `glm-5.2` / `deepseek-v4-flash` 行；干净库（上架 0 条）应见空态文案；stub `api.get("/api/sharings")` 抛错时断言出现 `[data-live-retry]` 按钮且点击后重新调用 `loadDashboard()`。

@@ -610,7 +610,7 @@
           sparkline(cumSeries, { labels: days, fmt: (v) => "+" + D.fmt(v), stroke: "var(--ok)" }));
       }
     } else {
-      $("#dash-sharings").innerHTML = loadErrorHtml(T("dash.loadFail"), () => loadDashboard(), T("err.loadFail"));
+      setLiveError($("#dash-sharings"), loadErrorHtml(T("dash.loadFail"), T("err.loadFail")), () => loadDashboard());
     }
     renderMonthChanges();
   }
@@ -775,7 +775,7 @@
     let list = Live.models ? modelsToView(Live.models) : (loggedIn() ? null : D.MARKET);
     if (!list) {
       $("#mk-count").textContent = T("cnt.on", { n: 0 });
-      $("#mk-body").innerHTML = loadErrorRow(7, T("mk.loadFail"), T("err.loadFail"));
+      setLiveError($("#mk-body"), loadErrorRow(7, T("mk.loadFail"), T("err.loadFail")), () => loadMarketplace());
       pulseTbody($("#mk-body"));
       renderRecent();
       return;
@@ -894,7 +894,7 @@
     const list = Live.sharings ? sharingsToView(Live.sharings) : null;
     if (!list) {
       $("#share-stats").innerHTML = "";
-      $("#share-body").innerHTML = loadErrorRow(8, T("share.loadFail"), T("err.loadFail"));
+      setLiveError($("#share-body"), loadErrorRow(8, T("share.loadFail"), T("err.loadFail")), () => loadSharing());
       return;
     }
     const on = list.filter((s) => s.status === "on");
@@ -1262,7 +1262,7 @@
     // 零 mock（rant 15:54:06）：登录态绝不 fallback D.RAISE_REQUESTS；失败 → 空态 + 重试
     const list = Live.raiseRequests;
     if (!list) {
-      el.innerHTML = loadErrorHtml(T("admin.raise.loadFail"), null, T("err.loadFail"));
+      setLiveError(el, loadErrorHtml(T("admin.raise.loadFail"), T("err.loadFail")), () => loadAdmin());
       return;
     }
     // 表头在渲染期取 i18n（本表由 JS 在 boot 之后注入，无 data-i18n 钩子可走）：
@@ -1513,7 +1513,7 @@
       renderTxTrend();
       const c = $("#tx-count");
       if (c) c.textContent = "";
-      $("#tx-table").innerHTML = loadErrorHtml(T("tx.loadFail"), null, T("err.loadFail"));
+      setLiveError($("#tx-table"), loadErrorHtml(T("tx.loadFail"), T("err.loadFail")), () => loadTransactions());
       return;
     }
     // 真后端分页 + 列筛选（rant 2026-08-24T10:51:57 + 2026-08-25T10:33:26）：页码/每页行数/筛选条件
@@ -1654,12 +1654,13 @@
     toast(T("tx.export.ok", { n: list.length }), "success");
   }
 
-  /* --- 数据表格键盘导航（rant 20:46:57 F：↑/↓ 行高亮 .row-active，Enter 触发主操作，Esc 清除） --- */
-  const KBD_TABLE_IDS = ["mk-body", "share-body", "api-keys", "emp-body", "dept-body", "ops-body", "tx-table"];
+  /* --- 数据表格键盘导航（rant 20:46:57 F：↑/↓ 行高亮 .row-active，Enter 触发主操作，Esc 清除） ---
+     容器由 DOM 派生（事件目标最近的 <tbody>），不维护「哪些表格可导航」的名册：
+     数据表一律可导航，新增表格无需登记，重绘也无需重新绑定。 */
   let kbd = { c: null, i: -1 }; // 当前激活的表格容器 + 高亮行下标
 
   function kbdRows(c) {
-    if (!c) return [];
+    if (!c || c.isConnected === false) return []; // 表格被整体重建 ⇒ 记住的容器已失效，视为未激活
     const trs = c.tagName === "TBODY" ? c.querySelectorAll("tr") : c.querySelectorAll("tbody tr");
     return [].filter.call(trs, (tr) => tr && !(tr.classList && tr.classList.contains("mk-detail")));
   }
@@ -1694,15 +1695,13 @@
     const btn = tr.querySelector ? tr.querySelector("button.btn:not(.row-expand)") : null;
     if (btn && !btn.disabled) btn.click();
   }
+  // 数据表容器 = 事件目标最近的 <tbody>（判断依据是元素本身，不是它的 id 是否被某个名册登记过）
+  function kbdTbodyOf(t) {
+    return (t && t.closest) ? t.closest("tbody") : null;
+  }
   function kbdContainerFrom(t) {
-    // 从事件目标向上找表格容器（tbody 本身或包 table 的 #tx-table），找不到沿用上次激活的表格
-    if (t && t.closest) {
-      const tb = t.closest("tbody");
-      if (tb && KBD_TABLE_IDS.indexOf(tb.id) >= 0) return tb;
-      const tbl = t.closest("table");
-      if (tbl && tbl.parentNode && tbl.parentNode.id === "tx-table") return tbl.parentNode;
-    }
-    return kbd.c;
+    // 键盘事件的目标通常是 body（无 tbody 可寻）⇒ 沿用上次激活的表格
+    return kbdTbodyOf(t) || (kbd.c && kbd.c.isConnected !== false ? kbd.c : null);
   }
 
   /* --- 通用 MRT 风格数据表格渲染器 ---
@@ -1983,7 +1982,7 @@
     // 零 mock（rant 2026-08-19T15:54:06）：登录态绝不 fallback D.API_KEYS；
     // 加载失败 → 空态 + 重试；设置页仅登录可达
     if (loggedIn() && !Live.apiKeys) {
-      $("#api-keys").innerHTML = loadErrorRow(6, T("settings.ak.loadFail"), T("err.loadFail"));
+      setLiveError($("#api-keys"), loadErrorRow(6, T("settings.ak.loadFail"), T("err.loadFail")), () => loadApiKeys());
       pulseTbody($("#api-keys"));
       return;
     }
@@ -2224,7 +2223,7 @@
       // 加载失败 → 空态 + 重试
       if (!Live.adminUsers) {
         $("#emp-stats").innerHTML = "";
-        $("#emp-body").innerHTML = loadErrorRow(7, T("admin.emp.loadFail"), T("err.loadFail"));
+        setLiveError($("#emp-body"), loadErrorRow(7, T("admin.emp.loadFail"), T("err.loadFail")), () => loadAdmin());
         pulseTbody($("#emp-body"));
         return;
       }
@@ -2262,7 +2261,7 @@
     } else if (tab === "usage") {
       // 零 mock（rant 15:54:06）：用量报表仅登录可达，绝不 fallback D.USAGE_MODEL/D.USAGE_EMP
       if (!Live.adminUsage) {
-        $("#usage-model").innerHTML = loadErrorHtml(T("admin.usage.loadFail"), null, T("err.loadFail"));
+        setLiveError($("#usage-model"), loadErrorHtml(T("admin.usage.loadFail"), T("err.loadFail")), () => loadAdmin());
         $("#usage-emp").innerHTML = "";
         $("#usage-dept").innerHTML = "";
         return;
@@ -2301,7 +2300,7 @@
   // 模型搜索过滤 + 表格渲染（数据来自 /api/admin/models；零 mock：加载失败 → 空态 + 重试）
   function renderAdminModels() {
     if (!Live.adminModels) {
-      $("#model-body").innerHTML = loadErrorRow(8, T("admin.models.loadFail"), T("err.loadFail"));
+      setLiveError($("#model-body"), loadErrorRow(8, T("admin.models.loadFail"), T("err.loadFail")), () => loadAdmin());
       pulseTbody($("#model-body"));
       return;
     }
@@ -2484,7 +2483,7 @@
     const src = Live.departments;
     if (!src) {
       $("#dept-stats").innerHTML = "";
-      $("#dept-body").innerHTML = loadErrorRow(7, T("admin.org.loadFail"), T("err.loadFail"));
+      setLiveError($("#dept-body"), loadErrorRow(7, T("admin.org.loadFail"), T("err.loadFail")), () => loadAdmin());
       pulseTbody($("#dept-body"));
       return;
     }
@@ -2599,7 +2598,7 @@
       const note = $("#ops-demo-note");
       if (note) note.innerHTML = "";
       if (!Live.opsRuntime) {
-        $("#ops-stats").innerHTML = loadErrorHtml(T("ops.loadFail"), null, T("err.loadFail"));
+        setLiveError($("#ops-stats"), loadErrorHtml(T("ops.loadFail"), T("err.loadFail")), () => loadOps());
         $("#ops-hours").innerHTML = "";
         $("#ops-keys").innerHTML = "";
         return;
@@ -2651,7 +2650,7 @@
 
     // tab === "users"：成员充值（零 mock，rant 15:54:06）
     if (!Live.opsUsers) {
-      $("#ops-body").innerHTML = loadErrorRow(4, T("ops.loadFail"), T("err.loadFail"));
+      setLiveError($("#ops-body"), loadErrorRow(4, T("ops.loadFail"), T("err.loadFail")), () => loadOps());
       pulseTbody($("#ops-body"));
       return;
     }
@@ -3017,24 +3016,34 @@
   }
 
   // 通用降级渲染：加载失败 → 空态 + 重试按钮（不白屏）
-  function loadErrorHtml(emptyLabel, retryFn, retryLabel) {
+  function loadErrorHtml(emptyLabel, retryLabel) {
     return '<div class="empty-state">' + EMPTY_ICON +
       "<p>" + esc(emptyLabel) + "</p>" +
       '<p class="muted">' + esc(retryLabel || T("err.loadFail")) + '</p>' +
       '<button type="button" class="btn btn-ghost" data-live-retry>' + T("common.retry") + "</button></div>";
   }
-  // 重试按钮委托（容器级）
-  function bindLiveRetry(containerId, fn) {
-    const c = document.getElementById(containerId);
-    if (!c) return;
-    c.addEventListener("click", (e) => {
-      if (e.target.closest("[data-live-retry]")) fn();
-    });
+  // 「加载失败 → 重试」的容器级委托：渲染方调用 setLiveError(容器, html, loader) 时把 loader 一并交出来，
+  // 容器上的**一次性** click 委托（重建不重绑）再把 `[data-live-retry]` 的点击分发给它。
+  // 谁渲染降级态谁就负责传 loader ⇒ 新增表格不必在任何名册里登记（漏登记 = 重试按钮点了没反应）。
+  const liveLoaders = new WeakMap();     // 容器 → 该容器的重试回调
+  const liveRetryBound = new WeakSet();  // 已挂上委托的容器（只挂一次）
+  function setLiveError(container, html, loader) {
+    if (!container) return;
+    liveLoaders.set(container, loader);
+    if (!liveRetryBound.has(container)) {
+      liveRetryBound.add(container);
+      container.addEventListener("click", (e) => {
+        if (!e.target.closest || !e.target.closest("[data-live-retry]")) return;
+        const fn = liveLoaders.get(container);
+        if (fn) fn();
+      });
+    }
+    container.innerHTML = html;
   }
 
   // tbody 容器专用降级行：<tr><td> 内嵌 loadErrorHtml（div 直接进 tbody 会被浏览器提升到表外，破坏布局与重试委托）
   function loadErrorRow(colspan, emptyLabel, retryLabel) {
-    return '<tr><td class="empty-cell" colspan="' + colspan + '">' + loadErrorHtml(emptyLabel, null, retryLabel) + "</td></tr>";
+    return '<tr><td class="empty-cell" colspan="' + colspan + '">' + loadErrorHtml(emptyLabel, retryLabel) + "</td></tr>";
   }
 
   // 后端 models → 视图行（点数按 points_per_unit=1、锚定 CNY 折算；USD 价 ×7.2；ctx 来自 models.context_window；
@@ -3643,15 +3652,15 @@
       });
     }
 
-    // 表格键盘导航（rant 20:46:57 F）：点击行 → 激活高亮，之后 ↑/↓/Enter/Esc 可用
-    KBD_TABLE_IDS.forEach((id) => {
-      const c = document.getElementById(id);
+    // 表格键盘导航（rant 20:46:57 F）：点击行 → 激活高亮，之后 ↑/↓/Enter/Esc 可用。
+    // document 级一次性委托 + 容器从 DOM 派生 ⇒ 所有数据表自动可导航（新增表格不必登记，
+    // 动态重建的表格也不会丢绑定）。
+    document.addEventListener("click", (e) => {
+      const c = kbdTbodyOf(e.target);
       if (!c) return;
-      c.addEventListener("click", (e) => {
-        const tr = e.target.closest ? e.target.closest("tr") : null;
-        if (!tr || (tr.classList && tr.classList.contains("mk-detail"))) return;
-        kbdSet(c, kbdRows(c).indexOf(tr));
-      });
+      const tr = e.target.closest ? e.target.closest("tr") : null;
+      if (!tr || (tr.classList && tr.classList.contains("mk-detail"))) return;
+      kbdSet(c, kbdRows(c).indexOf(tr));
     });
 
     // API Key 生成（行内编辑；列表展示脱敏、复制给完整 id）
@@ -3785,20 +3794,8 @@
     });
     renderNav();
     bindEvents();
-    // 登录态加载失败的空态重试按钮（rant 2026-08-19T15:48:17 / 15:54:06：各视图 loadError* 的 data-live-retry 委托）
-    bindLiveRetry("dash-sharings", () => loadDashboard());
-    bindLiveRetry("share-body", () => loadSharing());
-    bindLiveRetry("mk-body", () => loadMarketplace());
-    bindLiveRetry("tx-table", () => loadTransactions());
-    bindLiveRetry("api-keys", () => loadApiKeys());
-    bindLiveRetry("emp-body", () => loadAdmin());
-    bindLiveRetry("dept-body", () => loadAdmin());
-    bindLiveRetry("usage-model", () => loadAdmin());
-    bindLiveRetry("usage-emp", () => loadAdmin());
-    bindLiveRetry("usage-dept", () => loadAdmin());
-    bindLiveRetry("raise-requests", () => loadAdmin());
-    bindLiveRetry("ops-stats", () => loadOps());
-    bindLiveRetry("ops-body", () => loadOps());
+    // 登录态加载失败的空态重试按钮（rant 2026-08-19T15:48:17 / 15:54:06）：由渲染方经 setLiveError
+    // 把 loader 交给容器，这里不再逐个 id 登记。
     renderView("dashboard");
     $("#side-balance").textContent = D.fmt(D.USER.balance);
 
