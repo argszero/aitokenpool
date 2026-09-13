@@ -523,7 +523,7 @@ pub async fn transactions_trend(
 ///
 /// 两个窗口刻意不同，各自标注清楚（C2049：`net` 曾按 `series` 求和，与它上方的当月行自相矛盾）：
 /// - `month`（逐类型）与 `net`（净变化）＝**本月**（`strftime('%Y-%m', time)`）；`net` 就是 `month` 行的有符号和；
-/// - `series` ＝**近 7 天**（`date(time) >= date('now','-6 days')`），仅供 sparkline 使用。
+/// - `series` ＝**近 7 天**（今天 + 前 6 天，UTC）且**逐日补零**（无交易的日返回 0），仅供 sparkline 使用。
 pub async fn dashboard(
     State(st): State<AppState>,
     auth: AuthUser,
@@ -548,14 +548,27 @@ pub async fn dashboard(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(internal)?;
     // 近 7 天净额序列（earn/topup/gift 为正、consume 为负；rant 2026-08-22T06:34:37：
-    // 原先只把 earn 当正数 → topup 充值被误算为负）
+    // 原先只把 earn 当正数 → topup 充值被误算为负）。
+    //
+    // C2100：窗口**逐日补零**（今天 + 前 6 天，UTC）。`GROUP BY date(time)` 只返回「有交易」
+    // 的日子，而 sparkline 的 x 坐标是**下标**（`ui/js/app.js::sparkline`）⇒ 缺行会让不相邻的
+    // 两天被连成一条直线、横轴不再是时间；只有一天有交易时序列退化成单个点，整条折线消失。
+    // 兄弟消费者都补零且都写了理由（`routes/ops.rs::runtime` 的今日 24 小时、
+    // `ui/js/app.js::dashTrendDays` / `txTrendDays` 的日桶，以及本端点的**游客分支**）。
+    // 递归 CTE 生成 7 个日期键；**用户过滤写在 JOIN 条件里** —— 写进 WHERE 就等于没补零
+    // （LEFT JOIN 产生的空行会被 WHERE 滤掉）。
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT date(time), COALESCE(SUM({}), 0) \
-             FROM transactions \
-             WHERE user_id = ?1 AND date(time) >= date('now', '-6 days') \
-             GROUP BY date(time) ORDER BY date(time)",
-            signed_pts_expr("")
+            "WITH RECURSIVE days(day) AS ( \
+               SELECT date('now', '-6 days') \
+               UNION ALL \
+               SELECT date(day, '+1 day') FROM days WHERE day < date('now') \
+             ) \
+             SELECT days.day, COALESCE(SUM({}), 0) \
+             FROM days \
+             LEFT JOIN transactions t ON date(t.time) = days.day AND t.user_id = ?1 \
+             GROUP BY days.day ORDER BY days.day",
+            signed_pts_expr("t")
         ))
         .map_err(internal)?;
     let series = stmt
@@ -690,7 +703,16 @@ mod tests {
             (net - (1.8 - 2.0 + 1.0)).abs() < 1e-9,
             "净变化 = earn - consume + gift: {net}"
         );
-        assert!(!v["series"].as_array().unwrap().is_empty(), "近 7 天序列");
+        // C2100：窗口补零后序列恒为 7 行 ⇒ 原先的 `!is_empty()` 恒真、不再携带信息。
+        // 改写为它当初想表达的**规格**：近 7 天窗口，按日期升序、末行是今天。
+        let series = v["series"].as_array().unwrap();
+        assert_eq!(series.len(), 7, "近 7 天序列应逐日补零: {series:?}");
+        let today = crate::dao::utc_iso(&chrono::Utc::now().date_naive().to_string());
+        assert_eq!(
+            series[6]["date"].as_str().unwrap(),
+            today,
+            "序列末行应为今天（UTC）: {series:?}"
+        );
     }
 
     #[tokio::test]
@@ -783,6 +805,164 @@ mod tests {
             (net - 2000.5).abs() < 1e-9,
             "dashboard net 应含 topup+gift 为正（=2000.5，实际 {net}）"
         );
+    }
+
+    #[tokio::test]
+    async fn dashboard_series_is_a_zero_filled_seven_day_window() {
+        // C2100（施工单 fix/dashboard-sparkline-window-fill）：`/api/dashboard` 的 `series` 是
+        // `GROUP BY date(time)` 的**稀疏**日桶 —— 没有交易的日子**没有行**。而 `ui/js/app.js`
+        // 把它原样交给 `sparkline()`，后者的 x 坐标是**下标**（不是日期）⇒ 不相邻的两天被连成
+        // 一条直线、横轴不再是时间；只有一天有交易时序列退化成单个点、折线整条消失。
+        //
+        // 本测试断言**窗口形状**：7 行、按日期升序、恰好是「今天 + 前 6 天（UTC）」。
+        // 期望的日期集合由**独立权威**（chrono 的 `Utc::now()`）算出，不从实现里的 CTE 派生。
+        let st = test_state("dashwin");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '2', 1, 'm', 150, 4.0, 'consume', '成功', datetime('now','-6 days'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '3', 2, 'm', 150, 3.0, 'earn', '成功', datetime('now'))",
+                [],
+            )
+            .unwrap();
+        }
+        let (s, body) = get(st.clone(), "/api/dashboard", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let series = v["series"].as_array().unwrap();
+        // 独立权威：chrono 的 UTC 今天，向前推 6 天，升序
+        let today = chrono::Utc::now().date_naive();
+        let expected: Vec<String> = (0..7)
+            .rev()
+            .map(|n| crate::dao::utc_iso(&(today - chrono::Duration::days(n)).to_string()))
+            .collect();
+        let got: Vec<String> = series
+            .iter()
+            .map(|r| r["date"].as_str().unwrap().to_string())
+            .collect();
+        eprintln!("C2100 series {got:?} (expected {expected:?})");
+        assert_eq!(
+            got, expected,
+            "series 必须是补零后的 7 天窗口（升序、逐日）而不是稀疏日桶"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_series_zero_fills_inside_the_user_and_the_window() {
+        // C2100，与上一个测试互补：那个测**窗口形状**，这个测**每一行的值**。
+        // 夹具刻意摆出两个方向相反的错误（都必须不出现）：
+        //   user 1 @ now          earn    3.0  → 今天必须 +3.0
+        //   user 2 @ -3 days      earn    7.0  → **另一个用户**的行不得串入 ⇒ user 1 的 -3 日必须恰为 0
+        //   user 1 @ -7 days      earn    9.0  → **窗口外**的行不得出现
+        // 然后**阳性对照**：往本为 0 的 -3 日补一笔 user 1 的 earn 2.5 ⇒ 该日必须变成 2.5
+        // （证明补零没有掩盖数据）。
+        let st = test_state("dashwinval");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '3', 2, 'm', 150, 3.0, 'earn', '成功', datetime('now'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (2, '3', 2, 'm', 150, 7.0, 'earn', '成功', datetime('now','-3 days'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '3', 2, 'm', 150, 9.0, 'earn', '成功', datetime('now','-7 days'))",
+                [],
+            )
+            .unwrap();
+        }
+        let by_date = |v: &serde_json::Value| -> std::collections::HashMap<String, f64> {
+            v["series"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    (
+                        r["date"].as_str().unwrap().to_string(),
+                        r["pts"].as_f64().unwrap(),
+                    )
+                })
+                .collect()
+        };
+        let (s, body) = get(st.clone(), "/api/dashboard", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let m = by_date(&v);
+        let iso = |n: i64| {
+            crate::dao::utc_iso(
+                &(chrono::Utc::now().date_naive() - chrono::Duration::days(n)).to_string(),
+            )
+        };
+        eprintln!("C2100 series values {m:?}");
+        assert_eq!(m.get(&iso(0)).copied(), Some(3.0), "今天 = +3.0: {m:?}");
+        assert_eq!(
+            m.get(&iso(3)).copied(),
+            Some(0.0),
+            "本日为 0 时必须补 0（且他人当日的一笔不得串入）: {m:?}"
+        );
+        assert!(
+            !m.values().any(|p| (p - 9.0).abs() < 1e-9),
+            "窗口外（-7 天）的行不得出现在序列里: {m:?}"
+        );
+        assert!(!m.contains_key(&iso(7)), "窗口是 7 天（含今天）: {m:?}");
+        // 逐行对上「规格」（独立于实现的 SQL：普通 WHERE 求和，无 CTE）
+        {
+            let conn = st.db.lock().unwrap();
+            let sign = "CASE WHEN type IN ('earn','topup','gift') THEN pts ELSE -pts END";
+            for (date, pts) in &m {
+                // `date` 是 ISO（`…T00:00:00Z`），库内是 `YYYY-MM-DD` ⇒ 取前 10 位比
+                let day = &date[..10];
+                let spec: f64 = conn
+                    .query_row(
+                        &format!(
+                            "SELECT COALESCE(SUM({sign}), 0) FROM transactions \
+                             WHERE user_id = 1 AND date(time) = ?1"
+                        ),
+                        rusqlite::params![day],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(
+                    (pts - spec).abs() < 1e-9,
+                    "{date} 的值应为该日有符号和 {spec}，实际 {pts}"
+                );
+            }
+        }
+        // 阳性对照：往原本为 0 的 -3 日补一笔
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '3', 2, 'm', 150, 2.5, 'earn', '成功', datetime('now','-3 days'))",
+                [],
+            )
+            .unwrap();
+        }
+        let (s, body) = get(st.clone(), "/api/dashboard", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v2: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let m2 = by_date(&v2);
+        assert_eq!(
+            m2.get(&iso(3)).copied(),
+            Some(2.5),
+            "阳性对照：补零不得掩盖后写入同一日的交易: {m2:?}"
+        );
+        assert_eq!(m2.len(), m.len(), "阳性对照不改变窗口行数: {m2:?}");
     }
 
     #[tokio::test]
