@@ -217,10 +217,20 @@ fn new_verification_code() -> (String, String) {
 /// 发送验证码（dev 模式打日志；SMTP 模式发信），返回是否 dev 模式。
 /// 约定：**调用方先在自己的锁作用域内写入验证码记录**（`dao::store_verification_code` /
 /// `dao::begin_resend_verification`），本函数只负责发出——写入与限频检查必须原子，而发信（含重试）
-/// 不能持锁。
-fn send_code(st: &AppState, email: &str, code: &str) -> Result<bool, ApiErr> {
+/// 不能持锁；同理它也**不能占住 async worker**：`crate::mail::send_verification_code` 是阻塞 I/O，
+/// 失败时 3 次尝试 + 2×2 s 重试间隔（SMTP 静默丢弃时每次尝试还有 15 s 超时），在 worker 线程上原地
+/// 调用会让整个运行时停止服务（单 worker 运行时实测被卡 4.24 s / 最坏 49 s）⇒ 放进 blocking pool。
+async fn send_code(st: &AppState, email: &str, code: &str) -> Result<bool, ApiErr> {
     let dev = !st.cfg.mail.configured();
-    if let Err(e) = crate::mail::send_verification_code(&st.cfg.mail, email, code) {
+    let cfg = st.cfg.mail.clone();
+    let to = email.to_string();
+    let code_owned = code.to_string();
+    let sent = tokio::task::spawn_blocking(move || {
+        crate::mail::send_verification_code(&cfg, &to, &code_owned)
+    })
+    .await
+    .map_err(|e| internal(format!("发信任务失败: {e}")))?;
+    if let Err(e) = sent {
         // SMTP 发送失败（重试后仍失败）→ 清除验证码记录（解除 60s 重发限频，用户可立即重发），
         // 返回 502 + 明确错误提示（rant 2026-08-21T23:52:17：半注册账号兜底）
         let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
@@ -285,20 +295,23 @@ pub async fn register(
     // argon2 在锁外（默认参数实测 ~0.24 s；理由同 login —— 不能占着共享 DB 互斥量算哈希）
     let hash = crate::auth::hash_password(&req.password).map_err(internal)?;
     let (code, code_hash) = new_verification_code();
-    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    // 复查：KDF 期间锁已释放，同一邮箱可能已被并发注册（users.email 有 UNIQUE 约束，
-    // 但这里是「已注册」这一语义，应当给出与首次检查一致的 409，而不是让 UNIQUE 变成 500）
-    if dao::email_taken(&conn, &email) {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({ "error": "该邮箱已注册" })),
-        ));
-    }
-    let user_id = dao::create_unverified_user(&conn, &email, &name, &hash).map_err(internal)?;
-    // 验证码记录与建号在同一锁作用域内写入：不存在「用户已建、码未写」的中间态
-    dao::store_verification_code(&conn, &email, &code_hash).map_err(internal)?;
-    drop(conn);
-    let dev = send_code(&st, &email, &code)?;
+    // 锁作用域限定在块内：KDF 之后要 await 发信，锁必须在此之前释放（不能把连接守卫带过 await）
+    let user_id = {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        // 复查：KDF 期间锁已释放，同一邮箱可能已被并发注册（users.email 有 UNIQUE 约束，
+        // 但这里是「已注册」这一语义，应当给出与首次检查一致的 409，而不是让 UNIQUE 变成 500）
+        if dao::email_taken(&conn, &email) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "该邮箱已注册" })),
+            ));
+        }
+        let user_id = dao::create_unverified_user(&conn, &email, &name, &hash).map_err(internal)?;
+        // 验证码记录与建号在同一锁作用域内写入：不存在「用户已建、码未写」的中间态
+        dao::store_verification_code(&conn, &email, &code_hash).map_err(internal)?;
+        user_id
+    };
+    let dev = send_code(&st, &email, &code).await?;
     let mut v = serde_json::json!({
         "id": user_id,
         "email": email,
@@ -362,28 +375,30 @@ pub async fn resend_code(
     Json(req): Json<ResendReq>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
     let email = req.email.trim().to_lowercase();
-    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    // 防枚举：邮箱从未注册过就统一返回 ok（不发送、不建验证码记录），与 forgot-password 一致。
-    // 只按「用户是否存在」判断，不看 verified：重发按钮本身就是「没收到码」的补救路径，
-    // 用户此刻必然还是 verified=0。
-    let exists = dao::find_user_by_email(&conn, &email).is_some();
-    drop(conn);
+    let exists = {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        // 防枚举：邮箱从未注册过就统一返回 ok（不发送、不建验证码记录），与 forgot-password 一致。
+        // 只按「用户是否存在」判断，不看 verified：重发按钮本身就是「没收到码」的补救路径，
+        // 用户此刻必然还是 verified=0。
+        dao::find_user_by_email(&conn, &email).is_some()
+    };
     if !exists {
         return Ok(Json(serde_json::json!({ "status": "ok", "email": email })));
     }
     let (code, code_hash) = new_verification_code();
-    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    // 限频检查与写入必须在同一把锁内（dao::begin_resend_verification）：拆成两段各自加锁时，
-    // 并发重发会同时通过检查 ⇒ 同一邮箱一次突发收到多封验证码（已实测）
-    let written = dao::begin_resend_verification(&conn, &email, &code_hash).map_err(internal)?;
-    drop(conn);
+    let written = {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        // 限频检查与写入必须在同一把锁内（dao::begin_resend_verification）：拆成两段各自加锁时，
+        // 并发重发会同时通过检查 ⇒ 同一邮箱一次突发收到多封验证码（已实测）
+        dao::begin_resend_verification(&conn, &email, &code_hash).map_err(internal)?
+    };
     if !written {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({ "error": "请求过于频繁，请 60 秒后重试" })),
         ));
     }
-    let dev = send_code(&st, &email, &code)?;
+    let dev = send_code(&st, &email, &code).await?;
     let mut v = serde_json::json!({ "status": "ok", "email": email });
     if dev {
         v["dev_code"] = serde_json::json!(code);
@@ -404,25 +419,27 @@ pub async fn forgot_password(
     Json(req): Json<ForgotPasswordReq>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
     let email = req.email.trim().to_lowercase();
-    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    let exists = dao::find_user_by_email(&conn, &email).is_some();
-    drop(conn);
+    let exists = {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        dao::find_user_by_email(&conn, &email).is_some()
+    };
     if !exists {
         // 防枚举：统一返回 ok（不发送）
         return Ok(Json(serde_json::json!({ "status": "ok", "email": email })));
     }
     let (code, code_hash) = new_verification_code();
-    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    // 限频检查与写入必须在同一把锁内（同 resend-code：否则并发重发同时通过检查）
-    let written = dao::begin_resend_verification(&conn, &email, &code_hash).map_err(internal)?;
-    drop(conn);
+    let written = {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        // 限频检查与写入必须在同一把锁内（同 resend-code：否则并发重发同时通过检查）
+        dao::begin_resend_verification(&conn, &email, &code_hash).map_err(internal)?
+    };
     if !written {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({ "error": "请求过于频繁，请 60 秒后重试" })),
         ));
     }
-    let dev = send_code(&st, &email, &code)?;
+    let dev = send_code(&st, &email, &code).await?;
     let mut v = serde_json::json!({ "status": "ok", "email": email });
     if dev {
         v["dev_code"] = serde_json::json!(code);
@@ -1602,6 +1619,144 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             "发送失败后重发不应被限频卡住（验证码记录已清除）"
         );
+    }
+
+    /// 验证码发信是**阻塞 I/O**（lettre：失败时 3 次尝试 + 2×2 s 重试间隔）。它若在 async worker 上
+    /// 原地调用，一次**未认证**的注册就能让整个进程停止服务 —— 本测试把网关跑在**单 worker** 的
+    /// 运行时上，用「接受后立刻关闭」的假 SMTP 把一次 `register` 卡在发信里，再从一个**运行时之外**
+    /// 的线程发一条与它毫无关系的 `GET /healthz`：修复后必须毫秒级返回。
+    ///
+    /// 测量窗口的起点是**假 SMTP 收到第一个连接**（即注册已进入发信），不是在发请求时 —— 这样
+    /// argon2（~0.24 s，见 C2090，属另一件事）不在读数里。改前该读数 ≈ 3.8 s（发信剩下的重试时长），
+    /// 修复后 ≈ 1 ms。`dev` 臂（未配 SMTP ⇒ 不阻塞）作为阴性对照。
+    #[test]
+    fn slow_smtp_send_does_not_stall_the_runtime() {
+        use std::io::{Read, Write};
+        use std::net::{SocketAddr, TcpListener, TcpStream};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        /// 极简 HTTP/1.1 客户端（够本测试用）：发一个请求、读到 EOF、返回 (状态码, body)。
+        /// 故意不用 reqwest/tower —— 客户端必须跑在 tokio 运行时**之外**，否则它自己也会被卡住。
+        fn http_call(
+            addr: SocketAddr,
+            method: &str,
+            path: &str,
+            body: Option<&str>,
+        ) -> (u16, String) {
+            let body = body.unwrap_or("");
+            let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(10)).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+            let req = format!(
+                "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            s.write_all(req.as_bytes()).unwrap();
+            let mut buf = Vec::new();
+            s.read_to_end(&mut buf).unwrap();
+            let text = String::from_utf8_lossy(&buf).to_string();
+            let status = text
+                .split_whitespace()
+                .nth(1)
+                .and_then(|c| c.parse().ok())
+                .unwrap_or(0);
+            let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+            (status, body)
+        }
+
+        // 假 SMTP：接受连接后立刻关闭（每次都失败），第一次接受时通知主线程「注册已进入发信」。
+        let smtp = TcpListener::bind("127.0.0.1:0").unwrap();
+        let smtp_addr = smtp.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let (accepted_tx, accepted_rx) = mpsc::channel::<()>();
+        {
+            let accepts = accepts.clone();
+            std::thread::spawn(move || {
+                let mut first = true;
+                for conn in smtp.incoming().flatten() {
+                    accepts.fetch_add(1, Ordering::SeqCst);
+                    if first {
+                        first = false;
+                        let _ = accepted_tx.send(());
+                    }
+                    drop(conn);
+                }
+            });
+        }
+
+        for arm in ["smtp", "dev"] {
+            let mut st = test_state(if arm == "smtp" { "c2092s" } else { "c2092d" });
+            if arm == "smtp" {
+                let mut cfg = (*st.cfg).clone();
+                cfg.mail.smtp_host = "127.0.0.1".to_string();
+                cfg.mail.smtp_port = smtp_addr.port();
+                cfg.mail.from = "noreply@test.local".to_string();
+                st.cfg = Arc::new(cfg);
+            }
+
+            // 真网关：单 worker 运行时 + 真 TCP 监听（客户端在运行时之外，所以必须真的走网络）。
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let app = router().with_state(st.clone());
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.spawn(async move {
+                let l = tokio::net::TcpListener::from_std(listener).unwrap();
+                axum::serve(l, app).await.unwrap();
+            });
+
+            // 客户端线程发一条注册并等它跑完；它在「发信」里会阻塞整个（单 worker）运行时。
+            let email = format!("c2092-{arm}@example.com");
+            let reg = std::thread::spawn(move || {
+                http_call(
+                    addr,
+                    "POST",
+                    "/api/auth/register",
+                    Some(&format!(r#"{{"email":"{email}","password":"pass1234"}}"#)),
+                )
+            });
+
+            // 窗口起点：等「注册已进入发信」。dev 臂不会发信 ⇒ 不等。
+            if arm == "smtp" {
+                accepted_rx
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("注册应在 30s 内进入发信（假 SMTP 收到连接）");
+            }
+
+            // 关键读数：注册**正在发信**时，从运行时之外发一条无关请求。
+            let t_health = Instant::now();
+            let (hs, hb) = http_call(addr, "GET", "/healthz", None);
+            let health_wait = t_health.elapsed();
+
+            let (rs, rb) = reg.join().unwrap();
+            let total_accepts = accepts.load(Ordering::SeqCst);
+            println!(
+                "### C2092 arm={arm} healthz_status={hs} healthz_wait={health_wait:?} \
+                 register_status={rs} accepts={total_accepts}"
+            );
+
+            assert_eq!(hs, 200, "{arm}: /healthz 应 200（body={hb}）");
+            assert!(
+                health_wait < Duration::from_secs(1),
+                "{arm}: 发信在飞行中时，并发的 /healthz 不应等它 —— 实测 {health_wait:?}\
+                 （改前单 worker 上会被推迟到发信结束 ≈3.8s）"
+            );
+            if arm == "smtp" {
+                assert_eq!(rs, 502, "SMTP 重试后仍失败应 502（body={rb}）");
+                assert_eq!(
+                    total_accepts, 3,
+                    "应恰好 3 次尝试（证明真的走完了阻塞的发信路径）"
+                );
+            } else {
+                assert_eq!(rs, 201, "dev 模式（未配 SMTP）应 201（body={rb}）");
+            }
+        }
     }
 
     #[tokio::test]
