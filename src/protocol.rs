@@ -318,7 +318,9 @@ pub fn openai_responses_to_openai_chat_req(body: &Value) -> Value {
             }
             Value::Array(arr) => {
                 for item in arr {
-                    messages.push(convert_responses_message(item));
+                    if !convert_responses_tool_item(item, &mut messages) {
+                        messages.push(convert_responses_message(item));
+                    }
                 }
             }
             _ => {}
@@ -1148,6 +1150,72 @@ fn build_anthropic_usage(usage: Option<&Value>) -> Value {
     usage_json
 }
 
+/// Responses 的**工具条目** → Chat 的一次工具往返。
+///
+/// Responses 用两个独立 item 表达一次工具往返（`function_call` /
+/// `function_call_output`），而 Chat 用「assistant 的 `tool_calls` 数组 +
+/// `role:"tool"` 的消息」表达 —— 与 `convert_message_to_openai` 的
+/// `tool_use` / `tool_result` 分支同构（形状单源，不另立一套）。
+///
+/// 返回 `false` 表示「不是工具条目」，调用方仍走 `convert_responses_message`。
+/// 少了这个分派，两个工具条目会在那条只认 `role` + `content` 的路径上变成两条
+/// `content: null` 的 user 消息 —— 工具调用与工具结果**静默消失**。
+fn convert_responses_tool_item(item: &Value, messages: &mut Vec<Value>) -> bool {
+    match item.get("type").and_then(|t| t.as_str()) {
+        Some("function_call") => {
+            let tool_call = json!({
+                "id": item.get("call_id").and_then(|c| c.as_str()).unwrap_or(""),
+                "type": "function",
+                "function": {
+                    "name": item.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                    "arguments": match item.get("arguments") {
+                        Some(Value::String(s)) => s.clone(),
+                        Some(v) => v.to_string(),
+                        None => String::new(),
+                    }
+                }
+            });
+            // 连续的 `function_call` 是**同一个 assistant 回合**（Responses 的并行
+            // 工具调用就是连续多个 item），合并进同一条消息的 `tool_calls` 数组 ——
+            // Chat 的形状本来就是一个消息一个数组。
+            let merge_into = messages
+                .last()
+                .map(|m| m.get("tool_calls").is_some())
+                .unwrap_or(false);
+            if merge_into {
+                let idx = messages.len() - 1;
+                if let Some(calls) = messages[idx]
+                    .get_mut("tool_calls")
+                    .and_then(|c| c.as_array_mut())
+                {
+                    calls.push(tool_call);
+                }
+            } else {
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": Value::Null,
+                    "tool_calls": [tool_call]
+                }));
+            }
+            true
+        }
+        Some("function_call_output") => {
+            let content = match item.get("output") {
+                Some(Value::String(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => String::new(),
+            };
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": item.get("call_id").and_then(|c| c.as_str()).unwrap_or(""),
+                "content": content
+            }));
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Responses 入站消息 → openai chat 消息（developer → system、content 数组文本合并）
 fn convert_responses_message(item: &Value) -> Value {
     let raw_role = item.get("role").and_then(|r| r.as_str()).unwrap_or("user");
@@ -1371,6 +1439,102 @@ mod tests {
         assert_eq!(out["messages"][2]["role"], "assistant");
         assert_eq!(out["messages"][2]["content"], "Hi there");
         assert_eq!(out["max_tokens"], 512);
+    }
+
+    /// Responses 的**工具条目**必须转成 Chat 的一次工具往返，而不是被
+    /// `convert_responses_message` 吞成两条空的 user 消息（静默丢数据）。
+    ///
+    /// 标记用长且独特的词（坑 179）：针太弱 ⇒ `true` 不是证据。
+    #[test]
+    fn responses_req_tool_items_to_openai_chat() {
+        let call = "ZZCALLMARK_R7";
+        let name = "ZZFNMARK_R7";
+        let args = "{\"city\":\"ZZARGMARK_R7\"}";
+        let output = "ZZOUTMARK_R7";
+        let text = "ZZTEXTMARK_R7";
+
+        let input = json!({
+            "model": "m",
+            "input": [
+                {"role": "user", "content": text},
+                {"type": "function_call", "call_id": call, "name": name, "arguments": args},
+                {"type": "function_call_output", "call_id": call, "output": output}
+            ]
+        });
+
+        let msgs = openai_responses_to_openai_chat_req(&input)["messages"].clone();
+        let arr = msgs.as_array().unwrap();
+        assert_eq!(arr.len(), 3, "one message per item: {msgs}");
+        assert_eq!(arr[0]["role"], "user");
+        assert_eq!(arr[0]["content"], text);
+        assert_eq!(arr[1]["role"], "assistant");
+        assert_eq!(arr[1]["content"], Value::Null, "no assistant text: {msgs}");
+        assert_eq!(arr[1]["tool_calls"][0]["id"], call);
+        assert_eq!(arr[1]["tool_calls"][0]["type"], "function");
+        assert_eq!(arr[1]["tool_calls"][0]["function"]["name"], name);
+        assert_eq!(arr[1]["tool_calls"][0]["function"]["arguments"], args);
+        assert_eq!(arr[2]["role"], "tool");
+        assert_eq!(arr[2]["tool_call_id"], call);
+        assert_eq!(arr[2]["content"], output);
+        // 缺陷形状必须消失：工具条目不能再变成 `content: null` 的 user 消息
+        assert!(
+            !arr.iter()
+                .any(|m| m["role"] == "user" && m["content"].is_null()),
+            "tool items must not become empty user messages: {msgs}"
+        );
+    }
+
+    /// 连续的 `function_call`（Responses 的**并行工具调用**）合并进同一条
+    /// assistant 消息 —— Chat 的形状是一个消息一个 `tool_calls` 数组。
+    #[test]
+    fn responses_req_parallel_function_calls_share_one_assistant_message() {
+        let input = json!({
+            "model": "m",
+            "input": [
+                {"role": "user", "content": "u"},
+                {"type": "function_call", "call_id": "c1", "name": "f1", "arguments": "{}"},
+                {"type": "function_call", "call_id": "c2", "name": "f2", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "r1"},
+                {"type": "function_call_output", "call_id": "c2", "output": "r2"}
+            ]
+        });
+        let msgs = openai_responses_to_openai_chat_req(&input)["messages"].clone();
+        let arr = msgs.as_array().unwrap();
+        assert_eq!(arr.len(), 4, "user + one assistant + two tool: {msgs}");
+        assert_eq!(arr[1]["role"], "assistant");
+        let calls = arr[1]["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 2, "parallel calls share one message: {msgs}");
+        assert_eq!(calls[0]["id"], "c1");
+        assert_eq!(calls[1]["id"], "c2");
+        assert_eq!(arr[2]["role"], "tool");
+        assert_eq!(arr[2]["tool_call_id"], "c1");
+        assert_eq!(arr[3]["tool_call_id"], "c2");
+    }
+
+    /// 链式 `responses → chat → anthropic`（7 个 plan 的 responses 入站走这条路）：
+    /// 工具往返必须活着到达 anthropic 形状（`tool_use` + `tool_result`）。
+    #[test]
+    fn responses_req_tool_items_through_the_anthropic_chain() {
+        let input = json!({
+            "model": "m",
+            "input": [
+                {"role": "user", "content": "ZZTEXTMARK_R7"},
+                {"type": "function_call", "call_id": "ZZCALLMARK_R7", "name": "ZZFNMARK_R7",
+                 "arguments": "{\"city\":\"ZZARGMARK_R7\"}"},
+                {"type": "function_call_output", "call_id": "ZZCALLMARK_R7", "output": "ZZOUTMARK_R7"}
+            ]
+        });
+        let out = openai_responses_to_anthropic_req(&input);
+        let msgs = out["messages"].clone();
+        let arr = msgs.as_array().unwrap();
+        assert_eq!(arr.len(), 3, "one message per item: {msgs}");
+        assert_eq!(arr[1]["content"][0]["type"], "tool_use");
+        assert_eq!(arr[1]["content"][0]["id"], "ZZCALLMARK_R7");
+        assert_eq!(arr[1]["content"][0]["name"], "ZZFNMARK_R7");
+        assert_eq!(arr[1]["content"][0]["input"]["city"], "ZZARGMARK_R7");
+        assert_eq!(arr[2]["content"][0]["type"], "tool_result");
+        assert_eq!(arr[2]["content"][0]["tool_use_id"], "ZZCALLMARK_R7");
+        assert_eq!(arr[2]["content"][0]["content"], "ZZOUTMARK_R7");
     }
 
     #[test]
