@@ -1342,7 +1342,12 @@
       render: (t) => {
         const v = signedPts(t.type, t.pts);
         return '<span style="color:' + (v > 0 ? "var(--ok)" : v < 0 ? "var(--danger)" : "var(--text)") + ';font-weight:600">' + (v > 0 ? "+" : "") + D.fmt(v) + "</span>";
-      } },
+      },
+      // C2054：筛选/排序必须与**渲染值**同口径 —— 用户是按单元格里看到的数字筛选与排序的。
+      // 少了这两行，`filterRows`/排序会退回 `row.pts`（库内正数）⇒ 按 -3.7 筛选得 0 行、
+      // 按 3 到 4 反而命中那条「-3.7」的行。
+      filterVal: (t) => signedPts(t.type, t.pts),
+      sortVal: (t) => signedPts(t.type, t.pts) },
     { key: "status", title: () => T("tx.col.status"), sort: "string", filter: "select",
       // C2031：同 type —— value 是库内值（成功/入账/处理中，语言无关），label 随语言变
       options: () => ["成功", "入账", "处理中"].map((s) => ({ value: s, label: txStatus(s) })),
@@ -1631,7 +1636,9 @@
     if (!list.length) { toast(T("tx.export.none"), "info"); return; }
     const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const headers = [T("tx.col.time"), T("tx.col.type"), T("tx.col.user"), T("tx.col.model"), T("tx.col.apiKeyName"), T("tx.col.input"), T("tx.col.cached"), T("tx.col.output"), T("tx.col.tokens"), T("tx.col.pts"), T("tx.col.status")];
-    const lines = list.map((t) => [t.time, txType(t.type), t.user, t.model, t.key, t.inputTokens, t.cachedTokens, t.outputTokens, t.tokens, t.pts, txStatus(t.status)].map(cell).join(","));
+    // C2054：导出的是「当前筛选可见行」，故「点数」列与表格单元格同口径（有符号：收入正/支出负），
+    // 否则屏幕上写着 -3.7、导出的文件里却是 3.7。
+    const lines = list.map((t) => [t.time, txType(t.type), t.user, t.model, t.key, t.inputTokens, t.cachedTokens, t.outputTokens, t.tokens, signedPts(t.type, t.pts), txStatus(t.status)].map(cell).join(","));
     const csv = "\uFEFF" + [headers.join(","), ...lines].join("\r\n"); // UTF-8 BOM，Excel 中文不乱码
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1800,7 +1807,10 @@
       data = data.slice().sort((a, b) => {
         for (const sk of state.sort) {
           const col = columns.find((c) => c.key === sk.key);
-          const av = a[sk.key], bv = b[sk.key];
+          // C2054：列的**渲染值**可能与行里存的原始值不同（如 pts 的有符号值）——
+          // 列可用 `sortVal` 声明「排序按哪个值」，缺省仍是 row[key]（其余 6 张表行为不变）。
+          const av = col && col.sortVal ? col.sortVal(a) : a[sk.key];
+          const bv = col && col.sortVal ? col.sortVal(b) : b[sk.key];
           let cmp;
           if (col && col.sort === "number") cmp = Number(av) - Number(bv);
           else cmp = String(av).localeCompare(String(bv), "zh-CN");

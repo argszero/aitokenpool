@@ -26,6 +26,36 @@ use crate::routes::{internal, ApiErr, AppState, AuthUser};
 /// 两者概念不同，勿混用（`withdraw` 受理但尚无 writer：受理集合与方向集合本就不是同一件事）。
 pub const TX_FILTER_TYPES: [&str; 6] = ["consume", "earn", "topup", "gift", "expire", "withdraw"];
 
+/// 交易**方向**的唯一真源 —— 收入类型（点数入账）。
+///
+/// 与 [`TX_FILTER_TYPES`] 是两件事：那是「**受理哪些值**」的集合，这是「值算收入还是支出」。
+/// 每个 writer 都把 `pts` 存成**非负数**，方向由 `type` 决定、不由 `pts` 的符号决定
+/// （C2045/C2047/C2050）。凡需要「有符号点数」的地方一律用 [`signed_pts_expr`]，勿再写内联字面量。
+const TX_INCOME_TYPES: &str = "'earn','topup','gift'";
+
+/// 交易方向：支出类型（离开账户）—— 消费 / 赠送过期 / 提现。见 [`TX_INCOME_TYPES`]。
+const TX_EXPENSE_TYPES: &str = "'consume','expire','withdraw'";
+
+/// 「点数」列在 UI 上**渲染/展示**的有符号值：收入为正、支出为负
+/// （前端 `signedPts()`，`ui/js/app.js`）。
+///
+/// 该列的一切消费方 —— 区间筛选、排序、CSV 导出 —— 都必须与此同口径：筛选/排序是对
+/// 「用户看到的数字」的主张，不是对库内原始值的主张。C2054：区间筛选曾直接比较库内 `pts`，
+/// 而每个 writer 都存正数 ⇒ 用户按表里看到的负数（如 `-3.7`）筛选会得到 **0 行**。
+///
+/// `prefix` 是表别名（如 `"t"`；无别名时传 `""`），与 [`tx_where`] 的 `col()` 同一约定。
+fn signed_pts_expr(prefix: &str) -> String {
+    let col = |c: &str| {
+        if prefix.is_empty() {
+            c.to_string()
+        } else {
+            format!("{prefix}.{c}")
+        }
+    };
+    let (ty, pts) = (col("type"), col("pts"));
+    format!("(CASE WHEN {ty} IN ({TX_INCOME_TYPES}) THEN {pts} ELSE -{pts} END)")
+}
+
 /// 解析 `type` 查询参数：`""` / `"all"` → `None`（不筛），[`TX_FILTER_TYPES`] 成员 → `Some(成员)`，
 /// 其余 → 400（文案由 [`TX_FILTER_TYPES`] **派生**，因此不可能再与集合分叉）。
 /// `/api/transactions` 与 `/api/transactions/trend` 共用此函数。
@@ -90,9 +120,9 @@ pub struct TxColFilters {
     pub key_name: Option<String>,
     /// 状态精确匹配（库内中文值：成功/入账/处理中）
     pub status: Option<String>,
-    /// 点数下限（>=）
+    /// 点数下限（>=，按列**渲染的有符号值**：收入正 / 支出负 —— 与 `signedPts()` 同口径）
     pub pts_min: Option<String>,
-    /// 点数上限（<=）
+    /// 点数上限（<=，同上：有符号值）
     pub pts_max: Option<String>,
 }
 
@@ -186,9 +216,12 @@ fn tx_where(
         conds.push(format!("{} = ?{}", col("status"), binds.len() + 1));
         binds.push(rusqlite::types::Value::Text(s.to_string()));
     }
+    // pts 区间：按**渲染的有符号值**比较（收入正 / 支出负），与列渲染、summary/trend 同口径。
+    // C2054：原先直接比较库内 `pts`，而每个 writer 都存正数 ⇒ 用户按表里看到的负数筛选得 0 行。
+    let signed_pts = signed_pts_expr(prefix);
     for (v, op) in [(f.pts_min.as_deref(), ">="), (f.pts_max.as_deref(), "<=")] {
         if let Some(n) = v.and_then(|s| s.trim().parse::<f64>().ok()) {
-            conds.push(format!("{} {op} ?{}", col("pts"), binds.len() + 1));
+            conds.push(format!("{signed_pts} {op} ?{}", binds.len() + 1));
             binds.push(rusqlite::types::Value::Real(n));
         }
     }
@@ -246,11 +279,12 @@ pub async fn transactions(
     // 方向由 `type` 决定，不是 `pts` 的符号（每个 writer 都存正数，C2045/C2050）。
     let (where_sql, where_binds) =
         tx_where("t", auth.user_id, &type_filter, &start, &end, &q.filters);
+    let signed_pts = signed_pts_expr("t");
     let summary_sql = format!(
         "SELECT \
-            COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN t.type IN ('consume','expire','withdraw') THEN t.pts ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE -t.pts END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ({TX_INCOME_TYPES}) THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ({TX_EXPENSE_TYPES}) THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM({signed_pts}), 0), \
             COALESCE(SUM(t.tokens), 0), \
             COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
             COALESCE(SUM(t.cached_tokens), 0), \
@@ -411,11 +445,12 @@ pub async fn transactions_trend(
     } else {
         ""
     };
+    let signed_pts = signed_pts_expr("t");
     let trend_sql = format!(
         "SELECT strftime('{expr}', t.time{mods}) AS b, \
-            COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN t.type IN ('consume','expire','withdraw') THEN t.pts ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE -t.pts END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ({TX_INCOME_TYPES}) THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ({TX_EXPENSE_TYPES}) THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM({signed_pts}), 0), \
             COALESCE(SUM(t.tokens), 0), \
             COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
             COALESCE(SUM(t.cached_tokens), 0), \
@@ -486,12 +521,13 @@ pub async fn dashboard(
     // 近 7 天净额序列（earn/topup/gift 为正、consume 为负；rant 2026-08-22T06:34:37：
     // 原先只把 earn 当正数 → topup 充值被误算为负）
     let mut stmt = conn
-        .prepare(
-            "SELECT date(time), COALESCE(SUM(CASE WHEN type IN ('earn','topup','gift') THEN pts ELSE -pts END), 0) \
+        .prepare(&format!(
+            "SELECT date(time), COALESCE(SUM({}), 0) \
              FROM transactions \
              WHERE user_id = ?1 AND date(time) >= date('now', '-6 days') \
              GROUP BY date(time) ORDER BY date(time)",
-        )
+            signed_pts_expr("")
+        ))
         .map_err(internal)?;
     let series = stmt
         .query_map([auth.user_id], |r| {
@@ -953,12 +989,30 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["total"], 1, "status 精确过滤: {body}");
         assert_eq!(v["items"].as_array().unwrap()[0]["type"], "earn");
-        // pts 区间 [15, 25] → 1 条（20）
+        // pts 区间：**按列渲染的有符号值**比较（C2054）——三条行的呈现值是
+        // consume -10.0 / consume -20.0 / earn +30.0，故区间 [-25,-15] → 1 条（-20.0）
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?pts_min=-25&pts_max=-15",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "pts 区间按渲染值过滤: {body}");
+        assert!((v["items"].as_array().unwrap()[0]["pts"].as_f64().unwrap() - 20.0).abs() < 1e-9);
+        // 阴性对照：库里存的正数 20.0 不再命中 [15,25]（修复前正是它命中）——
+        // 若此断言失败，说明筛选又退回了「比较库内原始 pts」
         let (s, body) = get(st.clone(), "/api/transactions?pts_min=15&pts_max=25", &key).await;
         assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["total"], 1, "pts 区间过滤: {body}");
-        assert!((v["items"].as_array().unwrap()[0]["pts"].as_f64().unwrap() - 20.0).abs() < 1e-9);
+        assert_eq!(v["total"], 0, "库内正数不得再命中（渲染值是负数）: {body}");
+        // 阳性对照：收入行的渲染值 +30.0 仍落在 [+25,+35]（筛选没有把收入也一起翻掉）
+        let (s, body) = get(st.clone(), "/api/transactions?pts_min=25&pts_max=35", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "收入行按渲染值命中: {body}");
+        assert_eq!(v["items"].as_array().unwrap()[0]["type"], "earn");
         // user_name LIKE（demo，全部 3 条命中）
         let (s, body) = get(st.clone(), "/api/transactions?user_name=dem", &key).await;
         assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
@@ -998,6 +1052,74 @@ mod tests {
         assert_eq!(buckets.len(), 1, "trend 随列筛选: {body}");
         assert!(
             (buckets[0]["expense"].as_f64().unwrap() - 10.0).abs() < 1e-9,
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pts_range_filter_matches_the_rendered_signed_value() {
+        // C2054：交易页「点数」列**渲染**的是有符号值（income 正 / expense 负，`signedPts()`），
+        // 但区间筛选曾比较库内原始 `pts`（每个 writer 都存正数）⇒ 用户按表里看到的数字筛选
+        // （例如「点数 ≤ 0」想看支出）会得到 0 行。规格：**筛选命中的行 = 渲染值落在区间内的行**。
+        let st = test_state("ptsrange");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            // 与 billing.rs 存的完全一样：两行都存正数，方向在 type
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, '2', 1, 'm', 150, 3.7, 'consume', '成功')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, '3', 2, 'm', 150, 0.5, 'earn', '成功')",
+                [],
+            )
+            .unwrap();
+        }
+        // 渲染值：consume → -3.7、earn → +0.5
+        let cases: [(&str, usize, &str); 4] = [
+            // 「点数 ≤ 0」＝用户眼里所有支出行
+            ("pts_max=0", 1, "consume"),
+            // 直接框住单元格里的 -3.7
+            ("pts_min=-4&pts_max=-3", 1, "consume"),
+            // 没有单元格落在这个区间（-3.7/+0.5 都不在）——修复前返回那条存了 3.7 的消费行
+            ("pts_min=3&pts_max=4", 0, ""),
+            // 阳性对照：收入行的渲染值 +0.5 仍被命中（证明筛选不是把一切都翻成负数）
+            ("pts_min=0&pts_max=1", 1, "earn"),
+        ];
+        for (qs, want_total, want_type) in cases {
+            let (s, body) = get(st.clone(), &format!("/api/transactions?{qs}"), &key).await;
+            assert_eq!(s, axum::http::StatusCode::OK, "q={qs} body: {body}");
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(v["total"], want_total, "q={qs} 按渲染值命中数: {body}");
+            if want_total > 0 {
+                assert_eq!(
+                    v["items"].as_array().unwrap()[0]["type"],
+                    want_type,
+                    "q={qs}: {body}"
+                );
+            }
+        }
+        // trend 与列表同口径（同一 where 片段）：pts_max=0 只留消费腿 → expense=3.7、income=0
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions/trend?bucket=day&pts_max=0",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let buckets = v["buckets"].as_array().unwrap();
+        assert_eq!(buckets.len(), 1, "trend 同口径: {body}");
+        assert!(
+            (buckets[0]["expense"].as_f64().unwrap() - 3.7).abs() < 1e-9,
+            "{body}"
+        );
+        assert!(
+            (buckets[0]["income"].as_f64().unwrap()).abs() < 1e-9,
             "{body}"
         );
     }
