@@ -21,20 +21,37 @@ use crate::routes::{internal, ApiErr, AppState, AuthUser};
 /// 筛选值会在一端 200、另一端 400（C2052：趋势端点曾漏 `expire`，列表正常而趋势图只显示
 /// 「趋势数据加载失败」）。**新增类型时只改这里。**
 ///
-/// ⚠️ 这是「**受理哪些值**」的集合，不是「值算收入还是支出」的**方向**集合 —— 方向在各自的
-/// SQL 里书写（收入 `IN ('earn','topup','gift')` / 支出 `IN ('consume','expire','withdraw')`），
-/// 两者概念不同，勿混用（`withdraw` 受理但尚无 writer：受理集合与方向集合本就不是同一件事）。
+/// ⚠️ 这是「**受理哪些值**」的集合，不是「值算收入还是支出」的**方向**集合 —— 方向由
+/// [`TX_INCOME_TYPES`] / [`TX_EXPENSE_TYPES`] 定义，两者概念不同，勿混用
+/// （`withdraw` 受理但尚无 writer：受理集合与方向集合本就不是同一件事）。
 pub const TX_FILTER_TYPES: [&str; 6] = ["consume", "earn", "topup", "gift", "expire", "withdraw"];
 
-/// 交易**方向**的唯一真源 —— 收入类型（点数入账）。
+/// 交易**方向**的唯一真源 —— 收入类型（点数入账）；其补集见 [`TX_EXPENSE_TYPES`]。
 ///
-/// 与 [`TX_FILTER_TYPES`] 是两件事：那是「**受理哪些值**」的集合，这是「值算收入还是支出」。
-/// 每个 writer 都把 `pts` 存成**非负数**，方向由 `type` 决定、不由 `pts` 的符号决定
-/// （C2045/C2047/C2050）。凡需要「有符号点数」的地方一律用 [`signed_pts_expr`]，勿再写内联字面量。
-const TX_INCOME_TYPES: &str = "'earn','topup','gift'";
+/// 方向由 `type` 决定、**不由 `pts` 的符号决定**（每个 writer 都把 `pts` 存成非负数，
+/// C2045/C2047/C2050）。本模块消费它的地方有两处，且**都从这一个数组取值**：
+///
+/// 1. **SQL** —— 经 [`sql_in_list`] 渲染成 `IN (…)` 值列表（[`signed_pts_expr`]、`summary`、`trend`）；
+/// 2. **Rust** —— `dashboard` 的 `net` 直接 `contains` 判断方向（C2056：此处曾内联
+///    `match ty { "earn" | "topup" | "gift" => … }`，是同一规则的**第二份副本**——
+///    只改本数组不会影响它；现已改为同源取值）。
+///
+/// ⇒ 调整**某个已有类型的方向**只需改这两个数组，SQL 与 Rust 两侧同时生效。
+/// 凡需要「有符号点数」的地方一律用 [`signed_pts_expr`]，勿再写内联字面量。
+const TX_INCOME_TYPES: [&str; 3] = ["earn", "topup", "gift"];
 
 /// 交易方向：支出类型（离开账户）—— 消费 / 赠送过期 / 提现。见 [`TX_INCOME_TYPES`]。
-const TX_EXPENSE_TYPES: &str = "'consume','expire','withdraw'";
+const TX_EXPENSE_TYPES: [&str; 3] = ["consume", "expire", "withdraw"];
+
+/// 把方向集合渲染成 SQL 的 `IN (…)` 值列表（如 `'earn','topup','gift'`）——
+/// SQL 与 Rust 共用同一份集合（C2056），因此两侧不可能再分叉。
+fn sql_in_list(types: &[&str]) -> String {
+    types
+        .iter()
+        .map(|t| format!("'{t}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 /// 「点数」列在 UI 上**渲染/展示**的有符号值：收入为正、支出为负
 /// （前端 `signedPts()`，`ui/js/app.js`）。
@@ -53,7 +70,10 @@ fn signed_pts_expr(prefix: &str) -> String {
         }
     };
     let (ty, pts) = (col("type"), col("pts"));
-    format!("(CASE WHEN {ty} IN ({TX_INCOME_TYPES}) THEN {pts} ELSE -{pts} END)")
+    format!(
+        "(CASE WHEN {ty} IN ({}) THEN {pts} ELSE -{pts} END)",
+        sql_in_list(&TX_INCOME_TYPES)
+    )
 }
 
 /// 解析 `type` 查询参数：`""` / `"all"` → `None`（不筛），[`TX_FILTER_TYPES`] 成员 → `Some(成员)`，
@@ -280,10 +300,12 @@ pub async fn transactions(
     let (where_sql, where_binds) =
         tx_where("t", auth.user_id, &type_filter, &start, &end, &q.filters);
     let signed_pts = signed_pts_expr("t");
+    let income = sql_in_list(&TX_INCOME_TYPES);
+    let expense = sql_in_list(&TX_EXPENSE_TYPES);
     let summary_sql = format!(
         "SELECT \
-            COALESCE(SUM(CASE WHEN t.type IN ({TX_INCOME_TYPES}) THEN t.pts ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN t.type IN ({TX_EXPENSE_TYPES}) THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ({income}) THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ({expense}) THEN t.pts ELSE 0 END), 0), \
             COALESCE(SUM({signed_pts}), 0), \
             COALESCE(SUM(t.tokens), 0), \
             COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
@@ -446,10 +468,12 @@ pub async fn transactions_trend(
         ""
     };
     let signed_pts = signed_pts_expr("t");
+    let income = sql_in_list(&TX_INCOME_TYPES);
+    let expense = sql_in_list(&TX_EXPENSE_TYPES);
     let trend_sql = format!(
         "SELECT strftime('{expr}', t.time{mods}) AS b, \
-            COALESCE(SUM(CASE WHEN t.type IN ({TX_INCOME_TYPES}) THEN t.pts ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN t.type IN ({TX_EXPENSE_TYPES}) THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ({income}) THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ({expense}) THEN t.pts ELSE 0 END), 0), \
             COALESCE(SUM({signed_pts}), 0), \
             COALESCE(SUM(t.tokens), 0), \
             COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
@@ -541,15 +565,17 @@ pub async fn dashboard(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(internal)?;
     // 净变化 = 上方逐类型行的有符号和（同一个月窗口）：
-    // earn/topup/gift 为收入、其余为支出 —— 与下方 series 的 CASE、transactions_trend 的 net 列、
-    // routes/ops.rs 的月份流水同口径（付款方同写正数 pts，方向由 type 决定）。
+    // 收入 = [`TX_INCOME_TYPES`] 成员（earn/topup/gift），其余为支出 —— 方向取自**同一个数组**，
+    // 与下方 series 的 CASE、transactions_trend 的 net 列、routes/ops.rs 的月份流水同口径
+    // （每个 writer 都写非负 pts，方向由 type 决定）。C2056：此处曾内联 `match "earn"|"topup"|"gift"`。
     let net: f64 = month
         .iter()
         .map(|m| {
             let pts = m["pts"].as_f64().unwrap_or(0.0);
-            match m["type"].as_str().unwrap_or("") {
-                "earn" | "topup" | "gift" => pts,
-                _ => -pts,
+            if TX_INCOME_TYPES.contains(&m["type"].as_str().unwrap_or("")) {
+                pts
+            } else {
+                -pts
             }
         })
         .sum();
@@ -831,6 +857,66 @@ mod tests {
         assert!(
             (net - month_spec).abs() < 1e-9,
             "net 必须是本月净变化（= 上方逐类型行之和 = {month_spec}），实际 {net}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_net_direction_holds_for_every_type() {
+        // C2056（施工单 fix/direction-set-single-source）：`dashboard` 的 `net` 判定方向时曾内联
+        // `match ty { "earn" | "topup" | "gift" => … }` —— 与 `signed_pts_expr` 用的 SQL 白名单是
+        // 同一条规则的**两份副本**，只改其一不会影响另一。本测试把**六种类型全部**摆出来，期望值
+        // **硬编码在测试里**（不从任何常量派生）⇒ 任一侧被单独改动都会让它变红。
+        //
+        // 期望（收入为正 / 支出为负）：
+        //   earn 3.0 + topup 2.0 + gift 1.0 = 6.0（收入）
+        //   consume 10.0 + expire 0.5 + withdraw 0.25 = 10.75（支出）
+        //   net = 6.0 − 10.75 = −4.75
+        let st = test_state("dashalltypes");
+        let key = login(st.clone()).await;
+        let rows = [
+            ("earn", 3.0),
+            ("topup", 2.0),
+            ("gift", 1.0),
+            ("consume", 10.0),
+            ("expire", 0.5),
+            ("withdraw", 0.25),
+        ];
+        {
+            let conn = st.db.lock().unwrap();
+            for (ty, pts) in rows {
+                conn.execute(
+                    "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                     VALUES (1, 'c', 1, 'm', 0, ?1, ?2, '成功', datetime('now','start of month'))",
+                    rusqlite::params![pts, ty],
+                )
+                .unwrap();
+            }
+        }
+        let (s, body) = get(st.clone(), "/api/dashboard", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        // 逐类型行＝本月按 type 聚合，原样返回库内的**非负** pts（方向不由 pts 符号决定）
+        let month: std::collections::HashMap<String, f64> = v["month"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                (
+                    m["type"].as_str().unwrap().to_string(),
+                    m["pts"].as_f64().unwrap(),
+                )
+            })
+            .collect();
+        for (ty, pts) in rows {
+            assert!(
+                (month[ty] - pts).abs() < 1e-9,
+                "month[{ty}] 应为库内非负值 {pts}，实际 {month:?}"
+            );
+        }
+        let net = v["net"].as_f64().unwrap();
+        assert!(
+            (net - (-4.75)).abs() < 1e-9,
+            "net 应为「收入(earn+topup+gift) − 支出(consume+expire+withdraw)」= −4.75，实际 {net}"
         );
     }
 
