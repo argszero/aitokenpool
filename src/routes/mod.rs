@@ -196,26 +196,20 @@ fn gen_verification_code() -> String {
     format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32))
 }
 
-/// 发送验证码（dev 模式打日志；SMTP 模式发信），返回是否 dev 模式 + 验证码
-fn send_code(st: &AppState, email: &str) -> Result<(bool, String), ApiErr> {
+/// 生成 6 位数字验证码 + 其 sha256 hex（写入方与发信方共用同一个码）
+fn new_verification_code() -> (String, String) {
     let code = gen_verification_code();
     let hash = sha2_hex(&code);
-    let expires_at = "+10 minutes".to_string();
-    {
-        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-        dao::store_verification_code(&conn, email, &hash, &expires_at).map_err(internal)?;
-    }
-    // 过期时间用 SQLite 表达式写入（datetime('now', '+10 minutes')）
-    {
-        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-        conn.execute(
-            "UPDATE email_verifications SET expires_at = datetime('now', '+10 minutes') WHERE email = ?1",
-            [email],
-        )
-        .map_err(internal)?;
-    }
+    (code, hash)
+}
+
+/// 发送验证码（dev 模式打日志；SMTP 模式发信），返回是否 dev 模式。
+/// 约定：**调用方先在自己的锁作用域内写入验证码记录**（`dao::store_verification_code` /
+/// `dao::begin_resend_verification`），本函数只负责发出——写入与限频检查必须原子，而发信（含重试）
+/// 不能持锁。
+fn send_code(st: &AppState, email: &str, code: &str) -> Result<bool, ApiErr> {
     let dev = !st.cfg.mail.configured();
-    if let Err(e) = crate::mail::send_verification_code(&st.cfg.mail, email, &code) {
+    if let Err(e) = crate::mail::send_verification_code(&st.cfg.mail, email, code) {
         // SMTP 发送失败（重试后仍失败）→ 清除验证码记录（解除 60s 重发限频，用户可立即重发），
         // 返回 502 + 明确错误提示（rant 2026-08-21T23:52:17：半注册账号兜底）
         let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
@@ -227,7 +221,7 @@ fn send_code(st: &AppState, email: &str) -> Result<(bool, String), ApiErr> {
             Json(serde_json::json!({ "error": "验证码发送失败，请重试" })),
         ));
     }
-    Ok((dev, code))
+    Ok(dev)
 }
 
 fn sha2_hex(s: &str) -> String {
@@ -276,8 +270,11 @@ pub async fn register(
     };
     let hash = crate::auth::hash_password(&req.password).map_err(internal)?;
     let user_id = dao::create_unverified_user(&conn, &email, &name, &hash).map_err(internal)?;
+    // 验证码记录与建号在同一锁作用域内写入：不存在「用户已建、码未写」的中间态
+    let (code, code_hash) = new_verification_code();
+    dao::store_verification_code(&conn, &email, &code_hash).map_err(internal)?;
     drop(conn);
-    let (dev, code) = send_code(&st, &email)?;
+    let dev = send_code(&st, &email, &code)?;
     let mut v = serde_json::json!({
         "id": user_id,
         "email": email,
@@ -350,15 +347,19 @@ pub async fn resend_code(
     if !exists {
         return Ok(Json(serde_json::json!({ "status": "ok", "email": email })));
     }
+    let (code, code_hash) = new_verification_code();
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    if dao::resend_too_soon(&conn, &email) {
+    // 限频检查与写入必须在同一把锁内（dao::begin_resend_verification）：拆成两段各自加锁时，
+    // 并发重发会同时通过检查 ⇒ 同一邮箱一次突发收到多封验证码（已实测）
+    let written = dao::begin_resend_verification(&conn, &email, &code_hash).map_err(internal)?;
+    drop(conn);
+    if !written {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({ "error": "请求过于频繁，请 60 秒后重试" })),
         ));
     }
-    drop(conn);
-    let (dev, code) = send_code(&st, &email)?;
+    let dev = send_code(&st, &email, &code)?;
     let mut v = serde_json::json!({ "status": "ok", "email": email });
     if dev {
         v["dev_code"] = serde_json::json!(code);
@@ -386,15 +387,18 @@ pub async fn forgot_password(
         // 防枚举：统一返回 ok（不发送）
         return Ok(Json(serde_json::json!({ "status": "ok", "email": email })));
     }
+    let (code, code_hash) = new_verification_code();
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    if dao::resend_too_soon(&conn, &email) {
+    // 限频检查与写入必须在同一把锁内（同 resend-code：否则并发重发同时通过检查）
+    let written = dao::begin_resend_verification(&conn, &email, &code_hash).map_err(internal)?;
+    drop(conn);
+    if !written {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({ "error": "请求过于频繁，请 60 秒后重试" })),
         ));
     }
-    drop(conn);
-    let (dev, code) = send_code(&st, &email)?;
+    let dev = send_code(&st, &email, &code)?;
     let mut v = serde_json::json!({ "status": "ok", "email": email });
     if dev {
         v["dev_code"] = serde_json::json!(code);
@@ -1822,6 +1826,62 @@ mod tests {
         assert!(
             v["dev_code"].is_string(),
             "真实账号重发必须发码（阳性对照）: {body}"
+        );
+    }
+
+    /// 写入方与读取方必须是同一口径：`store_verification_code` 写入的 `expires_at` 必须能被读取谓词
+    /// （`expires_at > datetime('now')`）解释。旧写法把字面量 `'+10 minutes'` 当**参数**存进去，再靠
+    /// 紧随其后的一次 UPDATE 救回——两次加锁之间存在「记录已存在却判为过期」的中间态，且第二次写失败
+    /// 即永久不可用（用户拿到码却验不过，重发又撞 60 秒限频）。
+    #[tokio::test]
+    async fn verification_code_is_usable_exactly_as_written() {
+        let st = test_state("verok");
+        let code = gen_verification_code();
+        let hash = sha2_hex(&code);
+        let conn = st.db.lock().unwrap();
+        dao::store_verification_code(&conn, "written@example.com", &hash).unwrap();
+        // 待测性质：写入后**不需要任何第二次写入**就立即可读（写入值落在读取谓词之内）
+        let (stored, _attempts) = dao::find_valid_verification(&conn, "written@example.com")
+            .expect("写入后必须立即可读——写入值必须在读取谓词之内");
+        assert_eq!(stored, hash, "取回的应是刚写入的码哈希");
+        let expires: String = conn
+            .query_row(
+                "SELECT expires_at FROM email_verifications WHERE email = ?1",
+                ["written@example.com"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(
+            expires, "+10 minutes",
+            "落库的必须是 SQL 计算的 datetime，而不是被当作参数存进来的字面量: {expires}"
+        );
+    }
+
+    /// 限频检查与写入必须原子（同一把锁内）。旧写法各自加锁、两段之间 `drop(conn)`：并发重发会
+    /// 同时通过检查 ⇒ 同一邮箱一次突发收到多封验证码（修复前实测：32 并发 2~4 封；把既有的无锁间隙
+    /// 放大到 300ms 后 32/32 全部放行）。
+    #[tokio::test]
+    async fn resend_limiter_and_write_share_one_critical_section() {
+        let st = test_state("resatomic");
+        let first = {
+            let conn = st.db.lock().unwrap();
+            dao::begin_resend_verification(&conn, "burst@example.com", &sha2_hex("111111")).unwrap()
+        };
+        assert!(first, "首次写入应放行");
+        let second = {
+            let conn = st.db.lock().unwrap();
+            dao::begin_resend_verification(&conn, "burst@example.com", &sha2_hex("222222")).unwrap()
+        };
+        assert!(
+            !second,
+            "60 秒内第二次必须被限频拦下（检查与写入同一临界区）"
+        );
+        let conn = st.db.lock().unwrap();
+        let (hash, _attempts) = dao::find_valid_verification(&conn, "burst@example.com").unwrap();
+        assert_eq!(
+            hash,
+            sha2_hex("111111"),
+            "被限频拦下的那次不得写入新码（否则并发重发仍会各自换码）"
         );
     }
 
