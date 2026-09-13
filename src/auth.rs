@@ -31,6 +31,31 @@ pub fn verify_password(hash: &str, pw: &str) -> bool {
         .is_ok()
 }
 
+/// [`hash_password`] 的 blocking-pool 版本（handler 用）。
+///
+/// 两个 KDF 的**同步**版本是**阻塞 CPU**（默认参数 m=19MiB/t=2/p=1 实测 ~0.24 s）。async handler
+/// 里直接调用它会把调用它的 worker 线程占满：并发请求本应被工作线程池吸收，却变成**整个运行时排队**
+/// —— 任何无关请求（含 `/healthz`）都会等它跑完。多 worker 只是把这一步推后，不是可靠边界（C2105：
+/// 2 核 CI runner 上未认证注册的 KDF 让并发的 `/healthz` 等了 1.29 s，同一条测试在多核开发机上
+/// 通常是 ~0.4 ms ⇒ 间歇性红灯）。放进 blocking pool 后，同时 CPI 计数在**阻塞线程**上等待、
+/// 不占 worker，`/healthz` 回到毫秒级。
+///
+/// ⚠️ 调用方语义：`spawn_blocking` 的 JoinError 此前在 4 个 handler 里各有各的处理方式，本函数统一
+/// **panic 传播（resume_unwind）** —— 「worker 死了」与「密码错了」是不同的失败，绝不能把前者混进
+/// 后者的 →401 分支（那会掩盖 bug）。panic 本身由 axum 的 catch-panic 转 500。
+pub async fn hash_password_async(pw: String) -> Result<String> {
+    tokio::task::spawn_blocking(move || hash_password(&pw))
+        .await
+        .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
+}
+
+/// [`verify_password`] 的 blocking-pool 版本（handler 用）。语义同 [`hash_password_async`]。
+pub async fn verify_password_async(hash: String, pw: String) -> bool {
+    tokio::task::spawn_blocking(move || verify_password(&hash, &pw))
+        .await
+        .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
+}
+
 /// 生成分发 API Key：`atk_live_` + 24 位 hex（12 随机字节），与 UI 原型一致
 pub fn generate_api_key() -> String {
     let mut bytes = [0u8; 12];

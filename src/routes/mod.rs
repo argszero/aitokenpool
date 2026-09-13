@@ -169,6 +169,8 @@ pub async fn login(
     // 口令哈希只在锁内**取出**，argon2 校验放到锁外：KDF 故意昂贵（默认参数实测 ~0.24 s），
     // 放在共享 DB 互斥量里运行时，一次未认证登录就会让全进程所有 DB 路径排队等这么久
     // （C2089 实测：`max_lock_wait ≈ 236 ms`；移到锁外后同一读数为 `0.00 ms`）。
+    // ⚠️ 「锁外」不等于「不占 worker」：KDF 是阻塞 CPU，必须在 blocking pool 上跑，
+    // 否则并发登录会把 async worker 占满、连 /healthz 都排队（C2105）。
     let found = {
         let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
         dao::find_user_by_email(&conn, &email)
@@ -176,7 +178,7 @@ pub async fn login(
     let Some((user_id, hash)) = found else {
         return Err(unauthorized());
     };
-    if !crate::auth::verify_password(&hash, &req.password) {
+    if !crate::auth::verify_password_async(hash, req.password.clone()).await {
         return Err(unauthorized());
     }
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
@@ -292,8 +294,11 @@ pub async fn register(
     } else {
         req.name.trim().to_string()
     };
-    // argon2 在锁外（默认参数实测 ~0.24 s；理由同 login —— 不能占着共享 DB 互斥量算哈希）
-    let hash = crate::auth::hash_password(&req.password).map_err(internal)?;
+    // argon2 在锁外**且**在 blocking pool 上（默认参数实测 ~0.24 s；理由同 login —— 既不能占着
+    // 共享 DB 互斥量算哈希，也不能占着 async worker）
+    let hash = crate::auth::hash_password_async(req.password.clone())
+        .await
+        .map_err(internal)?;
     let (code, code_hash) = new_verification_code();
     // 锁作用域限定在块内：KDF 之后要 await 发信，锁必须在此之前释放（不能把连接守卫带过 await）
     let user_id = {
@@ -497,8 +502,10 @@ pub async fn reset_password(
             ));
         }
     }
-    // ② argon2 在锁外（默认参数实测 ~0.24 s；理由同 login）
-    let new_hash = crate::auth::hash_password(&req.new_password).map_err(internal)?;
+    // ② argon2 在锁外**且**在 blocking pool 上（默认参数实测 ~0.24 s；理由同 login）
+    let new_hash = crate::auth::hash_password_async(req.new_password.clone())
+        .await
+        .map_err(internal)?;
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     // ③ 落库前复查：KDF 期间码可能已过期/已被消费 —— 写入口令的一刻仍需持有有效授权
     let code_still_valid = match dao::find_valid_verification(&conn, &email) {
@@ -571,7 +578,7 @@ pub async fn change_password(
             Json(serde_json::json!({ "error": "新密码至少 8 位" })),
         ));
     }
-    // 旧哈希只在锁内取出；两次 argon2（校验旧口令 + 生成新哈希）都在锁外
+    // 旧哈希只在锁内取出；两次 argon2（校验旧口令 + 生成新哈希）都在锁外**且**在 blocking pool 上
     // （默认参数实测 ~0.24 s/次；理由同 login）
     let hash: String = {
         let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
@@ -582,10 +589,12 @@ pub async fn change_password(
         )
         .map_err(|_| unauthorized())?
     };
-    if !crate::auth::verify_password(&hash, &req.old_password) {
+    if !crate::auth::verify_password_async(hash, req.old_password.clone()).await {
         return Err(unauthorized());
     }
-    let new_hash = crate::auth::hash_password(&req.new_password).map_err(internal)?;
+    let new_hash = crate::auth::hash_password_async(req.new_password.clone())
+        .await
+        .map_err(internal)?;
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     conn.execute(
         "UPDATE users SET password_hash = ?1 WHERE id = ?2",
@@ -1621,16 +1630,41 @@ mod tests {
         );
     }
 
-    /// 验证码发信是**阻塞 I/O**（lettre：失败时 3 次尝试 + 2×2 s 重试间隔）。它若在 async worker 上
-    /// 原地调用，一次**未认证**的注册就能让整个进程停止服务 —— 本测试把网关跑在**单 worker** 的
-    /// 运行时上，用「接受后立刻关闭」的假 SMTP 把一次 `register` 卡在发信里，再从一个**运行时之外**
-    /// 的线程发一条与它毫无关系的 `GET /healthz`：修复后必须毫秒级返回。
+    /// 未认证请求就能触发的**阻塞段**不得拖住运行时 —— 本探针把网关跑在**单 worker** 的
+    /// 运行时上，让一个请求卡在阻塞段里，再从**运行时之外**发一条与它毫无关系的 `GET /healthz`：
+    /// 健康检查必须在阻塞段结束**之前**返回。三条入口各对应一种阻塞段，各自**独立成一个测试**：
     ///
-    /// 测量窗口的起点是**假 SMTP 收到第一个连接**（即注册已进入发信），不是在发请求时 —— 这样
-    /// argon2（~0.24 s，见 C2090，属另一件事）不在读数里。改前该读数 ≈ 3.8 s（发信剩下的重试时长），
-    /// 修复后 ≈ 1 ms。`dev` 臂（未配 SMTP ⇒ 不阻塞）作为阴性对照。
+    /// - `smtp`：阻塞 **I/O**（lettre 发信，失败时 3 次尝试 + 2×2 s 重试间隔）。改前读数 ≈ 3.8 s；
+    ///   窗口起点是**假 SMTP 收到第一个连接**（即注册已进入发信），不是在发请求时。
+    /// - `dev`：阻塞 **CPU**（注册里的 argon2 **哈希**，`auth::hash_password`，默认参数 ~0.24 s）。
+    /// - `login`：阻塞 **CPU**（登录里的 argon2 **校验**，`auth::verify_password`）。
+    ///
+    /// 后两臂的阻塞段（argon2）是**原地且不可观测**的，于是改为**在请求飞行期间轮询** `/healthz`
+    /// 并取**最大**等待 —— 任何「无关请求被串到阻塞段后面」的窗口都会被最大值抓到（C2105：2 核 CI
+    /// runner 上未认证注册的 argon2 曾让并发的 `/healthz` 等了 1.29 s，而同一测试在多核开发机上通常
+    /// 只读到 ~0.4 ms ⇒ 间歇性红灯；修后三臂皆 ~0.5 ms）。判据用「/healthz 等待 ÷ 请求总时长」的
+    /// 比值，**与本机快慢无关**：被串行化时 ≈1，不串行时 ≈0.01。
     #[test]
     fn slow_smtp_send_does_not_stall_the_runtime() {
+        stall_probe("smtp");
+    }
+
+    /// argon2 **哈希**（`auth::hash_password`）不得在 async worker 上原地跑 —— 见 `stall_probe`。
+    #[test]
+    fn argon2_hash_does_not_stall_the_runtime() {
+        stall_probe("dev");
+    }
+
+    /// argon2 **校验**（`auth::verify_password`）不得在 async worker 上原地跑 —— 见 `stall_probe`。
+    #[test]
+    fn argon2_verify_does_not_stall_the_runtime() {
+        stall_probe("login");
+    }
+
+    /// 三臂共用的探针（`arm` ∈ smtp/dev/login，见上文）。它必须是**普通函数**而不是 `#[test]`：
+    /// 三臂分开成三个测试，A/B 才读得出**互不遮蔽**的红集合（同一个测试里第一条断言失败就会中止
+    /// 后面的臂）。
+    fn stall_probe(arm: &str) {
         use std::io::{Read, Write};
         use std::net::{SocketAddr, TcpListener, TcpStream};
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1686,76 +1720,123 @@ mod tests {
             });
         }
 
-        for arm in ["smtp", "dev"] {
-            let mut st = test_state(if arm == "smtp" { "c2092s" } else { "c2092d" });
-            if arm == "smtp" {
-                let mut cfg = (*st.cfg).clone();
-                cfg.mail.smtp_host = "127.0.0.1".to_string();
-                cfg.mail.smtp_port = smtp_addr.port();
-                cfg.mail.from = "noreply@test.local".to_string();
-                st.cfg = Arc::new(cfg);
+        // 三条入口，三种「未认证请求即可触发的阻塞段」：
+        //   smtp  = 阻塞 I/O（发信重试）
+        //   dev   = 阻塞 CPU（注册里的 argon2 **哈希**）
+        //   login = 阻塞 CPU（登录里的 argon2 **校验**）
+        // 后两条是同一缺陷类的两个函数（`hash_password` / `verify_password`），都必须能在
+        // async worker 上**原地**跑而不拖住运行时。
+        let mut st = test_state(match arm {
+            "smtp" => "c2092s",
+            "dev" => "c2092d",
+            _ => "c2092l",
+        });
+        if arm == "smtp" {
+            let mut cfg = (*st.cfg).clone();
+            cfg.mail.smtp_host = "127.0.0.1".to_string();
+            cfg.mail.smtp_port = smtp_addr.port();
+            cfg.mail.from = "noreply@test.local".to_string();
+            st.cfg = Arc::new(cfg);
+        }
+
+        // 真网关：单 worker 运行时 + 真 TCP 监听（客户端在运行时之外，所以必须真的走网络）。
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router().with_state(st.clone());
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.spawn(async move {
+            let l = tokio::net::TcpListener::from_std(listener).unwrap();
+            axum::serve(l, app).await.unwrap();
+        });
+
+        // 客户端线程发一条**未认证**请求并等它跑完；它会占住整个（单 worker）运行时。
+        let (path, body, want) = match arm {
+            // 已播种的已验证用户 + 正确口令 ⇒ 走完 argon2 校验路径。
+            "login" => (
+                "/api/auth/login",
+                r#"{"email":"demo@aitokenpool.local","password":"demo1234"}"#.to_string(),
+                200u16,
+            ),
+            _ => (
+                "/api/auth/register",
+                format!(r#"{{"email":"c2092-{arm}@example.com","password":"pass1234"}}"#),
+                if arm == "smtp" { 502 } else { 201 },
+            ),
+        };
+        let t_reg = Instant::now();
+        let reg = {
+            let body = body.clone();
+            std::thread::spawn(move || http_call(addr, "POST", path, Some(&body)))
+        };
+
+        // 窗口起点：等「注册已进入发信」。另两臂没有可观测信号 ⇒ 不等。
+        if arm == "smtp" {
+            accepted_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("注册应在 30s 内进入发信（假 SMTP 收到连接）");
+        }
+
+        // 关键读数：请求**正在阻塞**时，从运行时之外发无关请求，取**最大**等待。
+        // smtp 臂有「已进入发信」的可观测信号 ⇒ 单次读数就落在窗口内；另两臂没有任何信号（
+        // argon2 是不可观测的原地 CPU 段）⇒ 在请求飞行期间轮询，任何被串行化的窗口都会被
+        // 最大值抓到。
+        let mut health_max = Duration::ZERO;
+        let mut hs = 0u16;
+        let mut hb = String::new();
+        if arm == "smtp" {
+            let t = Instant::now();
+            let (s, b) = http_call(addr, "GET", "/healthz", None);
+            health_max = t.elapsed();
+            hs = s;
+            hb = b;
+        } else {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !reg.is_finished() && Instant::now() < deadline {
+                let t = Instant::now();
+                let (s, b) = http_call(addr, "GET", "/healthz", None);
+                let w = t.elapsed();
+                if w > health_max {
+                    health_max = w;
+                }
+                hs = s;
+                hb = b;
+                std::thread::sleep(Duration::from_millis(5));
             }
+        }
 
-            // 真网关：单 worker 运行时 + 真 TCP 监听（客户端在运行时之外，所以必须真的走网络）。
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let addr = listener.local_addr().unwrap();
-            let app = router().with_state(st.clone());
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.spawn(async move {
-                let l = tokio::net::TcpListener::from_std(listener).unwrap();
-                axum::serve(l, app).await.unwrap();
-            });
+        let (rs, rb) = reg.join().unwrap();
+        let reg_elapsed = t_reg.elapsed();
+        let total_accepts = accepts.load(Ordering::SeqCst);
+        println!(
+            "### C2105 arm={arm} healthz_status={hs} healthz_wait_max={health_max:?} \
+                 request_status={rs} accepts={total_accepts} reg_elapsed={reg_elapsed:?}"
+        );
 
-            // 客户端线程发一条注册并等它跑完；它在「发信」里会阻塞整个（单 worker）运行时。
-            let email = format!("c2092-{arm}@example.com");
-            let reg = std::thread::spawn(move || {
-                http_call(
-                    addr,
-                    "POST",
-                    "/api/auth/register",
-                    Some(&format!(r#"{{"email":"{email}","password":"pass1234"}}"#)),
-                )
-            });
-
-            // 窗口起点：等「注册已进入发信」。dev 臂不会发信 ⇒ 不等。
-            if arm == "smtp" {
-                accepted_rx
-                    .recv_timeout(Duration::from_secs(30))
-                    .expect("注册应在 30s 内进入发信（假 SMTP 收到连接）");
-            }
-
-            // 关键读数：注册**正在发信**时，从运行时之外发一条无关请求。
-            let t_health = Instant::now();
-            let (hs, hb) = http_call(addr, "GET", "/healthz", None);
-            let health_wait = t_health.elapsed();
-
-            let (rs, rb) = reg.join().unwrap();
-            let total_accepts = accepts.load(Ordering::SeqCst);
-            println!(
-                "### C2092 arm={arm} healthz_status={hs} healthz_wait={health_wait:?} \
-                 register_status={rs} accepts={total_accepts}"
+        assert_eq!(hs, 200, "{arm}: /healthz 应 200（body={hb}）");
+        assert_eq!(rs, want, "{arm}: POST {path} 应 {want}（body={rb}）");
+        assert!(
+            health_max < Duration::from_secs(1),
+            "{arm}: 请求阻塞在飞行中时，并发的 /healthz 不应等它 —— 实测 {health_max:?}\
+                 （改前单 worker 上会被推迟到阻塞段结束：发信 ≈3.8s / argon2 ≈0.24s）"
+        );
+        // 不变量：无关请求**不得被串到请求的阻塞段后面**。用「等待 ÷ 请求总时长」的比值表达，
+        // 与机器快慢无关 —— 被串行化时比值 ≈1（等待本身就是阻塞段），不串行时 ≈0.01（C2105）。
+        assert!(
+            health_max * 4 < reg_elapsed,
+            "{arm}: 无关请求不应被串到阻塞段后面 —— /healthz 最大等待 {health_max:?} 已达\
+                 请求总时长 {reg_elapsed:?} 的 {:.3}（应 < 0.25）",
+            health_max.as_secs_f64() / reg_elapsed.as_secs_f64()
+        );
+        if arm == "smtp" {
+            assert_eq!(
+                total_accepts, 3,
+                "应恰好 3 次尝试（证明真的走完了阻塞的发信路径）"
             );
-
-            assert_eq!(hs, 200, "{arm}: /healthz 应 200（body={hb}）");
-            assert!(
-                health_wait < Duration::from_secs(1),
-                "{arm}: 发信在飞行中时，并发的 /healthz 不应等它 —— 实测 {health_wait:?}\
-                 （改前单 worker 上会被推迟到发信结束 ≈3.8s）"
-            );
-            if arm == "smtp" {
-                assert_eq!(rs, 502, "SMTP 重试后仍失败应 502（body={rb}）");
-                assert_eq!(
-                    total_accepts, 3,
-                    "应恰好 3 次尝试（证明真的走完了阻塞的发信路径）"
-                );
-            } else {
-                assert_eq!(rs, 201, "dev 模式（未配 SMTP）应 201（body={rb}）");
-            }
         }
     }
 
