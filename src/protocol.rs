@@ -468,7 +468,7 @@ pub fn openai_chat_to_anthropic_resp(body: &Value) -> Value {
             "role": "assistant",
             "content": [],
             "model": body.get("model").and_then(|m| m.as_str()).unwrap_or(""),
-            "stop_reason": null,
+            "stop_reason": openai_chat_to_anthropic_stop_reason(None, false),
             "stop_sequence": null,
             "usage": json!({"input_tokens": 0, "output_tokens": 0})
         });
@@ -538,15 +538,10 @@ pub fn openai_chat_to_anthropic_resp(body: &Value) -> Value {
         }
     }
 
-    let stop_reason = choice
+    let finish_reason = choice
         .and_then(|c| c.get("finish_reason"))
-        .and_then(|r| r.as_str())
-        .map(|r| match r {
-            "length" => "max_tokens",
-            "tool_calls" | "function_call" => "tool_use",
-            _ => "end_turn",
-        })
-        .or(if has_tool_use { Some("tool_use") } else { None });
+        .and_then(|r| r.as_str());
+    let stop_reason = openai_chat_to_anthropic_stop_reason(finish_reason, has_tool_use);
 
     let usage_json = build_anthropic_usage(body.get("usage"));
 
@@ -597,13 +592,7 @@ pub fn anthropic_to_openai_chat_resp(body: &Value) -> Value {
     }
 
     let stop_reason = body.get("stop_reason").and_then(|r| r.as_str());
-    let finish_reason = match stop_reason {
-        Some("max_tokens") => "length",
-        Some("tool_use") => "tool_calls",
-        Some("stop_sequence") => "stop",
-        Some("end_turn") | None => "stop",
-        Some(other) => other,
-    };
+    let finish_reason = anthropic_to_openai_chat_finish_reason(stop_reason);
 
     let usage = body.get("usage");
     let input_tokens = usage
@@ -797,7 +786,7 @@ pub fn openai_responses_to_openai_chat_resp(body: &Value) -> Value {
                 "content": content_val,
                 "tool_calls": if has_tool_calls { json!(tool_calls) } else { Value::Null }
             },
-            "finish_reason": if has_tool_calls { json!("tool_calls") } else { json!("stop") }
+            "finish_reason": openai_responses_to_openai_chat_finish_reason(has_tool_calls)
         }],
         "usage": {
             "prompt_tokens": input_tokens,
@@ -817,6 +806,56 @@ pub fn anthropic_to_openai_responses_resp(body: &Value) -> Value {
 pub fn openai_responses_to_anthropic_resp(body: &Value) -> Value {
     let chat = openai_responses_to_openai_chat_resp(body);
     openai_chat_to_anthropic_resp(&chat)
+}
+
+// ────────────────────────────────────────────────────────────
+// 完成信号（completion signal）
+//
+// 同一个协议对有两条翻译路径：流式（`crate::sse`）与整包（本模块）。客户端只会看到
+// 其中一条，两条给出不同的完成信号时，「是否正常结束 / 要不要派发工具 / 是否被截断」
+// 在流式与非流式下就有了不同答案。下面三个函数是各自的**唯一真源**，两条路径都调用
+// 它们，任何一侧都不得再写内联 match（内联副本正是这类分叉的来源）。
+// ────────────────────────────────────────────────────────────
+
+/// Anthropic `stop_reason` → OpenAI Chat `finish_reason`。
+///
+/// OpenAI 的 `finish_reason` 是封闭集合，anthropic 的其余取值（`refusal`、`pause_turn`、
+/// 以及未来新增值）与 `None` 一样按「正常结束」收敛为 `stop`——不要把 anthropic 的
+/// 原始值透传给 OpenAI 客户端。
+pub fn anthropic_to_openai_chat_finish_reason(stop_reason: Option<&str>) -> &'static str {
+    match stop_reason {
+        Some("max_tokens") => "length",
+        Some("tool_use") => "tool_calls",
+        _ => "stop",
+    }
+}
+
+/// OpenAI Chat `finish_reason` → Anthropic `stop_reason`。
+///
+/// `has_tool_calls`：本次响应是否带过 tool call。上游可能把 `finish_reason` 留空
+/// （`null`）却仍然返回了 tool_calls，此时按 `tool_use` 收尾，否则客户端不会派发工具。
+pub fn openai_chat_to_anthropic_stop_reason(
+    finish_reason: Option<&str>,
+    has_tool_calls: bool,
+) -> Option<String> {
+    finish_reason
+        .map(|r| match r {
+            "length" => "max_tokens",
+            "tool_calls" | "function_call" => "tool_use",
+            _ => "end_turn",
+        })
+        .map(str::to_string)
+        .or_else(|| has_tool_calls.then(|| "tool_use".to_string()))
+}
+
+/// OpenAI Responses 侧没有 `finish_reason` 字段，完成信号只能由内容推断：
+/// 带过 tool call → `tool_calls`，否则 `stop`。
+pub fn openai_responses_to_openai_chat_finish_reason(has_tool_calls: bool) -> &'static str {
+    if has_tool_calls {
+        "tool_calls"
+    } else {
+        "stop"
+    }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -1577,5 +1616,68 @@ mod tests {
         // 未知协议对 → 原样
         let out2 = transform_request(&body, "grpc", "openai_chat");
         assert_eq!(out2, body);
+    }
+
+    /// 完成信号的三个唯一真源：覆盖各自协议文档中的全部取值 + 未知取值对照。
+    ///
+    /// 流式（`crate::sse`）与整包翻译器都只调用这三个函数，所以这里钉住的是**两条路径
+    /// 共用的口径**；`sse::tests::completion_signal_agrees_between_stream_and_whole_body`
+    /// 再从真实路径两侧各跑一遍（同一输入必须同值）。
+    #[test]
+    fn completion_signal_helpers_cover_every_documented_value() {
+        // Anthropic stop_reason → OpenAI finish_reason
+        for (stop_reason, expected) in [
+            ("end_turn", "stop"),
+            ("stop_sequence", "stop"),
+            ("max_tokens", "length"),
+            ("tool_use", "tool_calls"),
+            // OpenAI 的 finish_reason 是封闭集合：anthropic 专有的取值必须收敛为「正常结束」
+            ("pause_turn", "stop"),
+            ("refusal", "stop"),
+            // 未知取值（含 anthropic 未来新增值、以及误传 OpenAI 的取值）同样收敛，绝不透传
+            ("content_filter", "stop"),
+            ("not_a_reason", "stop"),
+        ] {
+            assert_eq!(
+                anthropic_to_openai_chat_finish_reason(Some(stop_reason)),
+                expected,
+                "anthropic stop_reason={stop_reason}"
+            );
+        }
+        assert_eq!(anthropic_to_openai_chat_finish_reason(None), "stop");
+
+        // OpenAI finish_reason → Anthropic stop_reason
+        for (finish_reason, expected) in [
+            ("stop", "end_turn"),
+            ("length", "max_tokens"),
+            ("tool_calls", "tool_use"),
+            ("function_call", "tool_use"),
+            ("content_filter", "end_turn"),
+            ("not_a_reason", "end_turn"),
+        ] {
+            assert_eq!(
+                openai_chat_to_anthropic_stop_reason(Some(finish_reason), false).as_deref(),
+                Some(expected),
+                "openai finish_reason={finish_reason}"
+            );
+        }
+        // 上游没有给 finish_reason：没有 tool call 就「没有信号」，带过 tool call 则必须 tool_use
+        assert_eq!(openai_chat_to_anthropic_stop_reason(None, false), None);
+        assert_eq!(
+            openai_chat_to_anthropic_stop_reason(None, true).as_deref(),
+            Some("tool_use")
+        );
+        // 明确给了 finish_reason 时，内容不再覆盖它（保持既有语义）
+        assert_eq!(
+            openai_chat_to_anthropic_stop_reason(Some("stop"), true).as_deref(),
+            Some("end_turn")
+        );
+
+        // Responses 侧没有 finish_reason，只能由内容推断
+        assert_eq!(
+            openai_responses_to_openai_chat_finish_reason(true),
+            "tool_calls"
+        );
+        assert_eq!(openai_responses_to_openai_chat_finish_reason(false), "stop");
     }
 }

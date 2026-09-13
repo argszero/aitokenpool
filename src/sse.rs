@@ -223,7 +223,23 @@ pub fn openai_sse_to_anthropic<E: std::error::Error + Send + 'static>(
                         for l in line.lines() {
                             if let Some(data) = strip_sse_field(l, "data") {
                                 if data.trim() == "[DONE]" {
-                                    if let Some((stop_reason, usage_json)) = pending_message_delta.take() {
+                                    // 上游以 [DONE] 明确收尾 ⇒ 终局 stop_reason 必须告知客户端，且与
+                                    // 整包翻译器同源。上游一路没有给过 finish_reason（末尾 chunk 仍为
+                                    // null）时，按「无 finish_reason + 是否带过 tool call」推导，口径与
+                                    // openai_chat_to_anthropic_resp 完全一致（否则客户端拿不到 tool_use）。
+                                    let should_emit_terminal =
+                                        pending_message_delta.is_some() || has_sent_message_start;
+                                    if should_emit_terminal {
+                                        let (stop_reason, usage_json) =
+                                            pending_message_delta.take().unwrap_or_else(|| {
+                                                (
+                                                    crate::protocol::openai_chat_to_anthropic_stop_reason(
+                                                        None,
+                                                        !tool_blocks_by_index.is_empty(),
+                                                    ),
+                                                    latest_usage.clone(),
+                                                )
+                                            });
                                         let event = build_message_delta_event(stop_reason.as_ref(), usage_json);
                                         let sse_data = format!(
                                             "event: message_delta\ndata: {}\n\n",
@@ -476,7 +492,11 @@ pub fn openai_sse_to_anthropic<E: std::error::Error + Send + 'static>(
 
                                         // finish_reason → 延迟到 [DONE] 统一收尾
                                         if let Some(finish_reason) = &choice.finish_reason {
-                                            let stop_reason = map_stop_reason(Some(finish_reason));
+                                            // 终局 stop_reason 与整包翻译器同源（protocol 侧唯一真源）
+                                            let stop_reason = crate::protocol::openai_chat_to_anthropic_stop_reason(
+                                                Some(finish_reason),
+                                                !tool_blocks_by_index.is_empty(),
+                                            );
                                             let usage_json = chunk_usage_json.clone().or_else(|| latest_usage.clone());
 
                                             if has_emitted_message_delta {
@@ -594,17 +614,6 @@ fn extract_cache_read_tokens(usage: &StreamUsage) -> Option<u32> {
         return Some(v);
     }
     usage.cache_read_input_tokens
-}
-
-fn map_stop_reason(finish_reason: Option<&str>) -> Option<String> {
-    finish_reason.map(|r| {
-        match r {
-            "tool_calls" | "function_call" => "tool_use",
-            "length" => "max_tokens",
-            _ => "end_turn",
-        }
-        .to_string()
-    })
 }
 
 fn build_message_delta_event(stop_reason: Option<&String>, usage_json: Option<Value>) -> Value {
@@ -972,11 +981,9 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
                                     }
                                     record_usage(&usage, (input_tokens - cached_tokens).max(0.0), cached_tokens, output_tokens);
                                     let stop_reason = v.get("delta").and_then(|d| d.get("stop_reason")).and_then(|s| s.as_str());
-                                    let finish = match stop_reason {
-                                        Some("max_tokens") => "length",
-                                        Some("tool_use") => "tool_calls",
-                                        _ => "stop",
-                                    };
+                                    // 完成信号与整包翻译器同源（protocol 侧唯一真源）
+                                    let finish =
+                                        crate::protocol::anthropic_to_openai_chat_finish_reason(stop_reason);
                                     let data = json!({
                                         "id": format!("chatcmpl-{msg_id}"),
                                         "object": "chat.completion.chunk",
@@ -1003,7 +1010,9 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
                                             "choices": [{
                                                 "index": 0,
                                                 "delta": {},
-                                                "finish_reason": "stop"
+                                                // 上游没给 message_delta（没有 stop_reason）→ 与整包翻译器同源
+                                                "finish_reason":
+                                                    crate::protocol::anthropic_to_openai_chat_finish_reason(None)
                                             }]
                                         });
                                         let sse = format!("data: {}\n\n", serde_json::to_string(&data).unwrap_or_default());
@@ -1036,7 +1045,11 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
                 "object": "chat.completion.chunk",
                 "created": 0,
                 "model": model,
-                "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }]
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": crate::protocol::anthropic_to_openai_chat_finish_reason(None)
+                }]
             });
             let sse = format!("data: {}\n\n", serde_json::to_string(&data).unwrap_or_default());
             yield Ok(Bytes::from(sse));
@@ -1210,7 +1223,13 @@ pub fn responses_sse_to_openai_chat<E: std::error::Error + Send + 'static>(
                                             "choices": [{
                                                 "index": 0,
                                                 "delta": {},
-                                                "finish_reason": "stop"
+                                                // Responses 侧没有 finish_reason，只能由内容推断；与整包
+                                                // 翻译器同源。已经吐过 tool_calls 增量时必须报 tool_calls，
+                                                // 否则 OpenAI 客户端不会派发工具。
+                                                "finish_reason":
+                                                    crate::protocol::openai_responses_to_openai_chat_finish_reason(
+                                                        !tool_states.is_empty()
+                                                    )
                                             }]
                                         });
                                         let sse = format!("data: {}\n\n", serde_json::to_string(&data).unwrap_or_default());
@@ -1237,7 +1256,13 @@ pub fn responses_sse_to_openai_chat<E: std::error::Error + Send + 'static>(
                 "object": "chat.completion.chunk",
                 "created": 0,
                 "model": model,
-                "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }]
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": crate::protocol::openai_responses_to_openai_chat_finish_reason(
+                        !tool_states.is_empty()
+                    )
+                }]
             });
             let sse = format!("data: {}\n\n", serde_json::to_string(&data).unwrap_or_default());
             yield Ok(Bytes::from(sse));
@@ -1516,5 +1541,224 @@ mod tests {
             panic!("usage missing");
         };
         assert_eq!((i, c, o), (10.0, 90.0, 50.0), "anthropic disjoint usage");
+    }
+
+    // ── 完成信号：流式与整包两条路径必须同值（同一协议对只有一个答案）──
+
+    /// 流式输出里最后一个非 null 的 `finish_reason`
+    fn last_finish_reason(out: &str) -> Option<String> {
+        let mut last = None;
+        for line in out.lines() {
+            let Some(rest) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<Value>(rest) else {
+                continue;
+            };
+            if let Some(fr) = v["choices"]
+                .get(0)
+                .and_then(|c| c.get("finish_reason"))
+                .and_then(|f| f.as_str())
+            {
+                last = Some(fr.to_string());
+            }
+        }
+        last
+    }
+
+    /// 流式输出里 `message_delta.stop_reason`：外层 `None` = 整个事件都没发，
+    /// 内层 `None` = 事件发了但 `stop_reason` 为 `null`
+    fn message_delta_stop_reason(out: &str) -> Option<Option<String>> {
+        let mut found = None;
+        for line in out.lines() {
+            let Some(rest) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<Value>(rest) else {
+                continue;
+            };
+            if v.get("type").and_then(|t| t.as_str()) != Some("message_delta") {
+                continue;
+            }
+            found = Some(
+                v["delta"]
+                    .get("stop_reason")
+                    .and_then(|s| s.as_str())
+                    .map(str::to_string),
+            );
+        }
+        found
+    }
+
+    /// openai_chat 上游流（finish_reason 与是否带 tool call 可变）→ anthropic 客户端的终局 stop_reason
+    fn stream_openai_to_anthropic(
+        finish_reason: Option<&str>,
+        with_tool_call: bool,
+    ) -> Option<Option<String>> {
+        let mut items = vec![
+            "data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n".to_string(),
+        ];
+        if with_tool_call {
+            items.push("data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n".to_string());
+        } else {
+            items.push("data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":null}]}\n\n".to_string());
+        }
+        let fr = match finish_reason {
+            Some(v) => format!("\"{v}\""),
+            None => "null".to_string(),
+        };
+        items.push(format!(
+            "data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":{fr}}}],\"usage\":{{\"prompt_tokens\":1,\"completion_tokens\":2}}}}\n\n"
+        ));
+        items.push("data: [DONE]\n\n".to_string());
+        message_delta_stop_reason(&collect(openai_sse_to_anthropic(
+            sse_chunks(items),
+            usage_slot(),
+        )))
+    }
+
+    /// 同一份上游数据走整包翻译器
+    fn body_openai_to_anthropic(
+        finish_reason: Option<&str>,
+        with_tool_call: bool,
+    ) -> Option<String> {
+        let mut message = json!({
+            "role": "assistant",
+            "content": if with_tool_call { Value::Null } else { json!("x") }
+        });
+        if with_tool_call {
+            message["tool_calls"] = json!([{
+                "id": "call_a", "type": "function",
+                "function": {"name": "f", "arguments": "{}"}
+            }]);
+        }
+        let body = json!({
+            "id": "c1", "model": "m",
+            "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2}
+        });
+        crate::protocol::openai_chat_to_anthropic_resp(&body)["stop_reason"]
+            .as_str()
+            .map(str::to_string)
+    }
+
+    /// anthropic 上游流 → openai_chat 客户端的终局 finish_reason
+    fn stream_anthropic_to_openai(stop_reason: &str) -> Option<String> {
+        let items = vec![
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"claude-x\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n".to_string(),
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n".to_string(),
+            format!(
+                "event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"{stop_reason}\"}},\"usage\":{{\"output_tokens\":2}}}}\n\n"
+            ),
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".to_string(),
+        ];
+        last_finish_reason(&collect(anthropic_sse_to_openai(
+            sse_chunks(items),
+            usage_slot(),
+        )))
+    }
+
+    /// responses 上游流（是否带 function call 可变）→ openai_chat 客户端的终局 finish_reason
+    fn stream_responses_to_openai(with_tool_call: bool) -> Option<String> {
+        let mut items = vec![
+            "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"m1\"}}\n\n".to_string(),
+        ];
+        if with_tool_call {
+            items.push("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"f\",\"arguments\":\"\"}}\n\n".to_string());
+            items.push("event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"call_a\",\"delta\":\"{}\"}\n\n".to_string());
+        } else {
+            items.push("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n".to_string());
+        }
+        items.push("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"model\":\"m1\",\"output\":[],\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n".to_string());
+        last_finish_reason(&collect(responses_sse_to_openai_chat(
+            sse_chunks(items),
+            usage_slot(),
+        )))
+    }
+
+    /// 同一份上游数据走整包翻译器（responses → openai_chat）
+    fn body_responses_to_openai(with_tool_call: bool) -> Option<String> {
+        let output = if with_tool_call {
+            json!([{"type": "function_call", "call_id": "call_a", "name": "f", "arguments": "{}"}])
+        } else {
+            json!([{"type": "message", "content": [{"type": "output_text", "text": "x"}]}])
+        };
+        let body = json!({
+            "id": "resp_1", "object": "response", "model": "m1",
+            "output": output,
+            "usage": {"input_tokens": 1, "output_tokens": 2}
+        });
+        crate::protocol::openai_responses_to_openai_chat_resp(&body)["choices"][0]["finish_reason"]
+            .as_str()
+            .map(str::to_string)
+    }
+
+    /// 同一个上游完成信号，流式路径与整包路径必须给出同一个完成信号。
+    ///
+    /// 这是本轴的核心断言：客户端只会看到其中一条路径，两者不一致时
+    /// 「是否正常结束 / 要不要派发工具 / 是否被截断」在流式与非流式下答案不同。
+    #[test]
+    fn completion_signal_agrees_between_stream_and_whole_body() {
+        // ① openai_chat 上游 → anthropic 客户端（finish_reason 缺失 + 已吐 tool call 是活场景）
+        for fr in [
+            None,
+            Some("stop"),
+            Some("length"),
+            Some("tool_calls"),
+            Some("function_call"),
+            Some("content_filter"),
+        ] {
+            for with_tool_call in [false, true] {
+                let streamed = stream_openai_to_anthropic(fr, with_tool_call).expect(
+                    "上游已 [DONE] 收尾，流式路径必须发出 message_delta（否则客户端拿不到 stop_reason）",
+                );
+                let whole = body_openai_to_anthropic(fr, with_tool_call);
+                assert_eq!(
+                    streamed, whole,
+                    "openai→anthropic finish_reason={fr:?} tool_call={with_tool_call}"
+                );
+            }
+        }
+
+        // ② anthropic 上游 → openai_chat 客户端（未知 stop_reason 必须收敛，不能透传）
+        for sr in [
+            "end_turn",
+            "max_tokens",
+            "tool_use",
+            "stop_sequence",
+            "pause_turn",
+            "refusal",
+            "not_a_reason",
+        ] {
+            let streamed = stream_anthropic_to_openai(sr).expect("流式路径必须给出 finish_reason");
+            let whole = crate::protocol::anthropic_to_openai_chat_resp(&json!({
+                "id": "m1",
+                "model": "claude-x",
+                "content": [{"type": "text", "text": "x"}],
+                "stop_reason": sr,
+                "usage": {"input_tokens": 1, "output_tokens": 2}
+            }))["choices"][0]["finish_reason"]
+                .as_str()
+                .map(str::to_string)
+                .expect("整包路径必须给出 finish_reason");
+            assert_eq!(streamed, whole, "anthropic→openai stop_reason={sr}");
+        }
+
+        // ③ responses 上游 → openai_chat 客户端（已吐 tool_calls 增量 ⇒ 终局必须是 tool_calls）
+        for with_tool_call in [false, true] {
+            let streamed =
+                stream_responses_to_openai(with_tool_call).expect("流式路径必须给出 finish_reason");
+            let whole =
+                body_responses_to_openai(with_tool_call).expect("整包路径必须给出 finish_reason");
+            assert_eq!(
+                streamed, whole,
+                "responses→openai tool_call={with_tool_call}"
+            );
+            let expected = if with_tool_call { "tool_calls" } else { "stop" };
+            assert_eq!(
+                streamed, expected,
+                "responses→openai tool_call={with_tool_call}"
+            );
+        }
     }
 }
