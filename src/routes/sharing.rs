@@ -169,6 +169,8 @@ fn sharing_row(
     let status: String = r.get(4)?;
     let encrypted_key: String = r.get(5)?;
     let quota: f64 = r.get(6)?;
+    // keys.used = 该 key 已消耗的**点数**，与 `quota` 同单位（进度条 `used / quota`、卡片「已用 N 点」
+    // 都按点数渲染）。由 `billing::settle` 按 `p.pts` 累加；历史库由迁移按账本 `SUM(consume pts)` 重算。
     let used: f64 = r.get(7)?;
     let days: String = r.get(8)?;
     let start: String = r.get(9)?;

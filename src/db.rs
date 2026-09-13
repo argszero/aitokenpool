@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -314,10 +314,25 @@ pub fn migrate(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_transactions_user_id_time ON transactions(user_id, time);
          CREATE INDEX IF NOT EXISTS idx_transactions_user_id_type ON transactions(user_id, type);",
     )?;
-    // schema_version：INSERT OR REPLACE 保证幂等
+    // schema_version 记录**最高的**已迁移版本。⚠️ 必须用 MAX 读：该表没有唯一约束，
+    // 而 `INSERT OR REPLACE` 在无冲突时就是普通 INSERT —— 只读第一行的话
+    // `v < SCHEMA_VERSION` 会永远为真，每次启动都追加一行（`atp-data/aitokenpool.db`
+    // 实测已累积 22 行：7,8,8,8,9×13,10,10），任何版本门控也随之失效。
     let v: i64 = conn
-        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
+    // v13（共享页「已用 / 额度」单位修复）：`keys.used` 的语义从「token 数」改为「点数」
+    // （与 `keys.quota` 同单位）。老库只在这一步重算一次；重算值由账本唯一确定 ⇒ 幂等。
+    if v < 13 {
+        let healed = keys_used_from_ledger(conn)?;
+        if healed > 0 {
+            log::info!("keys.used 单位迁移：按账本重算 {healed} 条 key 的已用点数");
+        }
+    }
     if v < SCHEMA_VERSION {
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
@@ -325,6 +340,23 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// v13 数据修复：把 `keys.used` 从「token 累计」重算为「该 key 消耗的**点数**」。
+///
+/// 真源是账本：`used = SUM(transactions.pts WHERE key_id = keys.id AND type = 'consume')`。
+/// 这正是修复后的 `billing::settle` 所维护的不变量（每次 settle 加一笔记为 `p.pts` 的 consume 行），
+/// 所以对已修复的库重复执行是**空操作**；没有任何 consume 行的 key 归 0。
+/// 返回被更新的 key 行数。
+fn keys_used_from_ledger(conn: &Connection) -> Result<usize> {
+    let n = conn
+        .execute(
+            "UPDATE keys SET used = COALESCE((SELECT SUM(t.pts) FROM transactions t \
+             WHERE t.key_id = keys.id AND t.type = 'consume'), 0)",
+            [],
+        )
+        .with_context(|| "按账本重算 keys.used 失败".to_string())?;
+    Ok(n)
 }
 
 /// 幂等补列：列不存在才 ALTER TABLE ADD COLUMN
@@ -573,6 +605,131 @@ mod tests {
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn keys_used_is_healed_from_the_ledger_on_upgrade() {
+        let (conn, p) = tmp_db("heal_used");
+        conn.execute(
+            "INSERT INTO users (id, email, password_hash, name, role) VALUES (1, 'heal@t.local', 'x', 'u', 'user')",
+            [],
+        )
+        .unwrap();
+        // ① key 1：列里存着旧的 token 量级（319883396），但账本里该 key 的 consume 点数合计只有 12.5
+        // ② key 2：从未被调用（没有 consume 行），列里残留一个旧值 —— 应归 0
+        conn.execute(
+            "INSERT INTO keys (id, provider, plan, model, status, owner_id, encrypted_key, quota, used) \
+             VALUES (1, 'test', 'p', 'm', 'on', 1, 'sk-a', 5000, 319883396)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO keys (id, provider, plan, model, status, owner_id, encrypted_key, quota, used) \
+             VALUES (2, 'test', 'p', 'm', 'on', 1, 'sk-b', 1000, 42)",
+            [],
+        )
+        .unwrap();
+        for pts in [10.0, 2.5] {
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, '2', 1, 'm', 1000000, ?1, 'consume', '成功')",
+                rusqlite::params![pts],
+            )
+            .unwrap();
+        }
+        // 同一 key 的 earn / topup 行不得计入
+        conn.execute(
+            "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+             VALUES (1, '1', 1, 'm', 0, 11.25, 'earn', '成功')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (user_id, key_id, model, tokens, pts, type, status) \
+             VALUES (1, 1, 'recharge', 0, 777.0, 'topup', '成功')",
+            [],
+        )
+        .unwrap();
+        // 伪造成修复前的库版本（迁移前是 12）；该表无唯一约束，必须先清掉本库已有的 13 行
+        conn.execute("DELETE FROM schema_version", []).unwrap();
+        conn.execute("INSERT INTO schema_version (version) VALUES (12)", [])
+            .unwrap();
+
+        migrate(&conn).expect("v12 -> v13 迁移应成功");
+
+        let used1: f64 = conn
+            .query_row("SELECT used FROM keys WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            (used1 - 12.5).abs() < 1e-9,
+            "key 1 的 used 应为 consume 点数合计 12.5，实际 {used1}"
+        );
+        let used2: f64 = conn
+            .query_row("SELECT used FROM keys WHERE id = 2", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            (used2 - 0.0).abs() < 1e-9,
+            "无 consume 账本的 key 应归 0，实际 {used2}"
+        );
+        let v: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+
+        // 二次迁移不得**重跑**修复：往账本追加一笔 3 点 consume 但**不改** keys.used。
+        // 若 v<13 的门控失效（重跑），used 会被账本改写成 15.5；正常运行应保持 12.5。
+        conn.execute(
+            "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+             VALUES (1, '2', 1, 'm', 0, 3.0, 'consume', '成功')",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).expect("第二次迁移应成功");
+        let used1b: f64 = conn
+            .query_row("SELECT used FROM keys WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            (used1b - 12.5).abs() < 1e-9,
+            "v13 之后迁移不得重跑修复（若重跑会变成账本值 15.5），实际 {used1b}"
+        );
+
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// `schema_version` 没有唯一约束，历史启动会把同一版本追加成多行（真库里实测 22 行）。
+    /// 版本门控必须按**最高**行判断，否则每次启动都会再追加一行、且所有 `v < N` 的迁移永远重跑。
+    #[test]
+    fn schema_version_gate_uses_the_highest_recorded_version() {
+        let (conn, p) = tmp_db("schemaver");
+        conn.execute("DELETE FROM schema_version", []).unwrap();
+        for v in [7i64, 9, 9, 10] {
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [v])
+                .unwrap();
+        }
+
+        migrate(&conn).expect("迁移应成功");
+        let max: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(max, SCHEMA_VERSION);
+        let n1: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+
+        // 第二次迁移：起点已是最高版本 ⇒ 不得再追加行（按最旧行读则会每轮 +1）
+        migrate(&conn).expect("第二次迁移应成功");
+        let n2: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n1, n2, "已是最新版本时重复迁移不得再追加 schema_version 行");
+
         drop(conn);
         let _ = std::fs::remove_file(p);
     }
