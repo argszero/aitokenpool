@@ -2,7 +2,7 @@
 //!
 //! P0-C（rant 2026-08-18T10:36:04）：
 //! - GET /api/wallet → {balance, month_use, month_earn}
-//! - GET /api/transactions?type=&page=&page_size= → 分页 + type 过滤（consume/earn/all）
+//! - GET /api/transactions?type=&page=&page_size= → 分页 + type 过滤（consume/earn/topup/gift/expire/withdraw/all）
 //! - GET /api/dashboard → 本月按类型聚合 + 本月净变化 + 近 7 天净额序列（sparkline）
 
 use axum::extract::{Query, State};
@@ -192,12 +192,13 @@ pub async fn transactions(
     let type_filter = match q.r#type.as_str() {
         "" | "all" => None,
         // 列筛选 select 含 withdraw（rant 2026-08-25T10:33.26：列筛选后端化后 UI 选项须全被 API 接受）
-        t @ ("consume" | "earn" | "topup" | "gift" | "withdraw") => Some(t.to_string()),
+        // expire 同列（C2050：赠送过期的账本行，见 gift::expire_past_gifts）
+        t @ ("consume" | "earn" | "topup" | "gift" | "expire" | "withdraw") => Some(t.to_string()),
         _ => {
             return Err((
                 axum::http::StatusCode::BAD_REQUEST,
                 Json(
-                    serde_json::json!({ "error": "type 必须为 consume / earn / topup / gift / withdraw / all" }),
+                    serde_json::json!({ "error": "type 必须为 consume / earn / topup / gift / expire / withdraw / all" }),
                 ),
             ))
         }
@@ -222,13 +223,15 @@ pub async fn transactions(
     let start = norm(&q.start)?;
     let end = norm(&q.end)?;
     // 汇总（rant 2026-08-22T00:04:21/00:07:08）：全量 SQL 聚合（不依赖分页），
-    // 按当前 type + 时间段 + 列筛选；口径 = income 白名单（earn/topup/gift）为正、consume 为负。
+    // 按当前 type + 时间段 + 列筛选；口径 = income 白名单（earn/topup/gift）为正，
+    // 支出 = 其余「离开账户」的类型（consume 消费 / expire 赠送过期 / withdraw 提现）——
+    // 方向由 `type` 决定，不是 `pts` 的符号（每个 writer 都存正数，C2045/C2050）。
     let (where_sql, where_binds) =
         tx_where("t", auth.user_id, &type_filter, &start, &end, &q.filters);
     let summary_sql = format!(
         "SELECT \
             COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN t.type = 'consume' THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ('consume','expire','withdraw') THEN t.pts ELSE 0 END), 0), \
             COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE -t.pts END), 0), \
             COALESCE(SUM(t.tokens), 0), \
             COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
@@ -327,7 +330,7 @@ pub async fn transactions(
 /// GET /api/transactions/trend 查询参数
 #[derive(Debug, Deserialize)]
 pub struct TxTrendQuery {
-    /// consume / earn / topup / gift / all（缺省 all）
+    /// consume / earn / topup / gift / expire / withdraw / all（缺省 all）
     #[serde(default)]
     pub r#type: String,
     /// 起始时间（同 /api/transactions，ISO 8601 UTC）
@@ -401,7 +404,7 @@ pub async fn transactions_trend(
     let trend_sql = format!(
         "SELECT strftime('{expr}', t.time{mods}) AS b, \
             COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN t.type = 'consume' THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ('consume','expire','withdraw') THEN t.pts ELSE 0 END), 0), \
             COALESCE(SUM(CASE WHEN t.type IN ('earn','topup','gift') THEN t.pts ELSE -t.pts END), 0), \
             COALESCE(SUM(t.tokens), 0), \
             COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
@@ -1331,5 +1334,98 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn expired_gift_is_visible_in_the_ledger_through_the_handlers() {
+        // C2050：惰性清扫发生在 GET /api/wallet（ensure_daily_gift → expire_past_gifts）。
+        // 过期点数真的离开账户 ⇒ 账单必须能看到这一行，且汇总口径把它算作**支出**。
+        // 断言写的是规格（收入白名单 / 支出集合 / 净额 = 收入 − 支出 / 对账），不是实现的复述。
+        let st = test_state("expire");
+        let key = login(st.clone()).await;
+
+        // 1) 首次拉钱包 → 触发每日赠送（1 点 active）
+        let (s, body) = get(st.clone(), "/api/wallet", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let avail0 = serde_json::from_str::<serde_json::Value>(&body).unwrap()["available"]
+            .as_f64()
+            .unwrap();
+
+        // 2) 把赠送推到过期，再拉钱包 → 清扫发生
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "UPDATE gift_grants SET expires_at = datetime('now', '-1 minute') \
+                 WHERE user_id = 1 AND status = 'active'",
+                [],
+            )
+            .unwrap();
+        }
+        let (s, body) = get(st.clone(), "/api/wallet", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let avail1 = serde_json::from_str::<serde_json::Value>(&body).unwrap()["available"]
+            .as_f64()
+            .unwrap();
+        assert!(
+            (avail0 - avail1 - 1.0).abs() < 1e-9,
+            "过期 1 点离开账户: {avail0} -> {avail1}"
+        );
+
+        // 3) 账单里能看到 expire 行，且汇总把它算作支出
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=all&page=1&page_size=50",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let items = v["items"].as_array().unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|r| r["type"] == "expire" && (r["pts"].as_f64().unwrap() - 1.0).abs() < 1e-9),
+            "账单中应有 expire 行: {items:?}"
+        );
+        let inc = v["summary"]["income_pts"].as_f64().unwrap();
+        let exp = v["summary"]["expense_pts"].as_f64().unwrap();
+        let net = v["summary"]["net_pts"].as_f64().unwrap();
+        assert!(
+            (inc - 1.0).abs() < 1e-9,
+            "收入只有赠送的 1 点（过期不算收入）: {inc}"
+        );
+        assert!(exp >= 1.0, "支出应含过期的 1 点: {exp}");
+        assert!(
+            (net - (inc - exp)).abs() < 1e-9,
+            "净额 = 收入 − 支出: {inc} - {exp} != {net}"
+        );
+
+        // 4) type 过滤器接受 expire（列筛选选项后端化，rant 2026-08-25T10:33.26）
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=expire&page=1&page_size=50",
+            &key,
+        )
+        .await;
+        assert_eq!(
+            s,
+            axum::http::StatusCode::OK,
+            "type=expire 应被接受: {body}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "只有一笔过期: {body}");
+
+        // 5) 趋势（expense 列）同样把它算作支出
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions/trend?type=all&bucket=day",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let buckets = v["buckets"].as_array().unwrap();
+        let sum_exp: f64 = buckets.iter().map(|b| b["expense"].as_f64().unwrap()).sum();
+        assert!(sum_exp >= 1.0, "趋势支出应含过期的 1 点: {sum_exp}");
     }
 }

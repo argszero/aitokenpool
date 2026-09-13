@@ -1310,7 +1310,7 @@
 
   const TX_TYPE = {
     consume: () => T("tx.type.consume"), earn: () => T("tx.type.earn"), topup: () => T("tx.type.topup"),
-    withdraw: () => T("tx.type.withdraw"), gift: () => T("tx.type.gift"),
+    withdraw: () => T("tx.type.withdraw"), gift: () => T("tx.type.gift"), expire: () => T("tx.type.expire"),
   };
   const txType = (k) => (TX_TYPE[k] ? TX_TYPE[k]() : k);
   const txStatus = (s) => s === "成功" ? T("tx.status.success") : s === "处理中" ? T("tx.status.pending") : s === "入账" ? T("tx.status.credited") : s;
@@ -1321,7 +1321,7 @@
     { key: "type", title: () => T("tx.col.type"), sort: "string", filter: "select",
       // C2031：选项「值」与「文案」分离 —— value 恒为数据库值（语言无关），label 才随语言变。
       // 这样筛选状态存的是 DB 值，切换语言后 filterVal 仍能匹配（此前状态存本地化文案 ⇒ 切语言即失配，表格变空）
-      options: () => ["consume", "earn", "topup", "withdraw", "gift"].map((k) => ({ value: k, label: txType(k) })),
+      options: () => ["consume", "earn", "topup", "withdraw", "gift", "expire"].map((k) => ({ value: k, label: txType(k) })),
       filterVal: (t) => t.type,
       render: (t) => t.type === "earn" ? '<span class="pill pill-ok">' + T("tx.type.earn") + "</span>" : t.type === "consume" ? '<span class="pill pill-accent">' + T("tx.type.consume") + "</span>" : t.type === "gift" ? '<span class="pill pill-ok">' + T("tx.type.gift") + "</span>" : '<span class="pill pill-muted">' + esc(txType(t.type)) + "</span>" },
     // rant 2026-08-22T17:21:39 需求 2：新增「用户」列（transactions.user_id JOIN users 取用户名）
