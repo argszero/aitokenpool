@@ -2195,6 +2195,109 @@ mod tests {
         );
     }
 
+    /// `month_in` / `month_out` —— 运营概览「点数流入 / 点数流出」的口径必须按 `type`，**不能按符号**。
+    ///
+    /// 账本是 **type 编码** 的：每个 writer 都存正数 `pts`（`consume` 存 `+pts`，不是 `-pts`），
+    /// 方向只在 `type` 列里。旧实现按符号聚合（`WHERE pts > 0` / `pts < 0`）⇒「流出」恒为 0、
+    /// 消费被算进「流入」。本测试用**真实写入路径**（`POST /api/ops/credits` + `billing::settle`）
+    /// 造 `topup 100` / `consume 7` / `earn round5(7*0.9)`，断言 `in = 100 + earn`、`out = 7`。
+    #[tokio::test]
+    async fn ops_runtime_month_flow_is_type_based() {
+        let st = test_state("opsflow");
+        let ops_bearer = login_bearer(&st, "ops@aitokenpool.local", "ops1234").await;
+        let uid = |email: &str| -> i64 {
+            st.db
+                .lock()
+                .unwrap()
+                .query_row("SELECT id FROM users WHERE email = ?1", [email], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        let demo = uid("demo@aitokenpool.local");
+        let admin = uid("admin@aitokenpool.local");
+
+        // 真实充值路径：一行 topup 100
+        let (s, body) = post(
+            st.clone(),
+            "/api/ops/credits",
+            &format!(r#"{{"user_id":{demo},"amount":100}}"#),
+            Some(&ops_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "充值应 200: {body}");
+
+        // 真实结算路径：consume `pts` / earn `round5(pts*0.9)`
+        let pts = 7.0;
+        {
+            let mut conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (?1, 1000)",
+                [demo],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (?1, 0)",
+                [admin],
+            )
+            .unwrap();
+            let p = crate::billing::SettleParams {
+                consumer_id: demo,
+                api_key_id: None,
+                key_id: 1,
+                owner_id: admin,
+                model: "test-model".into(),
+                tokens: 1000.0,
+                cached_tokens: 0.0,
+                output_tokens: 0.0,
+                pts,
+                cost: 0.0,
+            };
+            crate::billing::settle(&mut conn, &p).unwrap();
+        }
+
+        // 期望值从夹具 + 生产常量推导，不写死
+        let earn = crate::billing::round5(pts * crate::billing::SHARE_RATIO);
+        let want_in = 100.0 + earn; // topup + earn
+        let want_out = pts; // consume
+
+        let (s, body) = get(st.clone(), "/api/ops/runtime", Some(&ops_bearer)).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            (v["month_in"].as_f64().unwrap() - want_in).abs() < 1e-9,
+            "流入应只算 earn/topup/gift（{want_in}），不得把 consume 也算进来: {body}"
+        );
+        assert!(
+            (v["month_out"].as_f64().unwrap() - want_out).abs() < 1e-9,
+            "流出应算 consume（{want_out}），不得恒为 0: {body}"
+        );
+
+        // 阳性对照：一个只有 consume 的月份 ⇒ 流入必须为 0（证明「流入」不是「全部求和」）
+        let st2 = test_state("opsflow2");
+        let ops2 = login_bearer(&st2, "ops@aitokenpool.local", "ops1234").await;
+        {
+            let conn = st2.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, 'x', 1, 'm', 10, ?1, 'consume', '成功')",
+                [pts],
+            )
+            .unwrap();
+        }
+        let (_, body) = get(st2.clone(), "/api/ops/runtime", Some(&ops2)).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            v["month_in"].as_f64().unwrap(),
+            0.0,
+            "只有消费的月份，流入应为 0: {body}"
+        );
+        assert!(
+            (v["month_out"].as_f64().unwrap() - pts).abs() < 1e-9,
+            "只有消费的月份，流出应为 {pts}: {body}"
+        );
+    }
+
     #[tokio::test]
     async fn usage_three_group_aggregation() {
         let st = test_state("usage3");

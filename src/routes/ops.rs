@@ -82,18 +82,26 @@ pub async fn runtime(
             |r| r.get(0),
         )
         .unwrap_or(0);
+    // 本月点数流水：方向由 `type` 决定，**不是** `pts` 的符号。
+    //
+    // 账本是 **type 编码** 的：每个 writer 都存正数 `pts`（`consume` 存 `+pts`，不是 `-pts`），
+    // 方向只写在 `type` 列里。所以按符号过滤（`pts > 0` / `pts < 0`）会让「流出」**永远是 0**
+    // （没有任何 writer 产负数），并把消费也算进「流入」。口径与 wallet.rs 的 7 天净额序列
+    // （`type IN ('earn','topup','gift')` 为正、其余取负）一致。
     let month_in: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(pts), 0) FROM transactions \
-             WHERE pts > 0 AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
+             WHERE type IN ('earn', 'topup', 'gift') \
+               AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
     let month_out: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(ABS(pts)), 0) FROM transactions \
-             WHERE pts < 0 AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
+            "SELECT COALESCE(SUM(pts), 0) FROM transactions \
+             WHERE type IN ('consume', 'withdraw') \
+               AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
             [],
             |r| r.get(0),
         )
