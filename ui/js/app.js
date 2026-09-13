@@ -1420,7 +1420,8 @@
       if (!isNaN(d.getTime())) byKey.set(keyOf(d), b);
     });
     const now = new Date();
-    // 窗口右端：custom/end 已指定则用 end，否则用「现在」（UTC 对齐到桶，与后端 strftime 口径一致）
+    // 窗口右端：custom/end 已指定则用 end，否则用「现在」
+    // （UTC 对齐到桶，与后端 strftime 口径一致：hour→小时、day→当日、week→周一）
     let end;
     if (txRange === "custom" && txCustomEnd) {
       end = new Date(txCustomEnd);
@@ -1429,8 +1430,15 @@
       end = now;
     }
     const p = (n) => String(n).padStart(2, "0");
+    // 桶起点 UTC 对齐：hour → 所在小时；day → 所在 UTC 日的 00:00；
+    // week → 所在自然周的**周一** 00:00（`(getUTCDay()+6)%7` 即「距本周一的天数」，周一→0）。
+    // week 必须对齐到周一，才能与后端 strftime 的 `weekday 0, -6 days` 同口径 ——
+    // 否则补出的轴键是「今天减 7k 天」（星期几跟随今天），6/7 的星期几对不上后端桶键，
+    // 整周柱子被补成 0（见 C2094）。
     const utcFloor = (d) => bucket === "hour"
       ? Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours())
+      : bucket === "week"
+      ? Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((d.getUTCDay() + 6) % 7))
       : Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
     const step = bucket === "hour" ? 36e5 : bucket === "week" ? 7 * 864e5 : 864e5;
     // 窗口长度：跟随实际数据跨度（先算最早桶到右端的桶数），避免 24h/自定义短窗口补出几百根空柱
