@@ -34,13 +34,41 @@ use crate::dao;
 use crate::gateway;
 use crate::router::RouterState;
 
+/// 上游请求的时限（连接与读取共用同一个数字，沿用 P0-B 写下的 120 s）。
+pub(crate) const UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// 非流式出站客户端：`timeout` 是**总**时限（建连到读完响应体），适合一次性响应。
+pub(crate) fn upstream_client(timeout: std::time::Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .expect("reqwest client 构建失败")
+}
+
+/// 流式出站客户端：**不设总时限**。
+///
+/// `ClientBuilder::timeout` 是「整个请求 + 响应体读完」的总时限，用在流式上会把**仍在产出数据**
+/// 的长回答一起截断（客户端看到的是 `error decoding response body`，而非超时字样）。
+/// 流式要的是另外两个语义：`connect_timeout` 限制建连；`read_timeout` 限制**每一次**读取，
+/// 且每次成功读取后重置——只有真正静默超时才算死，有进展的长流不会被打断。
+pub(crate) fn upstream_stream_client(timeout: std::time::Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(timeout)
+        .read_timeout(timeout)
+        .build()
+        .expect("reqwest client 构建失败")
+}
+
 /// 共享状态：数据库连接 + 配置 + 路由状态 + HTTP 客户端 + 密钥加密器 + 进程启动时刻
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub cfg: Arc<Config>,
     pub router: Arc<RouterState>,
+    /// 非流式出站客户端（**总**时限）：`gateway::forward` 使用。
     pub http: reqwest::Client,
+    /// 流式出站客户端（无总时限，只有连接 + 逐次读取时限）：`gateway::forward_stream` 使用。
+    pub http_stream: reqwest::Client,
     pub crypto: Crypto,
     /// 进程启动时刻（单调时钟）：`/api/ops/runtime` 用它算运行时长。
     /// 取 `Instant` 而非墙上时间——运行时长不怕系统时钟被调整。
@@ -53,10 +81,8 @@ impl AppState {
             db: Arc::new(Mutex::new(conn)),
             cfg,
             router: Arc::new(RouterState::new()),
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .expect("reqwest client 构建失败"),
+            http: upstream_client(UPSTREAM_TIMEOUT),
+            http_stream: upstream_stream_client(UPSTREAM_TIMEOUT),
             crypto,
             started_at: std::time::Instant::now(),
         }
