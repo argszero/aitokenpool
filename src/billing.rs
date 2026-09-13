@@ -6,7 +6,7 @@
 //! - 点数 = 锚定货币成本 × points_per_unit
 //! - 消费者扣 balance（上游调用前预检，余额 ≤ 0 → 402）
 //! - 分享者（key 属主）得 90%（平台抽成 10%），写 transactions（consume / earn）
-//! - 写 usage_records；更新 keys.used += tokens
+//! - 写 usage_records；更新 keys.used += pts（该 key 已消耗的**点数**，与 keys.quota 同单位）
 //! - 调用+记账事务性处理：上游失败不入账（settle 只在成功响应后调用）
 //!
 //! P1（rant 2026-08-18T11:03:02）：
@@ -144,7 +144,8 @@ pub struct SettleParams {
 }
 
 /// 事务性入账：扣消费者（先赠送后永久）→ 加分享者 90% → 两条 transactions →
-/// usage_records → keys.used。任一步失败整体回滚（调用方只在成功响应后调用，
+/// usage_records → keys.used（按 `p.pts` 累计**点数**，与 `keys.quota` 同单位）。任一步失败整体回滚
+/// （调用方只在成功响应后调用，
 /// 天然满足「失败不入账」）
 pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
     let tx = conn.transaction()?;
@@ -216,10 +217,13 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
         ],
     )?;
 
-    // keys.used 累计（key 不存在 → 报错回滚：账本不允许记到幽灵 key）
+    // keys.used 累计：记该 key 已消耗的**点数**（与 keys.quota 同单位 —— 共享页把两者相除画
+    // 进度条并按「点」渲染，见 ui/js/app.js）；token 计数另存 transactions.tokens /
+    // usage_records.tokens，不再进这一列。
+    // key 不存在 → 报错回滚：账本不允许记到幽灵 key
     let n = tx.execute(
         "UPDATE keys SET used = used + ?1 WHERE id = ?2",
-        rusqlite::params![p.tokens, p.key_id],
+        rusqlite::params![p.pts, p.key_id],
     )?;
     if n != 1 {
         return Err(anyhow::anyhow!("key {} not found", p.key_id));
@@ -517,11 +521,117 @@ mod tests {
             .unwrap();
         assert!((cached_u - 30.0).abs() < 1e-9, "usage cached={cached_u}");
         assert!((output_u - 20.0).abs() < 1e-9, "usage output={output_u}");
-        // keys.used 更新
+        // keys.used 记录的是**消耗的点数**（= 本笔 consume 的 pts），不是 token 数（150.0）——
+        // 该列与 keys.quota 同单位，共享页据此渲染「已用 / 额度」。
         let used: f64 = conn
             .query_row("SELECT used FROM keys WHERE id = 9", [], |r| r.get(0))
             .unwrap();
-        assert!((used - 150.0).abs() < 1e-9);
+        assert!(
+            (used - 2.0).abs() < 1e-9,
+            "keys.used 应为点数 2.0（而非 token 150.0），实际 {used}"
+        );
+        let consume_pts: f64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(pts), 0) FROM transactions WHERE key_id = 9 AND type = 'consume'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            (used - consume_pts).abs() < 1e-9,
+            "keys.used 必须等于账本里该 key 的 consume 点数合计（used={used} ledger={consume_pts}）"
+        );
+
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// 共享页把 `keys.used` / `keys.quota` 当成同一单位（点数）相除画进度条，
+    /// 所以 settle 必须往这一列写**消耗的点数**。本测试让 tokens 与 pts 差 5 个数量级，
+    /// 并覆盖「只有 consume 行计数」这一边界（同一笔的 earn 行、以及别处写入的 topup 行都不许进来）。
+    #[test]
+    fn keys_used_records_consumed_points_not_tokens() {
+        let (mut conn, p) = tmp_db("used_points");
+        conn.execute(
+            "INSERT INTO users (id, email, password_hash, name, role) VALUES (100, 'owner2@t.local', 'x', '分享者', 'user')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO quotas (user_id, balance) VALUES (100, 0)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO keys (id, provider, plan, model, status, owner_id, encrypted_key, quota, used) \
+             VALUES (9, 'test', 'test-plan', 'test-model', 'on', 2, 'sk-test', 5000, 0)",
+            [],
+        )
+        .unwrap();
+
+        let params = SettleParams {
+            consumer_id: 1,
+            api_key_id: Some(3),
+            key_id: 9,
+            owner_id: 100,
+            model: "test-model".into(),
+            tokens: 1_000_000.0,
+            cached_tokens: 0.0,
+            output_tokens: 0.0,
+            pts: 4.5,
+            cost: 0.0045,
+        };
+        settle(&mut conn, &params).unwrap();
+
+        let used: f64 = conn
+            .query_row("SELECT used FROM keys WHERE id = 9", [], |r| r.get(0))
+            .unwrap();
+        // ① 记的是点数，不是 token 数
+        assert!((used - 4.5).abs() < 1e-9, "keys.used={used}，应为 4.5 点");
+        assert!(
+            (used - params.tokens).abs() > 1.0,
+            "keys.used 不能是 token 数（{}）",
+            params.tokens
+        );
+        // ② 与账本一致：该 key 的 consume 行合计
+        let consume_pts: f64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(pts), 0) FROM transactions WHERE key_id = 9 AND type = 'consume'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            (used - consume_pts).abs() < 1e-9,
+            "keys.used={used} 应等于 consume 点数合计 {consume_pts}"
+        );
+        // ③ 阴性对照：同一笔的 earn 行（同 key_id、pts=4.05）不参与
+        let all_types: f64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(pts), 0) FROM transactions WHERE key_id = 9",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            (all_types - 8.55).abs() < 1e-9,
+            "该 key 的 consume+earn 合计应为 8.55，实际 {all_types}"
+        );
+        assert!(
+            (used - all_types).abs() > 0.1,
+            "keys.used 不得把 earn 行算进来（used={used} all={all_types}）"
+        );
+        // ④ 阴性对照：别处写入的其他类型（加额 topup）也不许改动这一列
+        conn.execute(
+            "INSERT INTO transactions (user_id, key_id, model, tokens, pts, type, status) \
+             VALUES (100, 9, 'recharge', 0, 777.0, 'topup', '成功')",
+            [],
+        )
+        .unwrap();
+        let used_after: f64 = conn
+            .query_row("SELECT used FROM keys WHERE id = 9", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            (used_after - 4.5).abs() < 1e-9,
+            "非 consume 行不得改变 keys.used，实际 {used_after}"
+        );
 
         drop(conn);
         let _ = std::fs::remove_file(p);
