@@ -52,10 +52,14 @@ pub struct PatchSharingReq {
 }
 
 /// key 脱敏：sk-****xxxx（保留前 2 位前缀 + 后 4 位，与原型一致）
+///
+/// ⚠️ 按**字符**（而非字节）截断：`key` 由用户提交、可以是任意 UTF-8，按字节切片会在多字节
+/// 字符内部断开并 panic（`byte index N is not a char boundary`）。
 fn mask_upstream_key(key: &str) -> String {
-    if key.len() > 6 {
-        let prefix = &key[..2.min(key.len())];
-        let tail = &key[key.len() - 4..];
+    let n = key.chars().count();
+    if n > 6 {
+        let prefix: String = key.chars().take(2).collect();
+        let tail: String = key.chars().skip(n - 4).collect();
         format!("{prefix}-****{tail}")
     } else {
         "****".to_string()
@@ -522,5 +526,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    // 回归：key 由用户提交，可以是任意 UTF-8；按字节切片曾在多字节字符内部 panic
+    // （`byte index N is not a char boundary`），使 POST /api/sharings 直接崩掉。
+    #[tokio::test]
+    async fn mask_upstream_key_is_char_boundary_safe() {
+        // 多字节字符：不再 panic，短于阈值时整体遮蔽
+        assert_eq!(mask_upstream_key("中中中"), "****");
+        assert_eq!(mask_upstream_key("aa中中"), "****");
+        // 多字节字符：超过阈值时前后缀按「字符」截断（而非字节）
+        assert_eq!(mask_upstream_key("aa中中中中中"), "aa-****中中中中");
+        // ASCII 行为逐字节保持不变
+        assert_eq!(mask_upstream_key("sk-realsecret1234"), "sk-****1234");
+        assert_eq!(mask_upstream_key("short"), "****");
+
+        // 端到端：带非 ASCII key 的 POST /api/sharings 必须正常返回（此前会 panic）
+        let st = test_state("utf8mask");
+        let token = login(st.clone()).await;
+        let (s, body) = send(
+            st,
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"aa中中中中中","quota":1000,"available":{"days":[1],"start":"09:00","end":"18:00"}}"#),
+            &token,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["key"], "aa-****中中中中", "非 ASCII key 应正常脱敏");
     }
 }
