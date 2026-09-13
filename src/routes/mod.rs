@@ -1639,11 +1639,18 @@ mod tests {
     /// - `dev`：阻塞 **CPU**（注册里的 argon2 **哈希**，`auth::hash_password`，默认参数 ~0.24 s）。
     /// - `login`：阻塞 **CPU**（登录里的 argon2 **校验**，`auth::verify_password`）。
     ///
-    /// 后两臂的阻塞段（argon2）是**原地且不可观测**的，于是改为**在请求飞行期间轮询** `/healthz`
-    /// 并取**最大**等待 —— 任何「无关请求被串到阻塞段后面」的窗口都会被最大值抓到（C2105：2 核 CI
-    /// runner 上未认证注册的 argon2 曾让并发的 `/healthz` 等了 1.29 s，而同一测试在多核开发机上通常
-    /// 只读到 ~0.4 ms ⇒ 间歇性红灯；修后三臂皆 ~0.5 ms）。判据用「/healthz 等待 ÷ 请求总时长」的
-    /// 比值，**与本机快慢无关**：被串行化时 ≈1，不串行时 ≈0.01。
+    /// 后两臂的阻塞段（argon2）是**原地且不可观测**的，于是改为**在请求飞行期间轮询** `/healthz`。
+    /// （C2105：2 核 CI runner 上未认证注册的 argon2 曾让并发的 `/healthz` 等了 1.29 s，而同一测试
+    /// 在多核开发机上通常只读到 ~0.4 ms ⇒ 间歇性红灯；放进 blocking pool 后三臂皆 ~0.5 ms。）
+    ///
+    /// **判据（C2106 修订，见下文 `prompt`）**：不是「**没有任何一次**往返被拖慢」，而是「阻塞段期间
+    /// 运行时**持续**在服务无关请求」。原先用「最大等待 ÷ 请求总时长 < 1/4」，但它是个**极值**统计量：
+    /// CI 的 CPU 争用会把**个别**往返（客户端或 worker 任一侧的线程被换出）单独抬高，与本缺陷无关 ——
+    /// 同一棵树 `6af5e950` 的 PR run 34782411063 绿、3 分钟后的 push run 34782558242 红（实测等待
+    /// 254.787 ms ÷ 总时长 865.123 ms = 0.295 > 0.25）⇒ 极值判据在 2 核 runner 上会**间歇性假红**。
+    /// 改成**逐样本计数**即对争用免疫：被串行化时**一个及时样本都产生不了**（改前循环至多留下 1~2 个
+    /// 样本，且首个样本 ≈ 剩余时长），未被串行化时则有几十个。smtp 臂仍是单次读数（窗口由「已进入
+    /// 发信」锚定、整段 ~3.8 s ⇒ 抖动只占几个百分点），故保留比值判据。
     #[test]
     fn slow_smtp_send_does_not_stall_the_runtime() {
         stall_probe("smtp");
@@ -1781,17 +1788,16 @@ mod tests {
                 .expect("注册应在 30s 内进入发信（假 SMTP 收到连接）");
         }
 
-        // 关键读数：请求**正在阻塞**时，从运行时之外发无关请求，取**最大**等待。
+        // 关键读数：请求**正在阻塞**时，从运行时之外发无关请求，记下**每一次**的等待。
         // smtp 臂有「已进入发信」的可观测信号 ⇒ 单次读数就落在窗口内；另两臂没有任何信号（
-        // argon2 是不可观测的原地 CPU 段）⇒ 在请求飞行期间轮询，任何被串行化的窗口都会被
-        // 最大值抓到。
-        let mut health_max = Duration::ZERO;
+        // argon2 是不可观测的原地 CPU 段）⇒ 在请求飞行期间轮询。
+        let mut waits: Vec<Duration> = Vec::new();
         let mut hs = 0u16;
         let mut hb = String::new();
         if arm == "smtp" {
             let t = Instant::now();
             let (s, b) = http_call(addr, "GET", "/healthz", None);
-            health_max = t.elapsed();
+            waits.push(t.elapsed());
             hs = s;
             hb = b;
         } else {
@@ -1799,10 +1805,7 @@ mod tests {
             while !reg.is_finished() && Instant::now() < deadline {
                 let t = Instant::now();
                 let (s, b) = http_call(addr, "GET", "/healthz", None);
-                let w = t.elapsed();
-                if w > health_max {
-                    health_max = w;
-                }
+                waits.push(t.elapsed());
                 hs = s;
                 hb = b;
                 std::thread::sleep(Duration::from_millis(5));
@@ -1811,31 +1814,49 @@ mod tests {
 
         let (rs, rb) = reg.join().unwrap();
         let reg_elapsed = t_reg.elapsed();
+        let health_max = waits.iter().copied().max().unwrap_or(Duration::ZERO);
+        // 「及时」＝远早于阻塞请求结束（< 总时长的 1/4）。逐样本计数，不取最大值 —— 见函数文档。
+        let prompt = waits.iter().filter(|w| **w * 4 < reg_elapsed).count();
         let total_accepts = accepts.load(Ordering::SeqCst);
         println!(
             "### C2105 arm={arm} healthz_status={hs} healthz_wait_max={health_max:?} \
-                 request_status={rs} accepts={total_accepts} reg_elapsed={reg_elapsed:?}"
+                 request_status={rs} accepts={total_accepts} reg_elapsed={reg_elapsed:?} \
+                 probes={} prompt={prompt}",
+            waits.len()
         );
 
         assert_eq!(hs, 200, "{arm}: /healthz 应 200（body={hb}）");
         assert_eq!(rs, want, "{arm}: POST {path} 应 {want}（body={rb}）");
-        assert!(
-            health_max < Duration::from_secs(1),
-            "{arm}: 请求阻塞在飞行中时，并发的 /healthz 不应等它 —— 实测 {health_max:?}\
-                 （改前单 worker 上会被推迟到阻塞段结束：发信 ≈3.8s / argon2 ≈0.24s）"
-        );
-        // 不变量：无关请求**不得被串到请求的阻塞段后面**。用「等待 ÷ 请求总时长」的比值表达，
-        // 与机器快慢无关 —— 被串行化时比值 ≈1（等待本身就是阻塞段），不串行时 ≈0.01（C2105）。
-        assert!(
-            health_max * 4 < reg_elapsed,
-            "{arm}: 无关请求不应被串到阻塞段后面 —— /healthz 最大等待 {health_max:?} 已达\
-                 请求总时长 {reg_elapsed:?} 的 {:.3}（应 < 0.25）",
-            health_max.as_secs_f64() / reg_elapsed.as_secs_f64()
-        );
         if arm == "smtp" {
+            assert!(
+                health_max < Duration::from_secs(1),
+                "{arm}: 请求阻塞在飞行中时，并发的 /healthz 不应等它 —— 实测 {health_max:?}\
+                     （改前单 worker 上会被推迟到阻塞段结束：发信 ≈3.8s）"
+            );
+            // 不变量：无关请求**不得被串到请求的阻塞段后面**。用「等待 ÷ 请求总时长」的比值表达，
+            // 与机器快慢无关 —— 被串行化时比值 ≈1（等待本身就是阻塞段），不串行时 ≈0.0003。
+            assert!(
+                health_max * 4 < reg_elapsed,
+                "{arm}: 无关请求不应被串到阻塞段后面 —— /healthz 最大等待 {health_max:?} 已达\
+                     请求总时长 {reg_elapsed:?} 的 {:.3}（应 < 0.25）",
+                health_max.as_secs_f64() / reg_elapsed.as_secs_f64()
+            );
             assert_eq!(
                 total_accepts, 3,
                 "应恰好 3 次尝试（证明真的走完了阻塞的发信路径）"
+            );
+        } else {
+            // 不变量（C2106 修订）：无关请求**不得被串到阻塞段后面** ⇒ 阻塞段在飞行期间，运行时应当
+            // **持续**在服务它，而不是「恰好有一次没被拖慢」。极值判据（最大等待 ÷ 总时长 < 1/4）在
+            // 2 核 CI runner 上会间歇性假红：争用会把个别往返单独抬高，但它动不了**绝大多数**样本
+            // （改后实测 ~40 个样本中仅 1 个离群）⇒ 改用计数。被串行化时循环至多留下 1~2 个样本、
+            // 且首个样本 ≈ 剩余时长 ⇒ 及时样本数为 0。
+            assert!(
+                prompt >= 3,
+                "{arm}: 阻塞请求在飞行中时，运行时应**持续**服务无关请求 —— 探针发了 {} 次 /healthz，\
+                 其中及时完成（< 请求总时长 {reg_elapsed:?} 的 1/4）的只有 {prompt} 次，最大等待 \
+                 {health_max:?}；被串到阻塞段后面时 0 次",
+                waits.len()
             );
         }
     }
