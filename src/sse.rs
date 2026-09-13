@@ -627,14 +627,79 @@ fn build_message_delta_event(stop_reason: Option<&String>, usage_json: Option<Va
 
 // ── openai_sse_to_openai_responses（移植 + 分块缓冲加固）───────────────────
 
+/// responses 流式转换的累积状态。
+///
+/// 除了「已发出哪些增量事件」之外，还累积**终局 `response.completed` 需要的内容**：
+/// `[DONE]` 分支读不到任何 chunk，唯一能给出完整对象的来源就是这里累积的状态。
 #[derive(Default)]
 struct ResponsesStreamState {
     initialized: bool,
     tool_output_index: usize,
     emitted_tool_calls: std::collections::HashSet<String>,
+    upstream_id: String,
+    model: String,
+    text: String,
+    tool_calls: Vec<Value>,
+    usage: Option<Value>,
+    completed: bool,
+}
+
+impl ResponsesStreamState {
+    /// 终局 `response.completed` 的 `response` 对象。
+    ///
+    /// 形状与整包路径**同源**（`protocol::openai_chat_message_to_responses_output` /
+    /// `protocol::openai_usage_to_responses_usage`），因此两条路径给出同一组字段：
+    /// `id` / `object` / `model` / `output` / `usage`。
+    ///
+    /// 两处**已记录**的分叉（本次改动不动它们）：① `id` 带 `resp_` 前缀（增量事件用的是
+    /// 同一个 id，客户端只可能看到一条路径）；② message item 的 id 用 `msg_…` —— 必须与
+    /// 本路径已发出的 `response.output_item.added` / 增量事件的 `item_id` 一致。
+    /// `status` 是流式独有的字段（整包路径没有；截断语义属宿主裁定族，此处沿用
+    /// `completed`，不引入 `incomplete`）。
+    fn terminal_response(&self) -> Value {
+        let mut message = json!({"role": "assistant", "content": self.text});
+        if !self.tool_calls.is_empty() {
+            message["tool_calls"] = Value::Array(self.tool_calls.clone());
+        }
+        json!({
+            "id": format!("resp_{}", self.upstream_id),
+            "object": "response",
+            "model": self.model,
+            "output": crate::protocol::openai_chat_message_to_responses_output(
+                &message,
+                &format!("msg_{}", self.upstream_id)
+            ),
+            "usage": crate::protocol::openai_usage_to_responses_usage(self.usage.as_ref()),
+            "status": "completed"
+        })
+    }
+
+    /// 终局事件，**每个流至多一次**。
+    ///
+    /// `finish_reason` 分支与 `[DONE]` 分支共用本函数：正常的上游先发 `finish_reason`
+    /// chunk 再发 `[DONE]`，谁先到谁发；上游只发 `[DONE]`（从未给 `finish_reason`）时由
+    /// `[DONE]` 分支补发**完整**对象 —— 修复前该分支发的是 `data: {}`（无 `type`、
+    /// 无 `response`），客户端按 `event.response` 读会拿到空，且正常流里终局事件出现两次。
+    fn completed_event(&mut self) -> Option<Bytes> {
+        if self.completed {
+            return None;
+        }
+        self.completed = true;
+        let data = serde_json::to_string(&json!({
+            "type": "response.completed",
+            "response": self.terminal_response()
+        }))
+        .unwrap_or_default();
+        Some(Bytes::from(format!(
+            "event: response.completed\ndata: {data}\n\n"
+        )))
+    }
 }
 
 /// OpenAI Chat SSE 流 → OpenAI Responses SSE 流（缓冲式解析，兼容跨 chunk 分块）
+///
+/// 终局事件 `response.completed` **恰好一次**，且负载是完整的 `response` 对象（内容由流内
+/// 累积状态构造、形状与整包路径同源，见 `ResponsesStreamState::terminal_response`）。
 pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
     input_stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
     usage: UsageSlot,
@@ -663,7 +728,12 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                     }
                     let Some(data) = strip_sse_field(line, "data") else { continue };
                     if data.trim() == "[DONE]" {
-                        yield Ok(Bytes::from("event: response.completed\ndata: {}\n\n"));
+                        // 上游正常收尾：终局事件在此补发（若 finish_reason chunk 已发过则不再重复），
+                        // 且必须是完整对象 —— 此前这里发 `data: {}`，客户端读到的终局没有
+                        // `type` 也没有 `response`，与整包路径的形状完全不同。
+                        if let Some(event) = state.completed_event() {
+                            yield Ok(event);
+                        }
                         continue;
                     }
                     let v: Value = match serde_json::from_str(data) {
@@ -673,6 +743,10 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                     // 计量：openai usage 字段 → (prompt, cached, completion)
                     // 统一走 StreamUsage 提取（三拼写兼容）+ input disjoint（rant 2026-08-23T08:20:38）
                     if let Some(u) = v.get("usage") {
+                        if !u.is_null() {
+                            // 终局对象要按整包路径的规则映射这份 usage（缺失则给 0）
+                            state.usage = Some(u.clone());
+                        }
                         if let Ok(su) = serde_json::from_value::<StreamUsage>(u.clone()) {
                             let cached = extract_cache_read_tokens(&su).unwrap_or(0);
                             record_usage(
@@ -686,6 +760,12 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
 
                     let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
                     let model = v.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                    if !id.is_empty() {
+                        state.upstream_id = id.clone();
+                    }
+                    if !model.is_empty() {
+                        state.model = model.clone();
+                    }
                     let response_id = format!("resp_{id}");
                     let Some(choices) = v.get("choices").and_then(|c| c.as_array()) else { continue };
                     let Some(first) = choices.first() else { continue };
@@ -744,6 +824,7 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                     if state.initialized {
                         if let Some(text) = delta.and_then(|d| d.get("content")).and_then(|c| c.as_str()) {
                             if !text.is_empty() {
+                                state.text.push_str(text);
                                 let data = serde_json::to_string(&json!({
                                     "type": "response.output_text.delta",
                                     "item_id": format!("msg_{id}"),
@@ -776,6 +857,29 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                             let tc_id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
                             let tc_name = tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()).unwrap_or("");
                             let tc_args = tc.get("function").and_then(|f| f.get("arguments")).and_then(|a| a.as_str()).unwrap_or("");
+                            // 累积成 chat 形状的 tool_call（终局对象由它构造 function_call 项）：
+                            // 同一个 call id 的 arguments 增量必须拼接，否则终局拿不到完整 JSON。
+                            match state
+                                .tool_calls
+                                .iter_mut()
+                                .find(|e| e.get("id").and_then(|i| i.as_str()) == Some(tc_id))
+                            {
+                                Some(existing) => {
+                                    if !tc_name.is_empty() {
+                                        existing["function"]["name"] = json!(tc_name);
+                                    }
+                                    let args = existing["function"]["arguments"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string();
+                                    existing["function"]["arguments"] = json!(format!("{args}{tc_args}"));
+                                }
+                                None => state.tool_calls.push(json!({
+                                    "id": tc_id,
+                                    "type": "function",
+                                    "function": {"name": tc_name, "arguments": tc_args}
+                                })),
+                            }
                             let key = tc_id.to_string();
                             if !state.emitted_tool_calls.contains(&key) {
                                 state.emitted_tool_calls.insert(key);
@@ -806,20 +910,12 @@ pub fn openai_sse_to_openai_responses<E: std::error::Error + Send + 'static>(
                         }
                     }
 
-                    // finish_reason → response.completed
+                    // finish_reason → response.completed（与 [DONE] 分支共用，全局只发一次）
                     if let Some(fr) = finish_reason {
                         if !fr.is_empty() {
-                            let data = serde_json::to_string(&json!({
-                                "type": "response.completed",
-                                "response": {
-                                    "id": response_id,
-                                    "object": "response",
-                                    "model": model,
-                                    "output": [],
-                                    "status": "completed"
-                                }
-                            })).unwrap_or_default();
-                            yield Ok(Bytes::from(format!("event: response.completed\ndata: {data}\n\n")));
+                            if let Some(event) = state.completed_event() {
+                                yield Ok(event);
+                            }
                         }
                     }
                 }
@@ -1758,6 +1854,401 @@ mod tests {
             assert_eq!(
                 streamed, expected,
                 "responses→openai tool_call={with_tool_call}"
+            );
+        }
+    }
+
+    // ── 轴：responses 终局事件的形状（流式 vs 整包）─────────────────────────
+
+    /// SSE 文本 → `(event 名, data 负载)` 列表。
+    ///
+    /// 计数必须按 SSE 的 `event:` 名，不能按负载里的 `type`：负载残缺时（正是本缺陷的
+    /// 形态）按 `type` 计数会把整条事件漏掉。
+    fn sse_events(out: &str) -> Vec<(String, String)> {
+        let mut events = Vec::new();
+        for block in out.split("\n\n") {
+            let mut name = None;
+            let mut data = None;
+            for line in block.lines() {
+                if let Some(n) = strip_sse_field(line, "event") {
+                    name = Some(n.to_string());
+                }
+                if let Some(d) = strip_sse_field(line, "data") {
+                    data = Some(d.to_string());
+                }
+            }
+            if let Some(name) = name {
+                events.push((name, data.unwrap_or_default()));
+            }
+        }
+        events
+    }
+
+    /// 一个 openai_chat 上游 chunk
+    fn chat_chunk(delta: Value, finish_reason: Option<&str>, usage: Option<Value>) -> String {
+        let mut v = json!({
+            "id": "c1",
+            "model": "m1",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}]
+        });
+        if let Some(u) = usage {
+            v["usage"] = u;
+        }
+        format!("data: {v}\n\n")
+    }
+
+    /// 跑流式路径 → `(终局 response 对象, 完整 SSE 文本)`，并断言终局事件恰好一次、
+    /// 负载带 `response` 对象。
+    fn streamed_responses_terminal(chunks: Vec<String>) -> (Value, String) {
+        let out = collect(openai_sse_to_openai_responses(
+            sse_chunks(chunks),
+            usage_slot(),
+        ));
+        let completed: Vec<(String, String)> = sse_events(&out)
+            .into_iter()
+            .filter(|(name, _)| name == "response.completed")
+            .collect();
+        assert_eq!(completed.len(), 1, "终局事件必须恰好一次：{out}");
+        let payload: Value = serde_json::from_str(&completed[0].1)
+            .unwrap_or_else(|e| panic!("终局负载必须是 JSON（{e}）：{}", completed[0].1));
+        assert_eq!(payload["type"], "response.completed", "负载类型：{payload}");
+        assert!(
+            payload["response"].is_object(),
+            "终局负载必须带 response 对象（修复前 [DONE] 分支发的是 `data: {{}}`）：{payload}"
+        );
+        (payload["response"].clone(), out)
+    }
+
+    /// 终局对象的内容必须是整段流累积出来的，不是空壳
+    #[test]
+    fn responses_terminal_event_is_emitted_once_with_the_full_response_object() {
+        let (terminal, out) = streamed_responses_terminal(vec![
+            chat_chunk(json!({"role": "assistant", "content": ""}), None, None),
+            chat_chunk(json!({"content": "Hel"}), None, None),
+            chat_chunk(json!({"content": "lo"}), None, None),
+            chat_chunk(
+                json!({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{\"city\""}}]}),
+                None,
+                None,
+            ),
+            chat_chunk(
+                json!({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                    "function": {"arguments": ": \"SF\"}"}}]}),
+                None,
+                None,
+            ),
+            chat_chunk(
+                json!({}),
+                Some("tool_calls"),
+                Some(json!({"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10})),
+            ),
+            "data: [DONE]\n\n".to_string(),
+        ]);
+
+        assert_eq!(terminal["id"], "resp_c1");
+        assert_eq!(terminal["object"], "response");
+        assert_eq!(terminal["model"], "m1");
+        assert_eq!(terminal["status"], "completed");
+        assert_eq!(
+            terminal["usage"],
+            json!({"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}),
+            "usage 必须按整包路径的规则映射"
+        );
+        let output = terminal["output"].as_array().expect("output 是数组");
+        assert_eq!(
+            output.len(),
+            2,
+            "一个 function_call + 一个 message：{terminal}"
+        );
+        assert_eq!(output[0]["type"], "function_call");
+        assert_eq!(output[0]["id"], "fc_call_1");
+        assert_eq!(output[0]["call_id"], "call_1");
+        assert_eq!(output[0]["name"], "get_weather");
+        assert_eq!(
+            output[0]["arguments"], "{\"city\":\"SF\"}",
+            "arguments 增量必须拼接成完整 JSON（并与整包路径同样做一次 parse → 紧凑序列化）"
+        );
+        assert_eq!(output[1]["type"], "message");
+        assert_eq!(output[1]["id"], "msg_c1", "必须与增量事件的 item_id 一致");
+        assert_eq!(output[1]["content"][0]["type"], "output_text");
+        assert_eq!(output[1]["content"][0]["text"], "Hello");
+        assert!(!out.contains("data: {}"), "不得再有空负载的终局事件：{out}");
+    }
+
+    /// 上游只发 `[DONE]`、从未给 `finish_reason`：终局事件仍必须是完整对象
+    #[test]
+    fn responses_terminal_event_without_finish_reason_is_still_complete() {
+        // 上游的真实形态：先一个只有 role 的 chunk，再内容 chunk，然后直接 [DONE]
+        let text_chunks = || {
+            vec![
+                chat_chunk(json!({"role": "assistant", "content": ""}), None, None),
+                chat_chunk(json!({"content": "Hi"}), None, None),
+            ]
+        };
+
+        // ① 连 usage 都没有 → 与整包路径一致给三个 0（而不是省略字段）
+        let mut chunks = text_chunks();
+        chunks.push("data: [DONE]\n\n".to_string());
+        let (terminal, _) = streamed_responses_terminal(chunks);
+        assert_eq!(terminal["id"], "resp_c1");
+        assert_eq!(terminal["model"], "m1");
+        assert_eq!(terminal["output"][0]["content"][0]["text"], "Hi");
+        assert_eq!(
+            terminal["usage"],
+            json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+        );
+
+        // ② 有 usage chunk 但没有 finish_reason → usage 照样带上
+        let mut chunks = text_chunks();
+        chunks.push(chat_chunk(
+            json!({}),
+            None,
+            Some(json!({"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7})),
+        ));
+        chunks.push("data: [DONE]\n\n".to_string());
+        let (terminal, _) = streamed_responses_terminal(chunks);
+        assert_eq!(terminal["usage"]["input_tokens"], 5);
+        assert_eq!(terminal["usage"]["output_tokens"], 2);
+    }
+
+    /// 整包路径的同一份上游内容
+    fn whole_body_responses(text: &str, tool_calls: &[Value], usage: Option<Value>) -> Value {
+        let mut message = json!({"role": "assistant", "content": text});
+        if !tool_calls.is_empty() {
+            message["tool_calls"] = Value::Array(tool_calls.to_vec());
+        }
+        let mut body = json!({
+            "id": "c1",
+            "model": "m1",
+            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]
+        });
+        if let Some(u) = usage {
+            body["usage"] = u;
+        }
+        crate::protocol::openai_chat_to_openai_responses_resp(&body)
+    }
+
+    /// 流式路径的同一份上游内容（tool_call 的 arguments 拆成两块 —— OpenAI 流式的真实形态）
+    fn streamed_responses_chunks(
+        text: &str,
+        tool_calls: &[Value],
+        usage: Option<Value>,
+    ) -> Vec<String> {
+        let mut chunks = vec![chat_chunk(
+            json!({"role": "assistant", "content": ""}),
+            None,
+            None,
+        )];
+        if !text.is_empty() {
+            chunks.push(chat_chunk(json!({"content": text}), None, None));
+        }
+        for tc in tool_calls {
+            let id = tc["id"].clone();
+            let name = tc["function"]["name"].clone();
+            let args = tc["function"]["arguments"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            let split = args
+                .char_indices()
+                .nth(4)
+                .map(|(i, _)| i)
+                .unwrap_or(args.len());
+            let (head, tail) = args.split_at(split);
+            chunks.push(chat_chunk(
+                json!({"tool_calls": [{"index": 0, "id": id.clone(), "type": "function",
+                    "function": {"name": name, "arguments": head}}]}),
+                None,
+                None,
+            ));
+            if !tail.is_empty() {
+                chunks.push(chat_chunk(
+                    json!({"tool_calls": [{"index": 0, "id": id, "type": "function",
+                        "function": {"arguments": tail}}]}),
+                    None,
+                    None,
+                ));
+            }
+        }
+        chunks.push(chat_chunk(json!({}), Some("stop"), usage));
+        chunks.push("data: [DONE]\n\n".to_string());
+        chunks
+    }
+
+    /// 两条路径的 `response` 对象逐字段比较，返回第一处差异（`None` = 同形）。
+    ///
+    /// 已记录的两处分叉**不忽略**，而是断言它恰好是已记录的关系：① 流式 id 带 `resp_`
+    /// 前缀；② 流式的 message item id 用 `msg_…`（与它自己的增量事件一致）而整包沿用响应 id。
+    /// 把分叉字段删掉再比，等于给它们发永久免检证。
+    fn responses_parity_diff(streamed: &Value, whole: &Value) -> Option<String> {
+        for key in ["object", "model", "usage"] {
+            if streamed.get(key) != whole.get(key) {
+                return Some(format!(
+                    "{key} 不同：{:?} vs {:?}",
+                    streamed.get(key),
+                    whole.get(key)
+                ));
+            }
+        }
+        // 流式终局多一个 `status`（整包路径没有该字段；截断语义属宿主裁定族，未动）
+        if streamed.get("status") != Some(&json!("completed")) {
+            return Some(format!(
+                "status 不是 completed：{:?}",
+                streamed.get("status")
+            ));
+        }
+        for key in whole.as_object().expect("整包是对象").keys() {
+            if streamed.get(key).is_none() {
+                return Some(format!("流式终局缺少整包字段 {key}"));
+            }
+        }
+        match (streamed["id"].as_str(), whole["id"].as_str()) {
+            (Some(s), Some(w)) if s == format!("resp_{w}") => {}
+            other => return Some(format!("id 前缀分叉不再是已记录的关系：{other:?}")),
+        }
+        let (Some(s_out), Some(w_out)) =
+            (streamed["output"].as_array(), whole["output"].as_array())
+        else {
+            return Some(format!(
+                "output 不是数组：{:?} vs {:?}",
+                streamed.get("output"),
+                whole.get("output")
+            ));
+        };
+        if s_out.len() != w_out.len() {
+            return Some(format!(
+                "output 长度不同：{} vs {}",
+                s_out.len(),
+                w_out.len()
+            ));
+        }
+        for (i, (s, w)) in s_out.iter().zip(w_out.iter()).enumerate() {
+            if s["type"] != w["type"] {
+                return Some(format!(
+                    "output[{i}].type 不同：{:?} vs {:?}",
+                    s["type"], w["type"]
+                ));
+            }
+            match s["type"].as_str() {
+                Some("function_call") => {
+                    for key in ["id", "call_id", "name", "arguments"] {
+                        if s[key] != w[key] {
+                            return Some(format!(
+                                "output[{i}].{key} 不同：{:?} vs {:?}",
+                                s[key], w[key]
+                            ));
+                        }
+                    }
+                }
+                Some("message") => {
+                    for key in ["role", "content"] {
+                        if s[key] != w[key] {
+                            return Some(format!(
+                                "output[{i}].{key} 不同：{:?} vs {:?}",
+                                s[key], w[key]
+                            ));
+                        }
+                    }
+                    let (si, wi) = (
+                        s["id"].as_str().unwrap_or(""),
+                        w["id"].as_str().unwrap_or(""),
+                    );
+                    if si != format!("msg_{wi}") {
+                        return Some(format!(
+                            "output[{i}].id 前缀分叉不再是已记录的关系：{si} vs {wi}"
+                        ));
+                    }
+                }
+                other => return Some(format!("output[{i}].type 未知：{other:?}")),
+            }
+        }
+        None
+    }
+
+    /// 同一份上游内容：流式终局对象与整包对象必须同形（形状字段，不只完成信号）
+    #[test]
+    fn responses_terminal_shape_agrees_between_stream_and_whole_body() {
+        let cases: Vec<(&str, Vec<Value>, Option<Value>)> = vec![
+            (
+                "Hello",
+                vec![],
+                Some(json!({"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10})),
+            ),
+            (
+                "Hello",
+                vec![json!({"id": "call_1", "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}})],
+                Some(json!({"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13})),
+            ),
+            (
+                "",
+                vec![json!({"id": "call_2", "type": "function",
+                    "function": {"name": "f", "arguments": "{}"}})],
+                None,
+            ),
+            ("只有参数没有 usage 的文本", vec![], None),
+        ];
+        for (text, tool_calls, usage) in cases {
+            let (streamed, out) = streamed_responses_terminal(streamed_responses_chunks(
+                text,
+                &tool_calls,
+                usage.clone(),
+            ));
+            let whole = whole_body_responses(text, &tool_calls, usage);
+            if let Some(diff) = responses_parity_diff(&streamed, &whole) {
+                panic!("流式与整包形状不一致（{text:?}）：{diff}\n流式：{streamed}\n整包：{whole}\n{out}");
+            }
+        }
+    }
+
+    /// 阳性对照：parity 比较器必须能拒绝形状不同的对象（否则「一致」是永久免检证）
+    #[test]
+    fn responses_parity_comparator_rejects_wrong_shapes() {
+        let whole = whole_body_responses(
+            "Hello",
+            &[],
+            Some(json!({"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3})),
+        );
+        assert!(
+            responses_parity_diff(&whole, &whole).is_some(),
+            "拿整包对象冒充流式终局必须被拒（无 resp_ 前缀、无 status）"
+        );
+
+        // 先造一个「除已记录分叉外处处相同」的流式对象：比较器必须放行
+        let mut base = whole.clone();
+        base["id"] = json!("resp_c1");
+        base["status"] = json!("completed");
+        base["output"][0]["id"] = json!("msg_c1");
+        assert!(
+            responses_parity_diff(&base, &whole).is_none(),
+            "修正已记录分叉后必须判为同形：{:?}",
+            responses_parity_diff(&base, &whole)
+        );
+
+        // 再逐个注入偏差：比较器必须每一处都报出来
+        type Mutate = fn(&mut Value);
+        let cases: Vec<(&str, Mutate)> = vec![
+            ("object", |v| v["object"] = json!("not_a_response")),
+            ("model", |v| v["model"] = json!("other-model")),
+            ("usage.output_tokens", |v| {
+                v["usage"]["output_tokens"] = json!(99)
+            }),
+            ("status", |v| v["status"] = json!("incomplete")),
+            ("output 长度", |v| v["output"] = json!([])),
+            ("output[0].content", |v| {
+                v["output"][0]["content"][0]["text"] = json!("tampered")
+            }),
+            ("output[0].id 前缀关系", |v| {
+                v["output"][0]["id"] = json!("msg_zzz")
+            }),
+        ];
+        for (label, mutate) in cases {
+            let mut broken = base.clone();
+            mutate(&mut broken);
+            assert!(
+                responses_parity_diff(&broken, &whole).is_some(),
+                "注入 {label} 偏差后比较器必须报差异：{broken}"
             );
         }
     }
