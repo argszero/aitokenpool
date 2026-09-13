@@ -2030,7 +2030,10 @@
     // P2-B：登录 → 后端 /api/api-keys（key 已脱敏；完整 key 仅生成时可得）
     let list;
     if (Live.apiKeys) {
-      list = Live.apiKeys.map((k) => ({
+      // idx = 定位符：行内按钮带的索引是**缓存数组里的下标**，不是搜索过滤后的行号
+      //（过滤会改变行号；copyKey/renameKey/deleteKey 都按 Live.apiKeys[idx] 取记录）
+      list = Live.apiKeys.map((k, idx) => ({
+        idx,
         id: k.id,
         fullKey: k.full_key || null,
         name: k.name || T("common.unnamed"),
@@ -2043,15 +2046,15 @@
       list = [];
     }
     list = list.filter((k) => !q || k.name.toLowerCase().includes(q));
-    $("#api-keys").innerHTML = list.length ? list.map((k, i) =>
-      "<tr><td data-label='" + T('settings.ak.col.name') + "'><strong>" + hl(k.name, rawQ) + "</strong></td>" +
+    $("#api-keys").innerHTML = list.length ? list.map((k) =>
+      "<tr data-key-row='" + k.idx + "'><td data-label='" + T('settings.ak.col.name') + "'><strong>" + hl(k.name, rawQ) + "</strong></td>" +
       "<td data-label='" + T('settings.ak.col.key') + "'><code>" + esc(Live.apiKeys ? k.key : "") + "</code></td>" +
       "<td data-label='" + T('settings.ak.col.created') + "'>" + esc(k.created) + "</td>" +
       "<td data-label='" + T('settings.ak.col.last') + "'>" + (k.last ? timeCell(k.last) : esc(T("settings.ak.last.never"))) + "</td>" +
       "<td data-label='" + T('settings.ak.col.status') + "'>" + (k.status === "active" ? '<span class="pill pill-ok">' + T("settings.ak.status.active") + "</span>" : '<span class="pill pill-muted">' + esc(k.status || "—") + "</span>") + "</td>" +
-      "<td data-label='" + T('settings.ak.col.action') + "'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + i + "'>" + T("settings.ak.copy") + "</button> " +
-      "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + i + "'>" + T("settings.ak.rename") + "</button> " +
-      "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + i + "'>" + T("settings.ak.del") + "</button></td></tr>"
+      "<td data-label='" + T('settings.ak.col.action') + "'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + k.idx + "'>" + T("settings.ak.copy") + "</button> " +
+      "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + k.idx + "'>" + T("settings.ak.rename") + "</button> " +
+      "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + k.idx + "'>" + T("settings.ak.del") + "</button></td></tr>"
     ).join("") : emptyRow(6, T("settings.ak.empty"), T("settings.ak.empty.sub"),
       '<button type="button" class="btn btn-ghost" data-new-key>' + T("settings.ak.empty.add") + "</button>");
     pulseTbody($("#api-keys"));
@@ -2217,7 +2220,8 @@
   function renameKey(i) {
     const k = Live.apiKeys ? Live.apiKeys[i] : null;
     if (!k) return;
-    const row = document.querySelector('#api-keys tr:nth-child(' + (i + 1) + ')');
+    // 行号会随搜索过滤变化 ⇒ 按定位符（缓存下标）找行，而不是 nth-child
+    const row = document.querySelector('#api-keys [data-key-row="' + i + '"]');
     const cell = row ? row.children[0] : null;
     if (!cell) return;
     inlineForm(cell, {
@@ -2349,8 +2353,11 @@
     const q = rawQ.toLowerCase();
     const list = Live.adminModels.filter((m) => !q ||
       (m.provider || "").toLowerCase().includes(q) || (m.model || "").toLowerCase().includes(q));
-    $("#model-body").innerHTML = list.length ? list.map((m, i) =>
-      "<tr data-model-row='" + i + "'><td data-label='" + T('admin.models.col.provider') + "'><strong>" + esc(m.provider) + "</strong></td>" +
+    // 定位符 = 缓存数组下标（editModelRow/deleteModel 按 Live.adminModels[i] 取记录）；
+    // 搜索过滤会改变行号，所以不能把行号当定位符填进按钮
+    $("#model-body").innerHTML = list.length ? list.map((m) => {
+      const i = Live.adminModels.indexOf(m);
+      return "<tr data-model-row='" + i + "'><td data-label='" + T('admin.models.col.provider') + "'><strong>" + esc(m.provider) + "</strong></td>" +
       "<td data-label='" + T('admin.models.col.model') + "'><code>" + esc(m.model) + "</code></td>" +
       '<td class="num" data-label="' + T("admin.models.col.in") + '">' + D.fmt(m.input_per_m || 0) + "</td>" +
       '<td class="num" data-label="' + T("admin.models.col.out") + '">' + D.fmt(m.output_per_m || 0) + "</td>" +
@@ -2358,8 +2365,8 @@
       '<td class="num" data-label="' + T("admin.models.col.outmax") + '">' + fmtCtx(m.max_output || 0) + "</td>" +
       "<td data-label='" + T('admin.models.col.vision') + "'>" + (m.vision ? '<span class="pill pill-ok">' + T("admin.models.vision.yes") + "</span>" : '<span class="pill pill-muted">' + T("admin.models.vision.no") + "</span>") + "</td>" +
       "<td data-label='" + T('admin.models.col.action') + "'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-model-edit='" + i + "'>" + T("admin.models.edit") + "</button> " +
-      "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-model-del='" + i + "'>" + T("admin.models.del") + "</button></td></tr>"
-    ).join("") : emptyRow(8, T("admin.models.empty"), T("admin.models.empty.sub"));
+      "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-model-del='" + i + "'>" + T("admin.models.del") + "</button></td></tr>";
+    }).join("") : emptyRow(8, T("admin.models.empty"), T("admin.models.empty.sub"));
     pulseTbody($("#model-body"));
   }
 
@@ -2543,7 +2550,10 @@
       stat(T("admin.org.stats.remain"), D.fmt(totalQuota - totalUsed) + " " + T("common.points"), T("admin.org.stats.remain.sub")),
     ].join("");
 
-    $("#dept-body").innerHTML = list.length ? list.map((d, i) => {
+    // 定位符 = 缓存数组下标（openDeptForm/deleteDept 按 Live.departments[i] 取记录）；
+    // 搜索过滤会改变行号，所以不能把行号当定位符填进按钮
+    $("#dept-body").innerHTML = list.length ? list.map((d) => {
+      const i = src.indexOf(d);
       const used = d.month_cost || 0;
       const members = d.member_count || 0;
       const pct = d.quota > 0 ? used / d.quota : 0;
