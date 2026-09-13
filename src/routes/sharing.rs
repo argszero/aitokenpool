@@ -108,6 +108,19 @@ pub async fn create(
             Json(serde_json::json!({ "error": "provider 与 model 不在模型目录中，无法计价" })),
         ));
     }
+    // 只能上架平台**能路由**的 plan：路由按 plan id 在 config `[[plans]]` 中解析端点
+    // （`gateway::resolve_outbound` / `resolve_endpoint`：`cfg.plans.iter().find(|p| p.id == plan_id)`），
+    // 查不到即该 key **永远不可路由**（调用 503「暂无可用 key」），却仍以 `status='on'` 落库、被
+    // `dao::list_models_with_availability`（`k.status = 'on'`，不认识 plan）计入 `available_keys`
+    // ⇒ 市场/共享页会展示一个平台**交不出**的可用性。
+    // `plan` 是 `#[serde(default)]`：省略字段即空串，同样不是任何 plan 的 id，一并拒绝
+    // （前端上架表单本就必选 plan，`app.js` 提交 `plan: plan.id`，故合法客户端不受影响）。
+    if !st.cfg.plans.iter().any(|p| p.id == req.plan) {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "plan 不在平台的套餐目录中，无法路由" })),
+        ));
+    }
     conn.execute(
         "INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key, quota, available_days, available_start, available_end, note) \
          VALUES (?1, ?2, ?3, 'on', ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -399,7 +412,7 @@ mod tests {
             st.clone(),
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"deepseek","model":"deepseek-v4-flash","key":"sk-patchme9999"}"#),
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-patchme9999"}"#),
             &key,
         )
         .await;
@@ -477,7 +490,7 @@ mod tests {
             st.clone(),
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"deepseek","model":"deepseek-v4-flash","key":"sk-created1234","used":0,"note":"utc"}"#),
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-created1234","used":0,"note":"utc"}"#),
             &key,
         )
         .await;
@@ -630,5 +643,98 @@ mod tests {
         .await;
         assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
         assert_eq!(count(&st), before + 1, "合法上架应落库一行");
+    }
+
+    /// 上架只接受平台**能路由**的 plan（C2067）。
+    ///
+    /// 路由按 plan id 在 config `[[plans]]` 中解析端点（`gateway::resolve_outbound` /
+    /// `resolve_endpoint`：`cfg.plans.iter().find(|p| p.id == plan_id)`）。`plan` 不在其中
+    /// （含 `#[serde(default)]` 的空串）时该 key **永远不可路由**，但 `create` 仍会把它以
+    /// `status='on'` 落库，并被 `dao::list_models_with_availability` 计入 `available_keys`
+    /// ⇒ 市场与共享页展示「可用」，实际调用却 503「暂无可用 key」。故入口拒绝。
+    ///
+    /// 本用例锁四件事：① 未知 plan → 400；② **省略 plan**（落库即空串）→ 400；
+    /// ③ **400 时不得落库**（校验须在 `INSERT` 之前）；④ 阳性对照：config 中的 plan → 200 且落库。
+    /// 末尾再加一条**失配配对**断言（沿用 C2066 判据：计数面与可达面必须成对断言，见坑 #162）：
+    /// 直接写入一条历史遗留的未知 plan 行，断言它**被计入 `available_keys`** 而它引用的 plan
+    /// **不在 config 中**（⇒ 路由解析不到）—— 这正是本条守卫要挡住的情形。
+    #[tokio::test]
+    async fn create_rejects_unroutable_plan() {
+        let st = test_state("unroutable");
+        let key = login(st.clone()).await;
+        let count = |st: &crate::routes::AppState| -> i64 {
+            let conn = st.db.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM keys", [], |r| r.get(0))
+                .unwrap()
+        };
+        let before = count(&st);
+
+        // ① plan 不在 config [[plans]] 中
+        let (s, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","plan":"no-such-plan","model":"deepseek-v4-flash","key":"sk-phantom1111","quota":100}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::BAD_REQUEST, "body: {body}");
+
+        // ② plan 省略 ⇒ `#[serde(default)]` 落库即空串，同样不是任何 plan 的 id
+        let (s, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","model":"deepseek-v4-flash","key":"sk-noplan2222","quota":100}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::BAD_REQUEST, "body: {body}");
+
+        // ③ 两次拒绝都不得写入（校验在 INSERT 之前）
+        assert_eq!(count(&st), before, "被拒绝的上架不得落库");
+
+        // ④ 阳性对照：config 中的 plan → 200 且落库（否则上面的 400 可能是「上架整体坏了」）
+        let (s, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-control3333","quota":100}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        assert_eq!(count(&st), before + 1, "合法上架应落库一行");
+
+        // 失配配对：历史遗留的「未知 plan 却 status='on'」行 —— 计数算它，config 里没有它
+        let avail = |st: &crate::routes::AppState| -> i64 {
+            let conn = st.db.lock().unwrap();
+            crate::dao::list_models_with_availability(&conn)
+                .unwrap()
+                .iter()
+                .find(|m| m["model"] == "deepseek-v4-flash")
+                .expect("市场列表应含 deepseek-v4-flash")["available_keys"]
+                .as_i64()
+                .unwrap()
+        };
+        let avail_before = avail(&st);
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key, quota, used) \
+                 VALUES ('deepseek', 'no-such-plan', 'deepseek-v4-flash', 'on', 1, 'sk-legacy-enc', 100, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        assert!(
+            st.cfg.plans.iter().all(|p| p.id != "no-such-plan"),
+            "前提：该 plan 不在 config 中（⇒ 路由解析不到）"
+        );
+        assert_eq!(
+            avail(&st),
+            avail_before + 1,
+            "未知 plan 的遗留行仍被计入 available_keys —— 正是本条守卫要挡住的情形"
+        );
     }
 }
