@@ -218,9 +218,14 @@ fn tx_where(
         binds.push(rusqlite::types::Value::Text(s));
     }
     if let Some(s) = like(&f.key_name) {
-        // 与前端 Key 列显示口径一致：key_name 优先，历史行兜底 key_label（note/provider/plan）
+        // C2101：与前端 Key 列显示口径一致 —— key_name 优先，空/缺时兜底 key_label
+        // （note 非空用 note，否则 provider / plan，plan 空则仅 provider）。
+        // ⚠️ `api_keys.name` 的库内默认是**空串**而非 NULL（db.rs `name TEXT NOT NULL DEFAULT ''`），
+        //    且登录自动建的分发 key 正是空名（dao::get_or_create_api_key 写 ''）——
+        //    而 `COALESCE` 只对 NULL 回退 ⇒ 表格显示兜底文案、按该文案筛选却 0 行。
+        //    先 `NULLIF(...,'')` 归零再 COALESCE，与前端 `t.key_name || t.key_label`（JS `||` 视空串为缺失）同口径。
         conds.push(format!(
-            "COALESCE(ak.name, CASE WHEN k.note <> '' THEN k.note \
+            "COALESCE(NULLIF(ak.name, ''), CASE WHEN k.note <> '' THEN k.note \
                 WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
                 ELSE k.provider END) LIKE ?{}",
             binds.len() + 1
@@ -1325,6 +1330,99 @@ mod tests {
             (buckets[0]["expense"].as_f64().unwrap() - 10.0).abs() < 1e-9,
             "{body}"
         );
+    }
+
+    /// 最小百分号编码（RFC 3986 unreserved 原样，其余 %XX）——测试里构造查询串用。
+    fn pct(s: &str) -> String {
+        let mut out = String::new();
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char)
+                }
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn transactions_key_filter_matches_the_displayed_fallback() {
+        // C2101：Key 列的**筛选口径必须等于显示口径**。
+        // `api_keys.name` 库内默认是**空串**（db.rs `name TEXT NOT NULL DEFAULT ''`），且登录自动建的
+        // 分发 key 正是空名（dao::get_or_create_api_key 写 ''）——而筛选曾用
+        // `COALESCE(ak.name, <key_label>)`：空串不是 NULL，COALESCE 不回退 ⇒ 表格显示 key_label
+        // 兜底文案（provider / plan），按该文案筛选却 0 行（前端 `t.key_name || t.key_label` 视空串为缺失）。
+        let st = test_state("txkeyfall");
+        let key = login(st.clone()).await;
+        let api_key_id: i64 = {
+            let conn = st.db.lock().unwrap();
+            // 前提断言：登录已为 demo 建分发 key，名字为空串（未改过名）
+            let (id, name): (i64, String) = conn
+                .query_row("SELECT id, name FROM api_keys WHERE user_id = 1", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(name, "", "前提：登录自动建的分发 key 名为空串");
+            // 与网关真实写入一致：带 api_key_id（用户用的是自动建的那把 key）
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, api_key_id, model, tokens, pts, type, status) \
+                 VALUES (1, '2', 1, ?1, 'deepseek-v4-flash', 100, 10.0, 'consume', '成功')",
+                rusqlite::params![id],
+            )
+            .unwrap();
+            id
+        };
+        // 表格 Key 列的值 = key_name（JS `||` 语义：空串视为缺失）→ key_label
+        let (s, body) = get(st.clone(), "/api/transactions", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let row = &v["items"].as_array().unwrap()[0];
+        assert_eq!(row["api_key_id"].as_i64(), Some(api_key_id));
+        let key_name = row["key_name"].as_str().unwrap_or("");
+        assert_eq!(key_name, "", "空名 key 的 key_name 为空串: {body}");
+        let displayed = if key_name.is_empty() {
+            row["key_label"].as_str().unwrap_or("")
+        } else {
+            key_name
+        };
+        assert_eq!(
+            displayed, "deepseek / deepseek-paygo",
+            "兜底显示文案: {body}"
+        );
+        // 缺陷断言：按**表格里显示的文案**筛选必须命中该行（修前为 0 行）
+        let (s, body) = get(
+            st.clone(),
+            &format!("/api/transactions?key_name={}", pct(displayed)),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "按显示的兜底文案筛选命中该行: {body}");
+        // 阳性对照：给这把 key 起名后，按名字筛选仍命中（修复没弄坏正常路径）
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "UPDATE api_keys SET name = 'prod-key' WHERE id = ?1",
+                rusqlite::params![api_key_id],
+            )
+            .unwrap();
+        }
+        let (s, body) = get(st.clone(), "/api/transactions?key_name=prod-key", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "有名 key 按名字命中: {body}");
+        // 阴性对照：名字已覆盖兜底 ⇒ 按旧的兜底文案筛选应 0 行
+        let (s, body) = get(
+            st.clone(),
+            &format!("/api/transactions?key_name={}", pct(displayed)),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 0, "改名后旧兜底文案不再命中: {body}");
     }
 
     #[tokio::test]
