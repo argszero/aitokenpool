@@ -632,11 +632,96 @@ pub fn anthropic_to_openai_chat_resp(body: &Value) -> Value {
     })
 }
 
+/// OpenAI Chat 的 `message`（`content` + `tool_calls`）→ Responses 的 `output` 数组。
+///
+/// **唯一真源**：整包路径（`openai_chat_to_openai_responses_resp`）与流式终局事件
+/// （`sse::openai_sse_to_openai_responses`）都调用本函数 —— 两条路径各写一份 output
+/// 构造代码，正是「同一协议对两条路径给出不同形状」这类缺陷的来源。
+///
+/// `message_item_id` 由调用方给出：整包路径沿用响应 id（历史行为，勿改），流式路径必须
+/// 用它自己在增量事件里已经发过的 `msg_…` id，否则终局对象与自己的增量自相矛盾。
+pub fn openai_chat_message_to_responses_output(
+    message: &Value,
+    message_item_id: &str,
+) -> Vec<Value> {
+    let mut output = Vec::new();
+    let mut content_parts = Vec::new();
+
+    if let Some(text) = message.get("content").and_then(|c| c.as_str()) {
+        if !text.is_empty() {
+            content_parts.push(json!({"type": "output_text", "text": text, "annotations": []}));
+        }
+    } else if let Some(parts) = message.get("content").and_then(|c| c.as_array()) {
+        for part in parts {
+            let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match part_type {
+                "text" | "output_text" => {
+                    if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                        content_parts
+                            .push(json!({"type": "output_text", "text": text, "annotations": []}));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(tool_calls) = message.get("tool_calls").and_then(|t| t.as_array()) {
+        for tc in tool_calls {
+            let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            let func = tc.get("function");
+            let name = func
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            let args = func
+                .and_then(|f| f.get("arguments"))
+                .and_then(|a| a.as_str())
+                .unwrap_or("{}");
+            let arguments: Value = serde_json::from_str(args).unwrap_or(json!({}));
+            output.push(json!({
+                "id": format!("fc_{id}"),
+                "type": "function_call",
+                "call_id": id,
+                "name": name,
+                "arguments": serde_json::to_string(&arguments).unwrap_or_default()
+            }));
+        }
+    }
+
+    if !content_parts.is_empty() {
+        output.push(json!({
+            "id": message_item_id,
+            "type": "message",
+            "role": "assistant",
+            "content": content_parts
+        }));
+    }
+
+    output
+}
+
+/// OpenAI Chat 的 `usage` → Responses 的 `usage`。
+///
+/// **唯一真源**：整包路径与流式终局事件共用。usage 缺失时给出三个 0（与整包路径一致），
+/// 而不是省略该字段 —— 客户端的 `response.usage` 因此总是存在。
+pub fn openai_usage_to_responses_usage(usage: Option<&Value>) -> Value {
+    match usage {
+        Some(u) => json!({
+            "input_tokens": u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
+            "output_tokens": u.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0),
+            "total_tokens": u.get("total_tokens").and_then(Value::as_u64).unwrap_or(0)
+        }),
+        None => json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
+    }
+}
+
 /// OpenAI Chat 响应 → OpenAI Responses 响应
 ///
 /// 移植自 openlocalrouter transform::openai_chat_to_openai_responses：
 /// message.content → output[0].message.content（output_text）、
 /// tool_calls → function_call output、usage → {input_tokens, output_tokens, total_tokens}。
+/// output / usage 的构造走上面的两个唯一真源函数（流式终局事件也调用它们）。
 pub fn openai_chat_to_openai_responses_resp(body: &Value) -> Value {
     let choices = body.get("choices").and_then(|c| c.as_array());
     let choice = choices.and_then(|c| c.first());
@@ -644,77 +729,20 @@ pub fn openai_chat_to_openai_responses_resp(body: &Value) -> Value {
     let mut output = Vec::new();
 
     if let Some(message) = choice.and_then(|c| c.get("message")) {
-        let mut content_parts = Vec::new();
-
-        if let Some(text) = message.get("content").and_then(|c| c.as_str()) {
-            if !text.is_empty() {
-                content_parts.push(json!({"type": "output_text", "text": text, "annotations": []}));
-            }
-        } else if let Some(parts) = message.get("content").and_then(|c| c.as_array()) {
-            for part in parts {
-                let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                match part_type {
-                    "text" | "output_text" => {
-                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                            content_parts.push(
-                                json!({"type": "output_text", "text": text, "annotations": []}),
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        if let Some(tool_calls) = message.get("tool_calls").and_then(|t| t.as_array()) {
-            for tc in tool_calls {
-                let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
-                let func = tc.get("function");
-                let name = func
-                    .and_then(|f| f.get("name"))
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("");
-                let args = func
-                    .and_then(|f| f.get("arguments"))
-                    .and_then(|a| a.as_str())
-                    .unwrap_or("{}");
-                let arguments: Value = serde_json::from_str(args).unwrap_or(json!({}));
-                output.push(json!({
-                    "id": format!("fc_{id}"),
-                    "type": "function_call",
-                    "call_id": id,
-                    "name": name,
-                    "arguments": serde_json::to_string(&arguments).unwrap_or_default()
-                }));
-            }
-        }
-
-        if !content_parts.is_empty() {
-            output.push(json!({
-                "id": body.get("id").and_then(|i| i.as_str()).unwrap_or(""),
-                "type": "message",
-                "role": "assistant",
-                "content": content_parts
-            }));
-        }
+        // message item 的 id 沿用响应 id（历史行为；与流式的 `msg_…` 前缀分叉已记录，
+        // 不在本次改动范围内 —— 见 sse.rs 终局对象的注释）。
+        output = openai_chat_message_to_responses_output(
+            message,
+            body.get("id").and_then(|i| i.as_str()).unwrap_or(""),
+        );
     }
-
-    let usage = body.get("usage");
-    let usage_json = match usage {
-        Some(u) => json!({
-            "input_tokens": u.get("prompt_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0),
-            "output_tokens": u.get("completion_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0),
-            "total_tokens": u.get("total_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0)
-        }),
-        None => json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
-    };
 
     json!({
         "id": body.get("id").and_then(|i| i.as_str()).unwrap_or(""),
         "object": "response",
         "model": body.get("model").and_then(|m| m.as_str()).unwrap_or(""),
         "output": output,
-        "usage": usage_json
+        "usage": openai_usage_to_responses_usage(body.get("usage"))
     })
 }
 
