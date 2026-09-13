@@ -69,11 +69,13 @@ pub struct ModelPatch {
 }
 
 /// 校验通用字段：价格 ≥ 0、vision ∈ {0,1}、currency 枚举
+#[allow(clippy::too_many_arguments)] // 价格字段平铺（6 个价格 + currency + vision），保持与请求结构体同序
 fn validate_common(
     currency: &str,
     input_per_m: f64,
     output_per_m: f64,
     vision: i64,
+    cache_hit_input_per_m: f64,
     peak_input_per_m: f64,
     peak_output_per_m: f64,
     peak_cache_hit_input_per_m: f64,
@@ -86,6 +88,7 @@ fn validate_common(
     }
     if input_per_m < 0.0
         || output_per_m < 0.0
+        || cache_hit_input_per_m < 0.0
         || peak_input_per_m < 0.0
         || peak_output_per_m < 0.0
         || peak_cache_hit_input_per_m < 0.0
@@ -162,6 +165,7 @@ pub async fn create(
         req.input_per_m,
         req.output_per_m,
         req.vision,
+        req.cache_hit_input_per_m,
         req.peak_input_per_m,
         req.peak_output_per_m,
         req.peak_cache_hit_input_per_m,
@@ -297,6 +301,7 @@ pub async fn patch(
         input_per_m,
         output_per_m,
         vision,
+        cache_hit_input_per_m,
         peak_input_per_m,
         peak_output_per_m,
         peak_cache_hit_input_per_m,

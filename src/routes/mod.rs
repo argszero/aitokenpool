@@ -1088,6 +1088,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_models_rejects_negative_cache_hit_price() {
+        // 负数缓存命中价会一路无钳制进入结算（pts 变负 ⇒ 消费者被充值、分享者被倒扣），
+        // 故必须与其余 5 个价格字段一样在入口被拒。修复前 CREATE/PATCH 均返回 200 并落库。
+        let st = test_state("admnegcache");
+        let admin_bearer = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+
+        // CREATE：负数 cache_hit_input_per_m → 400
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"neg","model":"neg-cache","currency":"USD","input_per_m":1.0,"output_per_m":2.0,"cache_hit_input_per_m":-3.0}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "负数缓存命中价应 400: {body}");
+
+        // 阳性对照：0 是合法值（= 命中部分免费），必须放行
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"neg","model":"zero-cache","currency":"USD","input_per_m":1.0,"output_per_m":2.0,"cache_hit_input_per_m":0.0}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "0 缓存命中价应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let new_id = v["id"].as_i64().unwrap();
+
+        // PATCH：改成负数 → 400，且库中该值不被写入
+        let (s, body) = patch(
+            st.clone(),
+            &format!("/api/admin/models/{new_id}"),
+            r#"{"cache_hit_input_per_m":-9.0}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::BAD_REQUEST,
+            "PATCH 负数缓存命中价应 400: {body}"
+        );
+        let (_, body) = get(st.clone(), "/api/admin/models", Some(&admin_bearer)).await;
+        let arr: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let row = arr
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == new_id)
+            .expect("模型仍在");
+        assert_eq!(
+            row["cache_hit_input_per_m"], 0.0,
+            "被拒的 PATCH 不得改库: {body}"
+        );
+
+        // 兄弟字段（高峰变体）此前已被校验，须保持 400
+        let (s, _) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"neg","model":"neg-peak","currency":"USD","input_per_m":1.0,"peak_cache_hit_input_per_m":-3.0}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "高峰缓存命中价负数仍应 400");
+    }
+
+    #[tokio::test]
     async fn market_models_include_new_fields() {
         // GET /api/models 响应补 context_length/max_output/vision/cache_hit_input_per_m
         let st = test_state("mkfields");
