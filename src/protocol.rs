@@ -79,6 +79,8 @@ pub fn transform_response(body: &Value, from: &str, to: &str) -> Value {
 /// - tool 消息 → user + tool_result content block；
 /// - assistant tool_calls → tool_use content blocks；
 /// - tools（type:function）→ anthropic tools（input_schema）；
+/// - tool_choice（`"required"`/`"auto"`/`"none"`/具名函数）→ anthropic 的
+///   `{type: any|auto|none|tool}` 形状（见 `copy_tool_choice`）；
 /// - max_tokens 缺失时补默认 4096（anthropic 必填）。
 pub fn openai_chat_to_anthropic_req(body: &Value) -> Value {
     let mut result = json!({});
@@ -198,6 +200,8 @@ pub fn openai_chat_to_anthropic_req(body: &Value) -> Value {
         }
     }
 
+    copy_tool_choice(body, PROTOCOL_OPENAI_CHAT, PROTOCOL_ANTHROPIC, &mut result);
+
     result
 }
 
@@ -205,7 +209,8 @@ pub fn openai_chat_to_anthropic_req(body: &Value) -> Value {
 ///
 /// 移植自 openlocalrouter transform::anthropic_to_openai_chat：
 /// system 提取为 system 消息、content blocks（text/image/tool_use/tool_result）
-/// → openai messages、tools input_schema → type:function。
+/// → openai messages、tools input_schema → type:function、
+/// tool_choice（`{type: any|tool|auto|none}`）→ chat 形状（见 `copy_tool_choice`）。
 pub fn anthropic_to_openai_chat_req(body: &Value) -> Value {
     let mut result = json!({});
 
@@ -283,9 +288,7 @@ pub fn anthropic_to_openai_chat_req(body: &Value) -> Value {
         }
     }
 
-    if let Some(v) = body.get("tool_choice") {
-        result["tool_choice"] = map_tool_choice(v);
-    }
+    copy_tool_choice(body, PROTOCOL_ANTHROPIC, PROTOCOL_OPENAI_CHAT, &mut result);
 
     result
 }
@@ -293,7 +296,8 @@ pub fn anthropic_to_openai_chat_req(body: &Value) -> Value {
 /// OpenAI Responses 请求 → OpenAI Chat 请求
 ///
 /// 移植自 openlocalrouter transform::openai_responses_to_openai_chat：
-/// input（string / 数组）+ instructions（→ system）+ max_output_tokens → max_tokens。
+/// input（string / 数组）+ instructions（→ system）+ max_output_tokens → max_tokens
+/// + tool_choice（`{type:function,name}` / 字符串）→ chat 形状（见 `copy_tool_choice`）。
 pub fn openai_responses_to_openai_chat_req(body: &Value) -> Value {
     let mut result = json!({});
 
@@ -363,6 +367,8 @@ pub fn openai_responses_to_openai_chat_req(body: &Value) -> Value {
         }
     }
 
+    copy_tool_choice(body, PROTOCOL_RESPONSES, PROTOCOL_OPENAI_CHAT, &mut result);
+
     result
 }
 
@@ -371,7 +377,8 @@ pub fn openai_responses_to_openai_chat_req(body: &Value) -> Value {
 /// - system 消息合并 → 顶层 `instructions`；
 /// - messages → `input` 数组（user/assistant 交错保留）；
 /// - max_tokens → max_output_tokens；
-/// - tools → responses 格式（type:function + name/description/parameters 平铺）。
+/// - tools → responses 格式（type:function + name/description/parameters 平铺）；
+/// - tool_choice（chat 形状）→ responses 的 `{type:function,name}` / 字符串（见 `copy_tool_choice`）。
 pub fn openai_chat_to_openai_responses_req(body: &Value) -> Value {
     let mut result = json!({});
 
@@ -433,6 +440,8 @@ pub fn openai_chat_to_openai_responses_req(body: &Value) -> Value {
             result["tools"] = json!(rs_tools);
         }
     }
+
+    copy_tool_choice(body, PROTOCOL_OPENAI_CHAT, PROTOCOL_RESPONSES, &mut result);
 
     result
 }
@@ -1073,23 +1082,106 @@ fn normalize_system_messages(messages: &mut Vec<Value>) {
     }
 }
 
-fn map_tool_choice(tool_choice: &Value) -> Value {
-    match tool_choice {
-        Value::String(s) => match s.as_str() {
-            "any" => json!("required"),
-            _ => json!(s),
+/// 跨协议 `tool_choice` 的形状语义（与协议无关的中间表示）
+///
+/// 三种协议各有一套形状：Chat 用字符串（`"none"/"auto"/"required"`）或
+/// `{"type":"function","function":{"name":…}}`；Anthropic 用
+/// `{"type":"auto|any|none|tool","name"}`；Responses 用字符串或
+/// `{"type":"function","name"}`。方向之间还有链式组合（`responses → anthropic` =
+/// `responses → chat` ∘ `chat → anthropic`）。
+#[derive(Debug, Clone, PartialEq)]
+enum ToolChoice {
+    None,
+    Auto,
+    Required,
+    Function(String),
+}
+
+/// 三个协议共用的标量形状（Chat / Responses 的字符串形式）
+fn parse_scalar_tool_choice(s: &str) -> Option<ToolChoice> {
+    match s {
+        "auto" => Some(ToolChoice::Auto),
+        "required" => Some(ToolChoice::Required),
+        "none" => Some(ToolChoice::None),
+        _ => None,
+    }
+}
+
+/// 源协议的 `tool_choice` 形状 → IR
+///
+/// 认不出来的形状返回 `None`：调用点据此**不写键**，而不是把源形状原样搬运或凭空
+/// 造一个目标协议可能不认的值（`map_tool_choice` 旧的 `_ => clone()` 会做前者）。
+fn parse_tool_choice(from: &str, raw: &Value) -> Option<ToolChoice> {
+    let fn_name = |obj: &Value| obj.get("name").and_then(|n| n.as_str()).map(str::to_string);
+    match from {
+        PROTOCOL_ANTHROPIC => match raw {
+            Value::Object(obj) => match obj.get("type").and_then(|t| t.as_str()) {
+                Some("auto") => Some(ToolChoice::Auto),
+                Some("any") => Some(ToolChoice::Required),
+                Some("none") => Some(ToolChoice::None),
+                Some("tool") => fn_name(raw).map(ToolChoice::Function),
+                _ => None,
+            },
+            _ => None,
         },
-        Value::Object(obj) => match obj.get("type").and_then(|t| t.as_str()) {
-            Some("any") => json!("required"),
-            Some("auto") => json!("auto"),
-            Some("none") => json!("none"),
-            Some("tool") => {
-                let name = obj.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        PROTOCOL_OPENAI_CHAT => match raw {
+            Value::String(s) => parse_scalar_tool_choice(s),
+            Value::Object(obj) => match obj.get("type").and_then(|t| t.as_str()) {
+                Some("function") => obj
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map(|n| ToolChoice::Function(n.to_string())),
+                _ => None,
+            },
+            _ => None,
+        },
+        PROTOCOL_RESPONSES => match raw {
+            Value::String(s) => parse_scalar_tool_choice(s),
+            Value::Object(obj) => match obj.get("type").and_then(|t| t.as_str()) {
+                Some("function") => fn_name(raw).map(ToolChoice::Function),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// IR → 目标协议的 `tool_choice` 形状
+fn render_tool_choice(to: &str, tc: &ToolChoice) -> Value {
+    match to {
+        PROTOCOL_ANTHROPIC => match tc {
+            ToolChoice::None => json!({"type": "none"}),
+            ToolChoice::Auto => json!({"type": "auto"}),
+            ToolChoice::Required => json!({"type": "any"}),
+            ToolChoice::Function(name) => json!({"type": "tool", "name": name}),
+        },
+        PROTOCOL_OPENAI_CHAT => match tc {
+            ToolChoice::None => json!("none"),
+            ToolChoice::Auto => json!("auto"),
+            ToolChoice::Required => json!("required"),
+            ToolChoice::Function(name) => {
                 json!({"type": "function", "function": {"name": name}})
             }
-            _ => tool_choice.clone(),
         },
-        _ => tool_choice.clone(),
+        PROTOCOL_RESPONSES => match tc {
+            ToolChoice::None => json!("none"),
+            ToolChoice::Auto => json!("auto"),
+            ToolChoice::Required => json!("required"),
+            ToolChoice::Function(name) => json!({"type": "function", "name": name}),
+        },
+        _ => Value::Null,
+    }
+}
+
+/// 请求翻译的公共尾巴：把源协议的 `tool_choice` 按 (from → to) 搬过去。
+/// 源没有该字段、或形状不可识别时**不写键**（缺席 ≠ 显式 null）。
+fn copy_tool_choice(body: &Value, from: &str, to: &str, result: &mut Value) {
+    if let Some(raw) = body.get("tool_choice") {
+        if let Some(tc) = parse_tool_choice(from, raw) {
+            result["tool_choice"] = render_tool_choice(to, &tc);
+        }
     }
 }
 
@@ -1903,5 +1995,147 @@ mod tests {
             "tool_calls"
         );
         assert_eq!(openai_responses_to_openai_chat_finish_reason(false), "stop");
+    }
+
+    /// 跨协议请求翻译：`tool_choice` 在每个方向、每种形状上都必须存活（C2082）
+    ///
+    /// 每个方向各自枚举 3 个标量 + 1 个具名工具，期望值**逐条写在测试里**
+    /// （不从实现里推导），并且方向之间互不共用期望值 —— 任一处漏转都会红。
+    #[test]
+    fn tool_choice_survives_every_cross_protocol_direction() {
+        let named_chat = json!({"type": "function", "function": {"name": "ZZTOOLMARK"}});
+        let named_anth = json!({"type": "tool", "name": "ZZTOOLMARK"});
+        let named_resp = json!({"type": "function", "name": "ZZTOOLMARK"});
+
+        // chat → anthropic
+        for (src, want) in [
+            (json!("auto"), json!({"type": "auto"})),
+            (json!("required"), json!({"type": "any"})),
+            (json!("none"), json!({"type": "none"})),
+            (named_chat.clone(), named_anth.clone()),
+        ] {
+            let out = openai_chat_to_anthropic_req(&json!({
+                "model": "m", "messages": [{"role": "user", "content": "hi"}], "tool_choice": src
+            }));
+            assert_eq!(out["tool_choice"], want, "chat->anthropic 源 {src}");
+        }
+
+        // chat → responses
+        for (src, want) in [
+            (json!("auto"), json!("auto")),
+            (json!("required"), json!("required")),
+            (json!("none"), json!("none")),
+            (named_chat.clone(), named_resp.clone()),
+        ] {
+            let out = openai_chat_to_openai_responses_req(&json!({
+                "model": "m", "messages": [{"role": "user", "content": "hi"}], "tool_choice": src
+            }));
+            assert_eq!(out["tool_choice"], want, "chat->responses 源 {src}");
+        }
+
+        // responses → chat
+        for (src, want) in [
+            (json!("auto"), json!("auto")),
+            (json!("required"), json!("required")),
+            (json!("none"), json!("none")),
+            (named_resp.clone(), named_chat.clone()),
+        ] {
+            let out = openai_responses_to_openai_chat_req(&json!({
+                "model": "m", "input": "hi", "tool_choice": src
+            }));
+            assert_eq!(out["tool_choice"], want, "responses->chat 源 {src}");
+        }
+
+        // anthropic → chat（既有方向的回归护栏：原来走 map_tool_choice，值不得变化）
+        for (src, want) in [
+            (json!({"type": "auto"}), json!("auto")),
+            (json!({"type": "any"}), json!("required")),
+            (json!({"type": "none"}), json!("none")),
+            (named_anth.clone(), named_chat.clone()),
+        ] {
+            let out = anthropic_to_openai_chat_req(&json!({
+                "model": "m", "messages": [{"role": "user", "content": "hi"}], "tool_choice": src
+            }));
+            assert_eq!(out["tool_choice"], want, "anthropic->chat 源 {src}");
+        }
+    }
+
+    /// 两条链式方向必须在**组合入口**（`transform_request`）上成立（C2082）
+    ///
+    /// `responses → anthropic` = `responses → chat` ∘ `chat → anthropic`；
+    /// `anthropic → responses` = `anthropic → chat` ∘ `chat → responses`。
+    /// 链式的收益是组合出来的，必须显式断言（坑 #185）。
+    #[test]
+    fn tool_choice_survives_the_two_chained_directions() {
+        for (src, want) in [
+            (json!("required"), json!({"type": "any"})),
+            (json!("auto"), json!({"type": "auto"})),
+            (
+                json!({"type": "function", "name": "ZZTOOLMARK"}),
+                json!({"type": "tool", "name": "ZZTOOLMARK"}),
+            ),
+        ] {
+            let out = transform_request(
+                &json!({"model": "m", "input": "hi", "tool_choice": src}),
+                PROTOCOL_RESPONSES,
+                PROTOCOL_ANTHROPIC,
+            );
+            assert_eq!(out["tool_choice"], want, "responses->anthropic 链 源 {src}");
+        }
+
+        for (src, want) in [
+            (json!({"type": "any"}), json!("required")),
+            (json!({"type": "auto"}), json!("auto")),
+            (
+                json!({"type": "tool", "name": "ZZTOOLMARK"}),
+                json!({"type": "function", "name": "ZZTOOLMARK"}),
+            ),
+        ] {
+            let out = transform_request(
+                &json!({
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tool_choice": src
+                }),
+                PROTOCOL_ANTHROPIC,
+                PROTOCOL_RESPONSES,
+            );
+            assert_eq!(out["tool_choice"], want, "anthropic->responses 链 源 {src}");
+        }
+    }
+
+    /// 阴性对照：源没给 `tool_choice` → 目标**不写键**；形状不可识别 → 不凭空造值
+    ///
+    /// 「缺席」与「显式 null」必须可区分（上游据此决定是否强制工具调用），
+    /// 因此这里断言的是 `get(...).is_none()`。
+    #[test]
+    fn tool_choice_is_not_invented() {
+        let plain = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
+        assert!(openai_chat_to_anthropic_req(&plain)
+            .get("tool_choice")
+            .is_none());
+        assert!(openai_chat_to_openai_responses_req(&plain)
+            .get("tool_choice")
+            .is_none());
+        assert!(
+            openai_responses_to_openai_chat_req(&json!({"model": "m", "input": "hi"}))
+                .get("tool_choice")
+                .is_none()
+        );
+
+        // 目标协议没有对应语义的形状 → 缺席，而不是原样搬运
+        let unknown_obj =
+            json!({"model": "m", "messages": [], "tool_choice": {"type": "allowed_tools"}});
+        assert!(openai_chat_to_anthropic_req(&unknown_obj)
+            .get("tool_choice")
+            .is_none());
+        let unknown_str = json!({"model": "m", "messages": [], "tool_choice": "something_else"});
+        assert!(openai_chat_to_anthropic_req(&unknown_str)
+            .get("tool_choice")
+            .is_none());
+        // 具名工具缺 name → 也不臆造
+        let nameless = json!({"model": "m", "messages": [], "tool_choice": {"type": "tool"}});
+        let out = anthropic_to_openai_chat_req(&nameless);
+        assert!(out.get("tool_choice").is_none(), "got {out}");
     }
 }
