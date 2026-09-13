@@ -6,7 +6,9 @@
 //!   peak_output_per_m?, peak_cache_hit_input_per_m?}
 //!   校验：provider/model 非空、价格 ≥ 0、currency ∈ {USD, CNY}、(provider, model) 唯一冲突 409
 //! - PATCH  /api/admin/models/:id：部分更新（任意字段）
-//! - DELETE /api/admin/models/:id：直接删除（模型删除后该 model 的调用无价格行 → 0 计费，README 说明）
+//! - DELETE /api/admin/models/:id：直接删除（删后该 model 无价格行 ⇒ 调用按 0 计费——行为在
+//!   `gateway::settle_usage` 的「查不到价格 → (0.0, 0.0)」分支，管理员可见文案为 `admin.models.sub`
+//!   （ui/js/i18n.js）；此处只指向载体，不复述规则）
 //! - 权限：require_admin（role=admin，否则 403）
 //! - 注意：config.toml `[[models]]` 为唯一真源——启动 seed_models 会同步删除 config 中已移除的
 //!   模型行（rant 2026-08-20T11:58:33），故 admin 运行时增删改在下次启动时会被 config 覆盖/清掉；
@@ -349,7 +351,8 @@ pub async fn patch(
     Ok(Json(row))
 }
 
-/// DELETE /api/admin/models/:id：直接删除（0 计费语义见 rant：无价格行 → 调用按 0 计费）
+/// DELETE /api/admin/models/:id：直接删除（rant 2026-08-19T20:40:29 要的「直接删除」；
+/// 无价格行 ⇒ 按 0 计费：行为与文案载体见本文件模块头）
 pub async fn remove(
     State(st): State<AppState>,
     auth: AuthUser,
