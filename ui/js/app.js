@@ -1329,14 +1329,22 @@
     { key: "model", title: () => T("tx.col.model"), sort: "string", filter: "text" },
     // rant 2026-08-22T17:21:39 需求 2：Key 列改为显示分发 key 的 name（api_keys.name），而非上游 keys 的 provider/plan
     { key: "key", title: () => T("tx.col.apiKeyName"), sort: "string", filter: "text" },
+    // C2102：四列 Token 的排序键不能在行对象上找 —— 行里存的是 K/M **显示串**（`tokens`/`inputTokens`…）
+    // 与精确值两套字段（`tokensRaw`/`inputRaw`…），列 key 与行字段名不同源 ⇒ 默认 `row[key]` 取到
+    // undefined（input/cached/output）或显示串（tokens），`Number()` 得 NaN ⇒ 比较器恒「相等」，
+    // 点列头永不动行。与 C2054（pts 的 `sortVal`）同一条规则：**排序必须与单元格里的数字同口径**。
     { key: "input", title: () => T("tx.col.input"), sort: "number", align: "num",
-      render: (t) => '<span' + t.tokenBrk(T("tx.col.input"), t.inputRaw) + '>' + t.inputTokens + "</span>" },
+      render: (t) => '<span' + t.tokenBrk(T("tx.col.input"), t.inputRaw) + '>' + t.inputTokens + "</span>",
+      sortVal: (t) => t.inputRaw },
     { key: "cached", title: () => T("tx.col.cached"), sort: "number", align: "num",
-      render: (t) => '<span' + t.tokenBrk(T("tx.col.cached"), t.cachedRaw) + '>' + t.cachedTokens + "</span>" },
+      render: (t) => '<span' + t.tokenBrk(T("tx.col.cached"), t.cachedRaw) + '>' + t.cachedTokens + "</span>",
+      sortVal: (t) => t.cachedRaw },
     { key: "output", title: () => T("tx.col.output"), sort: "number", align: "num",
-      render: (t) => '<span' + t.tokenBrk(T("tx.col.output"), t.outputRaw) + '>' + t.outputTokens + "</span>" },
+      render: (t) => '<span' + t.tokenBrk(T("tx.col.output"), t.outputRaw) + '>' + t.outputTokens + "</span>",
+      sortVal: (t) => t.outputRaw },
     { key: "tokens", title: () => T("tx.col.tokens"), sort: "number", align: "num",
-      render: (t) => '<span' + t.tokenBrk(T("tx.col.tokens"), t.tokensRaw) + '>' + t.tokens + "</span>" },
+      render: (t) => '<span' + t.tokenBrk(T("tx.col.tokens"), t.tokensRaw) + '>' + t.tokens + "</span>",
+      sortVal: (t) => t.tokensRaw },
     { key: "pts", title: () => T("tx.col.pts"), sort: "number", filter: "number-range", align: "num",
       // C2047：方向取自 type（signedPts），不能按 pts 的符号判 —— 所有 writer 都存正数 ⇒ 消费会显示成绿色的 +N
       render: (t) => {
@@ -1754,13 +1762,36 @@
   }
 
   // 表头（排序按钮）+ 筛选行 HTML（rant 2026-08-25T11:15:16：拆出独立渲染，整表重建不销毁筛选输入框）
+  // 排序方向标记（" ▲" / " ▼" / ""）—— 表头构建与就地刷新共用的**唯一真源**。
+  function sortArrow(state, key) {
+    const sk = state.sort.find((s) => s.key === key);
+    return sk ? (sk.dir === "asc" ? " ▲" : " ▼") : "";
+  }
+
+  // 列标题文案（列可声明 title 为函数：随语言变）。
+  function colTitle(col) {
+    return typeof col.title === "function" ? col.title() : col.title;
+  }
+
+  // 排序列头 ▲/▼ 就地刷新。为什么不能靠 tableTheadHtml：thead 只在容器无 <table> 时构建一次
+  // （#148 为保住筛选输入框焦点），而排序状态是**此后**点击才产生的 ⇒ 表头不会自己重画，
+  // 排序方向对用户永远不可见（仅在切语言触发的整表重建后才偶然出现一次）。
+  // 就地改按钮文本而**不**重建 thead：重建会销毁筛选输入框，破坏 #148 的焦点不变量。
+  function paintSortIndicators(container, columns, state) {
+    const btns = container.querySelectorAll("thead [data-sort-key]");
+    if (!btns.length) return;
+    btns.forEach((b) => {
+      const col = columns.find((c) => c.key === b.dataset.sortKey);
+      if (!col) return;
+      b.textContent = colTitle(col) + sortArrow(state, col.key);
+    });
+  }
+
   function tableTheadHtml(columns, state) {
     let html = "<tr>";
     columns.forEach((col) => {
-      const sk = state.sort.find((s) => s.key === col.key);
-      const arrow = sk ? (sk.dir === "asc" ? " ▲" : " ▼") : "";
       html += '<th' + (col.align === "num" ? ' class="num"' : "") + '><button type="button" class="th-sort" data-sort-key="' + esc(col.key) + '" title="' + T("tx.sort.title") + '">' +
-        esc(typeof col.title === "function" ? col.title() : col.title) + arrow + "</button></th>";
+        esc(colTitle(col)) + sortArrow(state, col.key) + "</button></th>";
     });
     html += "</tr><tr>";
     columns.forEach((col) => {
@@ -1795,7 +1826,7 @@
     pageRows.forEach((row) => {
       html += "<tr>";
       columns.forEach((col) => {
-        html += "<td" + (col.align === "num" ? ' class="num"' : "") + ' data-label="' + esc(typeof col.title === "function" ? col.title() : col.title) + '">' +
+        html += "<td" + (col.align === "num" ? ' class="num"' : "") + ' data-label="' + esc(colTitle(col)) + '">' +
           (col.render ? col.render(row) : esc(row[col.key] == null ? "" : row[col.key])) + "</td>";
       });
       html += "</tr>";
@@ -1928,6 +1959,8 @@
     // 5) 数据行（每次重建 tbody 内容）
     const tbody = table.querySelector("tbody");
     tbody.innerHTML = tableBodyHtml(pageRows, columns);
+    // 5b) 排序方向标记（thead 不重建，见 paintSortIndicators 注释）
+    paintSortIndicators(container, columns, state);
 
     // 6) 分页器 + 每页行数（每次重建）
     const oldPager = container.querySelector(".pager");
