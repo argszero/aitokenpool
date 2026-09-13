@@ -31,6 +31,10 @@ mod protocol;
 mod router;
 mod routes;
 mod sse;
+// 表格结构门禁（C2108）：同样是仅测试期编译 —— ui/index.html 与 ui/js/app.js
+// 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod table_gate;
 
 use std::sync::Arc;
 
