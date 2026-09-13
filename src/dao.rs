@@ -376,19 +376,28 @@ pub fn activate_user(conn: &Connection, email: &str) -> Result<()> {
     Ok(())
 }
 
-/// 存储验证码（6 位数字的 sha256 hex）；同一邮箱重复注册/重发 → 覆盖旧码
-pub fn store_verification_code(
-    conn: &Connection,
-    email: &str,
-    code_hash: &str,
-    expires_at: &str,
-) -> Result<()> {
+/// 存储验证码（6 位数字的 sha256 hex）；同一邮箱重复注册/重发 → 覆盖旧码。
+/// 过期时间由 SQL 自身计算（`datetime('now', '+10 minutes')`）：`find_valid_verification` 的谓词是
+/// `expires_at > datetime('now')`，写入方必须写入**该谓词能解释**的值——把字面量 `'+10 minutes'`
+/// 当参数存进去的话，记录存在却永远判为过期（写入口径与读取口径必须同一）。
+pub fn store_verification_code(conn: &Connection, email: &str, code_hash: &str) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO email_verifications (email, code_hash, expires_at, attempts) \
-         VALUES (?1, ?2, ?3, 0)",
-        rusqlite::params![email, code_hash, expires_at],
+         VALUES (?1, ?2, datetime('now', '+10 minutes'), 0)",
+        rusqlite::params![email, code_hash],
     )?;
     Ok(())
+}
+
+/// 重发限频检查 + 写入新码，**在同一把锁内**完成（原子）：距上次发送 < 60 秒 → 返回 false（不写入）。
+/// 检查与写入分段（各自加锁）会让并发重发同时通过检查 ⇒ 同一邮箱一次突发收到多封验证码。返回 true
+/// 表示已写入（`INSERT OR REPLACE` 重置 created_at，本次写入即下次限频的起点）。
+pub fn begin_resend_verification(conn: &Connection, email: &str, code_hash: &str) -> Result<bool> {
+    if resend_too_soon(conn, email) {
+        return Ok(false);
+    }
+    store_verification_code(conn, email, code_hash)?;
+    Ok(true)
 }
 
 /// 取验证记录 → Some((code_hash, attempts))；过期或不存在 → None
