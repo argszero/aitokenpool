@@ -459,11 +459,16 @@ pub async fn transactions_trend(
     // 桶表达式：day/week 产出 "YYYY-MM-DD"，hour 产出 "YYYY-MM-DD HH:00"
     let expr = match bucket.as_str() {
         "hour" => "%Y-%m-%d %H:00",
-        "week" => "%Y-%m-%d", // 配 modifier：周一起始
+        "week" => "%Y-%m-%d", // 配 modifier：周一起始（含周一当日）
         _ => "%Y-%m-%d",
     };
     let mods = if bucket == "week" {
-        ", 'weekday 1', '-7 days'"
+        // SQLite 的 `weekday N` 只把日期**向前**推进到下一个星期 N，且当日已是 N 时为空操作：
+        // 故 `weekday 1, -7 days` 会把**周一当天**的行推到上一周（其余星期恰好落回正确的那一周）。
+        // `weekday 0, -6 days` 才是「本周周一（含周一当日）」。
+        // ⚠️ 前端 `ui/js/app.js::txTrendDays` 补时间轴时用的是**同一口径**（周轴对齐到周一），
+        // 两处必须一致，否则补出的轴键与后端桶键错位、整周柱子被补成 0。
+        ", 'weekday 0', '-6 days'"
     } else {
         ""
     };
@@ -1349,6 +1354,64 @@ mod tests {
         assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["bucket"], "day", "非法 bucket 应回退 day: {body}");
+    }
+
+    #[tokio::test]
+    async fn transactions_trend_week_bucket_starts_on_monday() {
+        // C2094：week 桶必须是「周一起始（含周一当日）」。
+        // SQLite 的 `weekday 1, -7 days` 会把**周一当天**的行推进上一周
+        // （`strftime('%Y-%m-%d','2026-09-07 10:00:00','weekday 1','-7 days')` = `2026-08-31`），
+        // 只有周二..周日才恰好落在正确的那一周 —— 于是同一自然周被劈成两个桶，
+        // 而周一行「消失」在上一周。修法：`weekday 0, -6 days`。
+        let st = test_state("trendweek");
+        let key = login(st.clone()).await;
+        // 2026-09-07 是周一、2026-09-13 是周日，同属一个自然周。
+        let days = [
+            "2026-09-07", // 周一
+            "2026-09-08", // 周二
+            "2026-09-09", // 周三
+            "2026-09-10", // 周四
+            "2026-09-11", // 周五
+            "2026-09-12", // 周六
+            "2026-09-13", // 周日
+        ];
+        {
+            let conn = st.db.lock().unwrap();
+            for (i, d) in days.iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO transactions (user_id, counterpart, model, tokens, pts, type, status, time) \
+                     VALUES (1, 'w', 'm', 0, ?1, 'consume', '成功', ?2)",
+                    rusqlite::params![(i as f64) + 1.0, format!("{d} 10:00:00")],
+                )
+                .unwrap();
+            }
+        }
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions/trend?type=all&bucket=week",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["bucket"], "week", "body: {body}");
+        let buckets = v["buckets"].as_array().unwrap();
+        // 一个自然周的 7 行必须聚成**恰好一个**桶（缺陷版本会把周一那行拆到上一周 → 2 个桶）。
+        assert_eq!(buckets.len(), 1, "同一自然周应聚成 1 个桶: {body}");
+        assert_eq!(
+            buckets[0]["t"].as_str().unwrap(),
+            "2026-09-07T00:00:00Z",
+            "week 桶起点应为该周周一 00:00Z: {body}"
+        );
+        assert_eq!(
+            buckets[0]["count"].as_i64().unwrap(),
+            7,
+            "整周 7 行应同桶（周一那行不能落上一周）: {body}"
+        );
+        assert!(
+            (buckets[0]["expense"].as_f64().unwrap() - 28.0).abs() < 1e-9,
+            "整周 expense=1+2+..+7=28: {body}"
+        );
     }
 
     #[tokio::test]
