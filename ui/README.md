@@ -324,14 +324,14 @@ ui/
 
 ## 界面国际化 i18n 约定（v1.21.1，rant 2026-08-18T20:49:22 + 21:40:10 去中英混排）
 
-- **语言包**：`ui/js/i18n.js` 零依赖 IIFE，`I18N = { zh, en }` 双词典（786 键 ×2，覆盖导航/登录/视图标题/通用/仪表盘/市场/共享/钱包/交易/设置/管理/运营/聊天/游客/相对时间/帮助/tour/主题/错误映射）；`window.t(key, vars)` 查当前语言，**缺失回退 zh，再缺回退 key 本身**；`{var}` 占位符插值；
+- **语言包**：`ui/js/i18n.js` 零依赖 IIFE，`I18N = { zh, en }` 双词典（787 键 ×2，覆盖导航/登录/视图标题/通用/仪表盘/市场/共享/钱包/交易/设置/管理/运营/聊天/游客/相对时间/帮助/tour/主题/错误映射）；`window.t(key, vars)` 查当前语言，**缺失回退 zh，再缺回退 key 本身**；`{var}` 占位符插值；
 - **切换机制**：设置页「偏好 → 界面语言」下拉（`#prefs-lang`，zh/en）→ `I18n.setLang()`：写 `localStorage('atp_lang')` + `document.documentElement.lang` 同步（zh→`zh-CN` / en→`en`）+ 派发 `atp:langchange` → app.js 重渲染 `renderNav()` + `renderView(activeView)` + `document.title`（引导中额外 `renderTourStep()`）；**首载**：localStorage → `navigator.language` 前缀（`zh*`→zh，否则 en）→ 默认 zh；切换即时生效无需刷新；
 - **静态文案**：`index.html` 内静态中文用 `data-i18n` / `data-i18n-ph`（placeholder）/ `data-i18n-title`（title）标记，`applyStatic()` 启动时与每次切换时批量替换；**容器含表单控件的 `<label>` 用 `<label><span data-i18n="KEY">文本</span><input…></label>` 结构**（避免 innerHTML 替换销毁控件）；
 - **动态文案**：`app.js` 面向用户字符串全部走 `t('key')`；**语言敏感常量存 key 而非文案**（NAV/VIEW_TITLE/TOUR_STEPS/HELP_KEYS 存 key，渲染时 `T()` 解析；SHARE_STATUS/RAISE_STATUS 的 `text` 为函数；TX_COLUMNS 的 `title`/`options` 为函数；`DAY_LABELS` 动态 `T("share.day."+n)`）——保证切换语言后重渲染即时生效；
 - **数字/时间本地化**：`I18n.fmtNum`（zh→`zh-CN` / en→`en-US` `toLocaleString`）；`I18n.fmtRelTime`（刚刚/N 分钟前/N 小时前/昨天 ↔ just now/N min ago/N hr ago/yesterday）；数量单位（人/个/笔/次）用 `cnt.*` 键（zh 带量词，en 纯数字）；
 - **后端错误映射**：`api.js` 抛错前过 `I18n.mapErr()`——en 模式下已知中文错误（「该模型暂无可用 key」「点数余额不足」「需要管理员权限」等 15 组）映射为英文，未知原样返回；zh 模式原样透传；**`api.js` 自己的文案一律按 key 取**（`T("err.network")` / `T("err.http", {n})` 等），文件内不写中文原文——本文件不在 `src/i18n_pack.rs` 的输入面内，写原文会同时逃过三道门禁（见 `api_client_error_text_is_key_based`）；
 - **单语原则（v1.21.1 去混排）**：zh 词典值一律纯中文（仅保留 API/Key/Plan/tokens/CSV 等专有名词、键盘快捷键与占位符），不再内联英文注释；`index.html` 已移除全部 `<span class="en">` 静态小字（55 处）；`.en` CSS 样式已删除；en 词典保持纯英文；
-- 冒烟测试：node 无 DOM 桩跑 i18n.js（t/setLang/mapErr/fmtNum/fmtRelTime 断言，见开发记录）；Key 一致性扫描（`src/i18n_pack.rs` 门禁：app.js 的 `T()` 字面量 430 个、index.html 的 `data-i18n*` 305 个，去重并集 680 键全部存在于 ZH/EN）。
+- 冒烟测试：node 无 DOM 桩跑 i18n.js（t/setLang/mapErr/fmtNum/fmtRelTime 断言，见开发记录）；Key 一致性扫描（`src/i18n_pack.rs` 门禁：app.js 的 `T()` 字面量 431 个、index.html 的 `data-i18n*` 305 个，去重并集 681 键全部存在于 ZH/EN）。
 
 ## 仪表盘「我的共享」数据源与降级约定（v1.21.2，rant 2026-08-19T15:48:17 BUG）
 
@@ -404,3 +404,11 @@ ui/
 - **请求只走一处**：委托只 `btn.click()`，不自己复制一遍校验与请求 —— 忙碌态（`withLoading`）、字段校验、API 调用都留在确认按钮自己的监听器里。
 - **CI 覆盖**：`src/i18n_pack.rs::enter_submit_is_delegated_to_the_card` 钉形状 —— ① 任何让 Enter 去点确认按钮的 `keydown` 登记都不得挂在 `ui/index.html` 里声明于 `input` / `select` / `textarea` 的 id 上（阳性对照：`#chat-input` 的 Enter 是「发送消息」不是「提交表单」，不点按钮 ⇒ 不得被误判）；② `wireEnterSubmit` 必须在容器参数上登记、早退非 `INPUT` 与非文本类型；③ 五张卡片都必须走这个 helper，且 helper 调用数与卡片数相等。
 - **冒烟测试注意**：每个控件跑**同一件事两遍** —— 在控件里按 Enter vs 用**相同的字段值**点确认按钮，比较是否发出了同一个请求（点确认那一遍是控件**自带的阳性对照**，排除「这个表单本来就用这些值提交不了」）。⚠️ `withLoading` 会把提交推迟 **320ms**，等待须 > 320ms，且每条腿前清空请求记录，否则会读到上一条腿的请求（结论完全反向）。
+
+## 市场行的「可用性」只有一个事实：`avail`（C2128）
+
+- **一个事实，四处渲染**：一个市场行的可用性由 `avail` 表达 —— 厂商单元格的绿点（`.dot`）、「使用」按钮的 `disabled`、可用性筛选下拉（「仅可用」）、展开详情里的「当前可用 / 当前繁忙」四处都读它。`keys`（key 计数）**不是**第二个事实，它只是**有计数时才存在**的补充说明：登录态由 `modelsToView()` 从 `/api/models` 的 `available_keys` 填，游客兜底表（`data.js > MARKET`）按 rant 2026-08-19T15:54:06「虚构数据已移除」**不携带**任何计数（同源被删的还有 `multi` / `success`）。
+- **不变量**：**没有计数时不得把它读成「无 key」** —— 可用性 pill 必须先看计数（≥2 多 key / ==1 紧张），没有计数时回落到 `m.avail`（可用 / 无 key）。违反的后果是同一行自相矛盾：C2128 实测（jsdom 真 `index.html` + 四脚本）游客市场 **7/7 行**的这一格都渲染成「无 key」，而其中 **6 行**的圆点是绿的、「使用」按钮可点。
+- **修法**：`availPill(m)` 增加一个**由 `m.avail` 驱动**的回落档（新键 `mk.avail.on`，zh「可用」/ en「Available」）。**不给兜底表补手写计数** —— 那等于把虚构的运营数据展示给游客，正是 v1.22 清理掉 `multi`/`success` 的那件事；游客要看到真实计数，就得让数据来自 `/api/models`。
+- **CI 覆盖**：`src/catalog_gate.rs::market_availability_pill_agrees_with_the_row_it_renders` 钉两半 —— ① **消费侧**：`availPill` 体内必须出现 `m.avail`（阳性对照：兜底表每一行都必须有布尔 `avail`，同时证明这个字段名不是拼错的）；② **数据侧**：`MARKET` 行不得出现手写的 `keys`（挡住「给兜底表补计数」这条错修法）；③ 「使用」按钮所在行也必须读 `m.avail`（pill 要与它同源）。`js_function_body_stops_at_the_right_place` 再自证提取器不吞下一个函数，并用**合成输入**（删掉回落分支）证明断言有牙齿。
+- **冒烟测试注意**：本轴只在**游客腿**可见（登录态 `keys` 恒存在，三档计数 pill 正常）⇒ 探针必须两条腿都跑，并把登录腿当作**阳性对照**（`keys=3/1/0` 必须渲染成三档），否则「pill 只会渲染一档」与「游客数据缺字段」两种解读都被拒不了。游客腿的行数（7）、圆点、按钮禁用态都要读**渲染后的 DOM**，不要读 `MARKET` 字面量。
