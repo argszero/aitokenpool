@@ -386,3 +386,13 @@ ui/
 - **折入的同轴缺陷**：登录成功后不再 `await loadSession(); enterApp();`，而是走 boot 的**同一个**入口 `restoreSession()`（`if (await restoreSession()) toast(login.welcome)`）。理由与「会话恢复」小节完全相同：**token 已存却停在登录页 = 谎报「已登出」**（改前 `saveToken()` 之后 `loadSession()` 一旦非 401 失败，token 留在 storage 里而人留在登录页）。凭据已被接受之后，401 就不再是「登录失败」了。
 - **CI 覆盖**：形状（调用点声明了 + 咽喉的 401 分支受该声明守卫 + 全局登出没被整段删掉）由 `src/i18n_pack.rs::credential_401_is_not_a_session_expiry` 钉住；控制流本身没有 JS 运行器，与上节同理。
 - **冒烟测试注意**：① stub `POST /api/auth/login` → 401，主断言是 **toasts 不含** `T("login.session.expired")`（改前为红，有鉴别力），行内错误 **等于** `T("login.err.bad")` 只能作阳性对照（改前已绿）；② 另起一条 leg：带 token boot + stub `GET /api/me` → 401，断言 token 被清 + 回登录页 + toasts **含** `login.session.expired` —— 这条防止有人用「干脆不做全局登出」来让 ① 变绿；③ 再一条：登录成功但 `/api/me` 回 500，断言 app 可见（与「非 401 不得停在登录页」同一条不变量）。
+
+## 时间戳：一律整串交给时间 helper（C2126）
+
+- **唯一的线上格式**：后端用 `dao::utc_iso()` 统一序列化，前端拿到的一律是 `YYYY-MM-DDTHH:MM:SSZ`（`src/dao.rs` 的 `format!("{date}T{time}Z")` 是这条契约的载体）。前端**有**一族现成的本地化 helper：`fmtPrecise`（本地精确到秒）、`timeCell`（单元格：主文本 + 悬停）、`timeAgo`（相对时间）、`localMD`（本地月-日）、`utcMonth`（UTC 月键）。
+- **不变量**：**时间戳必须以原始串到达渲染器，格式化只能由 helper 做**。不允许在中间层用 `.slice()` / `.replace()` 自己加工一个线上时间戳 —— 加工 helper 的**输出**可以（`fmtPrecise(k.created_at).slice(0, 10)` 取本地日期就是对的），加工**线上串**不行。理由：那个串是 UTC 且带 `T`，自己切会同时犯两个错 —— 泄出 ISO 的 `T`（屏幕上真的出现 `09-13T16:30`）并按 UTC 显示。要截断/换格式，就加在 helper 之后。
+- **修前三处**（都在 `ui/js/app.js`，同一把尺子）：① 管理员加额申请「已处理」行 `(r.created_at || "").slice(5, 16)` → 屏幕上是 `09-13T16:30`；② 设置页 API Key「创建时间」`String(k.created_at || "").slice(0, 10)` → UTC 日，东八区用户在当地 08:00 前看到「昨天」；③ 交易视图行 `time: (t.time || "").replace("T", " ").slice(0, 16)` → **在渲染器之前**就把秒抹掉，而列（`timeCell(t.time, true)`）与 CSV 导出的口径都是 `HH:MM:SS` ⇒ 屏幕上的秒永远是伪造的 `00`（C2111 统一了「导出 = 单元格」，两份口径同源之后，源头的截断就成了口径本身）。
+- **改法**：① `timeCell(r.created_at, true)`；② `fmtPrecise(k.created_at).slice(0, 10)`；③ 视图行原样 `time: t.time || ""`。**零新增 i18n 键**（helper 只做数值格式化，文案键与本次无关）。
+- **CI 覆盖**：`src/i18n_pack.rs::wire_timestamps_reach_the_renderer_unsliced` 钉两件事 —— `_at` / `last_used` 这类线上字段不得被 `.slice()` / `.replace()` 原地加工（含阴性对照：提取器必须认得出修前的两种形态、并放过 `fmtPrecise(...).slice(...)` 与纯透传 `last: k.last_used || null`），以及 `txsToView` 返回的视图行里 `time` 必须是裸值。
+- **冒烟测试注意**：jsdom 启真 `index.html` + 四脚本、只 stub `fetch`，夹具必须带**非零秒**（`2026-09-13T16:30:45Z`）—— 用 `:00` 的夹具看不见第 ③ 面（改前改后都是 `:00`）。三面的期望值都从夹具用 `Date` **独立算出**（本地时间/本地日期），不要抄 helper 的输出。**时区是前提而不是细节**：`TZ=UTC` 下本地 == UTC，本轴整体不可见，探针必须先断言时区。
+
