@@ -1267,6 +1267,10 @@
     }
     // 表头在渲染期取 i18n（本表由 JS 在 boot 之后注入，无 data-i18n 钩子可走）：
     // 既保证首屏语言正确，也让 atp:langchange → renderView 能实时换语言
+    // C2126：已处理行里显示的是「处理时间」，必须交给时间 helper（`timeCell` → 本地化、
+    // 秒精度、悬停给相对时间），不能自己切服务端串 —— `created_at` 是
+    // `dao::utc_iso` 的 `YYYY-MM-DDTHH:MM:SSZ`，`slice(5, 16)` 会同时泄露 ISO 的 `T`
+    // 分隔符（屏幕上真的出现 `09-13T16:30`）并按 UTC 显示小时。
     el.innerHTML = (list.length ? '<div class="table-wrap compact"><table class="table"><thead><tr>' +
       '<th>' + esc(T("admin.raise.col.member")) + "</th>" +
       '<th class="num">' + esc(T("admin.raise.col.amount")) + "</th>" +
@@ -1281,7 +1285,7 @@
         "<td data-label='" + T('admin.raise.col.action') + "'>" + (r.status === "pending"
           ? "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-raise-approve='" + i + "'>" + T("admin.raise.approve") + "</button> " +
             "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-raise-reject='" + i + "'>" + T("admin.raise.reject") + "</button>"
-          : '<span class="muted" style="font-size:12px">' + esc((r.created_at || "").slice(5, 16)) + "</span>") + "</td></tr>"
+          : '<span class="muted" style="font-size:12px">' + timeCell(r.created_at, true) + "</span>") + "</td></tr>"
       ).join("") + "</tbody></table></div>"
       : emptyState(T("admin.raise.empty"), T("admin.raise.empty.sub")));
   }
@@ -2075,7 +2079,10 @@
         fullKey: k.full_key || null,
         name: k.name || T("common.unnamed"),
         key: k.key,
-        created: String(k.created_at || "").slice(0, 10),
+        // C2126：「创建时间」列显示的是**本地日** —— 直接切服务端串的前 10 位拿到的是
+        // UTC 日（东八区用户在当地 08:00 之前会看到昨天）。取 helper 产出的本地串的
+        // 日期部分，而不是再抄一份「时间转字符串」的口径。
+        created: fmtPrecise(k.created_at).slice(0, 10),
         last: k.last_used || null, // rant 2026-08-24T12:41:25：真实最近使用时间（NULL=从未使用）
         status: k.status || "active",
       }));
@@ -3271,7 +3278,12 @@
       const key = t.key_name || t.key_label || "—";
       return {
         id: t.id,
-        time: (t.time || "").replace("T", " ").slice(0, 16),
+        // C2126：视图行**原样**带出服务端串，格式化交给渲染器（列是 `timeCell(..., true)`
+        // → `fmtPrecise`，CSV 导出用同一个 helper）。此前在这里先切/替换成
+        // `YYYY-MM-DD HH:MM`，秒位被抹掉，而两处渲染的口径都是 `HH:MM:SS`
+        // ⇒ 屏幕上的秒数永远是伪造的 `00`（C2111 修好的是「导出与单元格同口径」，
+        // 两份口径同源之后，源头的截断就成了唯一的口径）。
+        time: t.time || "",
         type: t.type,
         // 用户列（rant 2026-08-22T17:21:39 需求 2）：transactions.user_id JOIN users 取用户名
         user: t.user_name || "—",

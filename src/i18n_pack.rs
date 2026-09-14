@@ -1211,4 +1211,172 @@ mod tests {
             "阳性对照失败：提取器认不出已声明的调用点"
         );
     }
+
+    /// 前端**自己切**线上时间戳的字段族：`dao::utc_iso()` 序列化出去的那一批。
+    ///
+    /// `transactions.time` 不在其中：`time` 这个名字太泛（游客 mock 的 `MM-DD HH:mm` 也叫
+    /// `time`，`dailySeries` 对它取前 5 位是**故意的**），所以交易视图行的形状由
+    /// `txs_to_view_row_carries_the_raw_timestamp` 单独按位置钉。
+    const WIRE_TS_FIELDS: [&str; 2] = ["created_at", "last_used"];
+
+    /// 前端现成的本地化 helper —— 出现在「被切的表达式」里就算这串是**先交给 helper 再切**的。
+    const TIME_HELPERS: [&str; 5] = [
+        "fmtPrecise(",
+        "timeCell(",
+        "timeAgo(",
+        "localMD(",
+        "utcMonth(",
+    ];
+
+    /// `at` 之前那个「表达式窗口」：从最近的 `,;:{}` 或换行起、到 `at` 为止（含两端之间的全部文本）。
+    ///
+    /// 刻意**不**在 `(` / `)` / 运算符处断开：`created: fmtPrecise(k.created_at)` 是个整体，
+    /// 在括号处断开会把 helper 名切出去，于是「切的是 helper 的输出」这条合法形态会被误判成违规。
+    fn expression_window(src: &str, at: usize) -> &str {
+        let bytes = src.as_bytes();
+        let mut i = at;
+        while i > 0 {
+            let c = bytes[i - 1] as char;
+            if matches!(c, ',' | ';' | ':' | '{' | '}' | '\n' | '\r') {
+                break;
+            }
+            i -= 1;
+        }
+        src[i..at].trim()
+    }
+
+    /// `src` 里对线上时间戳的**原地加工**（返回 表达式窗口 + 运算符）。
+    fn inline_timestamp_processing(src: &str) -> Vec<(String, &'static str)> {
+        let mut out = Vec::new();
+        for op in [".slice(", ".replace("] {
+            for (at, _) in src.match_indices(op) {
+                let window = expression_window(src, at);
+                if WIRE_TS_FIELDS.iter().any(|f| window.contains(f))
+                    && !TIME_HELPERS.iter().any(|h| window.contains(h))
+                {
+                    out.push((window.to_string(), op));
+                }
+            }
+        }
+        out
+    }
+
+    /// 取 JS 函数体：`signature` 之后的第一个 `{` 到配对的 `}`（跳过字符串/模板字面量里的花括号）。
+    fn js_function_body<'a>(src: &'a str, signature: &str) -> Option<&'a str> {
+        let start = src.find(signature)? + signature.len();
+        let open = src[start..].find('{')? + start;
+        let bytes = src.as_bytes();
+        let (mut depth, mut i, mut quote) = (0i32, open, 0u8);
+        while i < bytes.len() {
+            let c = bytes[i];
+            if quote != 0 {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == quote {
+                    quote = 0;
+                }
+            } else if c == b'"' || c == b'\'' || c == b'`' {
+                quote = c;
+            } else if c == b'{' {
+                depth += 1;
+            } else if c == b'}' {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[open..i + 1]);
+                }
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// 时间戳必须以**原始串**到达渲染器，格式化只能由 helper 做（C2126）。
+    ///
+    /// 后端用 `dao::utc_iso()` 统一序列化（`format!("{date}T{time}Z")`，见 `src/dao.rs`），
+    /// 前端则有现成的本地化 helper（`fmtPrecise` / `timeCell` / `timeAgo` / `localMD`）。
+    /// 但 `ui/js/app.js` 里三处消费者把这个串**自己切了**，于是同一把尺子上出现三种错法：
+    ///
+    /// - 管理员加额申请「已处理」行 `(r.created_at || "").slice(5, 16)` ⇒ 屏幕上真的印出
+    ///   `09-13T16:30`：ISO 的 `T` 分隔符泄露进 UI，而且小时是 UTC 的；
+    /// - 设置页 API Key「创建时间」`String(k.created_at || "").slice(0, 10)` ⇒ UTC 日，
+    ///   东八区用户在当地 08:00 之前看到的是「昨天」；
+    /// - 交易视图行 `time: (t.time || "").replace("T", " ").slice(0, 16)` ⇒ **在渲染器之前**
+    ///   就把秒抹掉，而这一列（`timeCell(t.time, true)`）与 CSV 导出（`fmtPrecise`）的口径都是
+    ///   `HH:MM:SS` ⇒ 屏幕上的秒数永远是伪造的 `00`。C2111 把「导出 = 单元格」统一之后，
+    ///   两份口径同源，源头的截断就成了口径本身。
+    ///
+    /// CI 里没有 JS 运行器，所以这里只钉**形状**（运行期那一半 —— 屏幕/CSV 上到底印出什么 ——
+    /// 由 jsdom 仪器与 `ui/README.md` 的「时间戳」小节承接）：
+    /// 线上字段不得被原地加工（**加工 helper 的输出可以**，见负/阳性对照）；
+    /// 交易视图行的 `time` 属性必须是裸值。
+    #[test]
+    fn wire_timestamps_reach_the_renderer_unsliced() {
+        let app = strip_js_comments(APP_JS);
+        assert!(
+            app.contains("function txsToView("),
+            "ui/js/app.js 没读到（提取器的输入为空）"
+        );
+
+        // ① 线上时间戳字段不得被 `.slice()` / `.replace()` 原地加工。
+        let found = inline_timestamp_processing(&app);
+        assert!(
+            found.is_empty(),
+            "ui/js/app.js 有 {} 处原地加工线上时间戳：{found:?} —— 服务端的时间戳是 \
+             `dao::utc_iso()` 的 `YYYY-MM-DDTHH:MM:SSZ`，自己切会同时泄露 ISO 的 `T` \
+             （屏幕上真的出现 `09-13T16:30`）并按 UTC 显示；整串交给 `fmtPrecise` / `timeCell` \
+             之后要截断也截它们的输出",
+            found.len()
+        );
+
+        // ② 交易视图行必须把服务端串**原样**带出去（`time` 太泛，不进 ① 的字段集，按位置钉）。
+        let body = js_function_body(&app, "function txsToView(")
+            .expect("ui/js/app.js 里找不到 txsToView 的函数体");
+        assert_eq!(
+            body.matches("time:").count(),
+            1,
+            "txsToView 里 `time:` 不再唯一，本断言按位置取属性 —— 请同步更新本测试"
+        );
+        let at = body.find("time:").unwrap() + "time:".len();
+        let rhs = &body[at..];
+        let rhs = rhs[..rhs.find(',').unwrap_or(rhs.len())].trim();
+        assert!(
+            !rhs.contains('('),
+            "交易视图行的 `time` 不再是裸值（{rhs:?}）：渲染器（`timeCell(..., true)` 与 CSV 导出）\
+             拿到的必须是库内原串。在这里先把 `YYYY-MM-DDTHH:MM:SSZ` 切成 `YYYY-MM-DD HH:MM` \
+             会把秒抹掉，而两处渲染的口径都是 `HH:MM:SS` ⇒ 屏幕上的秒永远是伪造的 `00`"
+        );
+
+        // ③ 阴性对照：提取器必须对**修前**的两种形态给出相反答案（否则 ① 只是恒真的形状巧合）。
+        for (before, what) in [
+            (
+                "esc((r.created_at || \"\").slice(5, 16))",
+                "管理员加额申请「已处理」单元格",
+            ),
+            (
+                "created: String(k.created_at || \"\").slice(0, 10),",
+                "API Key「创建时间」单元格",
+            ),
+        ] {
+            assert_eq!(
+                inline_timestamp_processing(before).len(),
+                1,
+                "阴性对照失败：提取器认不出修前形态（{what}）—— ① 等于没写"
+            );
+        }
+        //    阳性对照：同一种「切」落在 helper 输出上必须被放过 —— 要截断就截 helper 的结果。
+        for (after, what) in [
+            (
+                "created: fmtPrecise(k.created_at).slice(0, 10),",
+                "取本地日期",
+            ),
+            ("last: k.last_used || null,", "原样透传（渲染器再格式化）"),
+        ] {
+            assert!(
+                inline_timestamp_processing(after).is_empty(),
+                "阳性对照失败：提取器把合法形态判成违规（{what}：{after}）"
+            );
+        }
+    }
 }
