@@ -39,6 +39,10 @@ mod table_gate;
 // 加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod perf_gate;
+// 部署产物门禁（C2117）：同样是仅测试期编译 —— compose / config 示例 / Dockerfile / README
+// 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod deploy_gate;
 
 use std::sync::Arc;
 
