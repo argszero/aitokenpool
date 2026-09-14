@@ -37,6 +37,8 @@ const FILES: &[(&str, &str)] = &[
     ("ops.rs", include_str!("routes/ops.rs")),
     ("admin.rs", include_str!("routes/admin.rs")),
     ("org.rs", include_str!("routes/org.rs")),
+    // 第三、四条不变量（v15 / 按需 JOIN / 行构造器不得发 SQL）也覆盖共享页
+    ("sharing.rs", include_str!("routes/sharing.rs")),
 ];
 
 /// 生产区里**月聚合闭区间**的期望处数（`… 'start of month', '+1 month'`）。
@@ -95,18 +97,28 @@ fn calls_of(src: &str, name: &str) -> usize {
         .lines()
         .filter(|l| {
             let t = l.trim_start();
-            !t.starts_with("//") && !t.starts_with("fn ")
+            !t.starts_with("//") && !is_fn_def(l)
         })
         .filter(|l| l.contains(name))
         .count()
 }
 
-/// `fn name(…)` 行里的函数名（`fn tx_joins_if(needed: bool) …` → `tx_joins_if`）。
+/// 行首 `fn` 定义行的函数名，含 `pub` / `pub(crate)` / `async` 前缀：
+/// `pub async fn list(…)` → `list`，`fn tx_joins_if(…)` → `tx_joins_if`。
+/// 不是定义行 → `None`。
 fn fn_name(line: &str) -> Option<&str> {
-    line.trim_start()
-        .strip_prefix("fn ")?
-        .split(['(', '<', ' '])
-        .next()
+    let mut s = line.trim_start();
+    for prefix in ["pub(crate) ", "pub ", "async "] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+        }
+    }
+    s.strip_prefix("fn ")?.split(['(', '<', ' ']).next()
+}
+
+/// 该行是不是函数定义行（`fn` / `pub fn` / `pub async fn` …）。
+fn is_fn_def(line: &str) -> bool {
+    fn_name(line).is_some()
 }
 
 /// 直接调用无条件 `tx_joins()` 的位置（应恒为空）。
@@ -121,7 +133,7 @@ fn unconditional_join_calls(src: &str) -> Vec<(usize, String)> {
         if t.starts_with("//") {
             continue; // 注释里引用函数名是文档，不是调用
         }
-        if t.starts_with("fn ") {
+        if is_fn_def(line) {
             owner = fn_name(line).unwrap_or("");
             continue; // 定义行本身不是调用
         }
@@ -240,9 +252,98 @@ fn join_detector_flags_a_bare_call_and_spares_the_wrapper() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 第三条不变量（rant 2026-09-14T21:15:02 第 2 条）：**行构造器不得发 SQL**。
+//
+// `sharing.rs::sharing_row` 是「把一行记录变成 JSON」的纯函数。它曾在行内跑
+// `SELECT SUM(pts) FROM transactions WHERE key_id = ?1 AND type = 'earn'` 取收益 ⇒
+// 列表 N 行就是 N 次查询（N+1）：每次都要 prepare + 索引查找，NAS 上还要多摸几页，
+// 代价随 N 线性增长（本机 200,000 行 / 8 key：8 次子查询 1.54ms，一次批量聚合 0.02ms）。
+//
+// 收益现在由 `ROW_SELECT` 的**一个**批量聚合左连给出，行构造器只读列。这条规则把
+// 「行构造器里再补一次 query_row」变成 CI 红灯 —— 那种改动**能编译、测试也大多会过**
+// （值可能仍然对），唯一症状是慢，而慢在小库/SSD 上看不出来。
+// ---------------------------------------------------------------------------
+
+/// 会发出 SQL 的调用（`prepare` / `query_row` / `execute` …）。
+const SQL_CALLS: &[&str] = &[
+    "conn.prepare(",
+    ".prepare(",
+    "query_row(",
+    "query_map(",
+    "execute(",
+    "execute_batch(",
+    "prepare_cached(",
+];
+
+/// 函数 `name` 的函数体里发出的 SQL 调用（1 基行号、行文本）。
+fn sql_in_fn(src: &str, name: &str) -> Vec<(usize, String)> {
+    body_of(src, name)
+        .into_iter()
+        .filter(|(_, l)| !l.trim_start().starts_with("//"))
+        .filter(|(_, l)| SQL_CALLS.iter().any(|c| l.contains(c)))
+        .map(|(i, l)| (i, l.trim().to_string()))
+        .collect()
+}
+
+#[test]
+fn the_sharing_row_builder_runs_no_sql() {
+    let src = FILES
+        .iter()
+        .find(|(n, _)| *n == "sharing.rs")
+        .map(|(_, s)| *s)
+        .expect("sharing.rs 应在 FILES 里");
+    let hits = sql_in_fn(src, "sharing_row");
+    assert!(
+        hits.is_empty(),
+        "行构造器里发 SQL ⇒ 列表端点退回 N+1（每行一次查询）；收益应来自 `ROW_SELECT` 的批量聚合：\n{}",
+        hits.iter()
+            .map(|(l, t)| format!("  src/routes/sharing.rs:{l}: {t}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // 阳性对照：同一份源码里的端点函数**当然**发 SQL —— 证明扫描器看的是真内容，
+    // 而不是「body_of 永远切出空集」这种假绿。
+    assert!(
+        !sql_in_fn(src, "list").is_empty(),
+        "`list` 端点应当发 SQL（对照组）"
+    );
+    assert!(
+        !sql_in_fn(src, "patch").is_empty(),
+        "`patch` 端点应当发 SQL（对照组）"
+    );
+}
+
+#[test]
+fn row_builder_detector_flags_a_per_row_query() {
+    // 检测器自身的对照：喂合成输入，确认它**真的会红**。
+    let bad = "fn sharing_row(crypto: &C, r: &Row) -> Result<V> {\n    \
+               let earn: f64 = conn.query_row(\"SELECT SUM(pts)\", [id], |r| r.get(0))?;\n    \
+               Ok(json!({}))\n}\n";
+    assert_eq!(
+        sql_in_fn(bad, "sharing_row").len(),
+        1,
+        "行内 `query_row` 应恰好报 1 处"
+    );
+    // 阴性对照：只读列的版本（本仓库现在的形状）不得报出。
+    let good = "fn sharing_row(crypto: &C, r: &Row) -> Result<V> {\n    \
+                let earn: f64 = r.get(13)?;\n    \
+                Ok(json!({ \"earn\": earn }))\n}\n";
+    assert!(
+        sql_in_fn(good, "sharing_row").is_empty(),
+        "只读列的行构造器不该被报出：{:?}",
+        sql_in_fn(good, "sharing_row")
+    );
+    // 注释里的 SQL 是文档（本仓库的注释里就写着旧写法），不算违规。
+    let commented = "fn sharing_row(crypto: &C, r: &Row) -> Result<V> {\n    \
+                     // 旧写法：conn.query_row(\"SELECT SUM(pts) …\") —— 每行一次\n    \
+                     Ok(json!({}))\n}\n";
+    assert!(sql_in_fn(commented, "sharing_row").is_empty());
+}
+
 #[test]
 fn no_date_function_wraps_a_time_column_in_production() {
-    assert_eq!(FILES.len(), 4, "应扫描 4 个路由文件");
+    assert_eq!(FILES.len(), 5, "应扫描 5 个路由文件");
     let mut all = Vec::new();
     for (name, src) in FILES {
         for (ln, text) in violations(src) {
