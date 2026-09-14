@@ -276,6 +276,32 @@ fn tx_joins() -> &'static str {
      LEFT JOIN api_keys ak ON ak.id = t.api_key_id"
 }
 
+/// 该组列筛选**是否需要** `tx_joins()` 里的三张表。
+///
+/// ⚠️ 性能要害（rant 2026-09-14T21:0x，dev 实测）：只有 `user_name`（users u）与
+/// `key_name`（api_keys ak + keys k）引用 JOIN 表列；`model` / `status` / `pts` 全在
+/// `transactions` 自身。而一旦 SQL 里出现这三个 LEFT JOIN，SQLite 就**不再选用覆盖索引**，
+/// 退回 `idx_transactions_user_id_id` 逐行回表 —— dev 库（18.6 万行、NAS/NFS）实测同一条
+/// 聚合查询：**不带 JOIN 0.21s，带 JOIN 22.6s（约 100×）**。
+///
+/// 因此 summary / COUNT / trend 这三处**只碰 `t.*`** 的查询按需 JOIN：无上述筛选时不 JOIN。
+/// 列表查询仍需 JOIN（要渲染 `user_name` / `key_label` / `key_name`），但它有
+/// `ORDER BY t.id DESC LIMIT n`，代价可控。
+fn needs_joins(f: &TxColFilters) -> bool {
+    let set = |v: &Option<String>| v.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    set(&f.user_name) || set(&f.key_name)
+}
+
+/// 按需拼接 JOIN 片段（`true` 时与 [`tx_joins`] 等价，`false` 时为 `""`）。
+/// 调用方必须与 [`needs_joins`] 共用同一判定，避免 JOIN 与 `tx_where` 的引用再次分叉。
+fn tx_joins_if(needed: bool) -> &'static str {
+    if needed {
+        tx_joins()
+    } else {
+        ""
+    }
+}
+
 fn default_page() -> u32 {
     1
 }
@@ -319,6 +345,9 @@ pub async fn transactions(
     // 方向由 `type` 决定，不是 `pts` 的符号（每个 writer 都存正数，C2045/C2050）。
     let (where_sql, where_binds) =
         tx_where("t", auth.user_id, &type_filter, &start, &end, &q.filters);
+    // ⚠️ summary 与 COUNT 只碰 `t.*` ⇒ 无 user_name/key_name 筛选时**不得** JOIN，
+    // 否则优化器弃用覆盖索引、逐行回表（dev 实测 0.21s → 22.6s，见 `needs_joins`）。
+    let join_needed = needs_joins(&q.filters);
     let signed_pts = signed_pts_expr("t");
     let income = sql_in_list(&TX_INCOME_TYPES);
     let expense = sql_in_list(&TX_EXPENSE_TYPES);
@@ -332,7 +361,7 @@ pub async fn transactions(
             COALESCE(SUM(t.cached_tokens), 0), \
             COALESCE(SUM(t.output_tokens), 0) \
             FROM transactions t {} WHERE {where_sql}",
-        tx_joins()
+        tx_joins_if(join_needed)
     );
     let summary: serde_json::Value = conn
         .query_row(&summary_sql, params_from_iter(where_binds.iter()), |r| {
@@ -351,7 +380,7 @@ pub async fn transactions(
         .query_row(
             &format!(
                 "SELECT COUNT(*) FROM transactions t {} WHERE {where_sql}",
-                tx_joins()
+                tx_joins_if(join_needed)
             ),
             params_from_iter(where_binds.iter()),
             |r| r.get(0),
@@ -506,7 +535,7 @@ pub async fn transactions_trend(
             COALESCE(SUM(t.output_tokens), 0), \
             COUNT(*) \
          FROM transactions t {} WHERE {where_sql} GROUP BY b ORDER BY b",
-        tx_joins()
+        tx_joins_if(needs_joins(&q.filters))
     );
     let mut stmt = conn.prepare(&trend_sql).map_err(internal)?;
     let buckets: Vec<serde_json::Value> = stmt
