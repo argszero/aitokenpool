@@ -13,7 +13,7 @@
   const T = window.t; // i18n（rant 2026-08-18T20:49:22）
 
   let activeView = "dashboard";
-  let txTab = "all";
+  // 交易类型筛选**只有一份状态**：`txTable.filters.type`（见 txTypeFilter()，原 `txTab` 已删）
   let txRange = "24h"; // 交易时间段快捷范围：24h / 7d / 30d / all / custom（默认最近 24 小时，rant 2026-08-22T10:50:00）
   let txCustomStart = ""; // 自定义开始（datetime-local 值，本地时区）
   let txCustomEnd = ""; // 自定义结束
@@ -1521,7 +1521,11 @@
   }
 
   function renderTransactions() {
-    $$("#tx-tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.txTab === txTab));
+    // tab 高亮 = **生效的类型筛选**（txTypeFilter()），不是另存的一份 tab 状态 —— 两处必须同源，
+    // 否则列筛选一出值，高亮就与列表说的不是同一件事。生效值不属于 all/consume/earn 时
+    // （topup/withdraw/gift/expire），没有任何 tab 可以自称生效 ⇒ 都不高亮。
+    const effTab = txTypeFilter() || "all";
+    $$("#tx-tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.txTab === effTab));
     // 零 mock（rant 2026-08-19T15:54:06）：登录态绝不 fallback D.TRANSACTIONS；
     // 加载失败 → 空态 + 重试；游客不可达（导航拦截）
     if (loggedIn() && !Live.transactions) {
@@ -1601,6 +1605,23 @@
     if (f.status) add("status", f.status);
     return p.join("&");
   }
+  // 交易类型筛选：**一份状态，两套控件**。顶部 tab（全部/消费/收益）与「类型」列筛选 select
+  // （6 个库内值）是同一个筛选器的两种控件，状态只存在 `txTable.filters.type`（空串 = 不限，
+  // 取值恒为库内值 ⇒ 语言无关，见 C2031）。请求参数、tab 高亮、列筛选控件三者都必须是**它**的
+  // 投影；此前顶部 tab 另存一份 `txTab`，而请求按 `filters.type || txTab` 取值 ⇒ 列筛选一出值，
+  // tab 的写入就被永久盖住（点 tab 只是挪高亮、列表不变），高亮也仍按 `txTab` 画
+  // ⇒ 指示器与列表说的不是同一件事。删掉第二份状态，该类不再存在。
+  function txTypeFilter() {
+    return (txTable.filters && txTable.filters.type) || "";
+  }
+  // 写类型筛选，并同步**已渲染**的列筛选 select：#148 之后表头不重建（保住筛选框焦点），
+  // 控件值不会自己跟上状态；表头若尚未渲染/已被清空则无需同步，下次重建会读 state 得到正确值。
+  function setTxTypeFilter(v) {
+    txTable.filters = txTable.filters || {};
+    txTable.filters.type = v || "";
+    const sel = document.querySelector('#tx-table select[data-filter-key="type"]');
+    if (sel) sel.value = txTable.filters.type;
+  }
   // 列筛选签名：筛选条件变化 → renderTransactions 触发重拉（rant 2026-08-25T10:33:26）
   function txFilterSig() {
     const f = txTable.filters || {};
@@ -1611,10 +1632,9 @@
   // loadedPage/loadedPageSize 记录已加载页，renderTransactions 发现页码不一致时自动重拉）
   async function loadTransactions() {
     if (!loggedIn()) return;
-    // 类型：列筛选 type（select）优先于顶部 tab（tab=all 时即列筛选值）；列筛选后端化后同走 type 参数。
+    // 类型：单一状态（txTypeFilter()），tab 与列筛选都读写它；后端化后同走 type 参数。
     // C2031：筛选状态即库内值（consume/earn/…），直接发送，无需反查。
-    const colType = (txTable.filters && txTable.filters.type) ? txTable.filters.type : "";
-    const type = colType || (txTab === "all" ? "" : txTab);
+    const type = txTypeFilter();
     const range = txRangeParams();
     const cols = txFilterParams(); // rant 2026-08-25T10:33:26：列筛选随请求发出，后端全量过滤
     const page = Math.max(1, txTable.page || 1);
@@ -3669,8 +3689,14 @@
     // 容器级委托，避免为每个视图各绑一次；与原型 data-goto 语义一致
     $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
 
-    // 交易 Tab（P2-B：切 tab 重新拉后端过滤数据）
-    $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => { txTab = b.dataset.txTab; txTable.page = 1; renderTransactions(); if (loggedIn()) loadTransactions(); }));
+    // 交易 Tab（P2-B：切 tab 重新拉后端过滤数据）：tab 写的就是类型筛选本身（setTxTypeFilter）
+    // —— 它也负责把「类型」列筛选控件同步成同一个值，否则两份控件又会各说各话；控件状态一变，
+    // renderTransactions 里的签名比对自会重拉（勿再显式调 loadTransactions，会与它并发两次请求）。
+    $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => {
+      setTxTypeFilter(b.dataset.txTab === "all" ? "" : b.dataset.txTab);
+      txTable.page = 1;
+      renderTransactions();
+    }));
     $("#tx-export-btn").addEventListener("click", exportTxCsv); // 导出 CSV（rant 20:46:57 E）
 
     // 交易时间段（rant 2026-08-22T10:50:00：快捷范围 + 自定义起止，切换后重载列表与汇总）
