@@ -396,3 +396,11 @@ ui/
 - **CI 覆盖**：`src/i18n_pack.rs::wire_timestamps_reach_the_renderer_unsliced` 钉两件事 —— `_at` / `last_used` 这类线上字段不得被 `.slice()` / `.replace()` 原地加工（含阴性对照：提取器必须认得出修前的两种形态、并放过 `fmtPrecise(...).slice(...)` 与纯透传 `last: k.last_used || null`），以及 `txsToView` 返回的视图行里 `time` 必须是裸值。
 - **冒烟测试注意**：jsdom 启真 `index.html` + 四脚本、只 stub `fetch`，夹具必须带**非零秒**（`2026-09-13T16:30:45Z`）—— 用 `:00` 的夹具看不见第 ③ 面（改前改后都是 `:00`）。三面的期望值都从夹具用 `Date` **独立算出**（本地时间/本地日期），不要抄 helper 的输出。**时区是前提而不是细节**：`TZ=UTC` 下本地 == UTC，本轴整体不可见，探针必须先断言时区。
 
+## 行内卡片的 Enter 提交：容器级委托，不逐字段登记（C2127）
+
+- **两类容器，两条路**：`#share-form` 是**真 `<form>`**（配合 `type="submit"` 按钮，浏览器自己实现隐式提交，所有字段免费获得 Enter）；其余行内卡片是 `<div class="form">` / `<span class="inline-edit">`（`#topup-card` / `#raise-card` / `#dept-form-card` / `#model-form-card` / `#ak-new-inline`），隐式提交不存在，得自己实现。
+- **不变量**：**Enter 提交挂在容器上（`wireEnterSubmit($("#某卡片"), "#某确认按钮")`），不得逐字段登记**。逐字段 `$("#某字段").addEventListener("keydown", …)` 等于把「哪些控件能提交」抄成一份**名册**，而名册不会随控件增长 —— 模型表单曾有 10 个可输入控件、只登记了 2 个（厂商 / 模型名），输入价 / 缓存命中价 / 输出价 / 高峰三价 / 上下文窗口 / 最大输出这 8 个按 Enter 毫无反应（点「确认」都能提交）；而同页的部门表单每个字段都登记了（2/2）⇒ 是漏登记，不是取舍。
+- **哪类控件算「提交」**：只有文本类输入控件（`NON_TEXT_INPUT_TYPES` = checkbox / radio / button / submit / reset / file / range / color / hidden 之外）。这与真 `<form>` 的隐式提交一致；焦点在「取消」上按 Enter 更不该提交（这正是委托到容器时要早退 `button` 的原因）。
+- **请求只走一处**：委托只 `btn.click()`，不自己复制一遍校验与请求 —— 忙碌态（`withLoading`）、字段校验、API 调用都留在确认按钮自己的监听器里。
+- **CI 覆盖**：`src/i18n_pack.rs::enter_submit_is_delegated_to_the_card` 钉形状 —— ① 任何让 Enter 去点确认按钮的 `keydown` 登记都不得挂在 `ui/index.html` 里声明于 `input` / `select` / `textarea` 的 id 上（阳性对照：`#chat-input` 的 Enter 是「发送消息」不是「提交表单」，不点按钮 ⇒ 不得被误判）；② `wireEnterSubmit` 必须在容器参数上登记、早退非 `INPUT` 与非文本类型；③ 五张卡片都必须走这个 helper，且 helper 调用数与卡片数相等。
+- **冒烟测试注意**：每个控件跑**同一件事两遍** —— 在控件里按 Enter vs 用**相同的字段值**点确认按钮，比较是否发出了同一个请求（点确认那一遍是控件**自带的阳性对照**，排除「这个表单本来就用这些值提交不了」）。⚠️ `withLoading` 会把提交推迟 **320ms**，等待须 > 320ms，且每条腿前清空请求记录，否则会读到上一条腿的请求（结论完全反向）。

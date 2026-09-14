@@ -172,6 +172,39 @@
     }, ms || 320);
   }
 
+  /* --- 行内表单卡片的 Enter 提交（C2127） --- */
+
+  // 哪些输入控件按 Enter 等于「提交」：文本类。非文本类（勾选框 / 单选框 / 下拉 / 文件 /
+  // 范围 / 颜色 / 隐藏域）按 Enter 不提交 —— 真 `<form>` 的隐式提交也是这个规则，
+  // 这里刻意对齐它，别自己发明一套。
+  const NON_TEXT_INPUT_TYPES = ["checkbox", "radio", "button", "submit", "reset", "file", "range", "color", "hidden"];
+
+  // 把「Enter 提交」挂到**容器**上，而不是逐字段登记（C2127）。
+  //
+  // 这些卡片是 `<div class="form">` / `<span class="inline-edit">` 而非真 `<form>`
+  // （真表单见 `#share-form`：`type=submit` 按钮让浏览器自己实现隐式提交，全字段免费），
+  // 所以 Enter 得自己实现。逐字段 `$("#某字段").addEventListener("keydown", …)` 等于把
+  // 「哪些控件能提交」抄成一份**名册** —— 而名册不会随控件增长：模型表单曾有 10 个可输入
+  // 控件、只登记了 2 个，另外 8 个（输入价 / 输出价 / 上下文窗口 …）按 Enter 毫无反应，
+  // 用户只会以为界面卡住；同一页的部门表单却每个字段都登记了（2/2）⇒ 漂移不是取舍。
+  //
+  // 容器级委托挂在事件冒泡上 ⇒ 卡片里**当前和以后**的文本控件都自动生效，名册消失。
+  function wireEnterSubmit(card, confirmSel) {
+    if (!card) return;
+    card.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      const t = e.target;
+      // 只认「往里打字」的控件：焦点在按钮/勾选框/下拉上按 Enter 不提交
+      // （否则在「取消」上按 Enter 会同时触发取消与提交）。
+      if (!t || t.tagName !== "INPUT") return;
+      if (NON_TEXT_INPUT_TYPES.includes((t.type || "text").toLowerCase())) return;
+      const btn = $(confirmSel);
+      if (!btn || btn.disabled) return;
+      e.preventDefault();
+      btn.click(); // 走确认按钮自己的监听器（忙碌态、校验、请求都在那一处，不重复实现）
+    });
+  }
+
   /* --- 行内校验错误（rant 16:57:17 E：红边框 + 字段下方行内错误文案，修正后自动清除） --- */
 
   // 在输入框下方显示行内错误文案，并给输入框加红边框；输入修正时自动清除
@@ -3740,9 +3773,9 @@
     $("#topup-cancel").addEventListener("click", closeTopup);
     $("#raise-cancel").addEventListener("click", closeRaise);
     // 键盘可达（rant 15:50:05 B.9）：Enter 提交、Esc 关闭行内编辑
-    $("#topup-custom").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#topup-confirm").click(); });
-    $("#raise-amount").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#raise-confirm").click(); });
-    $("#raise-reason").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#raise-confirm").click(); });
+    // Enter 走容器级委托（C2127）：卡片里每个文本控件都生效，且新增字段不用再登记。
+    wireEnterSubmit($("#topup-card"), "#topup-confirm");
+    wireEnterSubmit($("#raise-card"), "#raise-confirm");
     ["topup-card", "raise-card"].forEach((id) => {
       document.getElementById(id).addEventListener("keydown", (e) => {
         if (e.key === "Escape") { document.getElementById(id).hidden = true; }
@@ -3822,10 +3855,9 @@
     $("#new-api-key-btn").addEventListener("click", openNewKeyInline);
     $("#ak-new-ok").addEventListener("click", commitNewKey);
     $("#ak-new-cancel").addEventListener("click", closeNewKeyInline);
-    $("#ak-new-name").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") commitNewKey();
-      else if (e.key === "Escape") closeNewKeyInline();
-    });
+    // Enter 提交走容器级委托（C2127）；Esc 收起由容器自己管。
+    wireEnterSubmit($("#ak-new-inline"), "#ak-new-ok");
+    $("#ak-new-inline").addEventListener("keydown", (e) => { if (e.key === "Escape") closeNewKeyInline(); });
 
     // API Key 搜索 + 行内操作（复制 / 改名 / 删除[行内二次确认]）
     wireSearch($("#ak-search"), renderSettings);
@@ -3902,9 +3934,8 @@
     $("#add-dept-btn").addEventListener("click", () => openDeptForm(null));
     $("#dept-confirm").addEventListener("click", (e) => withLoading(e.currentTarget, confirmDept));
     $("#dept-cancel").addEventListener("click", () => { $("#dept-form-card").hidden = true; });
-    // 键盘可达（B.9）：部门表单 Enter 提交、Esc 收起
-    $("#dept-form-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#dept-confirm").click(); } });
-    $("#dept-form-quota").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#dept-confirm").click(); } });
+    // 键盘可达（B.9）：部门表单 Enter 提交、Esc 收起。Enter 走容器级委托（C2127）。
+    wireEnterSubmit($("#dept-form-card"), "#dept-confirm");
     $("#dept-form-card").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#dept-form-card").hidden = true; } });
 
     $("#dept-body").addEventListener("click", (e) => {
@@ -3924,8 +3955,10 @@
     $("#add-model-btn").addEventListener("click", () => openModelForm(null));
     $("#model-confirm").addEventListener("click", (e) => withLoading(e.currentTarget, confirmModel));
     $("#model-cancel").addEventListener("click", () => { $("#model-form-card").hidden = true; });
-    $("#model-form-provider").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#model-confirm").click(); } });
-    $("#model-form-model").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#model-confirm").click(); } });
+    // Enter 提交由容器级委托统一提供（C2127）：这里原先是**逐字段**登记，而名册只写了
+    // 「厂商」「模型名」两个 —— 输入价 / 缓存命中价 / 输出价 / 高峰三价 / 上下文窗口 /
+    // 最大输出这 8 个控件按 Enter 毫无反应（点确认都能提交）。
+    wireEnterSubmit($("#model-form-card"), "#model-confirm");
     $("#model-form-card").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#model-form-card").hidden = true; } });
 
     $("#model-body").addEventListener("click", (e) => {
