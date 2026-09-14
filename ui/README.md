@@ -433,3 +433,15 @@ ui/
 - **CI 覆盖**：`src/state_gate.rs` 再加两条 —— `the_identity_boundaries_drop_every_session_cache`（清空必须含 `Object.keys(Live)`；体内**不得**出现逐个槽的赋值，否则就是第二份名册；`loadSession` 与 `exitGuest` 都必须调用它）与 `the_view_router_renders_and_loads_in_every_branch`（`renderView` 每个分支行都既含 `render` 又含 `load`）。两条都带**提取器自证**与**合成输入**（手抄名册 / 缺 loader 的分支必须变红）。
 - **冒烟测试注意**：① 夹具必须让两个账号的钱包**可区分**，且 **`available ≠ balance`**（有当日赠送）—— 否则「拿到了自己的永久余额」与「回落到 available」不可区分；② 冻结点要**精确**：`loadSession` 自己的 `/api/wallet` 必须放行（否则会话建立就卡住），只扣住**仪表盘刷新**那一次（按序放行第 1 个、冻结第 2 个）；③ 隔离瞬态脸时，乙的**落点**必须是仪表盘 —— 若乙落在钱包，钱包的新 loader 会在登录过程中就把共享的 `Live.wallet` 刷新掉，瞬态脸**看不见**（这正是「只加 loader 不清缓存」这条竞争修法能让探针全绿的原因）；④ 断言按**读到的 DOM 文本**，不要读 `Live` 内部（探针可临时注入 `window.__Live = Live` 仅用于**诊断**）。
 
+
+## 后端自造的显示文案：分界线在「数据字段 / 文案字段」（C2133）
+
+- **咽喉只覆盖文案字段**：`api.js` 把后端 `error` 字段整串交给 `I18n.mapErr()`（词表 `ERR_MAP`），所以**错误文案**有兜底（C2129）。但**响应数据字段**是前端原样渲染的 —— 后端在数据字段里自造一句中文，`en` 界面上就是中文，而 `cargo test` 全绿。
+- **不变量**：**显示文案归语言包，后端只回传数据或语言中性标记**。数据字段里的值要么来自 config / 库 / 用户输入（原值透传），要么是语言中性的机器值（空串 / `null` / 枚举名）。中文标签只允许出现在 `error` 字段（有词表）和邮件正文（无 locale 机制、中英双语）里。
+- **修前两处可达**（都在 `en` 界面直接显示中文）：
+  1. `src/routes/admin.rs` 的按部门聚合：`COALESCE(d.name, '（未分配）')` → `app.js` 的 `#usage-dept` 只过 `esc()`。任何 `dept_id IS NULL` 且本月有用量的用户都会让这行出现 —— 而**同一张页面**的成员表早就在用 `T("common.unassigned")`（同一个键、零新增）。
+  2. `src/gateway.rs` 的 `/api/plans`：config 未写 `name` 时后端按 `type` 自造 `API（按量）` / `Token Plan` / `Coding Plan`；而 `config.example.toml` 与 `config.toml` 的 `[[plans]]` **全都**不写 `name` ⇒ 恒触发，上架表单的 Plan 下拉与上架成功的 toast 都读它。
+- **改法**：① 无部门的桶改用**空串**（与同一个 handler 里 `users[].dept_name` 的 `COALESCE(d.name, '')` 同口径），前端 `d.name || T("common.unassigned")` 兜底；② `/api/plans` 的 `name` 改为 config **原值**（未配置即空串），前端新增 `planLabel(pl)`：有 `name` 用原文，否则按 `type` 取新键 `share.planName.paygo|token|coding`（下拉与 toast 共用这一个函数）。
+- **CI 覆盖**：`src/i18n_pack.rs` 三条 —— ① `backend_data_fields_are_language_neutral`：扫全部 `src/**/*.rs`，提取「以 `json!` **数据**字段（key ≠ `error`）交付的中文字面量」，其集合必须**恰好等于**已裁定豁免清单（两侧都有牙：新增一处变红、删掉豁免项也变红）。提取器必须能穿透 `let name = … "中文" …; json!({ "name": name })` 这层间接（计划名就是这种写法；不穿透就漏掉一半的类），并跳过嵌套 `json!`；② 这两个渲染点必须**有**本地化兜底（`#usage-dept` 的 `barRow` 首参含 `T(`、`planLabel` 体内含 `pl.name` 与 `T("share.planName.…")`）；③ `GET /api/admin/usage` 的运行期契约：无部门用户有用量时，桶名不得含 CJK（`src/routes/mod.rs` 的 router 测试）。
+- **豁免清单为什么存在**：`src/routes/mod.rs` 注册接口的 `"name": name` 里那个默认用户名（`email.split('@').next().unwrap_or(...)`）是**用户数据**的默认值（同 `db.rs` 种子里的 `'管理员'`），不是后端自造的显示标签 —— 且 `split().next()` 恒 `Some`，该默认值不可达。豁免项带**理由**、且与提取结果**等价**（`==`，不是 `⊆`），所以它不会腐烂。
+- **冒烟测试注意**：`en` 语言包下断言 `#usage-dept` / `#sf-plan` 的**渲染后文本**不含 CJK（改前红）。夹具要让 `departments` 桶真的出现（`dept_id IS NULL` + 本月 `usage_records`），并**独立构造**期望值（`T("common.unassigned")` / `T("share.planName.paygo")` 现取，不要抄后端回传的串）；阴性对照腿用**配了 `name` 的 plan**（此时必须原样显示 config 的名字）。

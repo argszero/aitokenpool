@@ -436,6 +436,17 @@
     el.textContent = pl.type === "paygo" ? T("share.plan.paygo") : T("share.plan.sub");
   }
 
+  // Plan 显示名（C2133）：config 写了 name 就用它的原文，否则按 type 取语言包。
+  // 后端只回传 config 原值（未配置 = 空串，语言中性）——显示文案归语言包，否则
+  // `en` 界面会把响应数据字段里的后端自造中文原样印出来（mapErr 只认 `error` 字段）。
+  function planLabel(pl) {
+    if (pl.name) return pl.name;
+    if (pl.type === "paygo") return T("share.planName.paygo");
+    if (pl.type === "token") return T("share.planName.token");
+    if (pl.type === "coding") return T("share.planName.coding");
+    return pl.id;
+  }
+
   /* ---------------- 导航 ---------------- */
 
   // 统一内联 SVG 图标（线性风格、同尺寸、currentColor，替代 emoji；rant 15:50:05 A.2）
@@ -990,7 +1001,7 @@
       const fillPlans = () => {
         const p = selP.value;
         selPlan.innerHTML = '<option value="">' + T("share.select.plan") + "</option>" + plans.filter((pl) => pl.provider === p)
-          .map((pl) => '<option value="' + pl.id + '">' + esc(pl.name) + "</option>").join("");
+          .map((pl) => '<option value="' + pl.id + '">' + esc(planLabel(pl)) + "</option>").join("");
         showPlanHint("");
         fillModels();
       };
@@ -2424,10 +2435,10 @@
             '<div class="r"><span class="pts">' + T("cnt.calls", { n: x.month_calls || 0 }) + "</span><div class='d'>" + T("admin.usage.emp.calls") + "</div></div></div>"
           ).join("") + barRow(T("admin.usage.total"), users.reduce((a, x) => a + (x.month_tokens || 0), 0), maxUT, T("admin.usage.unit.tokens"))
         : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.emp") + "</p></div>";
-      // 按部门（barRow 用 cost 归一）
+      // 按部门（barRow 用 cost 归一）；无部门的桶后端回传空串（语言中性）⇒ 本地取语言包
       const maxDC = Math.max(1, ...depts.map((d) => d.cost || 0));
       $("#usage-dept").innerHTML = depts.length
-        ? depts.map((d) => barRow(d.name, d.cost, maxDC, T("admin.usage.unit.yuan"))).join("")
+        ? depts.map((d) => barRow(d.name || T("common.unassigned"), d.cost, maxDC, T("admin.usage.unit.yuan"))).join("")
         : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.dept") + "</p></div>";
     } else if (tab === "org") {
       renderOrg();
@@ -3779,7 +3790,7 @@
           const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
           $("#sf-quota").value = 5000;
           hideShareForm();
-          const label = provLabel(plan.provider) + " · " + plan.name;
+          const label = provLabel(plan.provider) + " · " + planLabel(plan);
           toast(T("share.list.ok", { label: label, model: model, price: D.fmt(price) }), "success");
         };
         if (!loggedIn()) {

@@ -2866,6 +2866,77 @@ mod tests {
         assert_eq!(d["cost"], 2.5);
     }
 
+    /// C2133：没有部门的那个桶，名字必须是**语言中性**的 —— 后端不得自造显示文案。
+    ///
+    /// 修前 SQL 是 `COALESCE(d.name, '（未分配）')`，而前端对 `departments[].name` 只过 `esc()`
+    /// （`app.js` 的 `barRow(d.name, …)` → `#usage-dept`）⇒ 只要有一个未分配部门且本月有用量的
+    /// 用户，`en` 界面的用量卡片上就出现中文。现在后端回空串，标签由前端
+    /// `T("common.unassigned")` 提供（同一个键、同一张页面的成员表早就在用）。
+    #[tokio::test]
+    async fn usage_department_bucket_without_a_department_is_language_neutral() {
+        fn is_cjk(c: char) -> bool {
+            matches!(c, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
+        }
+
+        let st = test_state("usagedeptneutral");
+        let admin = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+        // demo 未分配部门 ⇒ 它的用量落进「无部门」那个桶
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO usage_records (user_id, model, tokens, cost) VALUES (1, 'gpt-test', 1000, 2.5)",
+                [],
+            )
+            .unwrap();
+        }
+        let (s, body) = get(st.clone(), "/api/admin/usage", Some(&admin)).await;
+        assert_eq!(s, StatusCode::OK, "usage 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        // ① 不变量：桶名语言中性（显示文案归前端语言包）
+        let depts = v["departments"].as_array().unwrap();
+        assert_eq!(
+            depts.len(),
+            1,
+            "只有 demo 有用量且它未分配部门 ⇒ 恰好一个桶: {body}"
+        );
+        let name = depts[0]["name"].as_str().expect("桶名是字符串");
+        assert!(
+            !name.chars().any(is_cjk),
+            "无部门桶名必须语言中性（en 界面会原样渲染它），实测 {name:?}"
+        );
+        assert_eq!(depts[0]["cost"], 2.5, "桶仍带着聚合值: {body}");
+
+        // ② 阳性对照：真实部门名（用户数据）原样透传 —— 本不变量只约束**自造标签**
+        let (_, body) = post(
+            st.clone(),
+            "/api/admin/departments",
+            r#"{"name":"研发","quota":100000}"#,
+            Some(&admin),
+        )
+        .await;
+        let dept_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let (_, _) = patch(
+            st.clone(),
+            "/api/admin/users/1",
+            &format!(r#"{{"dept_id":{dept_id}}}"#),
+            Some(&admin),
+        )
+        .await;
+        let (s, body) = get(st.clone(), "/api/admin/usage", Some(&admin)).await;
+        assert_eq!(s, StatusCode::OK, "usage 应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let d = v["departments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["name"] == "研发")
+            .expect("真实部门名原样透传");
+        assert_eq!(d["cost"], 2.5, "换了部门仍是同一条聚合: {body}");
+    }
+
     /* ---- C2089：口令 KDF（argon2）必须在共享 DB 互斥量**之外**运行 ---- */
 
     /// 观测「共享 DB 互斥量是否被某个请求长时间攥住」的计数器：另起一条线程反复 `try_lock`，
