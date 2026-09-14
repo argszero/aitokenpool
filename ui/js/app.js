@@ -436,6 +436,17 @@
     el.textContent = pl.type === "paygo" ? T("share.plan.paygo") : T("share.plan.sub");
   }
 
+  // Plan 显示名（C2133）：config 写了 name 就用它的原文，否则按 type 取语言包。
+  // 后端只回传 config 原值（未配置 = 空串，语言中性）——显示文案归语言包，否则
+  // `en` 界面会把响应数据字段里的后端自造中文原样印出来（mapErr 只认 `error` 字段）。
+  function planLabel(pl) {
+    if (pl.name) return pl.name;
+    if (pl.type === "paygo") return T("share.planName.paygo");
+    if (pl.type === "token") return T("share.planName.token");
+    if (pl.type === "coding") return T("share.planName.coding");
+    return pl.id;
+  }
+
   /* ---------------- 导航 ---------------- */
 
   // 统一内联 SVG 图标（线性风格、同尺寸、currentColor，替代 emoji；rant 15:50:05 A.2）
@@ -970,34 +981,44 @@
 
     // 表单下拉（厂商 → Plan → 模型 三级联动；Plan 中「API」= 按量计价的 key）
     const selP = $("#sf-provider");
-    if (!selP.dataset.init) {
-      // Bug 1 修复：优先用 /api/plans（后端 config [[plans]]），未登录/失败降级 data.js 对齐清单
-      const plans = Live.plans || D.PLANS;
-      const planProviders = [...new Set(plans.map((pl) => pl.provider))];
-      selP.innerHTML = '<option value="">' + T("share.select.provider") + "</option>" + planProviders
-        .map((p) => '<option value="' + p + '">' + esc(provLabel(p)) + "</option>").join("");
-      const selPlan = $("#sf-plan");
-      const selM = $("#sf-model");
-      const fillModels = () => {
-        const plan = plans.find((pl) => pl.id === selPlan.value);
-        const p = plan ? plan.provider : selP.value;
-        // 零 mock（rant 15:54:06）：模型下拉登录态用 /api/models（Live.models），游客/兜底 data.js
-        const modelSrc = Live.models ? Live.models : D.MODELS;
-        selM.innerHTML = '<option value="">' + T("share.select.model") + "</option>" + modelSrc.filter((m) => !p || m.provider === p)
-          .map((m) => '<option value="' + m.model + '">' + m.model + "</option>").join("");
-        showPriceHint(selM.value);
-      };
-      const fillPlans = () => {
-        const p = selP.value;
-        selPlan.innerHTML = '<option value="">' + T("share.select.plan") + "</option>" + plans.filter((pl) => pl.provider === p)
-          .map((pl) => '<option value="' + pl.id + '">' + esc(pl.name) + "</option>").join("");
-        showPlanHint("");
-        fillModels();
-      };
+    const selPlan = $("#sf-plan");
+    const selM = $("#sf-model");
+    // 当前清单：优先 /api/plans（后端 config [[plans]] 单一真源），未登录/拉取失败降级 data.js。
+    // 每次读（不是捕获一份副本）：登录后首次渲染时 `Live.plans` 还没回来，随后会被真实清单替换，
+    // 而监听器只在第一次渲染时登记一次 —— 捕获副本的写法会让监听器永远指着那份兜底表。
+    const plansSrc = () => Live.plans || D.PLANS;
+    const fillModels = () => {
+      const plan = plansSrc().find((pl) => pl.id === selPlan.value);
+      const p = plan ? plan.provider : selP.value;
+      // 零 mock（rant 15:54:06）：模型下拉登录态用 /api/models（Live.models），游客/兜底 data.js
+      const modelSrc = Live.models ? Live.models : D.MODELS;
+      selM.innerHTML = '<option value="">' + T("share.select.model") + "</option>" + modelSrc.filter((m) => !p || m.provider === p)
+        .map((m) => '<option value="' + m.model + '">' + m.model + "</option>").join("");
+      showPriceHint(selM.value);
+    };
+    const fillPlans = () => {
+      const p = selP.value;
+      selPlan.innerHTML = '<option value="">' + T("share.select.plan") + "</option>" + plansSrc().filter((pl) => pl.provider === p)
+        .map((pl) => '<option value="' + pl.id + '">' + esc(planLabel(pl)) + "</option>").join("");
+      showPlanHint("");
+      fillModels();
+    };
+    // 监听器只登记一次（重建下拉框不该重复登记，否则一次 change 会级联跑两遍）
+    if (!selP.dataset.wired) {
       selP.addEventListener("change", fillPlans);
       selPlan.addEventListener("change", () => { showPlanHint(selPlan.value); fillModels(); });
       selM.addEventListener("change", () => showPriceHint(selM.value));
-      selP.dataset.init = "1";
+      selP.dataset.wired = "1";
+    }
+    // 重建的判据是**数据源**，不是「建过没有」（C2133）：登录后首次渲染时 /api/plans 还在路上，
+    // 兜底表会先建一次；若按「建过就跳过」，真实清单回来后下拉框**永远**不重建 —— 那个一次性
+    // 守卫等于让兜底表赢到底，`planLabel` 也就永远没机会生效（en 界面上就是兜底表里的中文名）。
+    const src = Live.plans ? "live" : "fallback";
+    if (selP.dataset.plansSrc !== src) {
+      selP.innerHTML = '<option value="">' + T("share.select.provider") + "</option>" +
+        [...new Set(plansSrc().map((pl) => pl.provider))]
+          .map((p) => '<option value="' + p + '">' + esc(provLabel(p)) + "</option>").join("");
+      selP.dataset.plansSrc = src;
       fillPlans();
     }
 
@@ -2424,10 +2445,10 @@
             '<div class="r"><span class="pts">' + T("cnt.calls", { n: x.month_calls || 0 }) + "</span><div class='d'>" + T("admin.usage.emp.calls") + "</div></div></div>"
           ).join("") + barRow(T("admin.usage.total"), users.reduce((a, x) => a + (x.month_tokens || 0), 0), maxUT, T("admin.usage.unit.tokens"))
         : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.emp") + "</p></div>";
-      // 按部门（barRow 用 cost 归一）
+      // 按部门（barRow 用 cost 归一）；无部门的桶后端回传空串（语言中性）⇒ 本地取语言包
       const maxDC = Math.max(1, ...depts.map((d) => d.cost || 0));
       $("#usage-dept").innerHTML = depts.length
-        ? depts.map((d) => barRow(d.name, d.cost, maxDC, T("admin.usage.unit.yuan"))).join("")
+        ? depts.map((d) => barRow(d.name || T("common.unassigned"), d.cost, maxDC, T("admin.usage.unit.yuan"))).join("")
         : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("admin.usage.empty.dept") + "</p></div>";
     } else if (tab === "org") {
       renderOrg();
@@ -3779,7 +3800,7 @@
           const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
           $("#sf-quota").value = 5000;
           hideShareForm();
-          const label = provLabel(plan.provider) + " · " + plan.name;
+          const label = provLabel(plan.provider) + " · " + planLabel(plan);
           toast(T("share.list.ok", { label: label, model: model, price: D.fmt(price) }), "success");
         };
         if (!loggedIn()) {

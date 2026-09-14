@@ -262,9 +262,13 @@ pub async fn usage(
         }
     }
     // 按部门
+    // 无部门（`d.name IS NULL`）用空串这个**语言中性**标记，显示文案归前端语言包
+    //（C2133：响应**数据**字段里由后端自造的中文会被 `en` 界面原样渲染 ——
+    // `I18n.mapErr` 只看 `error` 字段；前端用 `T("common.unassigned")` 兜底，
+    // 与上面 `users[].dept_name` 的 `COALESCE(d.name, '')` 同一口径）
     let mut stmt = conn
         .prepare(
-            "SELECT COALESCE(d.name, '（未分配）'), COALESCE(SUM(ur.tokens), 0), COALESCE(SUM(ur.cost), 0), COUNT(ur.id) \
+            "SELECT COALESCE(d.name, ''), COALESCE(SUM(ur.tokens), 0), COALESCE(SUM(ur.cost), 0), COUNT(ur.id) \
              FROM usage_records ur JOIN users u ON u.id = ur.user_id \
              LEFT JOIN departments d ON d.id = u.dept_id \
              WHERE ur.time >= date('now', 'start of month') \

@@ -864,7 +864,12 @@ pub async fn models(
 }
 
 /// GET /api/plans（上架表单数据源：config [[plans]] 单一真源，需认证）
-/// 返回 id / provider / name（config 无 name 时按 type 推导显示名）/ type / endpoints。
+/// 返回 id / provider / name / type / endpoints。
+///
+/// `name` 是 config 的**原值**（config 未写 `name` 就是空串）：显示文案归客户端语言包。
+/// 后端曾在这里按 `type` 自造显示名（`API（按量）` / `Token Plan` / `Coding Plan`），
+/// 而 `en` 界面把响应**数据**字段原样渲染（`I18n.mapErr` 只翻译 `error` 字段）⇒
+/// 英文界面上出现中文（C2133）。空串是语言中性标记，前端用 `planLabel()` 按 `type` 取键。
 pub async fn plans(
     State(st): State<AppState>,
     _auth: AuthUser,
@@ -874,20 +879,10 @@ pub async fn plans(
         .plans
         .iter()
         .map(|p| {
-            let name = if p.name.is_empty() {
-                match p.type_.as_str() {
-                    "paygo" => "API（按量）".to_string(),
-                    "token" => "Token Plan".to_string(),
-                    "coding" => "Coding Plan".to_string(),
-                    _ => p.id.clone(),
-                }
-            } else {
-                p.name.clone()
-            };
             serde_json::json!({
                 "id": p.id,
                 "provider": p.provider,
-                "name": name,
+                "name": p.name,
                 "type": p.type_,
                 "interactive_only": p.interactive_only,
                 "endpoints": p.endpoints.iter().map(|e| serde_json::json!({
@@ -2002,7 +1997,20 @@ mod tests {
         assert_eq!(dp["provider"], "deepseek");
         assert_eq!(dp["type"], "paygo");
 
-        assert_eq!(dp["name"], "API（按量）");
+        // `name` 是 config 的**原值**：config.example.toml 的 `[[plans]]` 全都不写 `name`
+        // ⇒ 这里就是空串。后端**不得**按 `type` 自造显示名（`API（按量）` 这类），因为响应
+        // 的**数据**字段是前端原样渲染的、`en` 界面会直接显示中文（C2133）；显示文案由客户端
+        // `planLabel()` 从语言包取。
+        assert_eq!(
+            dp["name"], "",
+            "plans[].name 必须是 config 原值（未配置即空串），不能是后端自造的显示名"
+        );
+        assert!(
+            !arr.iter().any(|p| p["name"]
+                .as_str()
+                .is_some_and(|n| n.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)))),
+            "plans[].name 里出现了中文 —— 数据字段里的中文会在 en 界面原样显示：{arr:?}"
+        );
         assert!(dp["endpoints"].is_array() && !dp["endpoints"].as_array().unwrap().is_empty());
         // 无认证 → 401
         let resp2 = router()

@@ -94,12 +94,12 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 806;
-const EN_KEY_COUNT: usize = 806;
+const ZH_KEY_COUNT: usize = 809;
+const EN_KEY_COUNT: usize = 809;
 const STATIC_ATTR_COUNT: usize = 330;
 const STATIC_ATTR_DISTINCT: usize = 305;
-const T_LITERAL_COUNT: usize = 539;
-const T_LITERAL_DISTINCT: usize = 431;
+const T_LITERAL_COUNT: usize = 543;
+const T_LITERAL_DISTINCT: usize = 434;
 
 /// 切出语言包区段（起点标记 → 终点标记，含起点）。
 fn pack_region<'a>(src: &'a str, start_mark: &str, end_mark: &str) -> &'a str {
@@ -1555,6 +1555,27 @@ mod tests {
         Some(&rest[..end])
     }
 
+    /// 含**全部** `needles` 的那条语句：`needles[0]` 的每一次命中都要检，命中同一条语句的才算。
+    ///
+    /// 为什么需要（C2133）：同一个选择器在一个函数里可以出现两次 —— `$("#usage-dept").innerHTML`
+    /// 先被清空、再被渲染。只按第一次命中切语句，拿到的是**清空**那句（里面根本没有渲染调用），
+    /// 门禁就会报一条与产品无关的假红。加一个 needle 把「哪一条语句」说清楚即可。
+    fn statement_containing_all<'a>(src: &'a str, needles: &[&str]) -> Option<&'a str> {
+        let (first, rest) = needles.split_first()?;
+        let mut from = 0usize;
+        while let Some(rel) = src[from..].find(first) {
+            let at = from + rel;
+            from = at + first.len();
+            let tail = &src[at..];
+            let end = tail.find(';').unwrap_or(tail.len());
+            let stmt = &tail[..end];
+            if rest.iter().all(|n| stmt.contains(n)) {
+                return Some(stmt);
+            }
+        }
+        None
+    }
+
     /// 401 的语义必须由**调用方**声明：凭据端点的 401 不是「会话过期」（C2120）。
     ///
     /// `ui/js/api.js` 的 `request()` 对 401 一律 `handleUnauthorized()`（清 token + 回登录页 +
@@ -2024,5 +2045,609 @@ mod tests {
             "wireEnterSubmit 的调用数与卡片数不一致：新增卡片请同步 ④ 的清单（并确认它是真 <form> \
              还是需要委托）"
         );
+    }
+
+    /* ---- C2133：后端不得把中文写进响应的**数据**字段 ---- */
+
+    /// 已裁定的豁免项：`(字面量, 理由)`。
+    ///
+    /// 必须与提取结果**等价**（`==`，不是 `⊆`）：两侧都有牙 —— 新增一处「后端自造的中文数据
+    /// 文案」会红；豁免的那个字面量消失（改掉或删掉）也红，清单不会腐烂。
+    ///
+    /// 为什么不能要求「一条都没有」：**用户数据**里的中文是合法的（`db.rs` 种子里作为账号名的
+    /// `'管理员'`、用户自己填的部门名），它们不是后端自造的显示标签。本清单只收「后端**自己编**
+    /// 了一句给用户看的话，塞进数据字段」这一种。
+    const DATA_LABEL_EXEMPTIONS: &[(&str, &str)] = &[(
+        "用户",
+        "注册接口 `\"name\": name` 的默认用户名 —— 那是**用户数据**的默认值（同账号名），不是自造\
+         的显示标签；且 `email.split('@').next()` 恒为 `Some`，该默认值不可达",
+    )];
+
+    /// 剥掉 Rust 注释，保留字符串字面量（`//` 与 `/* */` 在字面量内不生效）。
+    fn strip_rust_comments(src: &str) -> String {
+        let b = src.as_bytes();
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0usize;
+        while i < b.len() {
+            if b[i] == b'"' {
+                if let Some((_, end)) = read_rs_string(src, i) {
+                    out.push_str(&src[i..end]);
+                    i = end;
+                    continue;
+                }
+            }
+            if b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(b.len());
+                continue;
+            }
+            let ch = src[i..].chars().next().expect("i 在字符边界上");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+        out
+    }
+
+    /// 只读第一个 `#[cfg(test)]` 之前的内容：测试里的中文不上线。
+    fn cut_rust_test(src: &str) -> &str {
+        match src.find("#[cfg(test)]") {
+            Some(i) => &src[..i],
+            None => src,
+        }
+    }
+
+    /// `src[i] == '"'` → `(字面量内容, 闭合引号之后的下标)`。
+    fn read_rs_string(src: &str, i: usize) -> Option<(String, usize)> {
+        if src.as_bytes().get(i) != Some(&b'"') {
+            return None;
+        }
+        let b = src.as_bytes();
+        let mut j = i + 1;
+        let mut out = String::new();
+        while j < b.len() {
+            if b[j] == b'\\' {
+                if j + 2 > b.len() {
+                    return None;
+                }
+                out.push_str(&src[j..j + 2]);
+                j += 2;
+                continue;
+            }
+            if b[j] == b'"' {
+                return Some((out, j + 1));
+            }
+            let ch = src[j..].chars().next()?;
+            out.push(ch);
+            j += ch.len_utf8();
+        }
+        None
+    }
+
+    /// 与 `src[at]` 处的开定界符配对的闭定界符**之后**的下标（跳过字符串）。
+    fn match_rs_delim(src: &str, at: usize, open: u8, close: u8) -> Option<usize> {
+        let b = src.as_bytes();
+        let (mut depth, mut i) = (0i32, at);
+        while i < b.len() {
+            if b[i] == b'"' {
+                i = read_rs_string(src, i)?.1;
+                continue;
+            }
+            if b[i] == open {
+                depth += 1;
+            } else if b[i] == close {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// 包含 `at` 的**最内层** `fn` 体（绝对区间）。
+    ///
+    /// 作用域是必须的：`mod.rs` 的 `me()` 用元组解构拿 `name`（真数据），而 `register()` 里
+    /// 另有一个 `let name = … "用户" …`。没有作用域限制，`me()` 就会被误判成泄漏。
+    fn enclosing_fn_span(src: &str, at: usize) -> Option<(usize, usize)> {
+        let b = src.as_bytes();
+        let mut best: Option<(usize, usize)> = None;
+        let mut from = 0usize;
+        while let Some(rel) = src[from..].find("fn ") {
+            let start = from + rel;
+            if start >= at {
+                break;
+            }
+            from = start + 3;
+            let mut k = start + 3;
+            while k < b.len() && (b[k].is_ascii_alphanumeric() || b[k] == b'_') {
+                k += 1;
+            }
+            if k == start + 3 {
+                continue; // `fn(` 是函数指针类型，没有名字
+            }
+            while k < b.len() && b[k].is_ascii_whitespace() {
+                k += 1;
+            }
+            if b.get(k) != Some(&b'(') && b.get(k) != Some(&b'<') {
+                continue;
+            }
+            let Some(brace) = src[k..].find('{').map(|o| o + k) else {
+                continue;
+            };
+            if brace > at {
+                continue;
+            }
+            if let Some(end) = match_rs_delim(src, brace, b'{', b'}') {
+                if end > at {
+                    best = Some((start, end));
+                }
+            }
+        }
+        best
+    }
+
+    /// 跳过嵌套 `json!(...)`：那些区域由外层循环自己扫，别在绑定 RHS 里重复计入
+    ///（否则 `let user_id = { … json!({ "error": "…" }) … }` 会把**错误文案**算成数据文案）。
+    fn strip_json_macros(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0usize;
+        while i < text.len() {
+            if text[i..].starts_with("json!") {
+                let after = i + "json!".len();
+                if let Some(open) = text[after..].find('(').map(|o| o + after) {
+                    if let Some(end) = match_rs_delim(text, open, b'(', b')') {
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+            let ch = text[i..].chars().next().expect("i 在字符边界上");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+        out
+    }
+
+    /// 同函数内 `at` 之前**最近**的 `let <ident> = <expr>` 的右值（已剥掉嵌套 `json!`）。
+    fn local_binding_rhs(src: &str, ident: &str, at: usize) -> Option<String> {
+        let (fstart, fend) = enclosing_fn_span(src, at)?;
+        let b = src.as_bytes();
+        let mut chosen: Option<usize> = None;
+        let mut from = fstart;
+        while let Some(rel) = src[from..fend].find("let ") {
+            let abs = from + rel;
+            from = abs + 4;
+            let mut k = abs + 4;
+            let id_start = k;
+            while k < fend && (b[k].is_ascii_alphanumeric() || b[k] == b'_') {
+                k += 1;
+            }
+            if &src[id_start..k] != ident {
+                continue;
+            }
+            while k < fend && b[k].is_ascii_whitespace() {
+                k += 1;
+            }
+            if b.get(k) == Some(&b':') && b.get(k + 1) == Some(&b'=') {
+                k += 2;
+            } else if b.get(k) == Some(&b'=') {
+                k += 1;
+            } else {
+                continue;
+            }
+            if abs >= at {
+                break;
+            }
+            chosen = Some(k);
+        }
+        let start = chosen?;
+        let (mut depth, mut i) = (0i32, start);
+        while i < b.len() {
+            if b[i] == b'"' {
+                i = read_rs_string(src, i)?.1;
+                continue;
+            }
+            match b[i] {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                b';' if depth == 0 => break,
+                _ => {}
+            }
+            i += 1;
+        }
+        Some(strip_json_macros(&src[start..i]))
+    }
+
+    /// 文本里全部含 CJK 的字面量。
+    fn cjk_literals(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i < text.len() {
+            if text.as_bytes()[i] == b'"' {
+                if let Some((lit, end)) = read_rs_string(text, i) {
+                    if lit.chars().any(is_cjk) {
+                        out.push(lit);
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// `j` 处的值表达式原文（到顶层 `,` / `}` 为止）；字符串原样保留（含引号）。
+    fn json_value_expression(region: &str, j: usize) -> String {
+        let b = region.as_bytes();
+        let (mut depth, mut i) = (0i32, j);
+        let mut out = String::new();
+        while i < b.len() {
+            if b[i] == b'"' {
+                match read_rs_string(region, i) {
+                    Some((_, end)) => {
+                        out.push_str(&region[i..end]);
+                        i = end;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            match b[i] {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                b',' if depth == 0 => break,
+                _ => {}
+            }
+            let ch = region[i..].chars().next().expect("i 在字符边界上");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+        out
+    }
+
+    /// 以 `json!` **数据**字段（key ≠ `error`）交付的中文字面量，返回 `(字面量, 位置)`。
+    ///
+    /// 三条形态规则，缺一条就会漏掉本轴的一半：
+    /// 1. 直接写字面量：`json!({ "name": "中文" })`；
+    /// 2. 表达式里的字面量：`json!({ "name": format!("中文 {x}") })`；
+    /// 3. **穿透本地绑定**：`let name = … "中文" …; json!({ "name": name })` ——
+    ///    计划名的自造标签正是这种写法（`match p.type_ { "paygo" => "API（按量）" }`），
+    ///    不穿透就看不见它，门禁会在**改前就是绿的**。
+    fn data_field_cjk_literals(file: &str, src: &str) -> Vec<(String, String)> {
+        let stripped = strip_rust_comments(src);
+        let src = cut_rust_test(&stripped);
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = src[from..].find("json!") {
+            let at = from + rel;
+            from = at + "json!".len();
+            let Some(open) = src[from..].find('(').map(|o| o + from) else {
+                continue;
+            };
+            let Some(end) = match_rs_delim(src, open, b'(', b')') else {
+                continue;
+            };
+            let region = &src[open + 1..end];
+            let mut i = 0usize;
+            while i < region.len() {
+                if region.as_bytes()[i] != b'"' {
+                    i += 1;
+                    continue;
+                }
+                let Some((key, after)) = read_rs_string(region, i) else {
+                    break;
+                };
+                let mut j = after;
+                while j < region.len() && region.as_bytes()[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if region.as_bytes().get(j) != Some(&b':') {
+                    i = after;
+                    continue;
+                }
+                j += 1; // 跳过冒号本身 —— 漏掉这一步会把**键**当成值表达式，整条扫描静默失效
+                while j < region.len() && region.as_bytes()[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                let line = src[..open + 1 + i].matches('\n').count() + 1;
+                i = after;
+                if key == "error" {
+                    continue;
+                }
+                if region.as_bytes().get(j) == Some(&b'"') {
+                    if let Some((lit, _)) = read_rs_string(region, j) {
+                        if lit.chars().any(is_cjk) {
+                            out.push((lit, format!("{file}:{line} 字段 `{key}`")));
+                        }
+                    }
+                    continue;
+                }
+                let ident_end = {
+                    let mut k = j;
+                    while k < region.len()
+                        && (region.as_bytes()[k].is_ascii_alphanumeric()
+                            || region.as_bytes()[k] == b'_')
+                    {
+                        k += 1;
+                    }
+                    k
+                };
+                let next = region.as_bytes().get(ident_end).copied();
+                let is_binding = ident_end > j
+                    && !region.as_bytes()[j].is_ascii_digit()
+                    && next != Some(b'(')
+                    && next != Some(b'!');
+                if is_binding {
+                    let ident = &region[j..ident_end];
+                    if let Some(rhs) = local_binding_rhs(src, ident, open + 1 + j) {
+                        for lit in cjk_literals(&rhs) {
+                            out.push((
+                                lit,
+                                format!("{file}:{line} 字段 `{key}`（经由 `let {ident}`）"),
+                            ));
+                        }
+                        continue;
+                    }
+                }
+                for lit in cjk_literals(&json_value_expression(region, j)) {
+                    out.push((lit, format!("{file}:{line} 字段 `{key}`")));
+                }
+            }
+        }
+        out
+    }
+
+    /// `src/` 下的全部 `.rs`（递归）：名册由文件系统派生，新增子目录不会静默逃逸。
+    fn rust_sources_under_src(root: &str) -> Vec<String> {
+        let mut stack = vec!["src".to_string()];
+        let mut out = Vec::new();
+        while let Some(dir) = stack.pop() {
+            let entries = std::fs::read_dir(format!("{root}/{dir}"))
+                .unwrap_or_else(|_| panic!("应能读取 {dir}/"));
+            for e in entries.filter_map(|e| e.ok()) {
+                let rel = format!("{dir}/{}", e.file_name().to_string_lossy());
+                if e.path().is_dir() {
+                    stack.push(rel);
+                } else if rel.ends_with(".rs") {
+                    out.push(rel);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// 不变量：**后端不得自造中文显示文案塞进响应的数据字段**（C2133）。
+    ///
+    /// 咽喉 `api.js` 只把 `error` 字段交给 `mapErr`（词表见 `every_backend_error_message_
+    /// reaches_the_wordlist`），数据字段是前端**原样渲染**的 ⇒ 后端在数据字段里放一句中文，
+    /// `en` 界面上就是中文，而 `cargo test` 全绿。修前实测两处可达（`en` 语言包下，jsdom 启真
+    /// `index.html` + 四脚本）：① `GET /api/admin/usage` 的部门桶名 `（未分配）` → `#usage-dept`；
+    /// ② `GET /api/plans` 的 plan 兜底名 `API（按量）`（config 的 `[[plans]]` 全都不写 `name`
+    /// ⇒ 恒触发）→ `#sf-plan` 与上架 toast。
+    ///
+    /// 断言形态是**名册等价**而不是「一条都没有」：用户数据里的中文是合法的（账号名、用户自己
+    /// 填的部门名）。判据是「后端**自己编**了一句给用户看的话」—— 那种话归语言包。
+    #[test]
+    fn backend_data_fields_are_language_neutral() {
+        let root = env!("CARGO_MANIFEST_DIR");
+        let mut flagged: BTreeMap<String, String> = BTreeMap::new();
+        for rel in rust_sources_under_src(root) {
+            let src = std::fs::read_to_string(format!("{root}/{rel}"))
+                .unwrap_or_else(|_| panic!("应能读取 {rel}"));
+            for (lit, site) in data_field_cjk_literals(&rel, &src) {
+                flagged.insert(lit, site);
+            }
+        }
+
+        let got: Vec<String> = flagged.keys().cloned().collect();
+        let mut want: Vec<String> = DATA_LABEL_EXEMPTIONS
+            .iter()
+            .map(|(l, _)| l.to_string())
+            .collect();
+        want.sort();
+        want.dedup();
+
+        assert_eq!(
+            got, want,
+            "响应数据字段里的中文字面量与已裁定清单不一致 ——\n\
+             左＝实际提取到的（提取器与后端源码无关，它会随源码变），右＝裁定清单。\n\
+             多出来的：这不是错误文案（`error` 字段有 ERR_MAP 兜底），`en` 界面会原样显示中文；\
+             改法是让后端回传 config / 库里的**原值**或语言中性标记，把显示文案搬到客户端语言包。\n\
+             少掉的：清单在腐烂 —— 删掉那个字面量时请一并删掉它的豁免条目。\n\
+             实测：{flagged:#?}\n\
+             豁免清单：{DATA_LABEL_EXEMPTIONS:#?}"
+        );
+
+        // 提取器自证：不能是靠「什么都没扫到」通过的（清单非空 ⇒ 这一条同时是阳性对照）
+        assert!(
+            !DATA_LABEL_EXEMPTIONS.is_empty(),
+            "豁免清单为空时上面的等号会退化成「后端一条中文数据文案都没有」，\
+             请确认那是有意为之，而不是提取器失真"
+        );
+        // 名册是**日落清单**，不是注册表：这个类里正确的修法是「后端回传语言中性标记、显示文案
+        // 归客户端语言包」，**不是**「把自造的中文登记进来」。所以名额刻意只有 1 条，扩容必须
+        // 显式改这个数 —— 加之前先回答：这句话能不能由语言包说？能，就别加。
+        //（竞争修法腿就是这么被抓的：保留后端自造名 + 往清单里塞一条，等号那一半会放行，这一半不会。）
+        assert_eq!(
+            DATA_LABEL_EXEMPTIONS.len(),
+            1,
+            "豁免清单只收**用户数据的默认值**（不是自造标签）；确需扩容请同时改这个数 —— 故意的减速带"
+        );
+    }
+
+    /// 阴性/阳性对照：把「漏」与「误收」两种失真都注入合成输入，证明上面那条断言有牙齿。
+    #[test]
+    fn data_field_scanner_detects_injected_labels() {
+        let sample = r#"
+fn f(cfg: &Plan) {
+    json!({ "name": "中文甲" });
+    json!({ "error": "中文乙" });
+    json!({ "nested": { "label": "中文丙" } });
+    let name = if cfg.name.is_empty() { "中文丁".to_string() } else { cfg.name.clone() };
+    json!({ "name": name });
+    let user_id = { if bad() { return Err(json!({ "error": "中文戊" })); } 5 };
+    json!({ "id": user_id });
+    json!({ "note": format!("中文己 {x}") });
+    let decoy = "中文庚";
+}
+fn g(row: (String, String, String)) {
+    let (email, name, role) = row;
+    json!({ "name": name });
+}
+#[cfg(test)]
+mod tests { fn t() { json!({ "x": "测试中文" }) } }
+"#;
+        let got: Vec<String> = data_field_cjk_literals("sample.rs", sample)
+            .into_iter()
+            .map(|(lit, _)| lit)
+            .collect();
+
+        // 注意 `中文己 {x}` 比对的是字面量的**原文**（含占位符）：提取器交出来的就是源码里的
+        // 那个串，门禁的豁免清单也按原文记账 —— 换成「已格式化的样子」两侧就永远对不上。
+        for want in ["中文甲", "中文丙", "中文丁", "中文己 {x}"] {
+            assert!(
+                got.iter().any(|g| g == want),
+                "提取器漏掉 {want:?} —— 漏掉一种形态就等于把那一半的类放行，实得 {got:?}"
+            );
+        }
+        for unwanted in [
+            "中文乙",   // `error` 字段：由 ERR_MAP 那条门禁负责
+            "中文戊",   // 绑定 RHS 里**嵌套** json! 的错误文案，不得算作数据文案
+            "中文庚",   // 与 json! 无关的局部变量
+            "测试中文", // `#[cfg(test)]` 之后
+        ] {
+            assert!(
+                !got.iter().any(|g| g == unwanted),
+                "{unwanted:?} 不该被算作响应数据字段文案，实得 {got:?}"
+            );
+        }
+        // 元组解构绑定的是**真数据**（用户/部门的实际名字）：必须按**函数作用域**解析绑定，
+        // 否则 `g()` 里那个 `name` 会解析到 `f()` 里更早的 `let name`，把 中文丁 数第二遍。
+        assert_eq!(
+            got.iter().filter(|g| *g == "中文丁").count(),
+            1,
+            "绑定解析必须限定在**同一个函数**内，实得 {got:?}"
+        );
+    }
+
+    /// 另一半（C2133）：后端只回传语言中性标记之后，标签必须由客户端补上。
+    ///
+    /// 只钉生产者（后端无中文）会漏掉「前端把空串直接渲染成空白标签」这条半修；
+    /// 只钉消费者则会漏掉「后端继续自造中文」。两半各钉一个方向。
+    #[test]
+    fn backend_neutral_data_labels_are_localized_in_the_client() {
+        let app = strip_js_comments(APP_JS);
+
+        // ① 用量卡片：无部门桶（后端回空串）必须有语言包兜底
+        // 注意：`#usage-dept` 在同一个函数里出现**两次**（先清空、后渲染）。按第一次命中切语句
+        // 会拿到那句清空（里面根本没有 `barRow`）⇒ 门禁报出一条与产品无关的假红（坑 #286 家族）。
+        let stmt = statement_containing_all(&app, &["$(\"#usage-dept\").innerHTML", "barRow("])
+            .expect("找不到 #usage-dept 经 barRow 渲染的那条语句");
+        let arg = first_call_arg(stmt, "barRow(").expect("部门条应经 barRow 渲染");
+        assert!(
+            arg.contains("d.name"),
+            "部门条的首参应是该行的部门名，实得 {arg:?}"
+        );
+        assert!(
+            arg.contains("T("),
+            "无部门桶的标签必须由语言包提供（`d.name || T(\"common.unassigned\")`）——\
+             后端已经不再自造它了，前端不兜底就只剩一个空标签：{arg:?}"
+        );
+
+        // ② Plan 显示名：一个函数、两个渲染点
+        let body = js_function_body(&app, "function planLabel(")
+            .expect("应有 planLabel（config 没写 name 时按 type 取语言包）");
+        assert!(
+            body.contains("pl.name") && body.contains("T(\"share.planName."),
+            "planLabel 必须先看 config 原名、再按 type 取语言包，实得 {body:?}"
+        );
+        for (site, needle) in [
+            ("上架表单的 Plan 下拉", "selPlan.innerHTML"),
+            ("上架成功的 toast", "const label = provLabel(plan.provider)"),
+        ] {
+            let stmt = statement_containing(&app, needle)
+                .unwrap_or_else(|| panic!("找不到 {site} 的渲染语句（`{needle}`）"));
+            assert!(
+                stmt.contains("planLabel("),
+                "{site} 必须经 planLabel 渲染 —— 直接读 `plan.name` 会让 config 未配置时显示空标签：{stmt:?}"
+            );
+        }
+
+        // ③ 兜底表不得赢过真实清单（C2133 实测的那条路）：Plan 下拉框的重建判据必须是**数据源**，
+        //    而不是「建过没有」。一次性守卫在登录后首次渲染时就把兜底表 `D.PLANS` 定了型
+        //    （`/api/plans` 那次请求还在路上），它回来后下拉框再也不重建 ⇒ `planLabel` 永远没机会
+        //    生效，`en` 界面上显示的就是兜底表里的中文名 —— 光加上 planLabel 是**半修**。
+        assert!(
+            app.contains("selP.dataset.plansSrc"),
+            "Plan 下拉框丢了「数据源变了才重建」的判据（应比对数据源快照，而不是一次性标志）"
+        );
+        assert!(
+            !app.contains("selP.dataset.init"),
+            "Plan 下拉框又回到「一次性初始化」守卫：兜底表会赢到底，真实清单回来后不再重建"
+        );
+    }
+
+    /// `src` 中 `needle` 之后那个调用的**第一个实参**（括号配平，到顶层 `,` 为止）。
+    fn first_call_arg<'a>(src: &'a str, needle: &str) -> Option<&'a str> {
+        let at = src.find(needle)? + needle.len();
+        let b = src.as_bytes();
+        let (mut depth, mut i, mut end) = (0i32, at, None);
+        while i < b.len() {
+            if b[i] == b'"' || b[i] == b'\'' || b[i] == b'`' {
+                let q = b[i];
+                i += 1;
+                while i < b.len() {
+                    if b[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == q {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            match b[i] {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => {
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                    depth -= 1;
+                }
+                b',' if depth == 0 => {
+                    end = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        Some(&src[at..end?])
     }
 }
