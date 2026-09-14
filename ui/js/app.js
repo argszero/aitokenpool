@@ -844,7 +844,8 @@
       '<td class="num" data-label="' + T("mk.col.ctx") + '">' + D.ctxFmt(m.ctx) + "</td>" +
       // 能力标签（rant 第 4 节：旗舰/推理 tag-accent，读图另加 tag）——仅渲染后端真实字段
       '<td data-label="' + T("mk.col.caps") + '">' + capabilityTags(m) + "</td>" +
-      // 可用性 pill（rant 第 4 节：keys>=2 可用·N key / keys==1 紧张 / 无 key）
+      // 可用性 pill（rant 第 4 节：keys>=2 可用·N key / keys==1 紧张 / 无计数但标着可用 → 可用 / 无 key）
+      // —— 有计数用计数，没计数用 `avail`（游客兜底表只有布尔，见 availPill 的注释）
       "<td data-label='" + T('mk.col.avail') + "'>" + availPill(m) + "</td>" +
       "<td data-label='" + T('mk.col.action') + "'><button class='btn btn-primary btn-sm' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">" + T("mk.use") + "</button>" +
       // 零 mock：成功率后端暂无字段 → 仅当有真实值时展示（multi/success 已从 data.js 移除）
@@ -867,10 +868,18 @@
   }
 
   // 可用性 pill（rant 第 4 节）：key 数三态；无 key → muted 且「使用」按钮禁用
+  //
+  // ⚠️ 一个市场行的「可用」只有**一个**事实：`avail`（绿点 / 「使用」按钮是否可点 / 可用性筛选
+  // / 详情里的「当前可用」四处都读它）。`keys` 只是**有计数时才存在**的补充说明 ——
+  // 登录态由 `modelsToView()` 从 `available_keys` 填，游客兜底表（`data.js > MARKET`）
+  // 按 rant 2026-08-19T15:54:06「虚构数据已移除」**不携带计数**。
+  // 因此没有计数时**不能**读成「无 key」：那会让同一行的绿点 + 可点的「使用」按钮
+  // 与这一格文案互相打脸（C2128 实测：游客市场 7/7 行都渲染成「无 key」，其中 6 行按钮可点）。
   function availPill(m) {
     const n = m.keys || 0;
     if (n >= 2) return '<span class="pill pill-ok">' + esc(T("mk.avail.multi", { n: n })) + "</span>";
     if (n === 1) return '<span class="pill pill-warn">' + esc(T("mk.avail.tight")) + "</span>";
+    if (m.avail) return '<span class="pill pill-ok">' + esc(T("mk.avail.on")) + "</span>";
     return '<span class="pill pill-muted">' + esc(T("mk.avail.none")) + "</span>";
   }
 

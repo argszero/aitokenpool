@@ -27,6 +27,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// （`main.rs` 的 `DEFAULT_CONFIG`），因此这里 `include_str!` 它不引入任何新东西。
 const DATA_JS: &str = include_str!("../ui/js/data.js");
 const CONFIG_TOML: &str = include_str!("../config/config.example.toml");
+/// 市场行模板与可用性 pill 的所在文件。
+///
+/// 兜底表与渲染器是**一对**：表里的字段名只有在渲染器读同一个名字时才有意义
+/// （本模块诞生于 `ce6d0db`：表里的模型名与配置漂移，游客看到错误价格与「未上架」单元格）。
+/// 「渲染器读了什么」因此也必须在输入面里，否则「字段缺失」永远无法被静态断言看见。
+const APP_JS: &str = include_str!("../ui/js/app.js");
 
 /// 阳性对照真值：**改动模型目录 / 兜底表 / plan 清单时应刻意更新这些数字**。
 ///
@@ -595,5 +601,136 @@ mod tests {
         // ⑦ 阳性对照：干净数据不得被误报
         assert!(subset_violations(&js_market, &js_names).is_empty());
         assert!(all_row_mismatches(&js_models, &cfg_models).is_empty());
+    }
+
+    /// 切出 `function <name>(` 之后的**函数体**（含收尾 `}`）。
+    ///
+    /// 按行收尾：本文件的 JS 函数体一律 2 空格缩进，收尾行恰为 `  }`。
+    /// 不用括号配对是因为体里有字符串与嵌套块，手写配对容易被 JS 的引号/注释骗到；
+    /// 而「首个恰为 `  }` 的行」在这种缩进约定下是稳定的。**调用方必须自证收尾正确**
+    /// （见 `js_function_body_stops_at_the_right_place`），否则提取器会静默吞掉下一个函数。
+    fn js_function_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+        let head = format!("function {name}(");
+        let start = src.find(&head)?;
+        let rest = &src[start..];
+        let mut offset = 0usize;
+        for line in rest.split_inclusive('\n') {
+            offset += line.len();
+            if line.trim_end_matches(['\n', '\r']) == "  }" {
+                return Some(&rest[..offset]);
+            }
+        }
+        None
+    }
+
+    /// 市场行的「可用性」只有**一个**事实：`avail`。
+    ///
+    /// 圆点（`.dot`）、「使用」按钮的 `disabled`、可用性筛选、详情网格四处都渲染它；
+    /// key 计数（`keys`）只是**登录态**由 `modelsToView()` 从 `available_keys` 填上的补充说明 ——
+    /// 游客兜底表（`MARKET`）按 rant 2026-08-19T15:54:06「虚构数据已移除」**不携带**计数。
+    ///
+    /// 真实事故（C2128，jsdom 真 `index.html` + 四个真脚本跑出来的）：可用性 pill 只认 `keys`，
+    /// 于是游客市场 7/7 行的这一格都渲染成「无 key」，其中 6 行的圆点是绿的、「使用」按钮可点 ——
+    /// 同一行里两处文案互相打脸。本测试把「pill 必须回落到行自己的 `avail`」钉住，
+    /// 并同时钉住**不许**用手写计数去"修"它（那是往游客面前放虚构的运营数据）。
+    #[test]
+    fn market_availability_pill_agrees_with_the_row_it_renders() {
+        // ── 前置①：兜底表解析得到一整张表（空表上的集合断言会假绿，坑 68）───────────
+        let rows = top_level_objects(array_region(DATA_JS, "MARKET: ["));
+        assert_eq!(
+            rows.len(),
+            MARKET_COUNT,
+            "data.js MARKET 应扫出 {MARKET_COUNT} 行，实得 {}",
+            rows.len()
+        );
+
+        // ── 前置②：每行都声明了**布尔** `avail` —— pill 回落读的就是这个名字 ─────────
+        // 这一条同时是「字段名不是拼错」的阳性对照：若 pill 读 `m.availability`（#94 之前的名字），
+        // 下面的断言会指出兜底表根本没有这个字段。
+        let bad_flag: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match field_raw(r, "avail").map(str::trim) {
+                Some("true") | Some("false") => None,
+                other => Some(format!("第 {} 行 avail = {other:?}", i + 1)),
+            })
+            .collect();
+        assert!(
+            bad_flag.is_empty(),
+            "MARKET 每行都必须有布尔 `avail`（市场行可用性的唯一事实）：\n{}",
+            bad_flag.join("\n")
+        );
+
+        // ── 不变量③（消费侧）：pill 必须读行自己的 `avail` ────────────────────────
+        let pill = js_function_body(APP_JS, "availPill").expect("app.js 里找不到 availPill()");
+        assert!(
+            pill.contains("m.avail"),
+            "可用性 pill 必须回落到行自己的 `avail`（绿点/「使用」按钮/可用性筛选都读它）：\
+             没有 key 计数时（游客兜底表）否则会渲染成「无 key」，与同一行的绿点互相打脸（C2128）。\
+             当前 availPill 体：\n{pill}"
+        );
+
+        // ── 不变量④（数据侧）：游客兜底表不得手写 key 计数 ────────────────────────
+        // `keys` 只在登录态由 `available_keys` 填；写进兜底表等同于把虚构的运营数据展示给游客，
+        // 也正是 #94 删掉 `multi`/`success` 的同源行为。要显示计数就必须来自后端。
+        let fabricated: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| field_raw(r, "keys").is_some())
+            .map(|(i, r)| format!("第 {} 行：{}", i + 1, field_raw(r, "model").unwrap_or("?")))
+            .collect();
+        assert!(
+            fabricated.is_empty(),
+            "MARKET 行不得携带手写的 `keys` 计数（游客看到的 key 数必须来自 /api/models 的 \
+             available_keys，不能是兜底表里的虚构数字）：\n{}",
+            fabricated.join("\n")
+        );
+
+        // ── 阳性对照⑤：pill 要与之保持一致的那一行，确实也读 `m.avail` ──────────────
+        let button_line = APP_JS
+            .lines()
+            .find(|l| l.contains("data-use-model="))
+            .expect("市场行模板里找不到 data-use-model 按钮");
+        assert!(
+            button_line.contains("m.avail"),
+            "「使用」按钮的可用性必须与 pill 同源（都读 `m.avail`），当前行：\n{button_line}"
+        );
+    }
+
+    /// 提取器自证：`js_function_body` 必须停在**本函数**的收尾处，不能吞掉下一个函数，
+    /// 且删掉回落分支后必须报出「不读 `m.avail`」。
+    #[test]
+    fn js_function_body_stops_at_the_right_place() {
+        let pill = js_function_body(APP_JS, "availPill").expect("找不到 availPill()");
+        // ① 收尾正确：体内含自己的三个计数分支，且不含紧随其后的函数
+        assert!(
+            pill.contains("mk.avail.multi") && pill.contains("mk.avail.none"),
+            "提取到的 availPill 体不含它自己的文案键：\n{pill}"
+        );
+        assert!(
+            !pill.contains("function loadMarketplace"),
+            "提取器吞掉了下一个函数（收尾行判定错了）：\n{pill}"
+        );
+
+        // ② 合成输入对照：把回落分支摘掉后，同一条断言必须变红（否则它测的不是它宣称的东西）
+        let without_fallback = APP_JS
+            .lines()
+            .filter(|l| {
+                !l.contains(
+                    "if (m.avail) return '<span class=\"pill pill-ok\">' + esc(T(\"mk.avail.on\"))",
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_ne!(
+            without_fallback, APP_JS,
+            "对照构造失败：回落分支这一行不存在，测试会变成自证（先确认 availPill 的回落写法）"
+        );
+        let mutated =
+            js_function_body(&without_fallback, "availPill").expect("变异体里找不到 availPill()");
+        assert!(
+            !mutated.contains("m.avail"),
+            "阴性对照失败：删掉回落分支后提取器仍报「读了 m.avail」—— 断言没有牙齿：\n{mutated}"
+        );
     }
 }
