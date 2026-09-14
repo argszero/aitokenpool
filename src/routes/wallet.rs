@@ -1569,6 +1569,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tx_text_column_filters_trim_the_value_before_matching() {
+        // C2114：交易表的列筛选**只有服务端这一个实现**（rant 2026-08-25T10:33:26 把列筛选
+        // 从「本地过滤当前页」改为「后端全量过滤」）。前端 `txFilterParams` 发请求前会 `trim()`
+        // 每个值 —— 本测试把服务端这一侧的口径钉住，因为前端**不得**再用另一套语义本地筛一遍，
+        // 正是建立在这几条之上：
+        //   ① 值先 trim：用户输入 `"deepseek "`（尾随空格）等价于 `"deepseek"`
+        //   ② trim 后为空 ⇒ **不筛**（而不是「筛一个空串」⇒ 0 行）
+        //   ③ 文本列走 SQL LIKE（`%v%`）⇒ `%` 是通配符，不是字面量
+        let st = test_state("txcoltrim");
+        let key = login(st.clone()).await;
+        {
+            let conn = st.db.lock().unwrap();
+            for (model, ty) in [
+                ("deepseek-v4-flash", "consume"),
+                ("qwen-max", "earn"),
+                ("recharge", "topup"),
+            ] {
+                conn.execute(
+                    "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                     VALUES (1, '2', 1, ?1, 100, 1.0, ?2, '成功')",
+                    rusqlite::params![model, ty],
+                )
+                .unwrap();
+            }
+        }
+        let total = |body: &str| -> i64 {
+            serde_json::from_str::<serde_json::Value>(body).unwrap()["total"]
+                .as_i64()
+                .unwrap_or(i64::MIN)
+        };
+        // ① 尾随空格与不带空格等价（前端发出的正是 trim 后的值）
+        for uri in [
+            "/api/transactions?model=deepseek",
+            "/api/transactions?model=deepseek%20",
+        ] {
+            let (s, body) = get(st.clone(), uri, &key).await;
+            assert_eq!(s, axum::http::StatusCode::OK, "{uri}: {body}");
+            assert_eq!(total(&body), 1, "{uri} 应命中 deepseek 行: {body}");
+        }
+        // ② 纯空白值 = 未筛（筛的是「没有值」，不是空串）
+        let (s, body) = get(st.clone(), "/api/transactions?model=%20", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        assert_eq!(total(&body), 3, "纯空白值应视为未筛: {body}");
+        // ③ 文本列是 LIKE 而非子串比较
+        let (s, body) = get(st.clone(), "/api/transactions?model=%25", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        assert_eq!(total(&body), 3, "`%` 是 LIKE 通配符: {body}");
+        // 阴性对照：真匹配不到的值 ⇒ 0 行（避免「一律不筛」也能通过上面三条）
+        let (s, body) = get(st.clone(), "/api/transactions?model=zzz", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        assert_eq!(total(&body), 0, "无匹配值应为 0 行: {body}");
+    }
+
+    #[tokio::test]
     async fn pts_range_filter_matches_the_rendered_signed_value() {
         // C2054：交易页「点数」列**渲染**的是有符号值（income 正 / expense 负，`signedPts()`），
         // 但区间筛选曾比较库内原始 `pts`（每个 writer 都存正数）⇒ 用户按表里看到的数字筛选
