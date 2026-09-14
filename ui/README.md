@@ -324,12 +324,12 @@ ui/
 
 ## 界面国际化 i18n 约定（v1.21.1，rant 2026-08-18T20:49:22 + 21:40:10 去中英混排）
 
-- **语言包**：`ui/js/i18n.js` 零依赖 IIFE，`I18N = { zh, en }` 双词典（787 键 ×2，覆盖导航/登录/视图标题/通用/仪表盘/市场/共享/钱包/交易/设置/管理/运营/聊天/游客/相对时间/帮助/tour/主题/错误映射）；`window.t(key, vars)` 查当前语言，**缺失回退 zh，再缺回退 key 本身**；`{var}` 占位符插值；
+- **语言包**：`ui/js/i18n.js` 零依赖 IIFE，`I18N = { zh, en }` 双词典（806 键 ×2，覆盖导航/登录/视图标题/通用/仪表盘/市场/共享/钱包/交易/设置/管理/运营/聊天/游客/相对时间/帮助/tour/主题/错误映射）；`window.t(key, vars)` 查当前语言，**缺失回退 zh，再缺回退 key 本身**；`{var}` 占位符插值；
 - **切换机制**：设置页「偏好 → 界面语言」下拉（`#prefs-lang`，zh/en）→ `I18n.setLang()`：写 `localStorage('atp_lang')` + `document.documentElement.lang` 同步（zh→`zh-CN` / en→`en`）+ 派发 `atp:langchange` → app.js 重渲染 `renderNav()` + `renderView(activeView)` + `document.title`（引导中额外 `renderTourStep()`）；**首载**：localStorage → `navigator.language` 前缀（`zh*`→zh，否则 en）→ 默认 zh；切换即时生效无需刷新；
 - **静态文案**：`index.html` 内静态中文用 `data-i18n` / `data-i18n-ph`（placeholder）/ `data-i18n-title`（title）标记，`applyStatic()` 启动时与每次切换时批量替换；**容器含表单控件的 `<label>` 用 `<label><span data-i18n="KEY">文本</span><input…></label>` 结构**（避免 innerHTML 替换销毁控件）；
 - **动态文案**：`app.js` 面向用户字符串全部走 `t('key')`；**语言敏感常量存 key 而非文案**（NAV/VIEW_TITLE/TOUR_STEPS/HELP_KEYS 存 key，渲染时 `T()` 解析；SHARE_STATUS/RAISE_STATUS 的 `text` 为函数；TX_COLUMNS 的 `title`/`options` 为函数；`DAY_LABELS` 动态 `T("share.day."+n)`）——保证切换语言后重渲染即时生效；
 - **数字/时间本地化**：`I18n.fmtNum`（zh→`zh-CN` / en→`en-US` `toLocaleString`）；`I18n.fmtRelTime`（刚刚/N 分钟前/N 小时前/昨天 ↔ just now/N min ago/N hr ago/yesterday）；数量单位（人/个/笔/次）用 `cnt.*` 键（zh 带量词，en 纯数字）；
-- **后端错误映射**：`api.js` 抛错前过 `I18n.mapErr()`——en 模式下已知中文错误（「该模型暂无可用 key」「点数余额不足」「需要管理员权限」等 15 组）映射为英文，未知原样返回；zh 模式原样透传；**`api.js` 自己的文案一律按 key 取**（`T("err.network")` / `T("err.http", {n})` 等），文件内不写中文原文——本文件不在 `src/i18n_pack.rs` 的输入面内，写原文会同时逃过三道门禁（见 `api_client_error_text_is_key_based`）；
+- **后端错误映射**：`api.js` 抛错前过 `I18n.mapErr()`——en 模式下已知中文错误映射为英文，未知**原样返回**；zh 模式原样透传；`ERR_MAP`（`i18n.js`）按**最长匹配**取值，带运行期插值的消息只登记到插值符之前的稳定前缀（写全模板永远匹配不上）。**后端每写一条用户可见的中文错误，就必须在 `ERR_MAP` 里登记**，并给两个包加对应键——否则英文界面上直接显示中文，而 `cargo test` 全绿（`src/i18n_pack.rs::every_backend_error_message_reaches_the_wordlist` 现在把这条约束变成门禁：它扫 `BACKEND_ERROR_SOURCES` 列出的后端源码，逐条断言「能被 `ERR_MAP` 命中」，并由 `backend_error_sources_cover_the_routes_directory` 用 `src/routes/` 的实际目录项兜住漏登记的文件）；**`api.js` 自己的文案一律按 key 取**（`T("err.network")` / `T("err.http", {n})` 等），文件内不写中文原文（`api_client_error_text_is_key_based`）。
 - **单语原则（v1.21.1 去混排）**：zh 词典值一律纯中文（仅保留 API/Key/Plan/tokens/CSV 等专有名词、键盘快捷键与占位符），不再内联英文注释；`index.html` 已移除全部 `<span class="en">` 静态小字（55 处）；`.en` CSS 样式已删除；en 词典保持纯英文；
 - 冒烟测试：node 无 DOM 桩跑 i18n.js（t/setLang/mapErr/fmtNum/fmtRelTime 断言，见开发记录）；Key 一致性扫描（`src/i18n_pack.rs` 门禁：app.js 的 `T()` 字面量 431 个、index.html 的 `data-i18n*` 305 个，去重并集 681 键全部存在于 ZH/EN）。
 

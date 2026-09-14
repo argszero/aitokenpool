@@ -833,6 +833,25 @@
     "err.raiseHandled": "该申请已处理",
     "err.codeSendFail": "验证码发送失败，请重试",
     "err.negativePrice": "价格不能为负数",
+    "err.amountPositive": "amount 必须大于 0",
+    "err.amountPositiveInt": "amount 必须为正整数",
+    "err.currencyUnsupported": "currency 仅支持 USD | CNY",
+    "err.visionUnsupported": "vision 仅支持 0 | 1",
+    "err.providerModelRequired": "provider 与 model 不能为空",
+    "err.modelKeyRequired": "model 与 key 必填",
+    "err.deptNameQuotaRequired": "name 不能为空且 quota 必须大于 0",
+    "err.quotaPositive": "quota 必须大于 0",
+    "err.deptExists": "该部门名称已存在",
+    "err.deptNotEmpty": "部门下还有成员，请先调整成员部门",
+    "err.reasonRequired": "reason 不能为空",
+    "err.modelNotInCatalog": "provider 与 model 不在模型目录中，无法计价",
+    "err.planNotInCatalog": "plan 不在平台的套餐目录中，无法路由",
+    "err.shareStatusInvalid": "status 必须为 paused / on / off",
+    "err.txTypeInvalid": "交易类型筛选无效",
+    "err.timeParamFormat": "时间参数需为 ISO 8601（RFC3339）",
+    "err.missingModel": "请求体缺少 model 字段",
+    "err.upstreamReadFail": "上游响应读取失败（响应体未完整到达）",
+    "err.streamConvertUnsupported": "该协议组合的流式转换暂未支持",
   };
 
   var EN = {
@@ -1637,6 +1656,25 @@
     "err.raiseHandled": "This request has already been handled",
     "err.codeSendFail": "Failed to send the verification code, please try again",
     "err.negativePrice": "Price cannot be negative",
+    "err.amountPositive": "Amount must be greater than 0",
+    "err.amountPositiveInt": "Amount must be a positive integer",
+    "err.currencyUnsupported": "Currency must be USD or CNY",
+    "err.visionUnsupported": "vision must be 0 or 1",
+    "err.providerModelRequired": "provider and model are required",
+    "err.modelKeyRequired": "model and key are required",
+    "err.deptNameQuotaRequired": "Name is required and quota must be greater than 0",
+    "err.quotaPositive": "Quota must be greater than 0",
+    "err.deptExists": "A department with this name already exists",
+    "err.deptNotEmpty": "This department still has members; reassign them first",
+    "err.reasonRequired": "Reason is required",
+    "err.modelNotInCatalog": "provider and model are not in the model catalog, so this cannot be priced",
+    "err.planNotInCatalog": "plan is not in the platform plan catalog, so this cannot be routed",
+    "err.shareStatusInvalid": "status must be paused / on / off",
+    "err.txTypeInvalid": "Invalid transaction type filter",
+    "err.timeParamFormat": "Time parameters must be ISO 8601 (RFC3339)",
+    "err.missingModel": "Request body is missing the model field",
+    "err.upstreamReadFail": "Failed to read the upstream response (the body did not arrive in full)",
+    "err.streamConvertUnsupported": "Streaming conversion for this protocol combination is not supported yet",
   };
 
   // 后端中文错误 → en 键（lang=en 时对已知错误做映射；未知原样返回）
@@ -1673,6 +1711,34 @@
     ["未登录", "err.authRequired"],
     ["已失效", "err.keyNotFound"],
     ["不存在", "err.notFound"],
+    // —— 下列条目由后端源码的 `"error"` 文案逐字派生（C2129）。此前后端有 20 条用户可见的中文
+    //    文案不在本表里，en 模式下 mapErr 只能原样返回 ⇒ 中文直接落到英文界面上（其中「部门下
+    //    还有 N 名成员，请先调整成员部门」由删除部门这个**可达控件**触发，实测屏幕上就是中文）。
+    //    带运行期插值的三条（`流式协议转换 {u} → {c} 暂未支持` / `部门「{name}」已存在` /
+    //    `部门下还有 {members} 名成员…`）**只取到插值符之前的稳定前缀**：mapErr 是子串匹配，
+    //    渲染后的消息仍命得中，而写全模板永远匹配不上。
+    //    `src/i18n_pack.rs::every_backend_error_message_reaches_the_wordlist` 逐条断言
+    //    「后端源码里的每一条中文错误，都能被本表命中」，并由 `src/` 目录清单兜住漏登记的新文件。
+    ["name 不能为空且 quota 必须大于 0", "err.deptNameQuotaRequired"],
+    ["provider 与 model 不在模型目录中，无法计价", "err.modelNotInCatalog"],
+    ["responses 上游流式转换到 anthropic 客户端暂未支持（P3-B 延后）", "err.streamConvertUnsupported"],
+    ["上游响应读取失败（响应体未完整到达）", "err.upstreamReadFail"],
+    ["plan 不在平台的套餐目录中，无法路由", "err.planNotInCatalog"],
+    ["provider 与 model 不能为空", "err.providerModelRequired"],
+    ["请求体缺少 model 字段", "err.missingModel"],
+    ["部门下还有", "err.deptNotEmpty"],
+    ["amount 必须为正整数", "err.amountPositiveInt"],
+    ["status 必须为 paused / on / off", "err.shareStatusInvalid"],
+    ["currency 仅支持 USD | CNY", "err.currencyUnsupported"],
+    ["vision 仅支持 0 | 1", "err.visionUnsupported"],
+    ["amount 必须大于 0", "err.amountPositive"],
+    ["model 与 key 必填", "err.modelKeyRequired"],
+    ["流式协议转换", "err.streamConvertUnsupported"],
+    ["时间参数需为 ISO 8601", "err.timeParamFormat"],
+    ["type 必须为", "err.txTypeInvalid"],
+    ["reason 不能为空", "err.reasonRequired"],
+    ["quota 必须大于 0", "err.quotaPositive"],
+    ["部门「", "err.deptExists"],
   ];
 
   var current = "zh";

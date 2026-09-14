@@ -27,6 +27,44 @@ const APP_JS: &str = include_str!("../ui/js/app.js");
 /// 三条断言见 `api_client_error_text_is_key_based`。
 const API_JS: &str = include_str!("../ui/js/api.js");
 
+/// 后端**用户可见错误文案**的所在地（C2129）。
+///
+/// `api.js` 把后端 `error` 字段整串交给 `I18n.mapErr()`；`mapErr` 只翻译 `ERR_MAP` 里
+/// 手写登记的那几条中文，其余原样返回 ⇒ 后端每新增一条没人记得登记的错误文案，
+/// en 界面上就多一句中文，而 `cargo test` 全绿。本清单就是这条断言要扫的语料。
+///
+/// ⚠️ 手写清单正是本仓反复踩过的坑（C2072 键盘导航名册、C2127 Enter 登记名册）——
+/// 所以它由 `backend_error_sources_cover_the_routes_directory` 兜住：该测试把
+/// `src/routes/` 的实际目录项与本清单比对，新增路由文件而忘了登记会直接变红，
+/// 而不是「静默少扫一个文件、门禁照常通过」。
+const BACKEND_ERROR_SOURCES: &[(&str, &str)] = &[
+    ("src/gateway.rs", include_str!("gateway.rs")),
+    ("src/routes/mod.rs", include_str!("routes/mod.rs")),
+    ("src/routes/admin.rs", include_str!("routes/admin.rs")),
+    (
+        "src/routes/admin_models.rs",
+        include_str!("routes/admin_models.rs"),
+    ),
+    ("src/routes/api_keys.rs", include_str!("routes/api_keys.rs")),
+    ("src/routes/ops.rs", include_str!("routes/ops.rs")),
+    ("src/routes/org.rs", include_str!("routes/org.rs")),
+    ("src/routes/raise.rs", include_str!("routes/raise.rs")),
+    ("src/routes/sharing.rs", include_str!("routes/sharing.rs")),
+    ("src/routes/wallet.rs", include_str!("routes/wallet.rs")),
+];
+
+/// `ERR_MAP` 的区段标记（表体，不含 `var ERR_MAP = ` 与结尾的 `];`）。
+const ERR_MAP_START: &str = "var ERR_MAP = [";
+const ERR_MAP_END: &str = "\n  ];";
+
+/// 阳性对照真值（口径同 `ZH_KEY_COUNT`：**别口算，让门禁报出真值再照抄**）。
+///
+/// 这两个数把「提取器静默失真」与「后端/词表真的变了」区分开：语料被判空时，
+/// 「每条中文都在词表里」会**恒真**——这正是 C2106 坑 245（提取器返回空字典 ⇒
+/// 「0 处漂移」的假绿）。
+const ERR_MAP_ENTRY_COUNT: usize = 49;
+const BACKEND_ERROR_CJK_COUNT: usize = 45;
+
 /// 语言包区段的起止标记。
 ///
 /// ⚠️ 终点必须取**对象字面量自身的收尾** `"\n  };"`，不能取后面的 `window.I18N`：
@@ -56,8 +94,8 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 787;
-const EN_KEY_COUNT: usize = 787;
+const ZH_KEY_COUNT: usize = 806;
+const EN_KEY_COUNT: usize = 806;
 const STATIC_ATTR_COUNT: usize = 330;
 const STATIC_ATTR_DISTINCT: usize = 305;
 const T_LITERAL_COUNT: usize = 539;
@@ -462,9 +500,18 @@ fn obj_var_names(body: &str) -> Vec<String> {
 ///
 /// 处理范围是刻意最小的：`"…"` / `'…'` / `` `…` ``（含转义）**逐字透传**，
 /// `//…` 到行尾与 `/* … */` 整段丢弃。其余字节原样保留。
+///
+/// ⚠️ 必须在**字节**上搬运、最后整体 `String::from_utf8`（C2129）：曾经写成
+/// `out.push(b[i] as char)`，于是每个 **UTF-8 字节**被当成一个独立码位 —— 中文字面量会变成
+/// 乱码（一个 3 字节汉字 → 3 个 Latin-1 字符，`"中文"` 也再 `contains("中文")` 不成立）。
+/// 而所有旧消费者都只问 `is_ascii()`，乱码同样非 ASCII ⇒ **每一道旧门禁照常通过**，
+/// 这个失真静默了三轮；直到有消费者拿剥完注释的文本去与**未加工**的源文比 `contains()`
+/// （`err_map_pairs` 对 `ERR_MAP`）才暴露：词表 49 条中文全部匹配不上，后端 45 条文案
+/// 被误报成「一条都没登记」——一个**假的**红色，照它去改会往词表里塞 45 条永远命不中的条目。
+/// 教训：一处提取器若只被 `is_ascii()` 这类**弱谓词**消费，它的失真就没有证人。
 fn strip_js_comments(src: &str) -> String {
     let b = src.as_bytes();
-    let mut out = String::with_capacity(src.len());
+    let mut out: Vec<u8> = Vec::with_capacity(src.len());
     let mut i = 0;
     while i < b.len() {
         let c = b[i];
@@ -484,18 +531,18 @@ fn strip_js_comments(src: &str) -> String {
         }
         if c == b'"' || c == b'\'' || c == b'`' {
             let quote = c;
-            out.push(c as char);
+            out.push(c);
             i += 1;
             while i < b.len() {
                 if b[i] == b'\\' {
-                    out.push(b[i] as char);
+                    out.push(b[i]);
                     if i + 1 < b.len() {
-                        out.push(b[i + 1] as char);
+                        out.push(b[i + 1]);
                     }
                     i += 2;
                     continue;
                 }
-                out.push(b[i] as char);
+                out.push(b[i]);
                 if b[i] == quote {
                     i += 1;
                     break;
@@ -504,10 +551,12 @@ fn strip_js_comments(src: &str) -> String {
             }
             continue;
         }
-        out.push(c as char);
+        out.push(c);
         i += 1;
     }
-    out
+    // 删掉的都是 `//…\n` 与 `/*…*/`，两端都是 ASCII ⇒ 切点必落在字符边界上，
+    // 透传的字节序列保持原样，因此这里永远不会失败。
+    String::from_utf8(out).expect("strip_js_comments 只搬运字节，输入是 UTF-8 则输出也是")
 }
 
 /// 收集既不在中文包、也不在英文包中的键（即会被原样显示给用户的键名）。
@@ -974,7 +1023,27 @@ mod tests {
             "阳性对照失败：真实存在的键被判为缺失"
         );
 
-        // ③ 占位符：`err.http` 确实需要 `n`（前置条件），缺 vars 必须被检出
+        // ③ 保真（C2129）：注释之外的文本必须**逐码位**保留。
+        //    曾经的 `out.push(b[i] as char)` 把 UTF-8 字节当成码位 ⇒ 中文字面量变乱码；
+        //    而上面四条控制全用 `is_ascii()`，乱码同样非 ASCII ⇒ 失真**没有证人**。
+        //    直到 `err_map_pairs` 拿剥完注释的 `ERR_MAP` 去与未加工的源文比 `contains()`
+        //    才暴露。这条断言直接钉住保真性，而不是绕道一个弱谓词。
+        let fidelity = "const a = \"中文\"; // 行注释\nconst b = \"✅\"; /* 块注释 */";
+        let stripped = strip_js_comments(fidelity);
+        assert!(
+            stripped.contains("\"中文\""),
+            "strip_js_comments 未逐字透传（`byte as char` 乱码）：{stripped:?}"
+        );
+        assert!(
+            stripped.contains("\"✅\""),
+            "strip_js_comments 未逐字透传（`byte as char` 乱码）：{stripped:?}"
+        );
+        assert!(
+            !stripped.contains("行注释") && !stripped.contains("块注释"),
+            "strip_js_comments 没剥掉注释：{stripped:?}"
+        );
+
+        // ④ 占位符：`err.http` 确实需要 `n`（前置条件），缺 vars 必须被检出
         assert_eq!(
             placeholders(zh.get("err.http").expect("基准包应有 err.http")),
             vec!["n".to_string()],
@@ -994,6 +1063,359 @@ mod tests {
         assert!(
             with_vars.contains(", {"),
             "阳性对照失败：带 vars 的调用点被判为非法"
+        );
+    }
+
+    /// 从 `s[i]`（须是 `"`）读一个字符串字面量，返回内容与其后的下标。
+    ///
+    /// 只处理无转义/简单转义的形态 —— 本模块读的三处源文件（`i18n.js` 的 `ERR_MAP`、
+    /// 后端 `"error"` 文案、合成对照语料）都不含复杂转义。
+    fn read_quoted(s: &str, i: usize) -> Option<(String, usize)> {
+        if s.as_bytes().get(i) != Some(&b'"') {
+            return None;
+        }
+        let b = s.as_bytes();
+        let mut j = i + 1;
+        while j < b.len() {
+            if b[j] == b'\\' {
+                j += 2;
+                continue;
+            }
+            if b[j] == b'"' {
+                return Some((s[i + 1..j].to_string(), j + 1));
+            }
+            j += 1;
+        }
+        None
+    }
+
+    fn skip_ws(s: &str, mut i: usize) -> usize {
+        let b = s.as_bytes();
+        while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\r' | b'\n') {
+            i += 1;
+        }
+        i
+    }
+
+    /// 解析 `ERR_MAP` 的 `[ "中文原文", "键" ]` 条目（注释先剥掉）。
+    fn err_map_pairs() -> Vec<(String, String)> {
+        let body = pack_region(I18N_JS, ERR_MAP_START, ERR_MAP_END);
+        let code = strip_js_comments(body);
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find('[') {
+            let open = from + rel;
+            if let Some((src_text, after)) = read_quoted(&code, skip_ws(&code, open + 1)) {
+                let comma = skip_ws(&code, after);
+                if code.as_bytes().get(comma) == Some(&b',') {
+                    if let Some((key, end)) = read_quoted(&code, skip_ws(&code, comma + 1)) {
+                        out.push((src_text, key));
+                        from = end;
+                        continue;
+                    }
+                }
+            }
+            from = open + 1;
+        }
+        out
+    }
+
+    fn is_cjk(c: char) -> bool {
+        matches!(c, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
+    }
+
+    /// 后端 `"error"` 文案的两种书写形态：
+    /// `json!({ "error": "…" })` / `json!({ "error": format!("…") })`，以及
+    /// `err_json(StatusCode::X, "…")` / `err_json(StatusCode::X, &format!("…"))`。
+    ///
+    /// `#[cfg(test)]` 之后的内容一律不读：测试里的断言说明也是中文，但它们不上线。
+    fn backend_error_literals(src: &str) -> Vec<String> {
+        let src = match src.find("#[cfg(test)]") {
+            Some(i) => &src[..i],
+            None => src,
+        };
+        let mut out = Vec::new();
+
+        // 形态 A：`"error"` 之后（可带 `format!(` / `(`）紧跟的字面量
+        let mut from = 0usize;
+        while let Some(rel) = src[from..].find("\"error\"") {
+            let after = from + rel + "\"error\"".len();
+            let mut i = skip_ws(src, after);
+            if src.as_bytes().get(i) == Some(&b':') {
+                i = skip_ws(src, i + 1);
+            }
+            if src[i..].starts_with("format!") {
+                i += "format!".len();
+            }
+            i = skip_ws(src, i);
+            if src.as_bytes().get(i) == Some(&b'(') {
+                i = skip_ws(src, i + 1);
+            }
+            if let Some((lit, end)) = read_quoted(src, i) {
+                out.push(lit);
+                from = end;
+            } else {
+                from = after;
+            }
+        }
+
+        // 形态 B：`err_json(` 的第二个实参（跳过状态码参数）
+        let mut from = 0usize;
+        while let Some(rel) = src[from..].find("err_json(") {
+            let after = from + rel + "err_json(".len();
+            let mut i = after;
+            while i < src.len() && src.as_bytes()[i] != b',' {
+                i += 1;
+            }
+            i = skip_ws(src, i + 1);
+            if src.as_bytes().get(i) == Some(&b'&') {
+                i = skip_ws(src, i + 1);
+            }
+            if src[i..].starts_with("format!") {
+                i += "format!".len();
+            }
+            i = skip_ws(src, i);
+            if src.as_bytes().get(i) == Some(&b'(') {
+                i = skip_ws(src, i + 1);
+            }
+            if let Some((lit, end)) = read_quoted(src, i) {
+                out.push(lit);
+                from = end;
+            } else {
+                from = after;
+            }
+        }
+        out
+    }
+
+    /// 语料里**没有任何词表条目命中**的消息。
+    ///
+    /// 匹配规则与 `mapErr` 一致：**子串**（`msg.indexOf(条目原文) !== -1`）。
+    /// 因此带运行期插值的消息（`部门「{name}」已存在`）在词表里只登记到插值符之前的
+    /// 稳定前缀即可 —— 写全模板反而永远匹配不上。
+    fn unworded_messages(corpus: &[String], table: &[(String, String)]) -> Vec<String> {
+        corpus
+            .iter()
+            .filter(|m| !table.iter().any(|(cn, _)| m.contains(cn.as_str())))
+            .cloned()
+            .collect()
+    }
+
+    /// `mapErr` 的取值规则：命中多条时取**最长**的那条（否则通用短条目会遮蔽具体条目）。
+    fn longest_match(msg: &str, table: &[(String, String)]) -> Option<String> {
+        let mut best: Option<&str> = None;
+        for (cn, key) in table {
+            let better = match best {
+                None => true,
+                Some(b) => cn.chars().count() > b.chars().count(),
+            };
+            if msg.contains(cn.as_str()) && better {
+                best = Some(key);
+            }
+        }
+        best.map(str::to_string)
+    }
+
+    /// 后端每一条中文错误文案，都必须能被 `ERR_MAP` 命中（C2129）。
+    ///
+    /// `ui/js/api.js` 是唯一同时**构造**错误文案并调用 `mapErr` 的地方：它把后端的
+    /// `error` 字段整串交给词表。词表只翻译手写登记过的中文，其余原样返回 ⇒ 后端写了中文、
+    /// 而词表没登记，英文界面上就显示中文。
+    ///
+    /// 修前实测（jsdom 启真 `ui/index.html` + 四脚本，只 stub `fetch`）：`src/` 的 45 条中文
+    /// 错误里有 **20 条**不在表里；其中「部门下还有 N 名成员，请先调整成员部门」
+    /// （`src/routes/org.rs` DELETE 部门 → 409）由**可达控件**触发 —— 删一个还有成员的部门，
+    /// 屏幕上的 toast 就是中文。
+    ///
+    /// 与 `api_client_error_text_is_key_based` 的分工：那条管**前端**咽喉不得内嵌中文原文，
+    /// 这条管**后端**写下的中文原文有没有对应的词表条目。两条都指向同一个咽喉。
+    #[test]
+    fn every_backend_error_message_reaches_the_wordlist() {
+        let LanguagePacks { zh, en, .. } = packs();
+        let table = err_map_pairs();
+        assert_eq!(
+            table.len(),
+            ERR_MAP_ENTRY_COUNT,
+            "ERR_MAP 解析失真：应得 {ERR_MAP_ENTRY_COUNT} 条，实得 {} —— 表结构变了？",
+            table.len()
+        );
+
+        let mut corpus: BTreeSet<String> = BTreeSet::new();
+        for (_, src) in BACKEND_ERROR_SOURCES {
+            corpus.extend(backend_error_literals(src));
+        }
+        let cjk: Vec<String> = corpus
+            .iter()
+            .filter(|l| l.chars().any(is_cjk))
+            .cloned()
+            .collect();
+        assert_eq!(
+            cjk.len(),
+            BACKEND_ERROR_CJK_COUNT,
+            "后端中文错误文案数应为 {BACKEND_ERROR_CJK_COUNT}，实得 {} —— \
+             提取器已失真或后端文案真的变了（变了就更新这个常量，别让它变成一句空话）",
+            cjk.len()
+        );
+
+        // ① 不变量：每条后端中文文案都必须被词表命中
+        let unworded = unworded_messages(&cjk, &table);
+        assert!(
+            unworded.is_empty(),
+            "后端有 {} 条中文错误不在 ERR_MAP 里 —— en 模式下 mapErr 只能原样返回，\
+             用户会在英文界面上看到中文：\n  - {}",
+            unworded.len(),
+            unworded.join("\n  - ")
+        );
+
+        // ② 词表的**目标键**必须在两个包里都存在（否则 mapErr 把键名当文案显示给用户）
+        let targets: Vec<String> = {
+            let mut t: Vec<String> = table.iter().map(|(_, k)| k.clone()).collect();
+            t.sort();
+            t.dedup();
+            t
+        };
+        let missing = unresolved(
+            targets.iter(),
+            &zh.keys().cloned().collect(),
+            &en.keys().cloned().collect(),
+        );
+        assert!(
+            missing.is_empty(),
+            "ERR_MAP 指向了语言包里不存在的键（界面会显示键名）：{missing:?}"
+        );
+
+        // ③ 最长匹配：带插值的消息**渲染后**必须命中具体条目，不被通用短条目吃掉。
+        //    这一组是「登记前缀而不是全模板」这个决定的运行期证据 —— 全模板永远匹配不上。
+        for (msg, want) in [
+            ("部门「研发中心」已存在", "err.deptExists"),
+            ("部门下还有 3 名成员，请先调整成员部门", "err.deptNotEmpty"),
+            (
+                "流式协议转换 openai_chat → anthropic 暂未支持",
+                "err.streamConvertUnsupported",
+            ),
+            ("type 必须为 consume / earn / all", "err.txTypeInvalid"),
+            (
+                "name 不能为空且 quota 必须大于 0",
+                "err.deptNameQuotaRequired",
+            ),
+            ("验证码不存在或已过期，请重新获取", "err.codeExpired"),
+        ] {
+            assert_eq!(
+                longest_match(msg, &table).as_deref(),
+                Some(want),
+                "消息 {msg:?} 应映射到 {want}"
+            );
+        }
+        // 阴性对照：泛化到具体条目的遮蔽必须被「最长匹配」挡住
+        assert_eq!(
+            longest_match("name 不能为空且 quota 必须大于 0", &table).as_deref(),
+            Some("err.deptNameQuotaRequired"),
+            "通用条目 `quota 必须大于 0` 不得遮蔽更具体的那条"
+        );
+    }
+
+    /// 阴性对照：词表检查器必须真的会失败（否则第 ① 条断言等于没写）。
+    #[test]
+    fn backend_error_wordlist_checker_detects_injected_defects() {
+        let table = err_map_pairs();
+
+        let injected = ["后端新增的错误文案，还没人登记".to_string()];
+        assert_eq!(
+            unworded_messages(&injected, &table).len(),
+            1,
+            "阴性对照失败：未登记的中文错误未被报出"
+        );
+        let registered = ["点数余额不足".to_string()];
+        assert!(
+            unworded_messages(&registered, &table).is_empty(),
+            "阳性对照失败：已登记的中文错误被判为未登记"
+        );
+
+        // 提取器自身的对照：两种书写形态都必须认得出，非文案不得混进来
+        let sample = r#"
+            fn f() {
+                json!({ "error": "中文甲" })
+                json!({ "error": format!("中文乙 {u}") })
+                json!({ "error": { "message": msg } })
+                err_json(StatusCode::BAD_REQUEST, "中文丙")
+                err_json(StatusCode::BAD_REQUEST, &format!("流式协议转换 {u}"))
+                let decoy = "这不是错误文案";
+            }
+            #[cfg(test)]
+            mod tests { fn t() { json!({ "error": "测试文案" }) } }
+        "#;
+        let got = backend_error_literals(sample);
+        for want in ["中文甲", "中文乙 {u}", "中文丙", "流式协议转换 {u}"] {
+            assert!(
+                got.iter().any(|g| g == want),
+                "提取器漏掉了形态 {want:?}，实得 {got:?}"
+            );
+        }
+        assert!(
+            !got.iter().any(|g| g == "测试文案"),
+            "`#[cfg(test)]` 之后的字面量不得被算作用户可见文案"
+        );
+        assert!(
+            !got.iter().any(|g| g == "这不是错误文案"),
+            "与 `error` 字段无关的字面量不得被误收"
+        );
+    }
+
+    /// 手写清单的兜底：**文件系统里的「谁会发出错误文案」才是名册**。
+    ///
+    /// 没有这一条，新增一个文件就是**静默**逃过上面那条门禁（名册不随文件增长 ——
+    /// C2072 / C2127 的同一个形状）。这里刻意读一次文件系统（`CARGO_MANIFEST_DIR` 是
+    /// 编译期绝对路径，与工作目录无关），把「名册」变成**派生**：
+    ///
+    /// 判据不是「`src/routes/` 的目录项与名册一致」（那只覆盖一个目录，顶层新增
+    /// `src/foo.rs` 照样逃逸），而是**用同一个提取器扫全部 `src/*.rs` 与
+    /// `src/routes/*.rs`，产出错误字面量的文件集合必须恰好等于名册**。等号两侧都带牙齿：
+    /// 少登记一个有产出的文件 = 漏扫；名册里留一个没有产出的文件 = 名册在腐烂。
+    ///
+    /// （`src/` 顶层其余文件当前产出 0 条：gate 模块的示例都写在 `#[cfg(test)]` 之内，
+    /// 而提取器在第一个 `#[cfg(test)]` 处截断 —— 这正是它必须截断的理由之一。）
+    #[test]
+    fn backend_error_sources_cover_every_file_that_emits_an_error_literal() {
+        let root = env!("CARGO_MANIFEST_DIR");
+        let mut candidates: Vec<String> = vec!["src/gateway.rs".to_string()];
+        for dir in ["src", "src/routes"] {
+            let d = format!("{root}/{dir}");
+            for e in std::fs::read_dir(&d)
+                .unwrap_or_else(|_| panic!("应能读取 {dir}/"))
+                .filter_map(|e| e.ok())
+            {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if !name.ends_with(".rs") {
+                    continue;
+                }
+                let rel = format!("{dir}/{name}");
+                if !candidates.contains(&rel) {
+                    candidates.push(rel);
+                }
+            }
+        }
+
+        let mut emitters: Vec<String> = Vec::new();
+        for rel in &candidates {
+            let src = std::fs::read_to_string(format!("{root}/{rel}"))
+                .unwrap_or_else(|_| panic!("应能读取 {rel}"));
+            if !backend_error_literals(&src).is_empty() {
+                emitters.push(rel.clone());
+            }
+        }
+        emitters.sort();
+
+        let mut listed: Vec<String> = BACKEND_ERROR_SOURCES
+            .iter()
+            .map(|(p, _)| p.to_string())
+            .collect();
+        listed.sort();
+
+        assert_eq!(
+            emitters, listed,
+            "BACKEND_ERROR_SOURCES 与「实际发出错误文案的文件」不一致 —— 左＝磁盘上的产出者，\
+             右＝名册。漏登记的产出者，其文案不受词表门禁覆盖（英文界面上就是中文）；\
+             名册里多出的条目则是在腐烂。"
         );
     }
 
