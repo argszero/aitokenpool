@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -313,6 +313,26 @@ pub fn migrate(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_transactions_user_id_id ON transactions(user_id, id DESC);
          CREATE INDEX IF NOT EXISTS idx_transactions_user_id_time ON transactions(user_id, time);
          CREATE INDEX IF NOT EXISTS idx_transactions_user_id_type ON transactions(user_id, type);",
+    )?;
+    // v14（rant 2026-09-14T16:51:14）：月聚合查询在 NAS 上要 4~10s。真因不是 NAS 吞吐
+    // （实测 NAS 4KB 热读 1.9µs，与本地盘同级），而是**一次查询要摸多少页** ——
+    // `strftime('%Y-%m', time) = strftime('%Y-%m', 'now')` 把索引列包在函数里 ⇒ 索引失效
+    // ⇒ 全表扫描。v14 做两件事：
+    //   (1) 应用层把那 12 处谓词改成**闭区间**（见 routes/*.rs；语义等价且索引可用）；
+    //   (2) 本步补齐索引，覆盖此前**无索引可用**的两条路径。
+    // 同库同查询实测：strftime 3845ms → 范围谓词 2321ms → 覆盖索引 119ms（18~32x）。
+    conn.execute_batch(
+        // transactions 的「月聚合」有两种读法，各给一条覆盖索引：
+        //   - 带 user_id（wallet.rs 的 summary / dashboard 月聚合）⇒ 只扫 (user_id,time,type,pts)
+        //   - 全库、无 user_id（ops.rs 的 month_in / month_out）⇒ (time,type,pts)
+        "CREATE INDEX IF NOT EXISTS idx_transactions_user_id_time_type_pts
+             ON transactions(user_id, time, type, pts);
+         CREATE INDEX IF NOT EXISTS idx_transactions_time_type_pts
+             ON transactions(time, type, pts);
+         -- usage_records 此前**零索引**（全表扫 4525ms → 加 (time) 后 84ms）
+         CREATE INDEX IF NOT EXISTS idx_usage_records_time ON usage_records(time);
+         -- (user_id, time)：admin.rs 的按成员 LEFT JOIN 走这个前缀
+         CREATE INDEX IF NOT EXISTS idx_usage_records_user_id_time ON usage_records(user_id, time);",
     )?;
     // schema_version 记录**最高的**已迁移版本。⚠️ 必须用 MAX 读：该表没有唯一约束，
     // 而 `INSERT OR REPLACE` 在无冲突时就是普通 INSERT —— 只读第一行的话
@@ -738,6 +758,7 @@ mod tests {
     fn transactions_perf_indexes_created_on_migrate() {
         // v12（rant 2026-08-25T12:02:13）：transactions 性能索引在迁移时建好
         //（summary/COUNT/list 原先全表扫描 + 3 LEFT JOIN，dev 库 23079 行）
+        // v14（rant 2026-09-14T16:51:14）：补两条**覆盖索引**给月聚合（带/不带 user_id 各一）
         let (conn, p) = tmp_db("txidx");
         let names: Vec<String> = conn
             .prepare(
@@ -751,12 +772,105 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "idx_transactions_time_type_pts",
                 "idx_transactions_user_id",
                 "idx_transactions_user_id_id",
                 "idx_transactions_user_id_time",
+                "idx_transactions_user_id_time_type_pts",
                 "idx_transactions_user_id_type",
             ],
-            "四个性能索引都应建好"
+            "六个性能索引都应建好（v12 四条 + v14 两条）"
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn v14_usage_indexes_and_schema_version() {
+        // v14 的另一半：usage_records 此前**零索引**（月聚合/按小时聚合全表扫）。
+        // 这条断言同时把版本门禁钉住：迁移后 MAX(version) 必须是 SCHEMA_VERSION，
+        // 且再迁一次不得追加行（`INSERT OR REPLACE` 在无唯一约束时不会去重）。
+        let (conn, p) = tmp_db("usgidx");
+        let names: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_usage_records_%' ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            names,
+            vec!["idx_usage_records_time", "idx_usage_records_user_id_time"],
+            "usage_records 的两条新索引都应建好"
+        );
+        let maxv: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(maxv, SCHEMA_VERSION, "迁移后最高版本应为 SCHEMA_VERSION");
+        let rows1: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        migrate(&conn).unwrap();
+        let rows2: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows1, rows2, "重复迁移不得再追加 schema_version 行");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn month_range_predicate_is_equivalent_to_strftime_and_excludes_future_rows() {
+        // v14（rant 2026-09-14T16:51:14）：把 12 处月聚合谓词从 `strftime('%Y-%m', time)`
+        // 改写成 `time >= date('now','start of month') AND time < …'+1 month'`。
+        //
+        // 这是那条改写的**独立语义规格**：新写法必须与旧写法给出同一个值，
+        // 且**必须排除未来月份的行**。夹具里刻意放一条下月记录 —— 它正是
+        // 「闭区间」与「只有左界」的唯一区别所在（只有左界会把下月也统计进来）。
+        // 用一张最小表而不是真 schema：被测的是**谓词**，不是表结构。
+        let (conn, p) = tmp_db("pred");
+        conn.execute_batch(
+            "CREATE TABLE t (user_id INTEGER, type TEXT, pts REAL, time TEXT);
+             INSERT INTO t VALUES (1, 'consume', 1.0, datetime('now','start of month','-1 month','+1 day'));
+             INSERT INTO t VALUES (1, 'consume', 2.0, datetime('now','start of month','+1 day'));
+             INSERT INTO t VALUES (1, 'consume', 4.0, datetime('now','start of month','+1 month','+1 day'));",
+        )
+        .unwrap();
+        let old: f64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(pts), 0) FROM t WHERE user_id = ?1 AND type = 'consume' \
+                 AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
+                [1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let new: f64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(pts), 0) FROM t WHERE user_id = ?1 AND type = 'consume' \
+                 AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
+                [1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let lower_bound_only: f64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(pts), 0) FROM t WHERE user_id = ?1 AND type = 'consume' \
+                 AND time >= date('now', 'start of month')",
+                [1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old, 2.0, "旧写法只统计本月（上月与下月都排除）");
+        assert_eq!(new, old, "闭区间必须与旧写法等价");
+        assert_eq!(
+            lower_bound_only, 6.0,
+            "只有左界会把未来月份算进来 —— 这正是必须写闭区间的原因"
         );
         drop(conn);
         let _ = std::fs::remove_file(p);

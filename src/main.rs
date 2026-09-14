@@ -35,6 +35,10 @@ mod sse;
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod table_gate;
+// 时间谓词门禁（C2116）：同样是仅测试期编译 —— src/routes/*.rs 在编译期读入，
+// 加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod perf_gate;
 
 use std::sync::Arc;
 

@@ -104,7 +104,8 @@ pub async fn wallet(
     let month_use: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(pts), 0) FROM transactions \
-             WHERE user_id = ?1 AND type = 'consume' AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
+             WHERE user_id = ?1 AND type = 'consume' \
+               AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
             [auth.user_id],
             |r| r.get(0),
         )
@@ -112,7 +113,8 @@ pub async fn wallet(
     let month_earn: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(pts), 0) FROM transactions \
-             WHERE user_id = ?1 AND type = 'earn' AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
+             WHERE user_id = ?1 AND type = 'earn' \
+               AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
             [auth.user_id],
             |r| r.get(0),
         )
@@ -551,7 +553,8 @@ pub async fn dashboard(
     let mut stmt = conn
         .prepare(
             "SELECT type, COALESCE(SUM(pts), 0) FROM transactions \
-             WHERE user_id = ?1 AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now') \
+             WHERE user_id = ?1 \
+               AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month') \
              GROUP BY type",
         )
         .map_err(internal)?;
@@ -584,7 +587,8 @@ pub async fn dashboard(
              ) \
              SELECT days.day, COALESCE(SUM({}), 0) \
              FROM days \
-             LEFT JOIN transactions t ON date(t.time) = days.day AND t.user_id = ?1 \
+             LEFT JOIN transactions t ON t.time >= days.day AND t.time < date(days.day, '+1 day') \
+               AND t.user_id = ?1 \
              GROUP BY days.day ORDER BY days.day",
             signed_pts_expr("t")
         ))

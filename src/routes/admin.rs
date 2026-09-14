@@ -210,7 +210,8 @@ pub async fn usage(
                     COALESCE(SUM(ur.tokens), 0), COALESCE(SUM(ur.cost), 0), COUNT(ur.id) \
              FROM users u \
              LEFT JOIN usage_records ur ON ur.user_id = u.id \
-                 AND strftime('%Y-%m', ur.time) = strftime('%Y-%m', 'now') \
+                 AND ur.time >= date('now', 'start of month') \
+                 AND ur.time < date('now', 'start of month', '+1 month') \
              LEFT JOIN departments d ON d.id = u.dept_id \
              GROUP BY u.id ORDER BY u.id",
         )
@@ -239,7 +240,8 @@ pub async fn usage(
     let mut stmt = conn
         .prepare(
             "SELECT COALESCE(model, ''), COALESCE(SUM(tokens), 0), COALESCE(SUM(cost), 0), COUNT(*) \
-             FROM usage_records WHERE strftime('%Y-%m', time) = strftime('%Y-%m', 'now') \
+             FROM usage_records WHERE time >= date('now', 'start of month') \
+               AND time < date('now', 'start of month', '+1 month') \
              GROUP BY model ORDER BY SUM(cost) DESC",
         )
         .map_err(internal)?;
@@ -265,7 +267,8 @@ pub async fn usage(
             "SELECT COALESCE(d.name, '（未分配）'), COALESCE(SUM(ur.tokens), 0), COALESCE(SUM(ur.cost), 0), COUNT(ur.id) \
              FROM usage_records ur JOIN users u ON u.id = ur.user_id \
              LEFT JOIN departments d ON d.id = u.dept_id \
-             WHERE strftime('%Y-%m', ur.time) = strftime('%Y-%m', 'now') \
+             WHERE ur.time >= date('now', 'start of month') \
+               AND ur.time < date('now', 'start of month', '+1 month') \
              GROUP BY d.id ORDER BY SUM(ur.cost) DESC",
         )
         .map_err(internal)?;

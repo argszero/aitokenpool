@@ -77,7 +77,8 @@ pub async fn runtime(
         .unwrap_or(0);
     let month_calls: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM usage_records WHERE strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
+            "SELECT COUNT(*) FROM usage_records \
+             WHERE time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
             [],
             |r| r.get(0),
         )
@@ -92,7 +93,7 @@ pub async fn runtime(
         .query_row(
             "SELECT COALESCE(SUM(pts), 0) FROM transactions \
              WHERE type IN ('earn', 'topup', 'gift') \
-               AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
+               AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
             [],
             |r| r.get(0),
         )
@@ -101,7 +102,7 @@ pub async fn runtime(
         .query_row(
             "SELECT COALESCE(SUM(pts), 0) FROM transactions \
              WHERE type IN ('consume', 'expire', 'withdraw') \
-               AND strftime('%Y-%m', time) = strftime('%Y-%m', 'now')",
+               AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
             [],
             |r| r.get(0),
         )
@@ -119,7 +120,7 @@ pub async fn runtime(
             .prepare(
                 "SELECT CAST(strftime('%H', time) AS INTEGER) AS h, COUNT(*) \
                  FROM usage_records \
-                 WHERE date(time) = date('now') GROUP BY h",
+                 WHERE time >= date('now') AND time < date('now', '+1 day') GROUP BY h",
             )
             .map_err(internal)?;
         let rows = stmt

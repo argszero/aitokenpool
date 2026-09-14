@@ -54,7 +54,8 @@ pub async fn list(
                     (SELECT COUNT(*) FROM users u WHERE u.dept_id = d.id), \
                     (SELECT COALESCE(SUM(ur.cost), 0) FROM usage_records ur \
                       JOIN users u ON u.id = ur.user_id WHERE u.dept_id = d.id \
-                      AND strftime('%Y-%m', ur.time) = strftime('%Y-%m', 'now')) \
+                      AND ur.time >= date('now', 'start of month') \
+                      AND ur.time < date('now', 'start of month', '+1 month')) \
              FROM departments d ORDER BY d.id",
         )
         .map_err(internal)?;
