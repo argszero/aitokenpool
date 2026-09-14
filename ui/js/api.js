@@ -1,7 +1,8 @@
 /* AITokenPool — API 客户端层（P2-A，rant 2026-08-18T11:49:52）
  *
  * 封装 fetch：api.get / api.post / api.patch，自动带 Bearer token；
- * 统一错误处理：401 → 清 token 回登录页；非 2xx → 抛 {status, message}。
+ * 统一错误处理：401 → 清 token 回登录页（**仅当调用方未声明 `opts.on401`**，见 `CREDENTIAL_401`）；
+ * 非 2xx → 抛 {status, message}。
  * base URL：默认同源（''），支持 ?api= 查询参数覆盖（部署时指向网关）。
  */
 const api = (() => {
@@ -51,6 +52,22 @@ const api = (() => {
     if (window.__atpLogout) window.__atpLogout();
   }
 
+  // 401 的语义由**调用方**声明（`opts.on401`），默认按「会话已失效」处理。
+  //
+  // 同一个状态码在两类端点上含义不同，而本层看不出区别：
+  //   · 业务端点 → 我们带上去的会话凭据被服务端拒绝了 ⇒ 清 token + 回登录页（全局登出）
+  //   · 凭据端点 → 这个端点**故意**用 401 表示「你刚提交的凭据不对」
+  //                （`POST /api/auth/login`、`POST /api/auth/change-password`）
+  //                ⇒ 那是**调用方**自己的错误，绝不能顺手把用户的会话拆掉
+  //
+  // 不声明（或声明了未知值）一律按会话失效处理 —— 漏声明只会「多登出一次」，
+  // 不会「少登出一次」，失败方向是安全的。
+  //
+  // ⚠️ 修前实测（C2120，jsdom 真表单 + 后端回 401）：登录页输错密码会**多发**一句
+  // 「登录已过期，请重新登录」，而它上面同时还有行内「邮箱或密码错误」——
+  // 用户从没登录过，却被要求重新登录；改密场景更重：会把仍有效的 token 清掉、把人踢出 app。
+  const CREDENTIAL_401 = "credentials";
+
   // 本文件**自己的**错误文案一律按 key 取，不写中文原文（C2029）。
   //
   // 为什么必须这样：`src/i18n_pack.rs` 的三条门禁只读 i18n.js / index.html / app.js，
@@ -70,10 +87,12 @@ const api = (() => {
     return window.t ? window.t(key, vars) : key;
   }
 
-  async function request(method, path, body) {
+  async function request(method, path, body, opts) {
     const headers = { "content-type": "application/json" };
     const token = getToken();
     if (token) headers.authorization = "Bearer " + token;
+    // 401 的含义由调用方声明（见 CREDENTIAL_401 的注释）；未声明按会话失效处理
+    const on401 = (opts && opts.on401) || "session";
     let resp;
     try {
       resp = await fetch(base + path, {
@@ -84,7 +103,7 @@ const api = (() => {
     } catch (e) {
       throw { status: 0, message: T("err.network") };
     }
-    if (resp.status === 401) {
+    if (resp.status === 401 && on401 !== CREDENTIAL_401) {
       handleUnauthorized();
       throw { status: 401, message: T("login.session.expired") };
     }
@@ -108,10 +127,11 @@ const api = (() => {
 
   return {
     base,
-    get: (path) => request("GET", path),
-    post: (path, body) => request("POST", path, body),
-    patch: (path, body) => request("PATCH", path, body),
-    del: (path) => request("DELETE", path),
+    CREDENTIAL_401,
+    get: (path, opts) => request("GET", path, undefined, opts),
+    post: (path, body, opts) => request("POST", path, body, opts),
+    patch: (path, body, opts) => request("PATCH", path, body, opts),
+    del: (path, opts) => request("DELETE", path, undefined, opts),
     saveToken,
     getToken,
     clearToken,

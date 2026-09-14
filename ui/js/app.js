@@ -3331,11 +3331,17 @@
       const btn = e.target.querySelector('button[type="submit"]');
       if (btn) { btn.disabled = true; btn.textContent = T("login.logging"); }
       try {
-        const r = await api.post("/api/auth/login", { email, password: pass });
+        // 这个端点的 401 是「凭据不对」，不是「会话失效」——必须声明（C2120）：否则 api.js
+        // 会清 token 并发一句「登录已过期，请重新登录」，与下面的行内报错同时出现在屏幕上，
+        // 而用户从没登录过。
+        const r = await api.post("/api/auth/login", { email, password: pass }, { on401: api.CREDENTIAL_401 });
         api.saveToken(r.api_key);
-        await loadSession(); // /api/me → 用户信息；/api/wallet → 余额
-        enterApp();
-        toast(T("login.welcome", { name: D.USER.name || email }), "success");
+        // 凭据已被接受 ⇒ 此后与 boot 走**同一个**入口（`restoreSession` 的三档判定）：
+        // 只有 401 意味未登录，网络/5xx 重试一次，其余非 401 照常进 app。
+        // 绝不把刚拿到 token 的用户留在登录页 —— token 已存却显示登录页 = 谎报「已登出」。
+        if (await restoreSession()) {
+          toast(T("login.welcome", { name: D.USER.name || email }), "success");
+        }
       } catch (err) {
         if (err && err.status === 401) {
           setFieldError($("#login-pass"), T("login.err.bad"));

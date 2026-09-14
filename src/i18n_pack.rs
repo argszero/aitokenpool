@@ -1112,4 +1112,103 @@ mod tests {
              the token is still held on this path, so the user is not signed out"
         );
     }
+
+    /// 取 `needle` **最后一次**出现处所属的 `if (…)` 条件头（从该 `if (` 到 `needle` 之间）。
+    ///
+    /// 取最后一次出现是刻意的：`function handleUnauthorized() {` 是定义、位置更靠前，
+    /// 要检查的是**调用点**。
+    fn enclosing_if<'a>(src: &'a str, needle: &str) -> Option<&'a str> {
+        let at = src.rfind(needle)?;
+        let start = src[..at].rfind("if (")?;
+        Some(&src[start..at])
+    }
+
+    /// 取包含 `needle` 的那条语句（`needle` → 下一个 `;`）。
+    ///
+    /// 按分号切而不是按行切：调用点换行时按行取会漏掉实参 —— 形状断言必须容忍排版。
+    fn statement_containing<'a>(src: &'a str, needle: &str) -> Option<&'a str> {
+        let at = src.find(needle)?;
+        let rest = &src[at..];
+        let end = rest.find(';').unwrap_or(rest.len());
+        Some(&rest[..end])
+    }
+
+    /// 401 的语义必须由**调用方**声明：凭据端点的 401 不是「会话过期」（C2120）。
+    ///
+    /// `ui/js/api.js` 的 `request()` 对 401 一律 `handleUnauthorized()`（清 token + 回登录页 +
+    /// 弹「登录已过期，请重新登录」），但 `POST /api/auth/login` **故意**用 401 表示「凭据不对」
+    /// （`src/routes/mod.rs::login` 里两处 `unauthorized()`：邮箱不存在 / 口令错）。
+    /// 修前实测（jsdom 启真 `index.html` + 四真脚本、驱动**真表单**、后端回 401）：屏幕上
+    /// **同时**出现行内「邮箱或密码错误」与一句「登录已过期，请重新登录」—— 后者是错的，
+    /// 这个用户从未登录过（`login.session.expired` 被念给了刚输错密码的人）。
+    ///
+    /// 咽喉层看不出端点语义，只能由调用方在 `opts.on401` 里声明。CI 里没有 JS 运行器，
+    /// 因此这里只钉**形状**（调用点声明了 + 咽喉的 401 分支受该声明守卫），
+    /// 运行期那一半由 `ui/README.md` 的「401 语义」小节与冒烟测试承接。
+    #[test]
+    fn credential_401_is_not_a_session_expiry() {
+        let api_code = strip_js_comments(API_JS);
+        let app_code = strip_js_comments(APP_JS);
+
+        // ① 阳性对照（防「半修」）：会话失效的全局处置必须**仍然**存在。
+        //    把 handleUnauthorized 整个删掉确实能让登录页不再弹错提示，但业务端点的 401
+        //    就再也不会把用户送回登录页 —— 那是拿掉安全行为，不是修缺陷。
+        assert!(
+            api_code.contains("function handleUnauthorized"),
+            "ui/js/api.js 里找不到 handleUnauthorized 的定义：会话失效的全局处置不得被删掉"
+        );
+        assert!(
+            api_code.contains("T(\"login.session.expired\")"),
+            "ui/js/api.js 不再抛出 login.session.expired：业务端点的 401 必须仍判为「会话失效」"
+        );
+        assert!(
+            app_code.contains("window.__atpLogout"),
+            "ui/js/app.js 不再注册 __atpLogout 钩子：会话失效时用户不会被送回登录页"
+        );
+
+        // ② 咽喉层：401 分支必须被「调用方声明」守卫住，不能无条件登出。
+        let guard = enclosing_if(&api_code, "handleUnauthorized()")
+            .expect("ui/js/api.js 里找不到对 handleUnauthorized() 的调用");
+        assert!(
+            guard.contains("CREDENTIAL_401"),
+            "ui/js/api.js 对 401 无条件执行 handleUnauthorized()（守卫：{guard:?}）—— \
+             凭据端点的 401 会顺带清掉用户的 token 并弹一句「登录已过期」"
+        );
+
+        // ③ 登录调用点必须声明自己是凭据端点 —— 这正是会被人「顺手改回去」的那一行。
+        let login_stmt = statement_containing(&app_code, "\"/api/auth/login\"")
+            .expect("ui/js/app.js 里找不到登录请求");
+        assert!(
+            login_stmt.contains("CREDENTIAL_401"),
+            "登录请求未声明 401 语义（语句：{login_stmt:?}）—— 输错密码会同时弹出\
+             「登录已过期，请重新登录」与行内「邮箱或密码错误」两句互相矛盾的提示"
+        );
+
+        // ④ 阴性对照：②③ 用的两个提取器必须能对**合成**的修前形态给出相反的答案，
+        //    否则上面的断言只是恒真的形状巧合（坑 85：门禁「有牙齿」要用计数中性的注入证明）。
+        let before_guard = "if (resp.status === 401) {\n      handleUnauthorized();\n    }";
+        assert!(
+            !enclosing_if(before_guard, "handleUnauthorized()")
+                .expect("合成语料里应能取到守卫")
+                .contains("CREDENTIAL_401"),
+            "阴性对照失败：提取器认不出「无条件登出」的守卫 —— ② 等于没写"
+        );
+        let before_call =
+            "const r = await api.post(\"/api/auth/login\", { email, password: pass });";
+        assert!(
+            !statement_containing(before_call, "\"/api/auth/login\"")
+                .expect("合成语料里应能取到语句")
+                .contains("CREDENTIAL_401"),
+            "阴性对照失败：提取器认不出未声明的调用点 —— ③ 等于没写"
+        );
+        //    阳性对照：同一提取器对**修后**形态必须给出相反答案（真/假两种答案才算检测器）。
+        let after_call =
+            "const r = await api.post(\"/api/auth/login\", body, { on401: api.CREDENTIAL_401 });";
+        assert!(
+            statement_containing(after_call, "\"/api/auth/login\"")
+                .expect("合成语料里应能取到语句")
+                .contains("CREDENTIAL_401"),
+            "阳性对照失败：提取器认不出已声明的调用点"
+        );
+    }
 }
