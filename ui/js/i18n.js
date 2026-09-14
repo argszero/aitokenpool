@@ -94,7 +94,7 @@
     "forgot.done": "密码已重置，请用新密码登录",
     "forgot.err.fail": "重置失败，请检查验证码",
     "verify.err.fail": "验证失败，请重试",
-    "login.session.fail": "会话恢复失败，请重新登录",
+    "login.session.fail": "会话数据加载失败，已进入平台，部分内容可能暂时不可用",
     "login.session.expired": "登录已过期，请重新登录",
     "login.balance.fail": "余额加载失败，显示 0",
 
@@ -891,7 +891,7 @@
     "login.err.bad": "Incorrect email or password",
     "login.err.fail": "Login failed, please try again later",
     "login.welcome": "Welcome back, {name}",
-    "login.session.fail": "Session restore failed, please sign in again",
+    "login.session.fail": "Session data failed to load — you are still signed in, some content may be unavailable",
     "login.session.expired": "Session expired, please sign in again",
     "login.balance.fail": "Balance load failed, showing 0",
     "register.name": "Nickname (optional)",

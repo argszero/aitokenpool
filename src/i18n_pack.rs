@@ -1036,4 +1036,80 @@ mod tests {
             "阳性对照失败：真实存在的键被误报为缺失"
         );
     }
+
+    /// 「这段文案是在要求用户重新登录吗？」
+    ///
+    /// 这是**检测器**不是断言：必须能对合成语料给出真、假两种答案，才配拿去断言真实文案
+    /// （否则一个恒假的检测器会让下面那条断言空转通过）。
+    fn demands_reauthentication(text: &str) -> bool {
+        [
+            "重新登录",
+            "重新认证",
+            "登录已过期",
+            "sign in again",
+            "session expired",
+        ]
+        .iter()
+        .any(|needle| text.contains(needle))
+    }
+
+    /// 会话恢复失败的文案**不得**写成「已登出」。
+    ///
+    /// boot 的会话恢复只在 **401** 时才把用户判成未登录（token 已被服务端作废）；
+    /// 网络错误 / 5xx / 网关 504 等**非 401** 失败时 token 仍在，`ui/js/app.js::restoreSession`
+    /// 会重试一次后**照常进入 app**（rant 2026-09-14T21:15:02 第 4 条）。此时若屏幕上出现
+    /// 「请重新登录」，就是把「加载失败」谎报成「未登录」—— 宿主 2026-09-14 21:00 实测的现象
+    /// （`/api/me` 被拖到 504 ⇒ 停在登录页、token 仍在、URL hash 仍指向上次视图）。
+    ///
+    /// 这里只钉**文案**这一半：两档必须不同，且「加载失败」那档不得要求重新登录。
+    /// 视图状态那一半（非 401 必须进 app）是 JS 控制流，CI 里没有 JS 测试运行器，
+    /// 由 `ui/README.md` 的「会话恢复」小节作为约定与冒烟测试说明承接。
+    #[test]
+    fn session_failure_copy_does_not_claim_the_user_is_logged_out() {
+        let LanguagePacks { zh, en, .. } = packs();
+        let get = |m: &std::collections::BTreeMap<String, String>, k: &str| {
+            m.get(k)
+                .unwrap_or_else(|| panic!("前置条件：语言包应有 {k}"))
+                .clone()
+        };
+        let fail_zh = get(&zh, "login.session.fail");
+        let fail_en = get(&en, "login.session.fail");
+        let expired_zh = get(&zh, "login.session.expired");
+        let expired_en = get(&en, "login.session.expired");
+
+        // ① 检测器的阳性对照（合成语料，不依赖语言包现状）：它必须认得「要求重新登录」的写法。
+        assert!(
+            demands_reauthentication("会话已过期，请重新登录")
+                && demands_reauthentication("Session expired, please sign in again"),
+            "阳性对照失败：检测器认不出「要求重新登录」的写法 —— 下面的断言等于没写"
+        );
+        // ② 阴性对照：不要求重新登录的写法不得被误报
+        assert!(
+            !demands_reauthentication("加载中…"),
+            "阴性对照失败：检测器把中性的加载提示误报成「要求重新登录」"
+        );
+
+        // ③ 两档文案必须不同 —— 相同的话，用户从屏幕上无法分辨自己是「被登出」还是「没连上」。
+        assert_ne!(
+            fail_zh, expired_zh,
+            "登录失败档与未登录档的中文文案相同：用户无法分辨状态"
+        );
+        assert_ne!(
+            fail_en, expired_en,
+            "the load-failure and not-signed-in English copies are identical — the two states become \
+             indistinguishable on screen"
+        );
+
+        // ④ 真正的不变量：token 仍在的用户不该被要求重新登录。
+        assert!(
+            !demands_reauthentication(&fail_zh),
+            "login.session.fail 的中文文案像是在要求重新登录（{fail_zh:?}）—— 但这条路径上 token 仍在，\
+             用户并没有被登出；「加载失败」与「未登录」必须分开表达"
+        );
+        assert!(
+            !demands_reauthentication(&fail_en),
+            "the English login.session.fail copy reads like a sign-in-again instruction ({fail_en:?}) — \
+             the token is still held on this path, so the user is not signed out"
+        );
+    }
 }
