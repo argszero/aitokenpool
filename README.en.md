@@ -2,8 +2,10 @@
 
 [English](README.en.md) | [简体中文](README.md)
 
+🔗 **Live instance**: <https://aitokenpool.args.fun/>
+
 > **Don't let your token plan go to waste.**
-> Subscribed to Claude / ChatGPT / GLM / DeepSeek and can't use it all? Share your quota to earn points — and spend them on models from others when you need to.
+> Subscribed to Claude / ChatGPT / GLM / DeepSeek but can't use it all? Share your idle quota to earn points, then redeem those points for models shared by others — one subscription, the whole model pool.
 
 AITokenPool is an open-source **AI token sharing platform / multi-model gateway** that pools API quota from multiple model providers behind a single entry point with fair per-point allocation. The enterprise edition (internal key pool + per-employee point quotas) and the public edition (users share idle keys to earn points and spend points on others' models) share the same core platform.
 
@@ -22,10 +24,12 @@ AITokenPool is an open-source **AI token sharing platform / multi-model gateway*
 | Scenario | Description |
 |----------|-------------|
 | Enterprises / teams | Buy multiple model plans centrally into a key pool and allocate points to employees — one entry point for all models, controlled cost |
-| Individual subscribers | Share idle subscription quota to earn points, then spend them on other models — subscriptions never go to waste |
+| Individual subscribers | Share quota you can't use to earn points, then redeem those points for other providers' models — subscriptions no longer go to waste |
 | Developers / tinkerers | One OpenAI-compatible API to call every model, with dashboard, reports, and permission system out of the box |
 
 ## Quick Start
+
+> Don't want to deploy it yourself? Just open the live instance at <https://aitokenpool.args.fun/> and sign up (no installation needed).
 
 ### Docker (recommended)
 
