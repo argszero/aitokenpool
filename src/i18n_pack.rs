@@ -2594,6 +2594,19 @@ mod tests { fn t() { json!({ "x": "测试中文" }) } }
                 "{site} 必须经 planLabel 渲染 —— 直接读 `plan.name` 会让 config 未配置时显示空标签：{stmt:?}"
             );
         }
+
+        // ③ 兜底表不得赢过真实清单（C2133 实测的那条路）：Plan 下拉框的重建判据必须是**数据源**，
+        //    而不是「建过没有」。一次性守卫在登录后首次渲染时就把兜底表 `D.PLANS` 定了型
+        //    （`/api/plans` 那次请求还在路上），它回来后下拉框再也不重建 ⇒ `planLabel` 永远没机会
+        //    生效，`en` 界面上显示的就是兜底表里的中文名 —— 光加上 planLabel 是**半修**。
+        assert!(
+            app.contains("selP.dataset.plansSrc"),
+            "Plan 下拉框丢了「数据源变了才重建」的判据（应比对数据源快照，而不是一次性标志）"
+        );
+        assert!(
+            !app.contains("selP.dataset.init"),
+            "Plan 下拉框又回到「一次性初始化」守卫：兜底表会赢到底，真实清单回来后不再重建"
+        );
     }
 
     /// `src` 中 `needle` 之后那个调用的**第一个实参**（括号配平，到顶层 `,` 为止）。

@@ -981,34 +981,44 @@
 
     // 表单下拉（厂商 → Plan → 模型 三级联动；Plan 中「API」= 按量计价的 key）
     const selP = $("#sf-provider");
-    if (!selP.dataset.init) {
-      // Bug 1 修复：优先用 /api/plans（后端 config [[plans]]），未登录/失败降级 data.js 对齐清单
-      const plans = Live.plans || D.PLANS;
-      const planProviders = [...new Set(plans.map((pl) => pl.provider))];
-      selP.innerHTML = '<option value="">' + T("share.select.provider") + "</option>" + planProviders
-        .map((p) => '<option value="' + p + '">' + esc(provLabel(p)) + "</option>").join("");
-      const selPlan = $("#sf-plan");
-      const selM = $("#sf-model");
-      const fillModels = () => {
-        const plan = plans.find((pl) => pl.id === selPlan.value);
-        const p = plan ? plan.provider : selP.value;
-        // 零 mock（rant 15:54:06）：模型下拉登录态用 /api/models（Live.models），游客/兜底 data.js
-        const modelSrc = Live.models ? Live.models : D.MODELS;
-        selM.innerHTML = '<option value="">' + T("share.select.model") + "</option>" + modelSrc.filter((m) => !p || m.provider === p)
-          .map((m) => '<option value="' + m.model + '">' + m.model + "</option>").join("");
-        showPriceHint(selM.value);
-      };
-      const fillPlans = () => {
-        const p = selP.value;
-        selPlan.innerHTML = '<option value="">' + T("share.select.plan") + "</option>" + plans.filter((pl) => pl.provider === p)
-          .map((pl) => '<option value="' + pl.id + '">' + esc(planLabel(pl)) + "</option>").join("");
-        showPlanHint("");
-        fillModels();
-      };
+    const selPlan = $("#sf-plan");
+    const selM = $("#sf-model");
+    // 当前清单：优先 /api/plans（后端 config [[plans]] 单一真源），未登录/拉取失败降级 data.js。
+    // 每次读（不是捕获一份副本）：登录后首次渲染时 `Live.plans` 还没回来，随后会被真实清单替换，
+    // 而监听器只在第一次渲染时登记一次 —— 捕获副本的写法会让监听器永远指着那份兜底表。
+    const plansSrc = () => Live.plans || D.PLANS;
+    const fillModels = () => {
+      const plan = plansSrc().find((pl) => pl.id === selPlan.value);
+      const p = plan ? plan.provider : selP.value;
+      // 零 mock（rant 15:54:06）：模型下拉登录态用 /api/models（Live.models），游客/兜底 data.js
+      const modelSrc = Live.models ? Live.models : D.MODELS;
+      selM.innerHTML = '<option value="">' + T("share.select.model") + "</option>" + modelSrc.filter((m) => !p || m.provider === p)
+        .map((m) => '<option value="' + m.model + '">' + m.model + "</option>").join("");
+      showPriceHint(selM.value);
+    };
+    const fillPlans = () => {
+      const p = selP.value;
+      selPlan.innerHTML = '<option value="">' + T("share.select.plan") + "</option>" + plansSrc().filter((pl) => pl.provider === p)
+        .map((pl) => '<option value="' + pl.id + '">' + esc(planLabel(pl)) + "</option>").join("");
+      showPlanHint("");
+      fillModels();
+    };
+    // 监听器只登记一次（重建下拉框不该重复登记，否则一次 change 会级联跑两遍）
+    if (!selP.dataset.wired) {
       selP.addEventListener("change", fillPlans);
       selPlan.addEventListener("change", () => { showPlanHint(selPlan.value); fillModels(); });
       selM.addEventListener("change", () => showPriceHint(selM.value));
-      selP.dataset.init = "1";
+      selP.dataset.wired = "1";
+    }
+    // 重建的判据是**数据源**，不是「建过没有」（C2133）：登录后首次渲染时 /api/plans 还在路上，
+    // 兜底表会先建一次；若按「建过就跳过」，真实清单回来后下拉框**永远**不重建 —— 那个一次性
+    // 守卫等于让兜底表赢到底，`planLabel` 也就永远没机会生效（en 界面上就是兜底表里的中文名）。
+    const src = Live.plans ? "live" : "fallback";
+    if (selP.dataset.plansSrc !== src) {
+      selP.innerHTML = '<option value="">' + T("share.select.provider") + "</option>" +
+        [...new Set(plansSrc().map((pl) => pl.provider))]
+          .map((p) => '<option value="' + p + '">' + esc(provLabel(p)) + "</option>").join("");
+      selP.dataset.plansSrc = src;
       fillPlans();
     }
 
