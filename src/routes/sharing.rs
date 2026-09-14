@@ -152,13 +152,29 @@ pub async fn create(
     })))
 }
 
-/// 单条共享（含收益汇总）；key 先解密再脱敏展示
+/// 共享列表 / 单条共用的**同一份** `SELECT`（两个调用点只差 `WHERE`）。
 ///
-/// ⚠️ 本函数**按下标读列**（`r.get(N)`），因此列顺序由调用方的 `SELECT` 决定：
-/// 两个调用点（`list` / `patch`）的列表**必须逐字一致**。只改一处会让所有字段静默错位
-/// （不报错、类型也往往恰好兼容），所以新增列一律**追加在末尾**，并同步改两处。
+/// 收益（`earn`）用**一次批量聚合**左连进来，而不是每行再跑一次
+/// `SELECT SUM(pts) … WHERE key_id = ?1 AND type = 'earn'`（rant 2026-09-14T21:15:02 第 2 条）：
+/// 共享页 N 行 ⇒ N 次子查询（每次 prepare + 索引查找），批量版只读一遍覆盖索引
+/// `idx_transactions_key_id_type_pts`。200,000 行 / 8 个 key 本机实测：8 次子查询 1.54 ms，
+/// 批量 0.02 ms；NAS 上每次子查询还要多摸若干页，差距随 N 放大。
+///
+/// 列顺序决定 [`sharing_row`] 的下标读取，且两个调用点必须**逐字相同** —— 只改一处会让所有字段
+/// 静默错位（不报错、类型也往往恰好兼容）。提取成常量就是为了让这件事只剩下一个地方可改
+/// （镜像 `admin_models.rs::ROW_SELECT` 的写法）。新增列一律**追加在末尾**。
+const ROW_SELECT: &str = "SELECT k.id, k.provider, k.plan, k.model, k.status, k.encrypted_key, \
+                k.quota, k.used, k.available_days, k.available_start, k.available_end, k.note, \
+                k.created_at, COALESCE(e.earn, 0) \
+         FROM keys k \
+         LEFT JOIN (SELECT key_id, SUM(pts) AS earn FROM transactions WHERE type = 'earn' \
+                    GROUP BY key_id) e ON e.key_id = k.id ";
+
+/// 单条共享（含收益汇总）；key 先解密再脱敏展示。
+///
+/// ⚠️ 本函数**只读列、不发 SQL**（收益来自 `ROW_SELECT` 的批量聚合；`perf_gate` 有断言守着）——
+/// 一旦在这里补一次 `query_row`，列表端点就退回 N+1。
 fn sharing_row(
-    conn: &rusqlite::Connection,
     crypto: &crate::crypto::Crypto,
     r: &rusqlite::Row,
 ) -> rusqlite::Result<serde_json::Value> {
@@ -177,6 +193,8 @@ fn sharing_row(
     let end: String = r.get(10)?;
     let note: String = r.get(11)?;
     let created_at: String = r.get(12)?;
+    // 收益：该 key 的 earn 交易累计 —— 由 `ROW_SELECT` 的批量聚合给出（不是每行一次子查询）
+    let earn: f64 = r.get(13)?;
     // 解密 → 脱敏（sk-****xxxx）；解密失败展示 ****
     let masked = crypto
         .decrypt(&encrypted_key)
@@ -184,14 +202,6 @@ fn sharing_row(
         .and_then(|k| String::from_utf8(k).ok())
         .map(|k| mask_upstream_key(&k))
         .unwrap_or_else(|| "****".to_string());
-    // 收益：该 key 的 earn 交易累计
-    let earn: f64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(pts), 0) FROM transactions WHERE key_id = ?1 AND type = 'earn'",
-            [id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0.0);
     Ok(serde_json::json!({
         "id": id,
         "provider": provider,
@@ -219,14 +229,12 @@ pub async fn list(
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     let crypto = st.crypto.clone();
     let mut stmt = conn
-        .prepare(
-            "SELECT id, provider, plan, model, status, encrypted_key, quota, used, \
-                    available_days, available_start, available_end, note, created_at \
-             FROM keys WHERE owner_id = ?1 ORDER BY id DESC",
-        )
+        .prepare(&format!(
+            "{ROW_SELECT} WHERE k.owner_id = ?1 ORDER BY k.id DESC"
+        ))
         .map_err(internal)?;
     let rows = stmt
-        .query_map([auth.user_id], |r| sharing_row(&conn, &crypto, r))
+        .query_map([auth.user_id], |r| sharing_row(&crypto, r))
         .map_err(internal)?;
     let mut out = Vec::new();
     for r in rows {
@@ -263,13 +271,9 @@ pub async fn patch(
     }
     let crypto = st.crypto.clone();
     let row = conn
-        .query_row(
-            "SELECT id, provider, plan, model, status, encrypted_key, quota, used, \
-                    available_days, available_start, available_end, note, created_at \
-             FROM keys WHERE id = ?1",
-            [id],
-            |r| sharing_row(&conn, &crypto, r),
-        )
+        .query_row(&format!("{ROW_SELECT} WHERE k.id = ?1"), [id], |r| {
+            sharing_row(&crypto, r)
+        })
         .map_err(internal)?;
     Ok(Json(row))
 }
@@ -404,6 +408,167 @@ mod tests {
         assert!(!body.contains("sk-realsecret1234"), "列表不得泄露明文");
         assert_eq!(row["status"], "on");
         assert_eq!(row["available_end"], "18:00");
+    }
+
+    /// rant 2026-09-14T21:15:02 第 2 条：共享页的收益（`earn`）**一次批量聚合**取回，
+    /// 而不是每行一次 `SELECT SUM(pts) … WHERE key_id = ?1 AND type = 'earn'`。
+    ///
+    /// 两件事必须同时成立，所以这条测试同时断言它们：
+    /// ① 值正确（`earn` 只算 `type='earn'`，`consume` 不计入）且**跨用户不串味** ——
+    ///    批量聚合读的是**全库** key 的 earn，再按 `key_id` 左连，一旦归属判断写错，
+    ///    别人的收益会贴到我的行上（信息泄露 + 金额错）；
+    /// ② `list` 与 `patch` **两个调用点**给出同一个值（共用的 `ROW_SELECT` 是唯一真源）。
+    #[tokio::test]
+    async fn sharings_earn_is_one_batched_aggregate() {
+        let st = test_state("earn");
+        let key = login(st.clone()).await;
+
+        // 两个 key（同一用户）：key_a 有 earn、key_b 只有 consume
+        let mut ids = Vec::new();
+        for (i, name) in ["a", "b"].iter().enumerate() {
+            let (s, body) = send(
+                st.clone(),
+                "POST",
+                "/api/sharings",
+                Some(&format!(
+                    r#"{{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-{name}00000000","quota":{}}}"#,
+                    1000 + i
+                )),
+                &key,
+            )
+            .await;
+            assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+            ids.push(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+                    .as_i64()
+                    .unwrap(),
+            );
+        }
+        let (key_a, key_b) = (ids[0], ids[1]);
+
+        // 另一个用户的 key + 一笔巨大的 earn：不许出现在我的列表里，也不许贴到我的行上
+        let (uid, other_key, other_uid) = {
+            let conn = st.db.lock().unwrap();
+            let uid: i64 = conn
+                .query_row(
+                    "SELECT id FROM users WHERE email = 'demo@aitokenpool.local'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            conn.execute(
+                "INSERT INTO users (email, password_hash, name, role) VALUES ('other@x.local', 'x', 'other', 'user')",
+                [],
+            )
+            .unwrap();
+            let other_uid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO keys (owner_id, provider, plan, model, status, encrypted_key, quota, used, \
+                 available_days, available_start, available_end, note) \
+                 VALUES (?1, 'deepseek', 'deepseek-paygo', 'deepseek-flash', 'on', 'v1:x', 10, 0, '', '', '', '')",
+                [other_uid],
+            )
+            .unwrap();
+            let other_key = conn.last_insert_rowid();
+            // key_a：earn 3.5 + earn 1.5 = 5.0（消费 9.0 不计入收益）
+            conn.execute_batch(&format!(
+                "INSERT INTO transactions (user_id, key_id, type, pts) VALUES
+                   ({uid}, {key_a}, 'earn', 3.5),
+                   ({uid}, {key_a}, 'earn', 1.5),
+                   ({uid}, {key_a}, 'consume', 9.0),
+                   ({uid}, {key_b}, 'consume', 2.0);
+                 INSERT INTO transactions (user_id, key_id, type, pts) VALUES
+                   ({other_uid}, {other_key}, 'earn', 1000.0);"
+            ))
+            .unwrap();
+            (uid, other_key, other_uid)
+        };
+
+        let (s, body) = send(st.clone(), "GET", "/api/sharings", None, &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        // 登录会自动给用户建一把分发 key（`dao.rs`），故列表 3 行：那一把 earn 0
+        assert_eq!(arr.len(), 3, "只应看到自己的三把 key：{body}");
+        let row_a = arr.iter().find(|r| r["id"] == key_a).unwrap();
+        let row_b = arr.iter().find(|r| r["id"] == key_b).unwrap();
+        assert_eq!(row_a["earn"], 5.0, "earn 只累计 type='earn'：{body}");
+        assert_eq!(row_b["earn"], 0.0, "只有 consume 的行收益为 0：{body}");
+        assert!(
+            arr.iter().all(|r| r["id"] != other_key),
+            "别的用户的 key 不得出现在我的列表里：{body}"
+        );
+        let earn_sum: f64 = arr.iter().map(|r| r["earn"].as_f64().unwrap()).sum();
+        assert_eq!(
+            earn_sum, 5.0,
+            "别的 key 的 1000.0 若被串进来，总和会是 1005.0：{body}"
+        );
+        // quota 未被收益污染（同一次查询里两列都来自 keys 行）
+        assert_eq!(row_a["quota"], 1000.0);
+        assert_eq!(row_b["quota"], 1001.0);
+
+        // ② PATCH 单条走同一份 ROW_SELECT ⇒ 同一个值
+        let (s, body) = send(
+            st.clone(),
+            "PATCH",
+            &format!("/api/sharings/{key_a}"),
+            Some(r#"{"status":"paused"}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let one: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            one["earn"], 5.0,
+            "patch 与 list 必须给出同一个 earn（同一份 SELECT）：{body}"
+        );
+        assert_eq!(one["status"], "paused");
+
+        // 阳性对照：夹具本身有效 —— 把别的 key 的 1000.0 也算进来会得到 1005.0
+        assert_ne!(uid, other_uid);
+    }
+
+    /// 同一件事的**计划层**证据（`perf_gate` 只保证源码形状，计划才证明优化器真的这么跑）：
+    /// 列表查询里的 earn 必须是**一个**未被关联的子查询（`MATERIALIZE`），
+    /// 且它扫的是覆盖索引 `idx_transactions_key_id_type_pts`（v15 迁移建的），不是回表。
+    /// 关联子查询（`CORRELATED SCALAR SUBQUERY`）就是 N+1 的形状 —— 那正是本改动要去掉的。
+    #[test]
+    fn the_list_query_aggregates_earn_once_over_a_covering_index() {
+        let st = test_state("plan");
+        let conn = st.db.lock().unwrap();
+        let uid: i64 = conn
+            .query_row(
+                "SELECT id FROM users WHERE email = 'demo@aitokenpool.local'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // 3000 行 / 3 个 key：行数太少优化器会「合理地」选全表扫
+        conn.execute_batch(&format!(
+            "WITH RECURSIVE c(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM c WHERE n < 2999)
+             INSERT INTO transactions (user_id, key_id, type, pts)
+               SELECT {uid}, 1 + (n % 3), CASE WHEN n % 3 = 0 THEN 'earn' ELSE 'consume' END, 0.5 FROM c;"
+        ))
+        .unwrap();
+        let sql = format!("{ROW_SELECT} WHERE k.owner_id = ?1 ORDER BY k.id DESC");
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let plan: Vec<String> = stmt
+            .query_map([uid], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let plan = plan.join(" | ");
+        assert!(
+            !plan.contains("CORRELATED"),
+            "earn 不得是关联子查询（每行一次 ⇒ N+1）：{plan}"
+        );
+        assert!(
+            plan.contains("COVERING INDEX idx_transactions_key_id_type_pts"),
+            "earn 聚合法应扫覆盖索引（v15 迁移建的）：{plan}"
+        );
+        assert!(
+            !plan.contains("SCAN transactions\n") && !plan.contains("SCAN transactions |"),
+            "不得对 transactions 做非覆盖全表扫：{plan}"
+        );
     }
 
     #[tokio::test]
