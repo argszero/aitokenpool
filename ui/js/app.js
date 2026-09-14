@@ -1315,20 +1315,24 @@
   const txType = (k) => (TX_TYPE[k] ? TX_TYPE[k]() : k);
   const txStatus = (s) => s === "成功" ? T("tx.status.success") : s === "处理中" ? T("tx.status.pending") : s === "入账" ? T("tx.status.credited") : s;
 
+  // 交易表的列筛选**只有服务端一个实现**（rant 2026-08-25T10:33:26）：每个带 `filter` 的列都声明
+  // `serverFilter: true`，含义是「这列的筛选值随请求发给服务端（`txFilterParams`）」⇒ 客户端
+  // 不得再用 `filterRows` 本地筛一遍（同一条规则的第二份实现，归一化与语义都不同，见 `filterRows`）。
+  // 新增带 `filter` 的列时**必须**一并声明它 —— 少了它，本地就会多筛一层。
   const TX_COLUMNS = [
     // rant 2026-08-23T16:01:07：列表内移除 time 列筛选（外部 tx-range 已有时间段筛选，两套并存冗余）
     { key: "time", title: () => T("tx.col.time"), sort: "string", render: (t) => timeCell(t.time, true) },
-    { key: "type", title: () => T("tx.col.type"), sort: "string", filter: "select",
+    { key: "type", title: () => T("tx.col.type"), sort: "string", filter: "select", serverFilter: true,
       // C2031：选项「值」与「文案」分离 —— value 恒为数据库值（语言无关），label 才随语言变。
       // 这样筛选状态存的是 DB 值，切换语言后 filterVal 仍能匹配（此前状态存本地化文案 ⇒ 切语言即失配，表格变空）
       options: () => ["consume", "earn", "topup", "withdraw", "gift", "expire"].map((k) => ({ value: k, label: txType(k) })),
       filterVal: (t) => t.type,
       render: (t) => t.type === "earn" ? '<span class="pill pill-ok">' + T("tx.type.earn") + "</span>" : t.type === "consume" ? '<span class="pill pill-accent">' + T("tx.type.consume") + "</span>" : t.type === "gift" ? '<span class="pill pill-ok">' + T("tx.type.gift") + "</span>" : '<span class="pill pill-muted">' + esc(txType(t.type)) + "</span>" },
     // rant 2026-08-22T17:21:39 需求 2：新增「用户」列（transactions.user_id JOIN users 取用户名）
-    { key: "user", title: () => T("tx.col.user"), sort: "string", filter: "text" },
-    { key: "model", title: () => T("tx.col.model"), sort: "string", filter: "text" },
+    { key: "user", title: () => T("tx.col.user"), sort: "string", filter: "text", serverFilter: true },
+    { key: "model", title: () => T("tx.col.model"), sort: "string", filter: "text", serverFilter: true },
     // rant 2026-08-22T17:21:39 需求 2：Key 列改为显示分发 key 的 name（api_keys.name），而非上游 keys 的 provider/plan
-    { key: "key", title: () => T("tx.col.apiKeyName"), sort: "string", filter: "text" },
+    { key: "key", title: () => T("tx.col.apiKeyName"), sort: "string", filter: "text", serverFilter: true },
     // C2102：四列 Token 的排序键不能在行对象上找 —— 行里存的是 K/M **显示串**（`tokens`/`inputTokens`…）
     // 与精确值两套字段（`tokensRaw`/`inputRaw`…），列 key 与行字段名不同源 ⇒ 默认 `row[key]` 取到
     // undefined（input/cached/output）或显示串（tokens），`Number()` 得 NaN ⇒ 比较器恒「相等」，
@@ -1345,7 +1349,7 @@
     { key: "tokens", title: () => T("tx.col.tokens"), sort: "number", align: "num",
       render: (t) => '<span' + t.tokenBrk(T("tx.col.tokens"), t.tokensRaw) + '>' + t.tokens + "</span>",
       sortVal: (t) => t.tokensRaw },
-    { key: "pts", title: () => T("tx.col.pts"), sort: "number", filter: "number-range", align: "num",
+    { key: "pts", title: () => T("tx.col.pts"), sort: "number", filter: "number-range", align: "num", serverFilter: true,
       // C2047：方向取自 type（signedPts），不能按 pts 的符号判 —— 所有 writer 都存正数 ⇒ 消费会显示成绿色的 +N
       render: (t) => {
         const v = signedPts(t.type, t.pts);
@@ -1356,7 +1360,7 @@
       // 按 3 到 4 反而命中那条「-3.7」的行。
       filterVal: (t) => signedPts(t.type, t.pts),
       sortVal: (t) => signedPts(t.type, t.pts) },
-    { key: "status", title: () => T("tx.col.status"), sort: "string", filter: "select",
+    { key: "status", title: () => T("tx.col.status"), sort: "string", filter: "select", serverFilter: true,
       // C2031：同 type —— value 是库内值（成功/入账/处理中，语言无关），label 随语言变
       options: () => ["成功", "入账", "处理中"].map((s) => ({ value: s, label: txStatus(s) })),
       filterVal: (t) => t.status,
@@ -1668,7 +1672,9 @@
     // 零 mock（rant 15:54:06）：登录态用后端数据，失败直接提示
     if (loggedIn() && !Live.transactions) { toast(T("tx.export.none"), "info"); return; }
     let list = Live.transactions ? txsToView(Live.transactions.items || []) : [];
-    list = filterRows(list, TX_COLUMNS, txTable.filters); // 与表格可见行一致（含列筛选）
+    // 与表格可见行一致：列筛选由**服务端**施加（列上声明了 `serverFilter`，见 TX_COLUMNS），
+    // 故这里不需要也不得本地再筛一遍 —— 服务端返回的行就是表格显示的行（C2114）。
+    list = filterRows(list, TX_COLUMNS, txTable.filters);
     if (!list.length) { toast(T("tx.export.none"), "info"); return; }
     const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const headers = [T("tx.col.time"), T("tx.col.type"), T("tx.col.user"), T("tx.col.model"), T("tx.col.apiKeyName"), T("tx.col.input"), T("tx.col.cached"), T("tx.col.output"), T("tx.col.tokens"), T("tx.col.pts"), T("tx.col.status")];
@@ -1750,13 +1756,20 @@
      state:  { sort: [{key,dir}], filters: {key:val}, page, pageSize }（原地更新，跨页保留） */
 
   // 按列筛选条件过滤行（buildDataTable 与交易汇总条共用，保证汇总与表格可见行一致）
+  //
+  // ⚠️ 只筛**客户端自己筛**的列。交易表的列筛选由**服务端**施加（rant 2026-08-25T10:33:26：列筛选
+  // 从「本地过滤当前页」改为「后端全量过滤」），那些列声明 `serverFilter: true` ⇒ 这里跳过。
+  // 理由：服务端已按**同一组**筛选返回了行，本地再筛一遍等于同一规则的**第二份实现**，而两边的
+  // 归一化与匹配语义并不相同 —— 请求侧 `txFilterParams` 先 `trim()`、服务端用 SQL `LIKE`，本函数
+  // 既不去空白也不认通配符 ⇒ 用户输入 `"deepseek "`（尾随空格）时服务端命中并返回该行，本地却把它
+  // 删掉：表格空，而「共 N 条」与汇总卡仍按 N 显示（C2114）。消除副本，而不是让副本跟上。
   function filterRows(rows, columns, filters) {
     return rows.filter((row) => {
       for (const key of Object.keys(filters)) {
         const fv = filters[key];
         if (fv == null || fv === "") continue;
         const col = columns.find((c) => c.key === key);
-        if (!col || !col.filter) continue;
+        if (!col || !col.filter || col.serverFilter) continue;
         const v = col.filterVal ? col.filterVal(row) : row[key];
         if (col.filter === "select") { if (String(v) !== String(fv)) return false; }
         else if (col.filter === "number-range") {

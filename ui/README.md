@@ -179,7 +179,7 @@ ui/
 ## 交易汇总卡约定（v1.19 → v1.23 改版，rant 2026-09-11T16:23:43 第 7 节）
 
 - 交易记录页顶部为**汇总卡** `#tx-summary`（`.stat-grid` + 5 张 `.stat-card`，改用 PR3 通用组件层）：**消费 / 收益 / 点数变化 / Token 合计 / 记录数**，正数 `var(--ok)`、负数 `var(--danger-text)`、零值中性；
-- **口径不变**（数据契约未动）：汇总值来自后端 `summary` 全量 SQL 聚合（`filterRows(list, TX_COLUMNS, txTable.filters)` 为无 summary 时的兜底），**不受分页影响**；「记录数」取后端 `total`（真分页下即当前筛选条件的全量条数）；
+- **口径不变**（数据契约未动）：汇总值来自后端 `summary` 全量 SQL 聚合（无 summary 时兜底用 `filterRows(list, TX_COLUMNS, txTable.filters)`），**不受分页影响**；「记录数」取后端 `total`（真分页下即当前筛选条件的全量条数）；
 - 工具栏右侧 `#tx-count` 同步显示 `tx.pager.count`（共 N 条），与汇总卡的记录数同源；
 - 图表：`#tx-trend` 改用原型 `.trend` 双色柱状（消费 / 收益两柱 + `.legend`），数据源仍是 `/api/transactions/trend`；**x 轴按请求窗口补零，保证左→右时间递增且柱距恒定**（后端 GROUP BY 只返回有交易的桶，缺行会导致柱子左移——原型同款 bug 的根因）；
 - 窄屏（≤560px）`.stat-grid` 两列、`.trend` 高度收紧。
@@ -267,7 +267,8 @@ ui/
 ## 交易记录导出 CSV 约定（v1.20，rant 2026-08-17T20:46:57 E）
 
 - 入口：交易页 page-head 右上 **`#tx-export-btn`「导出 CSV」**（`.btn.btn-secondary.btn-sm`），`bindEvents` 绑 `exportTxCsv`；
-- 数据范围：**当前筛选可见行** = tab（全部/消费/收益）→ `filterRows(list, TX_COLUMNS, txTable.filters)`（与表格、汇总条同一数据源）；无数据 → toast info 不导出；
+- 数据范围：**当前筛选可见行** = 服务端按 tab + 列筛选返回的行（**列筛选只有服务端一个实现**：`TX_COLUMNS` 每个带 `filter` 的列都声明 `serverFilter: true`，见 C2114）；导出与表格共用 `filterRows(list, TX_COLUMNS, txTable.filters)`，而该调用对已声明 `serverFilter` 的列**不生效** ⇒ 导出的行 = 表格显示的行；无数据 → toast info 不导出；
+  ⚠️ 不要在客户端再筛一遍：请求侧 `txFilterParams` 会 `trim()`、服务端用 SQL `LIKE`，与本地子串比较的语义不同，重复筛选会把服务端认可的行删掉（表格空、计数与汇总卡却仍有数 —— 见 C2114）；
 - **各列与表格单元格同口径**（C2054 点数 / C2111 时间）：时间列走渲染单元格的同一个 `fmtPrecise(t.time)`（本地精确时间），**不**直接写视图行的 `t.time`（库内 UTC 串，`txsToView` 不转换）——否则同一行在表里是 `23:04`、在导出文件里却是 `15:04`（东八区；西半球反向）。`#139`（rant 2026-08-24T12:38:44）把单元格改成当地时间展示时，漏了导出这个消费者；
 - 格式：**UTF-8 BOM**（`"\uFEFF"` 前缀）+ `\r\n` 换行 + 表头 `时间,类型,模型 / Key,Token 用量,点数,状态`；类型用 `TX_TYPE` 中文映射；点数正负号原值；字段含 `,`/`"`/换行按 RFC4180 双引号转义（`cell()` 助手）；
 - 下载：`Blob(type="text/csv;charset=utf-8")` → `URL.createObjectURL` → 临时 `<a download>` click → `remove()` → `setTimeout 1s` revoke；文件名 **`aitokenpool-transactions-YYYYMMDD.csv`**（`new Date()` 本地日期）；
