@@ -17,8 +17,7 @@
   // 模型价格（对齐 config.toml [[models]] 官方价，折算为点数 / 1M tokens）——上架表单定价兜底
   const MODELS = [
     { provider: "deepseek", model: "deepseek-v4-pro",  in: CNY(4.5),   out: CNY(13.5),  ctx: 1048576, max: 384000, tag: "推理" },
-    { provider: "deepseek", model: "deepseek-v4-flash", in: CNY(1.5),   out: CNY(4.5),   ctx: 1048576, max: 384000, tag: "通用" },
-    { provider: "deepseek", model: "deepseek-v4-flash-vision-exp", in: CNY(1.5), out: CNY(4.5), ctx: 1048576, max: 384000, tag: "读图" },
+    { provider: "deepseek", model: "deepseek-flash",   in: CNY(1.0),   out: CNY(4.0),   ctx: 1048576, max: 384000, tag: "多模态" },
     { provider: "zhipu",    model: "glm-5.3",          in: CNY(8.0),   out: CNY(28.0),  ctx: 1048576, max: 131072, tag: "旗舰" },
     { provider: "openai",   model: "gpt-5.6-sol",      in: USD(5.0),   out: USD(30.0),  ctx: 1050000, max: null,   tag: "旗舰" },
     { provider: "anthropic",model: "claude-opus-5",     in: USD(5.0),   out: USD(25.0),  ctx: 1000000, max: null,   tag: "旗舰" },
@@ -79,7 +78,7 @@
     // 市场在售 key（游客浏览用；rant 2026-08-19T15:54:06：multi/success 为虚构数据已移除；
     // 登录态用 GET /api/models 真实数据，multi=available_keys>=2、ctx=context_window）
     MARKET: [
-      { id: 1, provider: "deepseek", model: "deepseek-v4-flash", in: CNY(1.5),  out: CNY(4.5),   ctx: 1048576, avail: true, peak: true, peakIn: CNY(3.0), peakOut: CNY(9.0), peakMult: 2 },
+      { id: 1, provider: "deepseek", model: "deepseek-flash",    in: CNY(1.0),  out: CNY(4.0),   ctx: 1048576, avail: true, peak: true, peakIn: CNY(2.0), peakOut: CNY(8.0), peakMult: 2 },
       { id: 2, provider: "zhipu",    model: "glm-5.3",           in: CNY(8.0),  out: CNY(28.0),  ctx: 1048576, avail: true },
       { id: 3, provider: "openai",   model: "gpt-5.6-sol",       in: USD(5.0),  out: USD(30.0),  ctx: 1050000, avail: true },
       { id: 4, provider: "anthropic",model: "claude-opus-5",     in: USD(5.0),  out: USD(25.0),  ctx: 1000000, avail: false },
