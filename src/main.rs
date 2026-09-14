@@ -43,6 +43,10 @@ mod perf_gate;
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod deploy_gate;
+// 前端状态槽归属门禁（C2131）：同样是仅测试期编译 —— ui/js/app.js 在编译期读入，
+// 加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod state_gate;
 
 use std::sync::Arc;
 

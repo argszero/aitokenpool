@@ -605,7 +605,8 @@
         monthUse = Live.wallet.month_use || 0;
         monthEarn = Live.wallet.month_earn || 0;
       }
-      tradeCount = Live.transactions ? (Live.transactions.total || 0) : 0;
+      // C2130：读仪表盘**自己的**槽，而不是交易视图的载荷缓存 —— 见 Live.tradeCount 的注释
+      tradeCount = typeof Live.tradeCount === "number" ? Live.tradeCount : 0;
     } else {
       const txs = D.TRANSACTIONS || [];
       monthUse = txs.filter((t) => t.type === "consume").reduce((a, t) => a + Math.abs(t.pts), 0);
@@ -721,9 +722,18 @@
       Live.dashboardTrend = await api.get("/api/transactions/trend?type=all&bucket=day&start=" + encodeURIComponent(start));
     } catch (e) { Live.dashboardTrend = null; }
     // 交易数统计（dash.trades）：拉 1 条取 total（零 mock，rant 2026-08-19T15:54:06）
+    //
+    // C2130：这是**另一种查询**的载荷（`page_size=1`，只为读 `total`），只能进仪表盘**自己的**槽。
+    // 它曾写进 `Live.transactions` —— 那是**交易视图自己的**载荷缓存，由 `loadTransactions` 写入，
+    // 并由同一个函数写下它的有效性证据（`txTable.loadedPage/loadedPageSize/loadedFilterSig`）。
+    // 换了写者，证据就与缓存内容脱钩：`renderTransactions` 的守卫比的正是那三项，
+    // 于是**放行**仪表盘的载荷 —— 再入交易页时表格只剩 1 行（page_size=1）、汇总卡挂着
+    // 「当前筛选」却显示全时段数字（仪表盘那次请求不带时间范围）、趋势卡谎报「加载失败」
+    // （`trend` 只有 `loadTransactions` 会挂上）。仪表盘只要那个**数字**。
     try {
-      Live.transactions = await api.get("/api/transactions?page=1&page_size=1");
-    } catch (e) { Live.transactions = null; }
+      const page = await api.get("/api/transactions?page=1&page_size=1");
+      Live.tradeCount = typeof page.total === "number" ? page.total : 0;
+    } catch (e) { Live.tradeCount = null; }
     // rant 2026-08-19T15:48:17：仪表盘「我的共享」此前从不拉 sharings → 登录态恒显示 D.SHARINGS mock；
     // 现在拉真实数据；失败置 null → renderDashboard 走空态 + 重试（mock 仅游客）
     try {
@@ -3166,7 +3176,8 @@
     models: null,        // GET /api/models 原始数组
     plans: null,         // GET /api/plans 原始数组（上架表单数据源；rant 16:14:21 Bug 1）
     sharings: null,      // GET /api/sharings 原始数组
-    transactions: null,  // GET /api/transactions → {items,total,...}
+    transactions: null,  // GET /api/transactions → {items,total,...}（**交易视图自己的**载荷，唯一写者 loadTransactions）
+    tradeCount: null,    // 仪表盘「交易笔数」：GET /api/transactions?page_size=1 → total（C2130：仪表盘自己的槽，**不是**上面那个缓存）
     wallet: null,        // GET /api/wallet
     dashboard: null,     // GET /api/dashboard
     apiKeys: null,       // GET /api/api-keys
