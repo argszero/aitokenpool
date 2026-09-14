@@ -2,6 +2,11 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.24 (2026-09-14)
+
+- **交易页慢查询导致「刷新跳回登录页」（#240 95d69ba）** — 宿主实测：dev 上登录后进 `#/sharing` 刷新会**停在登录页**（URL 仍 `#/sharing`、token 仍在 sessionStorage）。根因是 `/api/transactions` 的 summary / COUNT / trend 三条语句**无条件**拼上 keys/users/api_keys 三个 LEFT JOIN，而这几个 JOIN 一出现 SQLite 就**弃用覆盖索引**、退回逐行回表：同一条聚合语句、同一个库（18.6 万行，NAS/NFS），**不带 JOIN 0.21s、带 JOIN 22.6s（约 100×）**。实际只有 `user_name` / `key_name` 两个筛选会引用 JOIN 表（`model` / `status` / pts 区间全在 `transactions` 自身），故改为**按需 JOIN**（新增单一判定谓词 `needs_joins()`，避免 JOIN 与 `tx_where` 的引用再次分叉）；列表查询保留 JOIN（要渲染 user_name / key_label / key_name，且有 `LIMIT` 兜底）。故障链：慢查询长时间占住共享 DB 锁 → `/api/me`、`/api/models` 被排队（实测单次 `/api/me` 被卡 35s、并发下出现网关 504）→ 前端 boot 串行等 4 个请求（其中 `/api/models` 非必需）才 `enterApp()` ⇒ 任一卡住则登录页无限期停留（实测 3 次刷新 2 次卡住）。
+- **README 标语重写 + 线上实例入口（#239 cefd589）** — 原文案「共享出去赚点数，需要时也能用别人的」主语省略、宾语含糊、只讲省钱不讲收益；改为「把闲置额度共享出去赚点数，再用点数兑换别人共享的模型 —— 一份订阅，换来整个模型池」，并同步「适用场景」表格里的同句复述。新增线上实例 `https://aitokenpool.args.fun/`（语言切换行下方 + 快速上手「不想自己部署」路径）。中英两版同步。
+
 ## v0.7.23 (2026-09-14)
 
 自 v0.7.22 起累计 76 个 PR（#161–#237），是本项目迄今最大的一次版本。⚠️ **数据库 schema 12 → 14**：含一次性数据修复（`keys.used` 按账本重算）与 4 条新索引（迁移在启动时执行；dev 库 79.6 MB / 36.6 万行，升级前请先备份 `data/aitokenpool.db`）。
