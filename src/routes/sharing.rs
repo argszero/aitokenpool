@@ -358,7 +358,7 @@ mod tests {
             st.clone(),
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-realsecret1234","quota":1000,"available":{"days":[1,2,3,4,5],"start":"09:00","end":"18:00"},"note":"工作日共享"}"#),
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-realsecret1234","quota":1000,"available":{"days":[1,2,3,4,5],"start":"09:00","end":"18:00"},"note":"工作日共享"}"#),
             &key,
         )
         .await;
@@ -414,7 +414,7 @@ mod tests {
             st.clone(),
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-patchme9999"}"#),
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-patchme9999"}"#),
             &key,
         )
         .await;
@@ -492,7 +492,7 @@ mod tests {
             st.clone(),
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-created1234","used":0,"note":"utc"}"#),
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-created1234","used":0,"note":"utc"}"#),
             &key,
         )
         .await;
@@ -580,7 +580,7 @@ mod tests {
             st,
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"aa中中中中中","quota":1000,"available":{"days":[1],"start":"09:00","end":"18:00"}}"#),
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"aa中中中中中","quota":1000,"available":{"days":[1],"start":"09:00","end":"18:00"}}"#),
             &token,
         )
         .await;
@@ -614,7 +614,7 @@ mod tests {
             st.clone(),
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"WRONG","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-wrong1234","quota":100}"#),
+            Some(r#"{"provider":"WRONG","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-wrong1234","quota":100}"#),
             &key,
         )
         .await;
@@ -639,7 +639,7 @@ mod tests {
             st.clone(),
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-control1234","quota":100}"#),
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-control1234","quota":100}"#),
             &key,
         )
         .await;
@@ -676,7 +676,7 @@ mod tests {
             st.clone(),
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"deepseek","plan":"no-such-plan","model":"deepseek-v4-flash","key":"sk-phantom1111","quota":100}"#),
+            Some(r#"{"provider":"deepseek","plan":"no-such-plan","model":"deepseek-flash","key":"sk-phantom1111","quota":100}"#),
             &key,
         )
         .await;
@@ -687,7 +687,7 @@ mod tests {
             st.clone(),
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"deepseek","model":"deepseek-v4-flash","key":"sk-noplan2222","quota":100}"#),
+            Some(r#"{"provider":"deepseek","model":"deepseek-flash","key":"sk-noplan2222","quota":100}"#),
             &key,
         )
         .await;
@@ -701,7 +701,7 @@ mod tests {
             st.clone(),
             "POST",
             "/api/sharings",
-            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-v4-flash","key":"sk-control3333","quota":100}"#),
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-control3333","quota":100}"#),
             &key,
         )
         .await;
@@ -714,8 +714,8 @@ mod tests {
             crate::dao::list_models_with_availability(&conn)
                 .unwrap()
                 .iter()
-                .find(|m| m["model"] == "deepseek-v4-flash")
-                .expect("市场列表应含 deepseek-v4-flash")["available_keys"]
+                .find(|m| m["model"] == "deepseek-flash")
+                .expect("市场列表应含 deepseek-flash")["available_keys"]
                 .as_i64()
                 .unwrap()
         };
@@ -724,7 +724,7 @@ mod tests {
             let conn = st.db.lock().unwrap();
             conn.execute(
                 "INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key, quota, used) \
-                 VALUES ('deepseek', 'no-such-plan', 'deepseek-v4-flash', 'on', 1, 'sk-legacy-enc', 100, 0)",
+                 VALUES ('deepseek', 'no-such-plan', 'deepseek-flash', 'on', 1, 'sk-legacy-enc', 100, 0)",
                 [],
             )
             .unwrap();

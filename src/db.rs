@@ -463,7 +463,7 @@ pub(crate) fn seed_test_users(conn: &Connection) -> Result<()> {
     if key_count == 0 {
         conn.execute(
             "INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key, quota, used) \
-             VALUES ('deepseek', 'deepseek-paygo', 'deepseek-v4-flash', 'on', ?1, 'sk-placeholder-encrypted', 1000, 0)",
+             VALUES ('deepseek', 'deepseek-paygo', 'deepseek-flash', 'on', ?1, 'sk-placeholder-encrypted', 1000, 0)",
             [demo_id],
         )?;
     }
@@ -924,19 +924,19 @@ mod tests {
             "peak cache_hit={peak_cache}"
         );
         assert_eq!(currency, "CNY");
-        // flash 也在（config 直接定义；高峰 3.0 / 9.0 / 0.10）
+        // deepseek-flash（V4.1-Flash）也在（config 直接定义；高峰 2.0 / 8.0 / 0.04）
         let (fi, fh, fp_in, fp_out): (f64, f64, f64, f64) = conn
             .query_row(
                 "SELECT input_per_m, cache_hit_input_per_m, peak_input_per_m, peak_output_per_m \
-                 FROM models WHERE provider = 'deepseek' AND model = 'deepseek-v4-flash'",
+                 FROM models WHERE provider = 'deepseek' AND model = 'deepseek-flash'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert!((fi - 1.5).abs() < 1e-9, "flash input={fi}");
-        assert!((fh - 0.05).abs() < 1e-9, "flash cache_hit={fh}");
-        assert!((fp_in - 3.0).abs() < 1e-9, "flash peak input={fp_in}");
-        assert!((fp_out - 9.0).abs() < 1e-9, "flash peak output={fp_out}");
+        assert!((fi - 1.0).abs() < 1e-9, "flash input={fi}");
+        assert!((fh - 0.02).abs() < 1e-9, "flash cache_hit={fh}");
+        assert!((fp_in - 2.0).abs() < 1e-9, "flash peak input={fp_in}");
+        assert!((fp_out - 8.0).abs() < 1e-9, "flash peak output={fp_out}");
         // 无高峰价的模型 → peak 缺省 0（不启用高峰计费）
         let (z_in, z_cache, z_out): (f64, f64, f64) = conn
             .query_row(

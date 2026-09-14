@@ -338,12 +338,26 @@ mod tests {
         let flash = cfg
             .models
             .iter()
-            .find(|m| m.model == "deepseek-v4-flash")
-            .unwrap();
-        assert_eq!(flash.input_per_m, 1.5);
-        assert_eq!(flash.cache_hit_input_per_m, 0.05);
-        assert_eq!(flash.peak_input_per_m, 3.0);
-        assert_eq!(flash.peak_output_per_m, 9.0);
+            .find(|m| m.model == "deepseek-flash")
+            .expect("deepseek-flash（V4.1-Flash，官方 2026-09-14 的现名）应在模型目录中");
+        assert_eq!(flash.input_per_m, 1.0);
+        assert_eq!(flash.cache_hit_input_per_m, 0.02);
+        assert_eq!(flash.output_per_m, 4.0);
+        assert_eq!(flash.peak_input_per_m, 2.0);
+        assert_eq!(flash.peak_cache_hit_input_per_m, 0.04);
+        assert_eq!(flash.peak_output_per_m, 8.0);
+        assert!(
+            flash.vision,
+            "V4.1-Flash 原生多模态（官方「图像理解：支持」）"
+        );
+        // 已下线的旧名不得再出现在目录中：市场列的是「现在能买的模型」
+        // （官方：deepseek-v4-flash / deepseek-v4-flash-vision-exp「对应模型已下线」）
+        assert!(
+            cfg.models.iter().all(
+                |m| m.model != "deepseek-v4-flash" && m.model != "deepseek-v4-flash-vision-exp"
+            ),
+            "已下线的 DeepSeek 旧模型名不应留在模型目录中"
+        );
         // 未配置高峰价的模型 → 缺省 0（不启用高峰计费）
         let zhipu = cfg.models.iter().find(|m| m.provider == "zhipu").unwrap();
         assert_eq!(zhipu.peak_input_per_m, 0.0, "无高峰价字段 → 缺省 0");

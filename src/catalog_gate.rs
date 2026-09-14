@@ -32,14 +32,14 @@ const CONFIG_TOML: &str = include_str!("../config/config.example.toml");
 ///
 /// 它们的作用是把「提取器静默失真」与「数据真的变了」区分开：若扫描器写错而返回空集，
 /// 集合断言会**在空集上"通过"**（C2005 坑 68），这些计数会先把运行中止。
-const MODEL_COUNT: usize = 14;
+const MODEL_COUNT: usize = 13;
 const MARKET_COUNT: usize = 7;
 const PLAN_COUNT: usize = 12;
 
 /// 已知真值（从配置里读出的官方价，CNY 计价）——用于确认解析器真的读到了正确字段。
-const KNOWN_MODEL: &str = "deepseek-v4-flash";
-const KNOWN_INPUT: f64 = 1.5;
-const KNOWN_OUTPUT: f64 = 4.5;
+const KNOWN_MODEL: &str = "deepseek-flash";
+const KNOWN_INPUT: f64 = 1.0;
+const KNOWN_OUTPUT: f64 = 4.0;
 
 /// 价格比较的容差。两侧都由十进制字面量解析而来，实际是精确相等；
 /// 留一个极小容差只为避免浮点表示差异造成的假红。
@@ -447,7 +447,7 @@ mod tests {
     ///
     /// 双向是关键，且两个方向对应两类真实事故：
     /// - 「兜底多出来的」= 幽灵模型（`ce6d0db` 塞进 `gemini-3.5-flash-lite`）；
-    /// - 「兜底缺失的」= 新增模型忘了同步（`deepseek-v4-flash-vision-exp`）。
+    /// - 「兜底缺失的」= 新增模型忘了同步（`ce6d0db` 之后新增 `deepseek-flash` 时）。
     ///
     /// 只查一个方向会漏掉其中一类（C2010 更正：此前我误以为该断言应为「子集」）。
     #[test]
@@ -562,7 +562,7 @@ mod tests {
             "阴性对照失败：MARKET 中的改名残留未被报出"
         );
 
-        // ④ 错价（真实事故形态：旧的 flash 价格 1.008/2.016）
+        // ④ 错价（真实事故形态：旧的 DeepSeek flash 价格 1.5/4.5，官方已于 2026-09-10 下调为 1.0/4.0）
         let mut wrong = js_models.get(KNOWN_MODEL).cloned().unwrap();
         wrong.input = 1.008;
         wrong.output = 2.016;
