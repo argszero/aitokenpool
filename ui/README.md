@@ -422,3 +422,14 @@ ui/
 - **为什么这条必须由静态门禁钉，而不是由 DOM 探针钉**：竞争修法「扩守卫」（让守卫也比对载荷的 `page_size`）能让探针的**全部缺陷断言**（B1/B2/B3）变绿 —— 探针只能证明「屏幕上不再是外来载荷」，证明不了「槽里不再是外来载荷」。而 `exportTxCsv` 直接读 `Live.transactions.items`、**不经那道守卫**，槽被污染它照样导出外来的那 1 行。A/B 实测：改前树门禁红、探针红 `{B1,B2,B3}`；扩守卫腿门禁**仍红**、探针轴断言**全绿** ⇒ 方向由门禁钉。
 - **CI 覆盖**：`src/state_gate.rs` 钉两件事 —— ① 交易槽的写者名册**恰好**是 `{loadTransactions}`；② 写槽者集合 **==** 写 `txTable.loaded*` 者集合（两者都不为空，空集上的集合断言会假绿）。另有仪表盘那条：必须**仍拉**那个只取 `total` 的查询、必须写/读自己的 `Live.tradeCount`、**不得**读写交易槽（否则「把请求整段删掉」这种「修法」会让断言变绿而笔数永远是 0）。`the_body_extractor_stops_at_the_right_place` 自证函数体提取器不吞下一个函数，`the_scanners_have_teeth_on_a_second_writer` 用**合成输入**证明判别式有牙齿（含阴性对照：`if (Live.transactions)` / `Live.transactions.items` / `=== null` / 守卫里的 `txTable.loadedPage !== …` 都**不是**写）。
 - **冒烟测试注意**：夹具必须让两种查询口径**真的不同**（带范围 vs 不带范围的 `summary` / `total`），否则「渲染了外来载荷」与「正常状态」在屏幕上无法区分。冻结交易视图自己的请求以固定中间态，并另起一条**阳性对照腿**（同样冻结、但把「先去仪表盘」换成「先去市场」）—— 红必须由那次仪表盘访问造成。射程：门禁只认**字面**的 `Live.<槽>` 与 `liveLoad("<槽>"`；动态键（`Live["transactions"] = …`）看不见。
+
+## 按会话缓存的生命周期：身份边界必须清空，且每个视图都要有自己的 loader（C2132）
+
+- **`Live` 是按会话的缓存**（上节讲它的写者），所以它的**生命周期**与「谁登录了」绑定。两条不变量：
+  1. **身份边界必须丢弃每一个槽**。会话建立（`loadSession`：boot / 登录，两者都经 `restoreSession`）与会话结束（`exitGuest`：登出 / 401）两侧都要清空。清空必须**派生自** `Live` 的对象字面量（`Object.keys(Live).forEach((k) => { Live[k] = null; })`）—— 手抄名册会在新增槽时静默漏掉。
+  2. **`renderView` 的每个分支都必须「既渲染又拉取」**。它是唯一允许「先同步渲染缓存、再异步拉取」的地方，于是「只渲染不拉取」的分支就是**永远显示缓存**的分支。
+- **修前的两张脸**（jsdom 启真 `index.html` + 四脚本、只 stub `fetch`，驱动真导航 / 真登出 / 真登录表单）：甲用完仪表盘登出、乙登录后打开钱包 —— `#wallet-forever`（「永久点数」）显示的是**甲的** `Live.wallet.balance`（实测 `4,242.42424`，乙应为 `7.5`），**且永不自愈**：`renderView("wallet")` 当时是八个分支里**唯一**只 `renderWallet()` 的，缓存不被清就再也没人刷新它。同一根因的**瞬态**脸：乙落在仪表盘时，`renderView` 先**同步**用甲的缓存渲染 `#dash-stats`（冻结乙自己的 `/api/wallet` 即可读到：本月用量是甲的 `12,345.6789`）。
+- **改法两半，缺一留红**：① `resetSessionCaches()`（派生式）在 `exitGuest()` 与 `loadSession()` 开头各调一次；② 钱包分支补上自己的 loader `loadWallet()`（镜像 `loadDashboard` 的尾段：`refreshWallet()` → `renderWallet()`）。② 顺带修掉**单会话**下的口径错 —— 此前登录后直接进钱包，`Live.wallet` 永远是 `null`，单元格只能回落到 `D.USER.balance`（= `available` = 永久 + 当日赠送）冒充「永久」。
+- **CI 覆盖**：`src/state_gate.rs` 再加两条 —— `the_identity_boundaries_drop_every_session_cache`（清空必须含 `Object.keys(Live)`；体内**不得**出现逐个槽的赋值，否则就是第二份名册；`loadSession` 与 `exitGuest` 都必须调用它）与 `the_view_router_renders_and_loads_in_every_branch`（`renderView` 每个分支行都既含 `render` 又含 `load`）。两条都带**提取器自证**与**合成输入**（手抄名册 / 缺 loader 的分支必须变红）。
+- **冒烟测试注意**：① 夹具必须让两个账号的钱包**可区分**，且 **`available ≠ balance`**（有当日赠送）—— 否则「拿到了自己的永久余额」与「回落到 available」不可区分；② 冻结点要**精确**：`loadSession` 自己的 `/api/wallet` 必须放行（否则会话建立就卡住），只扣住**仪表盘刷新**那一次（按序放行第 1 个、冻结第 2 个）；③ 隔离瞬态脸时，乙的**落点**必须是仪表盘 —— 若乙落在钱包，钱包的新 loader 会在登录过程中就把共享的 `Live.wallet` 刷新掉，瞬态脸**看不见**（这正是「只加 loader 不清缓存」这条竞争修法能让探针全绿的原因）；④ 断言按**读到的 DOM 文本**，不要读 `Live` 内部（探针可临时注入 `window.__Live = Live` 仅用于**诊断**）。
+

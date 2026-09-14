@@ -28,6 +28,23 @@
 //! 已知边界（如实的射程，不是承诺）：只认**字面**的 `Live.<slot>` 与 `liveLoad("<slot>"`。
 //! 用动态键（`Live["transactions"] = …`）或为 `liveLoad` 另造名字来写槽，本门禁看不见 ——
 //! 与兄弟门禁一样，它钉的是**静态调用点**，不是运行期别名。
+//!
+//! # C2132：缓存的生命周期，以及「每个视图都要有 loader」
+//!
+//! `Live` 是**按会话**缓存。第二组不变量钉的是它的**生命周期**与**视图路由的形状**：
+//!
+//! 1. **身份边界必须丢弃每一个槽**。会话建立（`loadSession`：boot / 登录）与会话结束
+//!    （`exitGuest`：登出 / 401）两侧都要清空。清空必须**派生自** `Live` 的对象字面量
+//!    （`Object.keys(Live)`）—— 手抄名册会在新增槽时静默漏掉。反例正是 C2132：登出不清缓存，
+//!    下一位登录者打开钱包时，`#wallet-forever`（「永久点数」）显示的是**上一位用户的**
+//!    `Live.wallet.balance`，且永不自愈（见下一条：钱包视图当时没有 loader）。
+//! 2. **`renderView` 的每个分支都必须「既渲染又拉取」**。它是唯一允许「先同步渲染缓存、
+//!    再异步拉取」的地方 —— 于是「只渲染不拉取」的分支就是**永远显示缓存**的分支。
+//!    C2132 实测：八个分支里 `wallet` 是唯一只 `renderWallet()` 的，所以钱包单元格
+//!    （乃至一次会话内）从不变新。
+//!
+//! 这两条与第一条不同：它们**不能用 DOM 探针钉方向**（改前/改后都是「屏幕上对不对」），
+//! 必须由静态断言钉住形状（C2128 坑 #287）。
 
 use std::collections::BTreeSet;
 
@@ -164,6 +181,44 @@ fn witnesses(src: &str, hit: impl Fn(&str) -> bool) -> Vec<String> {
         .collect()
 }
 
+/// `Live` 的字段名，**从它自己的对象字面量派生**（`const Live = { … };` 之间 `键: 值,` 的键）。
+///
+/// 派生而非手抄：这份名单是「有哪些槽」的**唯一真源**，新增槽自动出现在这里。
+fn live_slots(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in src.lines() {
+        if !inside {
+            if line.trim_start().starts_with("const Live = {") {
+                inside = true;
+            }
+            continue;
+        }
+        if line.trim() == "};" {
+            break;
+        }
+        if let Some((name, _)) = line.trim_start().split_once(':') {
+            let name = name.trim();
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+            {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// `renderView` 里的分支行（`if (id === "x")` / `else if (id === "x")`）。
+fn view_router_branches(body: &str) -> Vec<String> {
+    body.lines()
+        .filter(|l| l.contains("id === \""))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +310,59 @@ mod tests {
         );
     }
 
+    /// `renderView` 的每个分支都必须「既渲染又拉取」—— 它是唯一允许「先同步渲染缓存、再异步
+    /// 拉取」的地方，于是「只渲染不拉取」的分支就是**永远显示缓存**的分支。
+    /// C2132 实测：八个分支里 `wallet` 是唯一只 `renderWallet()` 的 ⇒ 钱包单元格从不变新。
+    #[test]
+    fn the_view_router_renders_and_loads_in_every_branch() {
+        let body = code_only(js_function_body(APP_JS, "renderView").expect("找不到 renderView()"));
+        let branches = view_router_branches(&body);
+
+        // 提取器自证：必须停在 `renderView` 自己的收尾处（`switchView` 里也有 `id === "…"`
+        // 形状的守卫；吞进它会把非分支行算成分支）
+        assert!(
+            !body.contains("function renderDashboard("),
+            "提取器吞掉了紧随其后的 `function renderDashboard(`：\n{body}"
+        );
+
+        // ── 前置：分支必须扫到（空集上循环体不会执行 ⇒ 假绿，坑 68）─────────────────
+        assert!(
+            branches.len() >= 5,
+            "只扫到 {} 个视图分支：{branches:?} —— 提取器或分支判别式坏了",
+            branches.len()
+        );
+
+        for b in &branches {
+            assert!(
+                b.contains("render"),
+                "视图分支没有渲染（首帧会空白）？\n{b}"
+            );
+            assert!(
+                b.contains("load"),
+                "视图分支只渲染不拉取 —— 它会永远显示缓存（C2132 的钱包缺陷形状）；\
+                 每个分支都要有 `if (loggedIn()) load…()`。\n{b}"
+            );
+        }
+
+        // ── 合成输入：缺 loader 的分支必须变红 ────────────────────────────────────
+        let no_loader = concat!(
+            "    if (id === \"dashboard\") { renderDashboard(); if (loggedIn()) loadDashboard(); }\n",
+            "    else if (id === \"wallet\") renderWallet();\n"
+        );
+        let scanned = view_router_branches(no_loader);
+        assert_eq!(scanned.len(), 2, "分支扫描在合成输入上不对：{scanned:?}");
+        assert!(
+            scanned[0].contains("render") && scanned[0].contains("load"),
+            "阳性对照失败：正常分支的两半没被认出：{}",
+            scanned[0]
+        );
+        assert!(
+            !scanned[1].contains("load"),
+            "合成对照失败：缺 loader 的分支竟被认成有 loader：{}",
+            scanned[1]
+        );
+    }
+
     /// 提取器自证：两个函数体都必须停在**本函数**的收尾处，不能吞掉紧随其后的函数。
     #[test]
     fn the_body_extractor_stops_at_the_right_place() {
@@ -338,6 +446,99 @@ mod tests {
         assert!(
             !writes_slot(comment, TX_SLOT),
             "注释行被当成代码了（`code_only` 或判别式串了）"
+        );
+    }
+
+    /// 身份边界（会话建立 / 会话结束）必须丢弃**每一个** `Live` 槽，且清空方式必须**派生自**
+    /// 对象字面量，而不是第二份手抄名册。
+    ///
+    /// 三条断言各有各的牙：
+    /// - `Object.keys(Live)`：挡住手抄名册（漏一个槽就静默留下一份上一位用户的载荷）；
+    /// - 名册检测（体里不得出现 `Live.<slot> =`）：挡住「派生了但顺手又抄了一份」；
+    /// - 两个边界都调用：挡住「清了缓存但忘了在某条身份路径上清」（登出与 boot/登录是两条路）。
+    #[test]
+    fn the_identity_boundaries_drop_every_session_cache() {
+        let slots = live_slots(APP_JS);
+
+        // ── 前置：派生出的槽名必须非空，否则后面的断言都在空集上假绿（坑 68）─────────────
+        assert!(
+            slots.len() >= 5,
+            "从 `const Live = {{ … }}` 派生的槽名太少（{}）：{slots:?} —— 派生器可能没停对地方",
+            slots.len()
+        );
+
+        let reset = code_only(
+            js_function_body(APP_JS, "resetSessionCaches").expect("找不到 resetSessionCaches()"),
+        );
+        // 提取器自证：必须停在本函数的收尾处（否则下面「不得逐个槽赋值」的断言会被后面的
+        // 函数绊出假红/假绿）
+        assert!(
+            !reset.contains("function loggedIn("),
+            "提取器吞掉了紧随其后的 `function loggedIn(`：\n{reset}"
+        );
+
+        // ── 不变量 A：清空方式是派生的（自动覆盖每一个槽）─────────────────────────────
+        assert!(
+            reset.contains("Object.keys(Live)"),
+            "清空缓存的函数没有从 `Live` 字面量派生槽名 —— 手抄的名册会在新增槽时静默漏掉。\n{reset}"
+        );
+
+        // ── 不变量 B：不得在手抄名册（体里不许出现逐个槽的赋值）──────────────────────
+        let roster: Vec<String> = slots
+            .iter()
+            .filter(|s| writes_slot(&reset, s))
+            .cloned()
+            .collect();
+        assert!(
+            roster.is_empty(),
+            "清空缓存的函数里出现了逐个槽的赋值（{roster:?}）—— 那就是第二份名册，会腐烂。\n{reset}"
+        );
+
+        // ── 不变量 C：两条身份路径都必须清（会话建立 + 会话结束）──────────────────────
+        for boundary in ["loadSession", "exitGuest"] {
+            let body = code_only(
+                js_function_body(APP_JS, boundary).unwrap_or_else(|| panic!("找不到 {boundary}()")),
+            );
+            assert!(
+                body.contains("resetSessionCaches()"),
+                "身份边界 `{boundary}()` 没有清空 `Live` 缓存 —— 它会把上一位用户的载荷留在槽里。\n{body}"
+            );
+        }
+
+        // ── 合成输入：判别式有牙齿 ────────────────────────────────────────────────
+        // (a) 手抄名册：不含派生式 ⇒ 不变量 A 会红
+        let roster_reset = concat!(
+            "  function resetSessionCaches() {\n",
+            "    Live.wallet = null;\n",
+            "    Live.models = null;\n",
+            "  }\n"
+        );
+        assert!(
+            !roster_reset.contains("Object.keys(Live)"),
+            "合成对照失败：手抄名册被认成了派生式"
+        );
+        // (b) 名册检测器必须真的认得出逐个槽的赋值（否则不变量 B 恒真）
+        assert!(
+            writes_slot(roster_reset, "wallet") && writes_slot(roster_reset, "models"),
+            "阳性对照失败：名册检测器认不出 `Live.wallet = null;`（不变量 B 没有牙齿）"
+        );
+        // (c) 派生式不得被误判成名册（`Live[k]` 是动态键，不该命中字面槽）
+        let derived_reset =
+            "  function resetSessionCaches() {\n    Object.keys(Live).forEach((k) => { Live[k] = null; });\n  }\n";
+        assert!(
+            derived_reset.contains("Object.keys(Live)"),
+            "阳性对照失败：派生式没被认出"
+        );
+        assert!(
+            !writes_slot(derived_reset, "wallet"),
+            "阴性对照失败：`Live[k] = null` 被当成了 `Live.wallet = …`"
+        );
+        // (d) `live_slots` 要能从合成字面量里派生字段
+        let synthetic_literal = "  const Live = {\n    a: null,\n    b: null,\n  };\n";
+        assert_eq!(
+            live_slots(synthetic_literal),
+            vec!["a".to_string(), "b".to_string()],
+            "合成输入上 `live_slots` 的派生结果不对"
         );
     }
 }
