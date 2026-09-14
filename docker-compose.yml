@@ -1,13 +1,15 @@
 # AITokenPool — Docker Compose 一键部署（v0.6.6）
 #
 # 快速开始：
+#   export ATP_MASTER_KEY=$(openssl rand -hex 32)   # 必填，见下方说明
 #   docker compose up -d --build
 #   浏览器打开 http://localhost:8080/
 #
 # ⚠️ 生产环境必须设置 ATP_MASTER_KEY（32 字节 hex 主密钥）：
 #   生成：openssl rand -hex 32
 #   注入：export ATP_MASTER_KEY=$(openssl rand -hex 32) && docker compose up -d
-#   未设置时使用示例默认值（dev 模式，重启后已加密的上游 key 不可解密，仅用于本地试用）。
+#   未设置时 compose 直接报错退出（本文件不提供默认值）：错误的主密钥会让重启后
+#   已加密的上游 key 全部不可解密（全量 503）。本地试用同样请先执行上面的 export。
 #
 # 统一数据目录（rant 2026-08-19T20:53:23）：只挂载一个 /data 卷，
 # config.toml（首次启动自动从内置示例复制）+ aitokenpool.db + logs/ 全在 ./atp-data/ 下。
@@ -22,7 +24,8 @@ services:
       - ./atp-data:/data
     environment:
       # 主密钥（32 字节 hex；env 优先于 config [server].master_key）
-      - ATP_MASTER_KEY=${ATP_MASTER_KEY:-dev-master-key-请替换}
+      #   必填：未设置时 docker compose 报错并给出生成命令
+      - ATP_MASTER_KEY=${ATP_MASTER_KEY:?未设置 ATP_MASTER_KEY：请提供 32 字节 hex 主密钥（生成：openssl rand -hex 32，见文件顶部说明）}
       # 统一数据目录（与 Dockerfile CMD --data-dir /data 一致）
       - ATP_DATA_DIR=/data
     healthcheck:
