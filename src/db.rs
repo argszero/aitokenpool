@@ -876,6 +876,99 @@ mod tests {
         let _ = std::fs::remove_file(p);
     }
 
+    /// 验收项 2（rant 2026-09-14T16:51:14）：「对月度聚合 `EXPLAIN QUERY PLAN`
+    /// **不得出现 `SCAN transactions`**」（现状的 `strftime` 版正是 SCAN）。
+    ///
+    /// 这是**计划层**的断言：`perf_gate` 只保证源码里没有「函数包住时间列」的形状，
+    /// 本测试保证优化器**确实**选了索引 —— 两者缺一不可（形状对了但索引被删掉，
+    /// 源码门禁仍然是绿的）。行数要足够多，否则优化器对迷你表会**合理地**选全表扫。
+    #[test]
+    fn month_aggregate_queries_use_an_index_not_a_full_scan() {
+        let (conn, p) = tmp_db("plan");
+        migrate(&conn).unwrap();
+        // transactions / usage_records 的 user_id 是外键（FK 默认开启），先建一个用户。
+        seed_test_users(&conn).unwrap();
+        let uid: i64 = conn
+            .query_row("SELECT id FROM users ORDER BY id LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        // 3000 行铺满最近 180 天 ⇒ 本月约占 1/6，索引对优化器有吸引力。
+        conn.execute_batch(&format!(
+            "WITH RECURSIVE c(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM c WHERE n < 2999)
+             INSERT INTO transactions (user_id, type, pts, time)
+               SELECT {uid}, 'consume', 1.0, datetime('now', '-' || (n % 180) || ' days') FROM c;
+             WITH RECURSIVE c(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM c WHERE n < 2999)
+             INSERT INTO usage_records (user_id, model, tokens, cost, time)
+               SELECT {uid}, 'deepseek-flash', 10, 0.1, datetime('now', '-' || (n % 180) || ' days') FROM c;"
+        ))
+        .unwrap();
+
+        let plan = |sql: &str| -> String {
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let rows: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            rows.join(" | ")
+        };
+
+        // (标签, 计划里应出现 `SEARCH <token>` 的对象, SQL)
+        let cases: Vec<(&str, &str, String)> = vec![
+            (
+                "per-user 月度消费（wallet.rs）",
+                "transactions",
+                format!(
+                    "SELECT COALESCE(SUM(pts), 0) FROM transactions WHERE user_id = {uid} AND type = 'consume' \
+                     AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')"
+                ),
+            ),
+            (
+                "全库月度流入（ops.rs，无 user_id）",
+                "transactions",
+                "SELECT COALESCE(SUM(pts), 0) FROM transactions WHERE type IN ('earn', 'topup', 'gift') \
+                 AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')"
+                    .into(),
+            ),
+            (
+                "本月调用数（ops.rs）",
+                "usage_records",
+                "SELECT COUNT(*) FROM usage_records \
+                 WHERE time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')"
+                    .into(),
+            ),
+            (
+                "今日按小时（ops.rs）",
+                "usage_records",
+                "SELECT CAST(strftime('%H', time) AS INTEGER) AS h, COUNT(*) FROM usage_records \
+                 WHERE time >= date('now') AND time < date('now', '+1 day') GROUP BY h"
+                    .into(),
+            ),
+            (
+                // 别名 `ur`：SQLite 的计划里打印**别名**，不是表名。
+                "按成员聚合（admin.rs，LEFT JOIN）",
+                "ur",
+                "SELECT u.id, COALESCE(SUM(ur.cost), 0) FROM users u \
+                 LEFT JOIN usage_records ur ON ur.user_id = u.id \
+                   AND ur.time >= date('now', 'start of month') AND ur.time < date('now', 'start of month', '+1 month') \
+                 GROUP BY u.id"
+                    .into(),
+            ),
+        ];
+        for (label, token, sql) in &cases {
+            let detail = plan(sql);
+            assert!(
+                !detail.contains(&format!("SCAN {token}")),
+                "{label} 仍在全表扫描 ⇒ 索引列又被函数包住或被删：{detail}"
+            );
+            assert!(
+                detail.contains(&format!("SEARCH {token}")),
+                "{label} 未走索引查找：{detail}"
+            );
+        }
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
     #[test]
     fn empty_db_has_no_seeded_users() {
         // rant 2026-08-19T10:41:03：生产标准空库——migrate 后无任何种子用户/配额/占位 key
