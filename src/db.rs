@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -333,6 +333,21 @@ pub fn migrate(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_usage_records_time ON usage_records(time);
          -- (user_id, time)：admin.rs 的按成员 LEFT JOIN 走这个前缀
          CREATE INDEX IF NOT EXISTS idx_usage_records_user_id_time ON usage_records(user_id, time);",
+    )?;
+    // v15（rant 2026-09-14T21:15:02）：这两条索引此前只在 dev/prod 主库**手工**建过
+    //（2026-09-14 21:00 事故的应急缓解），**未进迁移** ⇒ 任何新部署仍会踩到同样的慢查询。
+    // 补进迁移，让全新库拿到与主库一致的执行计划：
+    //   - 7 列覆盖索引：summary 的 `SUM(t.pts / t.tokens / t.cached_tokens / t.output_tokens)`
+    //     只碰 `t.*`，只有把这些列全包住一条索引才不必逐行回表（dev 实测 22.6s → 0.21s）；
+    //   - (key_id, type, pts)：`sharing.rs::sharing_row` 的
+    //     `SELECT SUM(pts) WHERE key_id = ?1 AND type = 'earn'` 原先 `SCAN transactions`
+    //     全表（实测 4.78s → 0.09s），共享页每行一次。
+    // 用 IF NOT EXISTS：dev/prod 已有同名索引（手工创建），迁移不得失败。
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_user_id_time_type_pts_tokens
+             ON transactions(user_id, time, type, pts, tokens, cached_tokens, output_tokens);
+         CREATE INDEX IF NOT EXISTS idx_transactions_key_id_type_pts
+             ON transactions(key_id, type, pts);",
     )?;
     // schema_version 记录**最高的**已迁移版本。⚠️ 必须用 MAX 读：该表没有唯一约束，
     // 而 `INSERT OR REPLACE` 在无冲突时就是普通 INSERT —— 只读第一行的话
@@ -759,6 +774,8 @@ mod tests {
         // v12（rant 2026-08-25T12:02:13）：transactions 性能索引在迁移时建好
         //（summary/COUNT/list 原先全表扫描 + 3 LEFT JOIN，dev 库 23079 行）
         // v14（rant 2026-09-14T16:51:14）：补两条**覆盖索引**给月聚合（带/不带 user_id 各一）
+        // v15（rant 2026-09-14T21:15:02）：补两条事故应急索引（summary 的 7 列覆盖索引 +
+        // sharing 的 (key_id, type, pts)）
         let (conn, p) = tmp_db("txidx");
         let names: Vec<String> = conn
             .prepare(
@@ -772,14 +789,16 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "idx_transactions_key_id_type_pts",
                 "idx_transactions_time_type_pts",
                 "idx_transactions_user_id",
                 "idx_transactions_user_id_id",
                 "idx_transactions_user_id_time",
                 "idx_transactions_user_id_time_type_pts",
+                "idx_transactions_user_id_time_type_pts_tokens",
                 "idx_transactions_user_id_type",
             ],
-            "六个性能索引都应建好（v12 四条 + v14 两条）"
+            "八个性能索引都应建好（v12 四条 + v14 两条 + v15 两条）"
         );
         drop(conn);
         let _ = std::fs::remove_file(p);
@@ -965,6 +984,78 @@ mod tests {
                 "{label} 未走索引查找：{detail}"
             );
         }
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// 验收项（rant 2026-09-14T21:15:02 第 3 条）：事故当天那两条索引只在 dev/prod 主库
+    /// **手工**建过（21:00 事故的应急缓解），**未进迁移** ⇒ 新部署拿不到同样的计划。
+    /// v15 把它们写进迁移；本测试在**计划层**证明优化器真的用得上它们：
+    ///   - summary 的聚合（`SUM(pts / tokens / cached_tokens / output_tokens …)`，无列筛选时
+    ///     **不带** JOIN）必须走**覆盖索引** `idx_transactions_user_id_time_type_pts_tokens`
+    ///     （否则逐行回表，dev 实测 0.21s → 22.6s）；
+    ///   - sharing 的 `SUM(pts) WHERE key_id = ?1 AND type = 'earn'` 必须 `SEARCH`，
+    ///     不得 `SCAN transactions`（全表 4.78s → 0.09s，而共享页**每行**跑一次）。
+    #[test]
+    fn summary_and_sharing_aggregates_use_their_indexes() {
+        let (conn, p) = tmp_db("plan2");
+        migrate(&conn).unwrap();
+        // transactions.user_id 是外键（FK 默认开启），先建一个用户。
+        seed_test_users(&conn).unwrap();
+        let uid: i64 = conn
+            .query_row("SELECT id FROM users ORDER BY id LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        // 3000 行铺满最近 180 天、3 个 key_id ⇒ 索引对优化器有吸引力。
+        conn.execute_batch(&format!(
+            "WITH RECURSIVE c(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM c WHERE n < 2999)
+             INSERT INTO transactions (user_id, key_id, type, pts, tokens, cached_tokens, output_tokens, time)
+               SELECT {uid}, 1 + (n % 3), 'consume', 1.0, 100, 20, 5,
+                      datetime('now', '-' || (n % 180) || ' days')
+               FROM c;"
+        ))
+        .unwrap();
+
+        let plan = |sql: &str| -> String {
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let rows: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            rows.join(" | ")
+        };
+
+        // 1) summary（列筛选为空 ⇒ `tx_joins_if(false)` ⇒ 不带 JOIN）。列与表达式照抄
+        //    `wallet.rs` 的 summary_sql（只碰 `t.*`）。
+        let summary = plan(&format!(
+            "SELECT COALESCE(SUM(CASE WHEN t.type IN ('earn', 'topup', 'gift') THEN t.pts ELSE 0 END), 0), \
+                    COALESCE(SUM(CASE WHEN t.type IN ('consume', 'expire', 'withdraw') THEN t.pts ELSE 0 END), 0), \
+                    COALESCE(SUM(t.tokens), 0), \
+                    COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
+                    COALESCE(SUM(t.cached_tokens), 0), \
+                    COALESCE(SUM(t.output_tokens), 0) \
+             FROM transactions t WHERE t.user_id = {uid} \
+               AND t.time >= datetime('now', '-180 days')"
+        ));
+        assert!(
+            summary.contains("COVERING INDEX idx_transactions_user_id_time_type_pts_tokens"),
+            "summary 聚合应走 7 列覆盖索引（否则逐行回表，dev 实测 0.21s → 22.6s）：{summary}"
+        );
+
+        // 2) sharing 每行一次的子查询（`sharing.rs::sharing_row`）。
+        let sharing = plan(
+            "SELECT COALESCE(SUM(pts), 0) FROM transactions WHERE key_id = 1 AND type = 'earn'",
+        );
+        assert!(
+            !sharing.contains("SCAN transactions"),
+            "sharing 的 key 聚合不得全表扫（共享页每行一次）：{sharing}"
+        );
+        assert!(
+            sharing.contains(
+                "SEARCH transactions USING COVERING INDEX idx_transactions_key_id_type_pts"
+            ),
+            "sharing 的 key 聚合应走 (key_id, type, pts)：{sharing}"
+        );
         drop(conn);
         let _ = std::fs::remove_file(p);
     }

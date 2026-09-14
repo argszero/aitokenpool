@@ -75,6 +75,171 @@ fn violations(src: &str) -> Vec<(usize, String)> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// 第二条不变量（rant 2026-09-14T21:15:02 第 3 条）：**聚合语句按需 JOIN**。
+//
+// `wallet.rs` 的 summary / COUNT / trend 三条语句只碰 `t.*`。而只要 SQL 里出现
+// `tx_joins()` 那三个 LEFT JOIN，SQLite 就**不再选用覆盖索引**
+// `idx_transactions_user_id_time_type_pts_tokens`，退回 `idx_transactions_user_id_id`
+// 逐行回表：dev 库（18.6 万行 / NFS）同一条查询 **0.21s → 22.6s（≈100×）**，
+// 拖垮共享 DB 锁下的 `/api/me` ⇒ 前端「刷新 #/sharing 跳回登录页」。
+//
+// 本机（SSD + 小库）**完全看不出来** —— 聚合值一模一样，唯一症状是慢。
+// 因此这条不变量只能固化在门禁里：条件拼接入口 `tx_joins_if(needs_joins(…))` 之外的
+// 任何**无条件** `tx_joins()` 调用都是缺陷（JOIN 与 `tx_where` 的引用会随之分叉）。
+// ---------------------------------------------------------------------------
+
+/// 生产区里 `name` 的**调用**处数（行首 `fn ` 的定义行与注释行不计）。
+fn calls_of(src: &str, name: &str) -> usize {
+    production_region(src)
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !t.starts_with("//") && !t.starts_with("fn ")
+        })
+        .filter(|l| l.contains(name))
+        .count()
+}
+
+/// `fn name(…)` 行里的函数名（`fn tx_joins_if(needed: bool) …` → `tx_joins_if`）。
+fn fn_name(line: &str) -> Option<&str> {
+    line.trim_start()
+        .strip_prefix("fn ")?
+        .split(['(', '<', ' '])
+        .next()
+}
+
+/// 直接调用无条件 `tx_joins()` 的位置（应恒为空）。
+///
+/// 位置性归属：向上找最近的 `fn ` 行 = 该调用的归属函数；只有包装器 `tx_joins_if`
+/// 内部的那一次是合法的（它把「是否需要」与「拼接」绑在一起）。
+fn unconditional_join_calls(src: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut owner = "";
+    for (i, line) in production_region(src).lines().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("//") {
+            continue; // 注释里引用函数名是文档，不是调用
+        }
+        if t.starts_with("fn ") {
+            owner = fn_name(line).unwrap_or("");
+            continue; // 定义行本身不是调用
+        }
+        if line.contains("tx_joins()") && owner != "tx_joins_if" {
+            out.push((i + 1, line.trim().to_string()));
+        }
+    }
+    out
+}
+
+/// `fn tx_joins_if` 之后的函数体行（到顶格 `}` 为止）。
+///
+/// 用途：包装器可以「看似正常」地被改成**恒真**（`if needed` → `if true`）——
+/// 调用点一处未动、`tx_joins()` 也没有新的直接调用，[`unconditional_join_calls`] 会说没问题，
+/// 而这正是同一条 100× 退化，所以必须把「无 JOIN 分支存在」也钉住。
+fn body_of<'a>(src: &'a str, name: &str) -> Vec<(usize, &'a str)> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for (i, line) in production_region(src).lines().enumerate() {
+        if inside {
+            if line.starts_with('}') {
+                break; // 顶格 `}` = 函数结束
+            }
+            out.push((i + 1, line));
+        } else if fn_name(line) == Some(name) {
+            inside = true;
+        }
+    }
+    out
+}
+
+#[test]
+fn the_transaction_aggregates_never_join_unconditionally() {
+    assert_eq!(FILES[0].0, "wallet.rs");
+    let src = FILES[0].1;
+    // ① 不变量：无条件三 JOIN 不得有任何 `tx_joins_if` 之外的调用点。
+    let hits = unconditional_join_calls(src);
+    assert!(
+        hits.is_empty(),
+        "无条件 LEFT JOIN 会让优化器弃用覆盖索引（dev 实测 0.21s → 22.6s），\
+         聚合语句改走 `tx_joins_if(needs_joins(&filters))`：\n{}",
+        hits.iter()
+            .map(|(l, t)| format!("  src/routes/wallet.rs:{l}: {t}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // ② 不变量（另一面）：包装器本身不得被改成恒真 —— 调用点一处不动也照样退化。
+    let body = body_of(src, "tx_joins_if");
+    assert!(
+        body.iter().any(|(_, l)| l.contains("\"\"")),
+        "`tx_joins_if` 必须保留**无 JOIN** 的分支（`\"\"`），否则它就成了恒真"
+    );
+    assert!(
+        body.iter().any(|(_, l)| l.contains("tx_joins(")),
+        "`tx_joins_if` 需要 JOIN 时仍应复用 `tx_joins`（唯一一份 JOIN 文案）"
+    );
+    // ③ 阳性对照：按需拼接确实还在用 —— summary / COUNT / trend 三处。
+    // （新增聚合语句时请一并更新此计数：这是有意的摩擦，不是噪音。）
+    assert_eq!(
+        calls_of(src, "tx_joins_if("),
+        3,
+        "wallet 的三条聚合语句都应经 `tx_joins_if` 拼接 JOIN"
+    );
+    // ④ 阳性对照：判定与拼接共用同一谓词。
+    assert_eq!(
+        calls_of(src, "needs_joins("),
+        2,
+        "JOIN 与 `tx_where` 的引用必须共用 `needs_joins`"
+    );
+}
+
+#[test]
+fn join_detector_flags_a_bare_call_and_spares_the_wrapper() {
+    // 检测器自身的对照：喂合成输入，确认它**真的会红**（不是恒真谓词）。
+    let bare = "fn count_sql() -> String {\n    \
+                format!(\"SELECT COUNT(*) FROM transactions t {} WHERE x\", tx_joins())\n}\n";
+    assert_eq!(
+        unconditional_join_calls(bare).len(),
+        1,
+        "聚合语句里直接写 `tx_joins()` 应恰好报 1 处"
+    );
+
+    // 阴性对照：包装器内部的那一次是「按需」本身，不得报出。
+    let wrapper = "fn tx_joins_if(needed: bool) -> &'static str {\n    \
+                   if needed {\n        tx_joins()\n    } else {\n        \"\"\n    }\n}\n";
+    assert!(
+        unconditional_join_calls(wrapper).is_empty(),
+        "包装器内部的调用不该算违规"
+    );
+    // 定义行不是调用。
+    let def = "fn tx_joins() -> &'static str {\n    \"LEFT JOIN keys k ON k.id = t.key_id\"\n}\n";
+    assert!(unconditional_join_calls(def).is_empty(), "定义行不该算违规");
+    // 注释里的引用合法。
+    assert!(unconditional_join_calls("// 见 tx_joins()\n").is_empty());
+
+    // `calls_of` 的分母：定义行不计入调用数（否则上面两条阳性对照会虚高）。
+    assert_eq!(calls_of(wrapper, "tx_joins()"), 1);
+    assert_eq!(calls_of(def, "tx_joins()"), 0);
+
+    // `body_of` 的位置性：切出的正是包装器函数体（含 `true` 与 `""` 两个分支），
+    // 不含定义行、不含紧随其后的其它函数。
+    let body = body_of(wrapper, "tx_joins_if");
+    assert_eq!(body.len(), 5, "包装器函数体应为 5 行：{body:?}");
+    assert!(
+        body.iter().any(|(_, l)| l.contains("\"\"")),
+        "应切出空串分支"
+    );
+    assert!(
+        body_of(
+            "fn tx_joins_if(needed: bool) -> &'static str {\n    if needed { tx_joins() }\n}\n",
+            "tx_joins_if"
+        )
+        .iter()
+        .all(|(_, l)| !l.contains("\"\"")),
+        "恒真版本（无空串分支）应被 body_of 原样暴露出来"
+    );
+}
+
 #[test]
 fn no_date_function_wraps_a_time_column_in_production() {
     assert_eq!(FILES.len(), 4, "应扫描 4 个路由文件");
