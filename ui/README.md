@@ -375,3 +375,14 @@ ui/
 - **两个状态分开表达**：「加载失败」由各视图自己的降级态（`loadErrorHtml` / `loadErrorRow` + 重试，见「登录态零 mock 约定」）承担；「未登录」只由 401 路径承担。若 token 其实已失效，进入 app 后第一次真实请求会拿到 401，由 `api.js` 清 token 回登录页 —— 那条路径给出的才是诚实的「登录已过期」。**不要**为了「稳妥」把非 401 也当作登出。
 - **文案**：`login.session.fail` 只说「加载失败」，**不得**写成「请重新登录」（会与 `login.session.expired` 混为一谈）。这条由 `src/i18n_pack.rs::session_failure_copy_does_not_claim_the_user_is_logged_out` 在 CI 里钉住（两档文案必须不同 + 失败档不得要求重新登录）；**视图那一半（非 401 必须进 app）是 JS 控制流，CI 里没有 JS 测试运行器**，只能靠本节约定与下面的冒烟测试。
 - **冒烟测试注意**：用 jsdom 启真 `index.html` + 四脚本、只 stub `fetch`，按 leg 脚本化 `/api/me` 的响应：`200` → app 可见 + 登录页隐藏 + `/api/me` **恰好 1 次**；`504` 或 fetch reject → app 可见 + 登录页隐藏 + token 仍在 + toast 是 `login.session.fail`；`504 → 200` → 恰好 **2 次**调用且无错误 toast；`401` → 登录页可见 + token 清空 + **恰好 1 次**（不重试）；无 token → `/api/me` **0 次**。断言期望值一律 `T("login.session.fail")` 现取，**不要**在测试里写死文案字面量。
+
+## 401 的语义由调用方声明：凭据端点不是「会话过期」（C2120）
+
+- **咽喉的默认行为**：`api.js` 的 `request()` 见到 401 就做全局登出（`clearToken()` + `window.__atpLogout()` → 回登录页 + `toast(T("login.session.expired"))`），并抛 `{status: 401}`。这对**业务端点**是对的：401 只能是我们带上去的会话凭据被服务端否掉了。
+- **但有两个端点故意用 401 表示「你刚提交的凭据不对」**：`POST /api/auth/login`（邮箱不存在 / 口令错）与 `POST /api/auth/change-password`（旧密码错）。后者的两个 401 目前**没有前端消费者**（全仓 `ui/` 无该路径调用点），只作为规则的一部分记录在此。
+- **声明方式**：`api.post(path, body, { on401: api.CREDENTIAL_401 })`。`api.CREDENTIAL_401` 是 `api.js` 导出的唯一取值；**不声明（或声明未知值）一律按会话失效**——漏声明只会「多登出一次」，不会「少登出一次」，失败方向是安全的。
+- **不变量**：**凭据端点的 401 不得清 token、不得回登录页、不得弹 `login.session.expired`**。它按**普通错误**抛给调用方（保留 `status === 401`），由该表单自己的行内错误呈现 —— 登录页是 `setFieldError($("#login-pass"), T("login.err.bad"))`。
+- **修前实测**（jsdom 启真 `index.html` + 四脚本、只 stub `fetch`、驱动**真表单**、后端回 401）：行内「邮箱或密码错误」与「登录已过期，请重新登录」**同时**出现在屏幕上 —— 后者把一句「你从未登录过」念给了刚输错密码的人。两层都跑（`handleUnauthorized()` 先截胡，异常随后冒泡到 `catch`），错的是前一层。
+- **折入的同轴缺陷**：登录成功后不再 `await loadSession(); enterApp();`，而是走 boot 的**同一个**入口 `restoreSession()`（`if (await restoreSession()) toast(login.welcome)`）。理由与「会话恢复」小节完全相同：**token 已存却停在登录页 = 谎报「已登出」**（改前 `saveToken()` 之后 `loadSession()` 一旦非 401 失败，token 留在 storage 里而人留在登录页）。凭据已被接受之后，401 就不再是「登录失败」了。
+- **CI 覆盖**：形状（调用点声明了 + 咽喉的 401 分支受该声明守卫 + 全局登出没被整段删掉）由 `src/i18n_pack.rs::credential_401_is_not_a_session_expiry` 钉住；控制流本身没有 JS 运行器，与上节同理。
+- **冒烟测试注意**：① stub `POST /api/auth/login` → 401，主断言是 **toasts 不含** `T("login.session.expired")`（改前为红，有鉴别力），行内错误 **等于** `T("login.err.bad")` 只能作阳性对照（改前已绿）；② 另起一条 leg：带 token boot + stub `GET /api/me` → 401，断言 token 被清 + 回登录页 + toasts **含** `login.session.expired` —— 这条防止有人用「干脆不做全局登出」来让 ① 变绿；③ 再一条：登录成功但 `/api/me` 回 500，断言 app 可见（与「非 401 不得停在登录页」同一条不变量）。
