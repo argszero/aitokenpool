@@ -132,11 +132,11 @@ pub async fn wallet(
 /// 值为字符串以宽容空值/非法输入（解析失败按未筛处理）。
 #[derive(Debug, Default, Deserialize)]
 pub struct TxColFilters {
-    /// 模型名 LIKE（%v%）
+    /// 模型名 LIKE（%v%；无模型的行按显示占位符 `—` 匹配，见 `tx_where`）
     pub model: Option<String>,
     /// 用户名 LIKE（JOIN users u）
     pub user_name: Option<String>,
-    /// Key 名 LIKE（JOIN api_keys ak；历史行兜底 key_label 表达式）
+    /// Key 名 LIKE（JOIN api_keys ak；历史行兜底 key_label 表达式，无 key 行按占位符 `—`）
     pub key_name: Option<String>,
     /// 状态精确匹配（库内中文值：成功/入账/处理中）
     pub status: Option<String>,
@@ -210,7 +210,15 @@ fn tx_where(
             .map(|s| format!("%{s}%"))
     };
     if let Some(s) = like(&f.model) {
-        conds.push(format!("{} LIKE ?{}", col("model"), binds.len() + 1));
+        // C2113：**筛选口径必须等于显示口径**。前端「模型」列无值的行（gift/expire 等）显示占位符
+        // `—`（`ui/js/app.js` `txsToView`：`t.model || "—"`），故筛选表达式也只能搜同一个文案
+        // （`NULLIF` 把库内空串（`model TEXT NOT NULL DEFAULT ''`）归零，与 JS `||` 同义）。
+        // 此前该列无值行显示的本地化类型名（「赠送」）在服务端不存在对应文案 —— 按它筛选永远 0 行。
+        conds.push(format!(
+            "COALESCE(NULLIF({}, ''), '—') LIKE ?{}",
+            col("model"),
+            binds.len() + 1
+        ));
         binds.push(rusqlite::types::Value::Text(s));
     }
     if let Some(s) = like(&f.user_name) {
@@ -224,10 +232,15 @@ fn tx_where(
         //    且登录自动建的分发 key 正是空名（dao::get_or_create_api_key 写 ''）——
         //    而 `COALESCE` 只对 NULL 回退 ⇒ 表格显示兜底文案、按该文案筛选却 0 行。
         //    先 `NULLIF(...,'')` 归零再 COALESCE，与前端 `t.key_name || t.key_label`（JS `||` 视空串为缺失）同口径。
+        // C2113：尾部的 `NULLIF(…, '')` + `'—'` 是 Key 列显示的**最后两层兜底** ——
+        // 前端单元格是 `t.key_name || t.key_label || "—"`：`key_label` 本身可能为空串
+        // （key 存在但 note/plan/provider 全空），无 key 的历史行（如 gift/expire）则连
+        // `key_label` 都是 NULL ⇒ 单元格显示 `—`。JS `||` 逐层把空串当缺失，SQL 侧必须逐层
+        // `NULLIF` 才能对齐，否则显示 `—` 而按 `—` 筛选 0 行。
         conds.push(format!(
-            "COALESCE(NULLIF(ak.name, ''), CASE WHEN k.note <> '' THEN k.note \
+            "COALESCE(NULLIF(ak.name, ''), NULLIF(CASE WHEN k.note <> '' THEN k.note \
                 WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
-                ELSE k.provider END) LIKE ?{}",
+                ELSE k.provider END, ''), '—') LIKE ?{}",
             binds.len() + 1
         ));
         binds.push(rusqlite::types::Value::Text(s));
@@ -1423,6 +1436,136 @@ mod tests {
         assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["total"], 0, "改名后旧兜底文案不再命中: {body}");
+    }
+
+    /// C2113：模型列 / Key 列 —— **单元格里出现的每一段文字都必须能被该列筛选命中**。
+    ///
+    /// 两列的筛选都走服务端（`tx_where` 的 `model` / `key_name` LIKE），而前端的无值兜底曾是
+    /// **本地化类型名**（`ui/js/app.js` `txsToView` 旧版 `t.model || txType(t.type)`）—— 服务端没有
+    /// 语言包，那个文案永远匹配不到 ⇒ 用户按屏幕上刚看到的文案筛选得 0 行；客户端 `filterRows`
+    /// 与「类型」列本就有正确的控件 ⇒ 丢的不是功能，是**可筛选的假象**。
+    /// 规格：无值行显示语言中性的占位符 `—`（与 `user` 列同款），服务端搜同一个文案。
+    ///
+    /// 夹具与「显示文案」助手被下面三个测试共用 —— 拆成三个是为了让 A/B 能读出互不遮蔽的红集合。
+    fn c2113_rows(st: &AppState) {
+        let conn = st.db.lock().unwrap();
+        // 与 gift.rs 的真实写入一致：当日赠送行既无模型也无 key（gift.rs `model` 传 ''）
+        conn.execute(
+            "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+             VALUES (1, '', NULL, '', 0, 2.0, 'gift', '成功')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+             VALUES (1, '2', 1, 'deepseek-v4-flash', 100, 10.0, 'consume', '成功')",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// 前端「模型」列显示的文案（`ui/js/app.js` `txsToView`：`t.model || "—"`）。
+    /// 由**规则**派生，不照抄任何一处输出。
+    fn displayed_model(row: &serde_json::Value) -> String {
+        let m = row["model"].as_str().unwrap_or("");
+        if m.is_empty() {
+            "—".into()
+        } else {
+            m.into()
+        }
+    }
+
+    /// 前端「Key」列显示的文案（`txsToView`：`t.key_name || t.key_label || "—"`；JS `||` 视空串为缺失）。
+    fn displayed_key(row: &serde_json::Value) -> String {
+        for k in ["key_name", "key_label"] {
+            let v = row[k].as_str().unwrap_or("");
+            if !v.is_empty() {
+                return v.into();
+            }
+        }
+        "—".into()
+    }
+
+    async fn tx_row_by_type(st: &AppState, key: &str, ty: &str) -> serde_json::Value {
+        let (s, body) = get(st.clone(), "/api/transactions", key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["type"].as_str() == Some(ty))
+            .unwrap_or_else(|| panic!("no {ty} row in {body}"))
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn tx_model_and_key_filters_match_the_displayed_placeholder() {
+        let st = test_state("txfall");
+        let key = login(st.clone()).await;
+        c2113_rows(&st);
+        let gift = tx_row_by_type(&st, &key, "gift").await;
+        assert_eq!(gift["model"].as_str(), Some(""), "前提：赠送行库内无模型");
+        assert!(gift["key_label"].is_null(), "前提：赠送行无 key");
+        // 1) 显示的文案 = 占位符
+        assert_eq!(displayed_model(&gift), "—", "模型列无值行显示占位符");
+        assert_eq!(displayed_key(&gift), "—", "Key 列无值行显示占位符");
+        // 2) 缺陷断言：按**表格里显示的文案**筛选必须命中该行（修前模型列为 0 行）
+        for (col, shown) in [
+            ("model", displayed_model(&gift)),
+            ("key_name", displayed_key(&gift)),
+        ] {
+            let (s, body) = get(
+                st.clone(),
+                &format!("/api/transactions?{col}={}", pct(&shown)),
+                &key,
+            )
+            .await;
+            assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(v["total"], 1, "按 {col} 列显示的文案筛选命中该行: {body}");
+            assert_eq!(
+                v["items"][0]["type"].as_str(),
+                Some("gift"),
+                "命中正是那一行: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tx_model_filter_still_matches_real_model_names() {
+        // 阳性对照：修复没弄坏正常路径 —— 有模型名的行照旧按模型名命中。
+        let st = test_state("txfallpos");
+        let key = login(st.clone()).await;
+        c2113_rows(&st);
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?model=deepseek-v4-flash",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 1, "按真实模型名命中消费行: {body}");
+        assert_eq!(v["items"][0]["type"].as_str(), Some("consume"));
+    }
+
+    #[tokio::test]
+    async fn tx_model_filter_does_not_take_localized_type_labels() {
+        // 阴性对照：本地化类型名（zh 包 `tx.type.gift` = 「赠送」）**不属于该列口径** ⇒ 0 行。
+        // 这条是给「反向修法」准备的：服务端没有语言包，若有人把类型名硬编码进 SQL 去匹配，
+        // 它就亮了 —— 正确解只有一处：让单元格显示服务端搜得到的文案（`—`）。
+        let st = test_state("txfallneg");
+        let key = login(st.clone()).await;
+        c2113_rows(&st);
+        let (s, body) = get(
+            st.clone(),
+            &format!("/api/transactions?model={}", pct("赠送")),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 0, "类型名不再是模型列的可筛值: {body}");
     }
 
     #[tokio::test]

@@ -357,3 +357,11 @@ ui/
 - **删掉的第二份状态**：`txTab`。此前顶部 tab 另存一份 `txTab`，而请求按 `filters.type || txTab` 取值 ⇒ 列筛选一旦出值，tab 的写入就被永久盖住：点 tab 只是挪高亮、列表不变（**死控件**），高亮却仍按 `txTab` 画（**说谎的指示器**）。jsdom 实测（改前 5/11）：列筛选选「赠送」后，请求 `type=gift` 而「全部」仍高亮；点「消费」后请求仍是 `gift`、`select` 仍显示 `gift` 而高亮已跳到「消费」——三者各说各话。
 - **高亮口径**：生效值不属于 all/consume/earn 时（topup / withdraw / gift / expire）**没有任何 tab 自称生效**（都不高亮），因为把「全部」点亮而列表只有赠送行同样是说谎。改版后不变量：**请求参数 / tab 高亮 / 列筛选 select 三者恒为同一份状态的投影**。
 - **冒烟测试注意**：点 tab 后状态已变，重拉由 `renderTransactions` 的筛选签名比对触发 —— **不要再显式 `loadTransactions()`**（会与它并发两次请求，后到者可能把先到者的行覆盖回去）。断言请比对「最近一次 `/api/transactions` 请求的 `type`」与「高亮的 tab」与「`select` 的 value」，三者用**同一个派生**（`wantTabs(type)`），不要写死字面量 —— 字面量会在应用的高亮恰好拼对时误绿。
+
+## 交易表「模型」/「Key」列：单元格文案 = 筛选口径（C2113）
+
+- **两列都是服务端筛选**：`txFilterParams()` 把「模型」列的文字发成 `model`、「Key」列发成 `key_name`，服务端 `tx_where` 用 LIKE 匹配库内值（`transactions.model` / `api_keys.name` → `key_label` 表达式）。**客户端 `filterRows` 只用于导出 CSV**（过滤当前页），表格本身的行由服务端全量过滤 + 分页。
+- **不变量**：**单元格里出现的每一段文字，都必须能被该列筛选命中**。因此无值行只能用**语言中性的占位符 `—`**（`user` 列与 Key 列消费分支早已如此），**不能**填本地化类型名 —— 服务端没有语言包，`txType(t.type)`（「赠送」「过期」）在 SQL 里永远匹配不到，按它筛选得 0 行（C2113 修前即此：文案看似可筛选，实际是**说谎的漏斗**）。
+- **两侧逐字对应**：`txsToView` 的 `t.model || "—"` / `t.key_name || t.key_label || "—"` ↔ `tx_where` 的 `COALESCE(NULLIF(…, ''), '—')`（Key 列是 `COALESCE(NULLIF(ak.name,''), NULLIF(<key_label 表达式>,''), '—')`，逐层 `NULLIF` 才能对齐 JS `||` 把空串当缺失的语义）。
+- **改文案就要同时改两侧**：这是「显示口径 = 筛选口径」类的第 4 处（前 3 处：点数有符号值 C2054、时间列 C2111、Key 列空名兜底 C2101）。`transactions_model_and_key_filters_match_the_displayed_placeholder`（`src/routes/wallet.rs`）钉住服务端半边；阴性对照断言「类型名不再是模型列的可筛值」，防止有人反向把中文标签硬编码进 SQL。
+- **冒烟测试注意**：前端半边（单元格文本）用 jsdom 启真 `index.html` + 四脚本、stub `fetch` 喂各类行（consume / gift / topup 哨兵）后**读渲染文本**；服务端半边由 Rust 测试覆盖。两侧的期望值都要**从同一条规则推出**（「库内值，空则 `—`」），不要照抄另一侧的输出 —— 照抄会让两边一起错。
