@@ -3209,11 +3209,18 @@
         const exact = typeof v === "number" && v > 0 ? fmtTokensExact(v) : "0";
         return ' title="' + esc(label + ": " + exact) + '"';
       };
-      // 模型列：consume/earn 显示模型名；无模型（topup/gift 等）显示交易类型说明
-      // Key 列（rant 2026-08-22T17:21:39 需求 2）：优先分发 key 的 name（api_keys.name）；
-      // 历史行无 api_key_id → 兜底 key_label（note/provider/plan），再兜底交易类型说明
-      const model = t.model || txType(t.type);
-      const key = t.key_name || t.key_label || (t.type === "consume" || t.type === "earn" ? "—" : txType(t.type));
+      // 模型列 / Key 列（rant 2026-08-22T17:21:39 需求 2）：优先库内值 ——
+      // 模型列取 `t.model`；Key 列优先分发 key 的 name（api_keys.name），历史行无 api_key_id
+      // → 兜底 key_label（note/provider/plan）。
+      // C2113：**无值时只能用服务端同样搜得到的占位符**。两列的筛选都走后端（`tx_where` 的
+      // `model` / `key_name` LIKE），故单元格里出现的每一段文字都必须是该列筛选能命中的值；
+      // 此前无值行显示的是**本地化类型名**（`txType(t.type)`，如「赠送」）—— 服务端拿不到语言包，
+      // 那个文案永远匹配不到 ⇒ 按屏幕上刚看到的文案筛选 0 行（客户端与「类型」列都有正确的控件，
+      // 所以这不是丢功能，是**说谎的漏斗**：文案看着可筛选、实际 0 行）。占位符 `—` 与
+      // `user` 列（`t.user_name || "—"`）及 Key 列消费分支同款：**无值、且语言中性**，
+      // 服务端筛选表达式尾部的 `'—'` 与这里逐字对应（见 `src/routes/wallet.rs` `tx_where`）。
+      const model = t.model || "—";
+      const key = t.key_name || t.key_label || "—";
       return {
         id: t.id,
         time: (t.time || "").replace("T", " ").slice(0, 16),
