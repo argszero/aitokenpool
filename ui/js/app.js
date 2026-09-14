@@ -587,7 +587,7 @@
     if (id === "dashboard") { renderDashboard(); if (loggedIn()) loadDashboard(); }
     else if (id === "marketplace") { renderMarketplace(); if (loggedIn()) loadMarketplace(); }
     else if (id === "sharing") { renderSharing(); if (loggedIn()) loadSharing(); }
-    else if (id === "wallet") renderWallet();
+    else if (id === "wallet") { renderWallet(); if (loggedIn()) loadWallet(); }
     else if (id === "transactions") { renderTransactions(); if (loggedIn()) loadTransactions(); }
     else if (id === "settings") { renderSettings(); if (loggedIn()) loadApiKeys(); }
     else if (id === "admin") { renderAdmin(); if (loggedIn() && D.USER.role === "admin") loadAdmin(); }
@@ -3072,6 +3072,8 @@
 
   function exitGuest() {
     isGuest = false;
+    // 身份边界（C2132）：会话结束即清空上一位用户的缓存 —— 否则下一位登录者会先看到他的数据
+    resetSessionCaches();
     $("#app").classList.add("hidden");
     setGuestSidebar(false);
     $("#login-view").classList.remove("hidden");
@@ -3081,6 +3083,9 @@
 
   // 拉当前用户信息 + 钱包余额（替代 mock D.USER.*）；余额失败 → 0 + 红色提示
   async function loadSession() {
+    // 身份边界（C2132）：会话建立前清空缓存 —— 登出再登录时，各视图的同步首帧会先渲染
+    // 上一位用户的载荷（`renderView` 先同步渲染、再异步拉取）。
+    resetSessionCaches();
     const me = await api.get("/api/me");
     D.USER.name = (me && me.name) || (me && me.email ? me.email.split("@")[0] : T("common.user"));
     D.USER.email = (me && me.email) || D.USER.email;
@@ -3189,6 +3194,15 @@
     opsUsers: null,      // P2-C GET /api/ops/users
     adminModels: null,   // rant 20:40:29 GET /api/admin/models（管理表格数据源）
   };
+
+  // 身份边界（C2132）：`Live` 是**按会话**缓存，必须在**会话结束**（exitGuest：登出 / 401）
+  // 与**会话建立**（loadSession：boot / 登录）两侧都清空 —— 否则换账号后，各视图会先用
+  // 上一位用户的载荷渲染（`renderView` 先同步渲染、再异步拉取）。钱包视图尤其致命：它是
+  // 八个视图里**唯一**没有自己的 loader 的分支，缓存不被清就永远显示上一个人的「永久点数」。
+  // 槽名**派生自**上面那个对象字面量（新增槽自动纳入）—— 不维护第二份名册。
+  function resetSessionCaches() {
+    Object.keys(Live).forEach((k) => { Live[k] = null; });
+  }
 
   function loggedIn() { return !!api.getToken() && !isGuest; }
 
@@ -3365,6 +3379,14 @@
       if (typeof Live.wallet.available === "number") D.USER.balance = Live.wallet.available;
       return Live.wallet.available;
     } catch (e) { return D.USER.balance; }
+  }
+
+  // 钱包视图自己的 loader（C2132）：`renderView("wallet")` 此前只渲染不拉取，是八个视图里
+  // **唯一**没有 loader 的分支 —— 缓存一旦有值（哪怕是上一位用户的）就永远不会刷新。
+  // 镜像 loadDashboard 的尾段：先拉真实钱包，再重渲染。
+  async function loadWallet() {
+    await refreshWallet();
+    renderWallet();
   }
 
   // 刷新侧边栏余额 + 当前视图（交易/仪表盘等消费后联动）
