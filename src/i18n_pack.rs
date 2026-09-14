@@ -1292,6 +1292,107 @@ mod tests {
         None
     }
 
+    /// `ui/index.html` 里声明在 `<input>` / `<select>` / `<textarea>` 上的 id（单个标签，不跨 `>`）。
+    fn form_control_ids(html: &str) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for tag in ["<input", "<select", "<textarea"] {
+            let mut from = 0;
+            while let Some(at) = html[from..].find(tag) {
+                let start = from + at;
+                let end = start + html[start..].find('>').map(|e| e + 1).unwrap_or(0);
+                let element = &html[start..end];
+                if let Some(id) = element
+                    .split("id=\"")
+                    .nth(1)
+                    .and_then(|r| r.split('"').next())
+                {
+                    out.insert(id.to_string());
+                }
+                from = end.max(start + 1);
+            }
+        }
+        out
+    }
+
+    /// `at` 处是一个调用（形如 `.addEventListener(`），返回其**实参列表**（含括号），
+    /// 括号配平并跳过字符串 / 模板字面量里的括号。
+    fn balanced_call_args(src: &str, at: usize) -> Option<&str> {
+        let open = at + src[at..].find('(')?;
+        let bytes = src.as_bytes();
+        let (mut depth, mut i, mut quote) = (0i32, open, 0u8);
+        while i < bytes.len() {
+            let c = bytes[i];
+            if quote != 0 {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == quote {
+                    quote = 0;
+                }
+            } else if c == b'"' || c == b'\'' || c == b'`' {
+                quote = c;
+            } else if c == b'(' {
+                depth += 1;
+            } else if c == b')' {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[open..i + 1]);
+                }
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// 让 Enter 去**点确认按钮**（`.click(`）的 `keydown` 登记，若其目标是某个表单控件（`controls`），
+    /// 就是「逐字段登记」的形态 —— 返回这些目标 id。
+    ///
+    /// 只认「点了按钮」的登记：`#chat-input` 的 Enter 是「发送消息」（调 `sendChat()`），
+    /// 不是表单提交，不得误判；容器级委托的目标是函数参数（`card`），不是 `$("#id")`，也不进这个集合。
+    fn enter_click_registrations_on_controls(
+        src: &str,
+        controls: &std::collections::BTreeSet<String>,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        for (at, _) in src.match_indices(".addEventListener(\"keydown\"") {
+            // 目标：登记表达式之前的那一段（`$("#id")` / `getElementById("id")` / `card`）
+            let back = src[..at]
+                .rfind([';', '{', '}', '\n'])
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let target = src[back..at].trim();
+            // 处理体：`addEventListener(` 的整个实参列表（配平括号，跳过字符串）。
+            // 不能取「到第一个 `;` 为止」—— `(e) => { if (e.key === "Enter") { e.preventDefault(); …click(); } }`
+            // 的第一处 `;` 出现在 `e.preventDefault()` 之后，会把 `.click(` 切在窗口外。
+            let body = match balanced_call_args(src, at) {
+                Some(b) => b,
+                None => continue,
+            };
+            if !body.contains("\"Enter\"") || !body.contains(".click(") {
+                continue;
+            }
+            let id = target
+                .split("\"#")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .or_else(|| {
+                    target
+                        .split("getElementById(\"")
+                        .nth(1)
+                        .and_then(|r| r.split('"').next())
+                });
+            if let Some(id) = id {
+                if controls.contains(id) {
+                    out.push(id.to_string());
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// 时间戳必须以**原始串**到达渲染器，格式化只能由 helper 做（C2126）。
     ///
     /// 后端用 `dao::utc_iso()` 统一序列化（`format!("{date}T{time}Z")`，见 `src/dao.rs`），
@@ -1378,5 +1479,128 @@ mod tests {
                 "阳性对照失败：提取器把合法形态判成违规（{what}：{after}）"
             );
         }
+    }
+
+    /// 行内卡片的 Enter 提交必须**委托到容器**，不得逐字段登记（C2127）。
+    ///
+    /// 这些卡片是 `<div class="form">` / `<span class="inline-edit">` 而非真 `<form>`
+    /// （真表单见 `#share-form`：`type=submit` 按钮让浏览器自己实现隐式提交，全字段免费），
+    /// 所以 Enter 得自己实现。逐字段 `$("#某字段").addEventListener("keydown", …)` 把
+    /// 「哪些控件能提交」抄成一份**名册**，而名册不会随控件增长：模型表单曾有 10 个可输入
+    /// 控件、只登记了 2 个（厂商 / 模型名），输入价 / 缓存命中价 / 输出价 / 高峰三价 /
+    /// 上下文窗口 / 最大输出这 8 个按 Enter **毫无反应**（点「确认」都能提交）；同一页的
+    /// 部门表单却每个字段都登记了（2/2）⇒ 是漏登记，不是取舍。
+    ///
+    /// CI 里没有 JS 运行器，运行期那一半（按 Enter 到底有没有发出与点确认**相同**的请求）
+    /// 由 jsdom 仪器与 `ui/README.md` 的「行内卡片的 Enter 提交」小节承接。这里钉形状。
+    #[test]
+    fn enter_submit_is_delegated_to_the_card() {
+        let app = strip_js_comments(APP_JS);
+        let controls = form_control_ids(INDEX_HTML);
+        assert!(
+            controls.contains("model-form-in") && controls.len() > 20,
+            "ui/index.html 没读到表单控件（提取器输入为空）：{}",
+            controls.len()
+        );
+
+        // ① 不变量（派生自 markup，而非人写名册）：任何「Enter → 点确认按钮」的登记都不得
+        //    挂在 `index.html` 里声明于 input/select/textarea 的 id 上。
+        let bad = enter_click_registrations_on_controls(&app, &controls);
+        assert!(
+            bad.is_empty(),
+            "ui/js/app.js 有 {} 处逐字段登记的 Enter 提交：{bad:?} —— 卡片是 `<div class=\"form\">`，\
+             没有隐式提交，但「哪些控件能提交」不该靠人写名册（模型表单 10 个可输入控件曾只登记 2 个）。\
+             改成容器级委托 `wireEnterSubmit($(\"#卡片\"), \"#确认按钮\")`：挂冒泡，卡片里当前和以后的\
+             文本控件都自动生效",
+            bad.len()
+        );
+
+        // ② 阴性对照：提取器必须认得出修前的两种形态（否则 ① 只是恒真的形状巧合）。
+        let mut synthetic = std::collections::BTreeSet::new();
+        for id in [
+            "model-form-in",
+            "model-form-provider",
+            "dept-form-quota",
+            "chat-input",
+        ] {
+            synthetic.insert(id.to_string());
+        }
+        for (before, what) in [
+            (
+                "$(\"#model-form-in\").addEventListener(\"keydown\", (e) => { if (e.key === \"Enter\") { e.preventDefault(); $(\"#model-confirm\").click(); } });",
+                "模型表单「输入价」字段",
+            ),
+            (
+                "$(\"#dept-form-quota\").addEventListener(\"keydown\", (e) => { if (e.key === \"Enter\") { e.preventDefault(); $(\"#dept-confirm\").click(); } });",
+                "部门表单「配额」字段",
+            ),
+        ] {
+            assert_eq!(
+                enter_click_registrations_on_controls(before, &synthetic).len(),
+                1,
+                "阴性对照失败：提取器认不出逐字段登记（{what}）—— ① 等于没写"
+            );
+        }
+        //    阳性对照：同样挂在控件上、但**不点按钮**的 Enter（聊天输入框 = 发送消息）不得误判；
+        //    容器级委托的目标是函数参数 `card`，也不得误判。
+        for (after, what) in [
+            (
+                "$(\"#chat-input\").addEventListener(\"keydown\", (e) => { if (e.key === \"Enter\") sendChat(); });",
+                "聊天输入框（发送消息，不是表单提交）",
+            ),
+            (
+                "card.addEventListener(\"keydown\", (e) => { if (e.key !== \"Enter\") return; btn.click(); });",
+                "容器级委托本身",
+            ),
+        ] {
+            assert!(
+                enter_click_registrations_on_controls(after, &synthetic).is_empty(),
+                "阳性对照失败：提取器把合法形态判成违规（{what}：{after}）"
+            );
+        }
+
+        // ③ 委托的加载器本身：登记在**容器参数**上，并早退非文本输入（否则焦点在「取消」上
+        //    按 Enter 会同时触发取消与提交）。
+        let body = js_function_body(&app, "function wireEnterSubmit(")
+            .expect("ui/js/app.js 里找不到 wireEnterSubmit 的函数体");
+        assert!(
+            body.contains("card.addEventListener(\"keydown\""),
+            "wireEnterSubmit 不再把 keydown 挂在**容器**上：{body}"
+        );
+        assert!(
+            body.contains("tagName !== \"INPUT\"") && body.contains("NON_TEXT_INPUT_TYPES"),
+            "wireEnterSubmit 不再早退非文本输入控件：勾选框 / 下拉 / 按钮上的 Enter 不该提交，\
+             而且早退 `button` 才能避免「在『取消』上按 Enter 同时触发取消与提交」"
+        );
+        assert!(
+            body.contains("btn.click()"),
+            "wireEnterSubmit 不再点确认按钮：忙碌态（withLoading）、字段校验与请求都留在确认按钮\
+             自己的监听器里，委托不得复制一份"
+        );
+
+        // ④ 五张行内卡片都必须走这个 helper。这一条是**卡片的**名册（5 个、每个都是有意的动作），
+        //    不是**字段的**名册（模型表单里 10 个字段就是这么长出来的）；数量断言让「新增卡片却
+        //    另写一套」必须先改这里，而字段级遗漏已由 ① 兜住。
+        let mut calls = 0;
+        for card in [
+            "topup-card",
+            "raise-card",
+            "ak-new-inline",
+            "dept-form-card",
+            "model-form-card",
+        ] {
+            let call = format!("wireEnterSubmit($(\"#{card}\")");
+            assert!(
+                app.contains(&call),
+                "行内卡片 #{card} 没有走 wireEnterSubmit —— 它的 Enter 提交要么缺失、要么又回到了逐字段登记"
+            );
+            calls += app.match_indices(&call).count();
+        }
+        assert_eq!(
+            calls,
+            app.matches("wireEnterSubmit($(\"#").count(),
+            "wireEnterSubmit 的调用数与卡片数不一致：新增卡片请同步 ④ 的清单（并确认它是真 <form> \
+             还是需要委托）"
+        );
     }
 }
