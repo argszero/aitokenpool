@@ -349,3 +349,11 @@ ui/
 - **运营视图**（2 tab 不变）：运行概览新增四张卡片——**服务版本**（`/api/ops/runtime` 的 `version`，取自 `env!("CARGO_PKG_VERSION")`，与 `/healthz` 同源；前端**不得**写死版本号）与**运行时长**（`uptime_secs` / `uptime_days` / `uptime_hours` / `uptime_minutes` / `uptime_secs_rest`，进位在后端 `split_uptime` 完成，前端 `fmtUptime` 只挑「最高两个非零位」并取 `ops.uptime.{days,hours,minutes,seconds}` 单位）、**今日调用量（按小时）** `.bar-list`（`today_hours`，服务端 0-23 全量补零；GROUP BY 会省略无调用的小时，不补零会让柱子整体左移，与交易页 `txTrendDays` 同款坑）与**上游 key 健康** `.mini-list`（`key_health` 按厂商聚合 total/on/off，三态 pill：健康 / N 个异常 / 全部失败）；成员充值的搜索框移到卡片标题行右侧（原型 `.spread`）；
 - **交易量卡（第 9 张，回归修复）**：`total_txs`（`ops.stats.trades` + `cnt.trades` + `ops.stats.trades.sub`）自 `85982e8`（PR #80）起就在 `/api/ops/runtime` 返回（全库 `COUNT(*)`，累计**全部类型**），但 v1.22 零 mock 重构 `89963f3` 删掉 mock 分支那张卡时漏了重接。**这不是原型对齐**——原型没有这张卡（原型 4 张，实现 9 张，多出的卡是刻意的）。值一律取自响应，**不取** `D.TRANSACTIONS`；
 - **零 mock 不破**：以上数据全部来自真实端点，加载失败仍走空态 + 重试（`.mini-item` / `.bar-row` 只在有真实数据时才渲染）。
+
+## 交易类型筛选：一份状态，两套控件（C2112）
+
+- **只有一份状态**：交易页的「类型」筛选器有两个控件 —— 顶部 **`#tx-tabs`**（全部 / 消费 / 收益）与「类型」列表头下的 **`select.th-filter[data-filter-key="type"]`**（6 个库内值）。**状态只存在 `txTable.filters.type`**（空串 = 不限；取值恒为库内值 ⇒ 语言无关，见 C2031：「选项 value 与文案分离」）。
+- **两者都读写它**：`txTypeFilter()` 是唯一取值定义（`loadTransactions` 的 `type` 参数、`renderTransactions` 的 tab 高亮都调它）；`setTxTypeFilter(v)` 是唯一写入口，并**同步已渲染的 select**（#148 之后表头不重建 → 控件值不会自己跟上状态）。
+- **删掉的第二份状态**：`txTab`。此前顶部 tab 另存一份 `txTab`，而请求按 `filters.type || txTab` 取值 ⇒ 列筛选一旦出值，tab 的写入就被永久盖住：点 tab 只是挪高亮、列表不变（**死控件**），高亮却仍按 `txTab` 画（**说谎的指示器**）。jsdom 实测（改前 5/11）：列筛选选「赠送」后，请求 `type=gift` 而「全部」仍高亮；点「消费」后请求仍是 `gift`、`select` 仍显示 `gift` 而高亮已跳到「消费」——三者各说各话。
+- **高亮口径**：生效值不属于 all/consume/earn 时（topup / withdraw / gift / expire）**没有任何 tab 自称生效**（都不高亮），因为把「全部」点亮而列表只有赠送行同样是说谎。改版后不变量：**请求参数 / tab 高亮 / 列筛选 select 三者恒为同一份状态的投影**。
+- **冒烟测试注意**：点 tab 后状态已变，重拉由 `renderTransactions` 的筛选签名比对触发 —— **不要再显式 `loadTransactions()`**（会与它并发两次请求，后到者可能把先到者的行覆盖回去）。断言请比对「最近一次 `/api/transactions` 请求的 `type`」与「高亮的 tab」与「`select` 的 value」，三者用**同一个派生**（`wantTabs(type)`），不要写死字面量 —— 字面量会在应用的高亮恰好拼对时误绿。
