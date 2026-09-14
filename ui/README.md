@@ -366,3 +366,12 @@ ui/
 - **两侧逐字对应**：`txsToView` 的 `t.model || "—"` / `t.key_name || t.key_label || "—"` ↔ `tx_where` 的 `COALESCE(NULLIF(…, ''), '—')`（Key 列是 `COALESCE(NULLIF(ak.name,''), NULLIF(<key_label 表达式>,''), '—')`，逐层 `NULLIF` 才能对齐 JS `||` 把空串当缺失的语义）。
 - **改文案就要同时改两侧**：这是「显示口径 = 筛选口径」类的第 4 处（前 3 处：点数有符号值 C2054、时间列 C2111、Key 列空名兜底 C2101）。`transactions_model_and_key_filters_match_the_displayed_placeholder`（`src/routes/wallet.rs`）钉住服务端半边；阴性对照断言「类型名不再是模型列的可筛值」，防止有人反向把中文标签硬编码进 SQL。
 - **冒烟测试注意**：前端半边（单元格文本）用 jsdom 启真 `index.html` + 四脚本、stub `fetch` 喂各类行（consume / gift / topup 哨兵）后**读渲染文本**；服务端半边由 Rust 测试覆盖。两侧的期望值都要**从同一条规则推出**（「库内值，空则 `—`」），不要照抄另一侧的输出 —— 照抄会让两边一起错。
+
+## 会话恢复：非 401 失败不得演成「已登出」（C2124）
+
+- **唯一入口**：boot 的会话恢复（`app.js` `DOMContentLoaded` 里那个 IIFE）只做一件事 —— `if (api.getToken()) await restoreSession();`。判定与降级**全部**写在 `restoreSession()` 里，登录页不再自己接错误。
+- **三档判定，只有 401 能判「未登录」**：401 = token 已被服务端作废（`api.js` 已清 token + `__atpLogout` 回登录页），**不重试**（重试不会让失效 token 变有效）；网络错误（`status === 0`）/ 5xx（含网关 504）视为**可重试**，等 1 s 重试**一次**（抖动通常只持续数百毫秒）；其余 4xx 不重试（重试无意义）。
+- **不变量**：**`api.getToken()` 非空时，任何非 401 失败都不得把用户摆在登录页**。重试后仍失败 ⇒ **照常 `enterApp()`** 并 `toast(T("login.session.fail"))`。理由：token 仍在却显示登录页 = 谎报「已登出」，而 URL hash 还指向上次视图，用户只会理解为被踢出（宿主 2026-09-14 21:00 实测：`/api/me` 被拖到网关 504 时「停在登录页 + token 仍在 + hash 仍是 `#/sharing`」三特征同现）。
+- **两个状态分开表达**：「加载失败」由各视图自己的降级态（`loadErrorHtml` / `loadErrorRow` + 重试，见「登录态零 mock 约定」）承担；「未登录」只由 401 路径承担。若 token 其实已失效，进入 app 后第一次真实请求会拿到 401，由 `api.js` 清 token 回登录页 —— 那条路径给出的才是诚实的「登录已过期」。**不要**为了「稳妥」把非 401 也当作登出。
+- **文案**：`login.session.fail` 只说「加载失败」，**不得**写成「请重新登录」（会与 `login.session.expired` 混为一谈）。这条由 `src/i18n_pack.rs::session_failure_copy_does_not_claim_the_user_is_logged_out` 在 CI 里钉住（两档文案必须不同 + 失败档不得要求重新登录）；**视图那一半（非 401 必须进 app）是 JS 控制流，CI 里没有 JS 测试运行器**，只能靠本节约定与下面的冒烟测试。
+- **冒烟测试注意**：用 jsdom 启真 `index.html` + 四脚本、只 stub `fetch`，按 leg 脚本化 `/api/me` 的响应：`200` → app 可见 + 登录页隐藏 + `/api/me` **恰好 1 次**；`504` 或 fetch reject → app 可见 + 登录页隐藏 + token 仍在 + toast 是 `login.session.fail`；`504 → 200` → 恰好 **2 次**调用且无错误 toast；`401` → 登录页可见 + token 清空 + **恰好 1 次**（不重试）；无 token → `/api/me` **0 次**。断言期望值一律 `T("login.session.fail")` 现取，**不要**在测试里写死文案字面量。

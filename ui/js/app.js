@@ -3064,6 +3064,41 @@
     maybeStartTour(); // 首次登录引导（rant 20:46:57 A：atp-tour-done 未标记才触发）
   }
 
+  // 会话恢复（boot 唯一入口；rant 2026-09-14T21:15:02 第 4 条）。
+  //
+  // 判定分三档，只有第一档能把用户判成「未登录」：
+  //   · 401        → token 已失效：api.js 已清 token 并回登录页（`__atpLogout`）。**唯一**
+  //                  不重试的情形 —— 重试不会让一个失效 token 变有效。
+  //   · 可重试失败 → 网络错误（`status === 0`）/ 5xx（含网关 504）：等 1s 重试**一次**。
+  //                  抖动通常只持续数百毫秒，一次重试即可救回，不必惊动用户。
+  //   · 其余失败   → 4xx（非 401）：重试无意义。
+  //
+  // ⚠️ 重试后仍失败 ⇒ **照常进入 app**，绝不把用户摆在登录页。token 仍在（`api.getToken()`
+  // 非空）却显示登录页 = 谎报「已登出」，且 URL hash 仍指向上次视图，用户只会理解为被踢出
+  // （宿主 2026-09-14 21:00 实测：`/api/me` 被拖到网关 504 时三特征同现）。两个状态必须分开：
+  // 「加载失败」由各视图自己的降级态（`loadErrorHtml`/`loadErrorRow` + 重试）承担，
+  // 「未登录」只由 401 路径承担。若 token 其实已失效，进入后第一次真实请求会拿到 401，
+  // 由 api.js 清 token 回登录页 —— 那条路径给出的是诚实的「登录已过期」。
+  async function restoreSession() {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await loadSession();
+        enterApp();
+        return true;
+      } catch (e) {
+        const status = (e && e.status) || 0;
+        if (status === 401) return false; // 已由 api.js 处理（清 token + 回登录页）
+        const transient = status === 0 || status >= 500;
+        if (!transient || attempt >= 1) {
+          enterApp();
+          toast(T("login.session.fail"), "error");
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+  }
+
   // api.js 401 钩子：token 失效 → 清 token 回登录页
   window.__atpLogout = () => {
     api.clearToken();
@@ -3901,16 +3936,12 @@
     renderView("dashboard");
     $("#side-balance").textContent = D.fmt(D.USER.balance);
 
-    // P2-A 会话恢复：已有 token → 拉 /api/me + /api/wallet 直接进 app；401 自动清 token 回登录页
+    // P2-A 会话恢复：已有 token → 拉 /api/me + /api/wallet 直接进 app。
+    // 失败处置集中在 restoreSession()：401 回登录页（唯一「未登录」信号），
+    // 其余失败重试一次后照常进 app 并提示 —— 不把「加载失败」演成「已登出」。
     (async () => {
       if (!api.getToken()) return;
-      try {
-        await loadSession();
-        enterApp();
-      } catch (e) {
-        // 401 已由 api.js 清 token；其余错误保持登录页并提示
-        if (!(e && e.status === 401)) toast(T("login.session.fail"), "error");
-      }
+      await restoreSession();
     })();
 
     // 主题（rant 18:06:09 B）：localStorage 记忆，首次加载尊重 prefers-color-scheme
