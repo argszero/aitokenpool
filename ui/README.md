@@ -268,6 +268,7 @@ ui/
 
 - 入口：交易页 page-head 右上 **`#tx-export-btn`「导出 CSV」**（`.btn.btn-secondary.btn-sm`），`bindEvents` 绑 `exportTxCsv`；
 - 数据范围：**当前筛选可见行** = tab（全部/消费/收益）→ `filterRows(list, TX_COLUMNS, txTable.filters)`（与表格、汇总条同一数据源）；无数据 → toast info 不导出；
+- **各列与表格单元格同口径**（C2054 点数 / C2111 时间）：时间列走渲染单元格的同一个 `fmtPrecise(t.time)`（本地精确时间），**不**直接写视图行的 `t.time`（库内 UTC 串，`txsToView` 不转换）——否则同一行在表里是 `23:04`、在导出文件里却是 `15:04`（东八区；西半球反向）。`#139`（rant 2026-08-24T12:38:44）把单元格改成当地时间展示时，漏了导出这个消费者；
 - 格式：**UTF-8 BOM**（`"\uFEFF"` 前缀）+ `\r\n` 换行 + 表头 `时间,类型,模型 / Key,Token 用量,点数,状态`；类型用 `TX_TYPE` 中文映射；点数正负号原值；字段含 `,`/`"`/换行按 RFC4180 双引号转义（`cell()` 助手）；
 - 下载：`Blob(type="text/csv;charset=utf-8")` → `URL.createObjectURL` → 临时 `<a download>` click → `remove()` → `setTimeout 1s` revoke；文件名 **`aitokenpool-transactions-YYYYMMDD.csv`**（`new Date()` 本地日期）；
 - 冒烟测试注意：stub 需给 `document.createElement("a")` 返回带 `click()`/`remove()` 的元素并捕获 `href`/`download`，`URL.createObjectURL` 捕获 Blob（`arrayBuffer()` 首 3 字节 EF BB BF 验证 BOM——`blob.text()` 会按规范剥掉 BOM）；列筛选联动可注入 `#tx-table` 的 `querySelectorAll(".th-filter")`/`querySelector('[data-filter-key=…]')` 假输入并 fire `input`。

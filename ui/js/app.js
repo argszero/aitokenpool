@@ -1652,9 +1652,13 @@
     if (!list.length) { toast(T("tx.export.none"), "info"); return; }
     const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const headers = [T("tx.col.time"), T("tx.col.type"), T("tx.col.user"), T("tx.col.model"), T("tx.col.apiKeyName"), T("tx.col.input"), T("tx.col.cached"), T("tx.col.output"), T("tx.col.tokens"), T("tx.col.pts"), T("tx.col.status")];
-    // C2054：导出的是「当前筛选可见行」，故「点数」列与表格单元格同口径（有符号：收入正/支出负），
+    // C2054：导出的是「当前筛选可见行」，故各列与表格单元格**同口径** —— 点数写有符号值，
     // 否则屏幕上写着 -3.7、导出的文件里却是 3.7。
-    const lines = list.map((t) => [t.time, txType(t.type), t.user, t.model, t.key, t.inputTokens, t.cachedTokens, t.outputTokens, t.tokens, signedPts(t.type, t.pts), txStatus(t.status)].map(cell).join(","));
+    // C2111：时间列同理。单元格渲染的是**本地**精确时间（`fmtPrecise`，时间列口径见 #139
+    // rant 2026-08-24T12:38:44），而导出一直直接写 `t.time`（库内 UTC 串，`txsToView` 未转换）
+    // ⇒ 同一行在表里是 23:04、在文件里却是 15:04（东八区；西半球反向）。两处必须同源：
+    // 导出直接用渲染该单元格的同一个 helper，而不是再抄一份「时间转字符串」的口径。
+    const lines = list.map((t) => [fmtPrecise(t.time), txType(t.type), t.user, t.model, t.key, t.inputTokens, t.cachedTokens, t.outputTokens, t.tokens, signedPts(t.type, t.pts), txStatus(t.status)].map(cell).join(","));
     const csv = "\uFEFF" + [headers.join(","), ...lines].join("\r\n"); // UTF-8 BOM，Excel 中文不乱码
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
