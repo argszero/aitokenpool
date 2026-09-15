@@ -224,6 +224,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// 前端源码在**编译期**读入：测试不依赖工作目录与文件系统布局。
 const APP_JS: &str = include_str!("../ui/js/app.js");
+/// 设置视图的静态标记（C2148）：控件在这里被渲染，接线在 `app.js`。
+const INDEX_HTML: &str = include_str!("../ui/index.html");
 
 /// 交易视图自己的载荷缓存槽（`Live` 的字段名）。
 const TX_SLOT: &str = "transactions";
@@ -254,6 +256,23 @@ const SESSION_TESTS: [&str; 2] = ["loggedIn", "isGuest"];
 const NAV_REGISTRY: &str = "NAV_ORDER";
 /// 登记表的定义式：它是从 `NAV` **推导**出来的展开结果，不是一个手抄的第二份清单。
 const NAV_REGISTRY_DERIVATION: &str = "NAV.flatMap";
+
+/// 设置视图里**配置卡**的三张卡（C2148）：账户 / 通知 / 偏好。
+///
+/// 本门禁的**射程**就是这三张卡里的表单控件。密钥卡（`#ak-search` / `#ak-new-*` /
+/// `#new-api-key-btn`）不在射程内：它们的接线另有既有门禁（`#ak-search` 的筛选参数名
+/// 与后端逐字对齐、`api_keys.name` 的空值由 C2101 钉住），把它们一起收进来会让本门禁
+/// 需要一串豁免清单 —— 射程由此显式登记，而不是靠「漏扫」。
+const SETTINGS_CARDS: [&str; 3] = ["settings.account", "settings.notify", "settings.prefs"];
+/// 设置视图 `<section>` 的身份（射程起点）。
+const SETTINGS_VIEW_ID: &str = "id=\"view-settings\"";
+/// 卡片的起点（`card` / `card mt16` / `card-grid-3 …` 都算边界；只需前缀）。
+const CARD_PREFIX: &str = "<div class=\"card";
+/// 惰性控件旁边必须有的本地化说明标记。
+const HINT_MARKUP: &str = "<span class=\"hint\"";
+/// 「把值存起来」不算消费：值读取落在这些方法上时不计数（坑 #338 的推广 ——
+/// 「被填」不是「被消费」，「被持久化」同样不是）。
+const STORAGE_METHODS: [&str; 4] = ["setItem", "getItem", "removeItem", "clear"];
 
 /// 行首为 `//` 的行：注释行，不参与断言。
 fn is_comment_line(line: &str) -> bool {
@@ -1429,6 +1448,417 @@ fn assignment_statement(src: &str, ident: &str) -> Option<String> {
         }
     }
     Some(out)
+}
+
+/// 设置卡片里的一个表单控件（`<input|select|textarea|button>`）。
+///
+/// `value_bearing` 把「有值的控件」与「按钮」分开：前者必须让**值**流进产品代码才算接线，
+/// 后者绑上监听器就算（按钮没有值可读）。
+struct HtmlControl {
+    tag: String,
+    id: Option<String>,
+    name: Option<String>,
+    value_bearing: bool,
+    inert: bool,
+}
+
+/// 去掉 `<!-- … -->`（HTML 注释不参与断言 —— 修法自己就会在控件旁边写解释）。
+fn strip_html_comments(src: &str) -> String {
+    let mut out = String::new();
+    let mut rest = src;
+    loop {
+        match rest.find("<!--") {
+            None => {
+                out.push_str(rest);
+                return out;
+            }
+            Some(open) => {
+                out.push_str(&rest[..open]);
+                match rest[open..].find("-->") {
+                    Some(close) => rest = &rest[open + close + 3..],
+                    None => return out,
+                }
+            }
+        }
+    }
+}
+
+/// 设置视图的 `<section>` 区段（射程起点；`</section>` 收尾 —— 视图里没有嵌套 section）。
+fn settings_view(html: &str) -> Option<&str> {
+    let at = html.find(SETTINGS_VIEW_ID)?;
+    let rest = &html[at..];
+    let end = rest.find("</section>").unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// 一张配置卡的区段：从它的 `<h3 data-i18n="KEY">` 起到**下一张卡**（或视图结束）。
+///
+/// 三张卡是 `settings-grid` 里的兄弟节点，因此「下一处 `<div class="card`」就是下界；
+/// 标记里的引号让 `settings.account` **不会**被 `settings.account.nickname` 命中。
+fn card_region<'a>(view: &'a str, key: &str) -> Option<&'a str> {
+    let marker = format!("data-i18n=\"{key}\"");
+    let at = view.find(&marker)?;
+    let rest = &view[at..];
+    let end = rest.find(CARD_PREFIX).unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// `attrs` 里属性 `name` 的引号值（不做词法分析：调用方的属性串只含标签属性）。
+fn html_attr_value(attrs: &str, name: &str) -> Option<String> {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    let bytes = attrs.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = attrs[from..].find(name) {
+        let at = from + rel;
+        let before_ok = at == 0 || !is_word(bytes[at - 1] as char);
+        if before_ok {
+            let t = attrs[at + name.len()..].trim_start();
+            if let Some(t) = t.strip_prefix('=') {
+                let t = t.trim_start();
+                if let Some(q) = t.chars().next() {
+                    if q == '"' || q == '\'' {
+                        if let Some(end) = t[1..].find(q) {
+                            return Some(t[1..1 + end].to_string());
+                        }
+                    }
+                }
+            }
+        }
+        from = at + 1;
+        if from >= attrs.len() {
+            break;
+        }
+    }
+    None
+}
+
+/// `attrs` 里是否出现**独立**的属性 `tok`（`readonly` / `disabled`；`data-readonly` 不算）。
+fn html_has_token(attrs: &str, tok: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    let bytes = attrs.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = attrs[from..].find(tok) {
+        let at = from + rel;
+        let end = at + tok.len();
+        let before_ok = at == 0 || !is_word(bytes[at - 1] as char);
+        let after_ok = end >= bytes.len() || !is_word(bytes[end] as char);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = at + 1;
+        if from >= attrs.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// 区段里出现的下一个表单控件标签：`(标签名, `<` 处的下标)`。
+fn next_control_tag(src: &str, from: usize) -> Option<(&'static str, usize)> {
+    let mut best: Option<(&'static str, usize)> = None;
+    for tag in ["input", "select", "textarea", "button"] {
+        let needle = format!("<{tag}");
+        let mut at = from;
+        while let Some(rel) = src[at..].find(&needle) {
+            let i = at + rel;
+            let after = src
+                .as_bytes()
+                .get(i + needle.len())
+                .copied()
+                .map(|b| b as char);
+            if matches!(after, Some(' ') | Some('\t') | Some('\n') | Some('>')) {
+                if best.is_none_or(|(_, b)| i < b) {
+                    best = Some((tag, i));
+                }
+                break;
+            }
+            at = i + 1;
+            if at >= src.len() {
+                break;
+            }
+        }
+    }
+    best
+}
+
+/// 区段里的全部表单控件。
+fn parse_controls(region: &str) -> Vec<HtmlControl> {
+    let src = strip_html_comments(region);
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some((tag, at)) = next_control_tag(&src, from) {
+        let after = at + tag.len() + 1;
+        let end = src[after..]
+            .find('>')
+            .map(|i| after + i)
+            .unwrap_or(src.len());
+        let attrs = &src[after..end];
+        let ty = html_attr_value(attrs, "type");
+        let value_bearing = !(tag == "button"
+            || matches!(
+                ty.as_deref(),
+                Some("button") | Some("submit") | Some("reset") | Some("image")
+            ));
+        out.push(HtmlControl {
+            tag: tag.to_string(),
+            id: html_attr_value(attrs, "id"),
+            name: html_attr_value(attrs, "name"),
+            value_bearing,
+            inert: html_has_token(attrs, "readonly") || html_has_token(attrs, "disabled"),
+        });
+        from = end + 1;
+    }
+    out
+}
+
+/// 一个控件能被 `app.js` 认出来的句柄：`#id`，以及同名组的 `name="…"`（单选组靠它接线）。
+fn control_handles(c: &HtmlControl) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(id) = &c.id {
+        out.push(format!("#{id}"));
+    }
+    if let Some(name) = &c.name {
+        out.push(format!("name=\"{name}\""));
+    }
+    out
+}
+
+/// 值读取处左边那个调用名（`applyTheme(sel.value)` ⇒ `applyTheme`）。
+///
+/// 只认**紧邻**的左括号：`const cur = sel.value;` 左边是 `=` ⇒ `None`
+/// （把当前值读进局部变量只是为了重渲染时还原，不是消费）。
+fn enclosing_callee(code: &str, at: usize) -> Option<String> {
+    let bytes = code.as_bytes();
+    let mut i = at;
+    while i > 0 && (bytes[i - 1] as char).is_whitespace() {
+        i -= 1;
+    }
+    if i == 0 || bytes[i - 1] as char != '(' {
+        return None;
+    }
+    let close = i - 1;
+    let mut k = close;
+    while k > 0 {
+        let c = bytes[k - 1] as char;
+        if c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.' {
+            k -= 1;
+        } else {
+            break;
+        }
+    }
+    let name = code[k..close].trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// 读值处的右侧是不是赋值（`sel.value = …` 是；`sel.value === x` 是比较，不是赋值）。
+fn is_assignment(code: &str, at: usize) -> bool {
+    let rest = code[at..].trim_start();
+    if !rest.starts_with('=') {
+        return false;
+    }
+    !rest[1..].trim_start().starts_with('=')
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    (b as char).is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+
+/// 这个变量的**值**是否真的流进了产品代码。
+///
+/// 判据是「值被读、且那次读取是某个**非存储**调用的实参」。三条反例都被判否：
+/// ① 赋值给控件本身（`sel.value = cur;`）；② 只写进 `localStorage.setItem(…, sel.value)`；
+/// ③ 读进局部变量给重渲染用（`const cur = sel.value;`）。
+/// 这就是本门禁与「加个监听器 + 存进 localStorage」的分界线（坑 #338 的推广）。
+fn value_reaches_product(code: &str, var: &str) -> bool {
+    let bytes = code.as_bytes();
+    for prop in ["value", "checked"] {
+        let needle = format!("{var}.{prop}");
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find(&needle) {
+            let at = from + rel;
+            let end = at + needle.len();
+            // 标识符 token 边界（坑 #333：`themeSel.value` 不是 `sel.value`）
+            let before_ok = at == 0 || !is_ident_byte(bytes[at - 1]);
+            let after_ok = end >= bytes.len() || !is_ident_byte(bytes[end]);
+            if before_ok && after_ok && !is_assignment(code, end) {
+                if let Some(callee) = enclosing_callee(code, at) {
+                    let last = callee.rsplit('.').next().unwrap_or("");
+                    if !STORAGE_METHODS.contains(&last) {
+                        return true;
+                    }
+                }
+            }
+            from = at + 1;
+            if from >= bytes.len() {
+                break;
+            }
+        }
+    }
+    false
+}
+
+/// 控件被绑到哪些变量名上：`X = $("#id")` / `X = document.querySelector(…)` /
+/// `querySelectorAll(…).forEach((X) =>`（单选组靠最后一种接线）。
+fn bound_vars(code: &str, handle: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find(handle) {
+        let at = from + rel;
+        if let Some(v) = assign_target_before(code, at) {
+            out.insert(v);
+        }
+        if let Some(v) = foreach_param_after(code, at + handle.len()) {
+            out.insert(v);
+        }
+        from = at + 1;
+        if from >= code.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// 这一处句柄的左边是不是 `X = $(` / `X = document.querySelector(` / `…All(`。
+fn assign_target_before(code: &str, at: usize) -> Option<String> {
+    let bytes = code.as_bytes();
+    let is_sel_char = |c: char| {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '_' | '$' | '[' | ']' | '"' | '\'' | '.' | ':' | '-' | '#' | ' '
+            )
+    };
+    let mut i = at;
+    while i > 0 && is_sel_char(bytes[i - 1] as char) {
+        i -= 1;
+    }
+    if i == 0 || bytes[i - 1] as char != '(' {
+        return None;
+    }
+    let open = i - 1;
+    let mut k = open;
+    while k > 0 {
+        let c = bytes[k - 1] as char;
+        if c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.' {
+            k -= 1;
+        } else {
+            break;
+        }
+    }
+    let method = code[k..open].trim();
+    if !matches!(
+        method,
+        "$" | "document.querySelector"
+            | "document.querySelectorAll"
+            | "querySelector"
+            | "querySelectorAll"
+    ) {
+        return None;
+    }
+    let head = code[..k].trim_end().strip_suffix('=')?.trim_end();
+    let ident: String = head
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$'))
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if ident.is_empty() {
+        None
+    } else {
+        Some(ident)
+    }
+}
+
+/// 这一处句柄的右边是不是 `…).forEach((X) =>`（多元素查询的回调参数）。
+fn foreach_param_after(code: &str, at: usize) -> Option<String> {
+    let tail = &code[at..];
+    let b = tail.as_bytes();
+    let mut k = 0usize;
+    while k < b.len() && matches!(b[k] as char, ']' | '"' | '\'' | ' ' | '\t') {
+        k += 1;
+    }
+    if k >= b.len() || b[k] as char != ')' {
+        return None;
+    }
+    k += 1;
+    let rest = &tail[k..];
+    let p = rest.find(".forEach(")?;
+    if !rest[..p].trim().is_empty() {
+        return None;
+    }
+    let after = rest[p + ".forEach(".len()..]
+        .trim_start()
+        .strip_prefix('(')?;
+    let ident: String = after
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$'))
+        .collect();
+    if ident.is_empty() {
+        None
+    } else {
+        Some(ident)
+    }
+}
+
+/// 句柄所在行绑定了监听器（非值控件 —— 按钮 —— 的接线形式）。
+fn binds_listener(code: &str, selector: &str) -> bool {
+    code.lines()
+        .any(|l| l.contains(selector) && l.contains(".addEventListener("))
+}
+
+/// 这个控件是否被 `app.js` **消费**（坑 #338：被填 ≠ 被消费）。
+///
+/// - 有值控件：值必须流进产品代码（见 `value_reaches_product`）——监听器本身不算
+///   （一个只把值写进 localStorage 的监听器就是本轴要挡的形状）；
+/// - 按钮：绑上监听器即算接线（它没有值可读）。
+fn consumed_in(code: &str, c: &HtmlControl) -> bool {
+    for h in control_handles(c) {
+        if !c.value_bearing && binds_listener(code, &h) {
+            return true;
+        }
+        for v in bound_vars(code, &h) {
+            if !c.value_bearing && binds_listener(code, &format!("{v}.addEventListener(")) {
+                return true;
+            }
+            if value_reaches_product(code, &v) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 卡片里的本地化说明键：`<span class="hint" … data-i18n="KEY">`。
+fn hint_keys(region: &str) -> Vec<String> {
+    let src = strip_html_comments(region);
+    let mut out: Vec<String> = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = src[from..].find(HINT_MARKUP) {
+        let at = from + rel;
+        let end = src[at..].find('>').map(|i| at + i).unwrap_or(src.len());
+        if let Some(k) = html_attr_value(&src[at..end], "data-i18n") {
+            out.push(k);
+        }
+        from = end + 1;
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// 语言包区段（与 `i18n_pack.rs` 同标记：终点取对象字面量自身的收尾）。
+fn pack_region<'a>(src: &'a str, start: &str, end: &str) -> Option<&'a str> {
+    let at = src.find(start)?;
+    let rest = &src[at..];
+    let stop = rest.find(end)?;
+    Some(&rest[..stop])
 }
 
 #[cfg(test)]
@@ -3269,6 +3699,285 @@ mod tests {
             )
             .is_empty(),
             "不含显式取数的函数被当成了触发器"
+        );
+    }
+
+    /// 设置卡片里的每个控件要么**接线**、要么**明确标成惰性**（C2148）。
+    ///
+    /// 轴：设置视图渲染了三族「看着能操作、输入却无人消费」的控件 ——
+    /// ① 昵称输入框（可编辑、由真实 `/api/me` 填，但全仓没有写昵称的后端路径：
+    ///    `UPDATE users` 只写 `dept_id`/`verified`/`password_hash` ⇒ 输入会在下一次
+    ///    `renderSettings` 被真名抹掉）；
+    /// ② 「默认模型」下拉（由真实目录填、看着能选，但无监听 / 无存储键 / 全仓无消费者）；
+    /// ③ 三枚渲染成**已勾选**的通知开关（无 id / 无 name / 无人读 —— 仓内没有通知子系统）。
+    /// 三族的每一族都能在**同卡兄弟**或仓内成例里指出它缺的那一半：同卡的邮箱早已
+    /// `readonly` + 一句提示（#157 那次重设计**同时**删掉了同卡那个死「保存」按钮、
+    /// 给邮箱标了惰性，独漏昵称 ⇒ 漂移而非取舍），卡内三个偏好控件（语言 / 主题 / 密度）
+    /// 都持久化并生效，而「能力尚未开放」的仓内成例是 `#withdraw-btn`（`disabled` + 说明）。
+    ///
+    /// 三条规则：
+    /// 1. **`inert ⟺ ¬consumed`**（双向）：没接线的控件必须标惰性（挡住本轴的三张脸），
+    ///    接了线的控件不得标惰性（挡住「一键全禁用」式的过度纠正 —— 那会把语言 / 主题 /
+    ///    密度三个真控件一起打死）。
+    /// 2. 卡内有惰性控件 ⇒ 卡内必须有一句 `hint` 说明，且键**两包俱在**（否则 en 界面
+    ///    显示原始键名，等于没解释）。
+    /// 3. 空集守卫：解析出的惰性 / 接线控件都非空 —— 否则上面两条会在空集上假绿。
+    #[test]
+    fn settings_controls_are_either_live_or_marked_inert() {
+        let code = code_text_by_line(APP_JS).join("\n");
+        let view = settings_view(INDEX_HTML).expect("设置视图 `view-settings` 不在 index.html 里");
+        let zh = pack_region(I18N_JS, ZH_PACK_START, PACK_END).expect("zh 语言包区段");
+        let en = pack_region(I18N_JS, EN_PACK_START, PACK_END).expect("en 语言包区段");
+        let mut inerts: Vec<String> = Vec::new();
+        let mut lives: Vec<String> = Vec::new();
+
+        for key in SETTINGS_CARDS {
+            let region =
+                card_region(view, key).unwrap_or_else(|| panic!("卡片 `{key}` 不在设置视图里"));
+            let controls = parse_controls(region);
+            assert!(
+                !controls.is_empty(),
+                "卡片 `{key}` 里一个表单控件都没解析出来 —— 提取器坏了，下面的断言会假绿"
+            );
+            for c in &controls {
+                let consumed = consumed_in(&code, c);
+                let label =
+                    c.id.clone()
+                        .or_else(|| c.name.clone())
+                        .unwrap_or_else(|| format!("<{}>（无 id / 无 name）", c.tag));
+                if c.inert {
+                    assert!(
+                        !consumed,
+                        "卡片 `{key}` 的控件 `{label}` 被标成了惰性，但 `app.js` 确实在**读它的值** \
+                         并送进产品代码 —— 惰性标记必须与接线状态一致，否则标记本身在说谎"
+                    );
+                    inerts.push(label);
+                } else {
+                    assert!(
+                        consumed,
+                        "卡片 `{key}` 的控件 `{label}` 既没有接线、也没有标惰性（缺 \
+                         `readonly` / `disabled`）：它看上去可以操作，但输入没有任何消费者；\
+                         没接线的控件必须明确标成惰性并在卡里给一句本地化说明（C2148）"
+                    );
+                    lives.push(label);
+                }
+            }
+            if controls.iter().any(|c| c.inert) {
+                let hints = hint_keys(region);
+                assert!(
+                    !hints.is_empty(),
+                    "卡片 `{key}` 里有惰性控件，却没有一句 `hint` 说明 —— 用户只看到控件被禁用，\
+                     不知道是「能力未开放」还是「坏了」（仓内成例：`#withdraw-btn` + 说明）"
+                );
+                for h in &hints {
+                    let needle = format!("\"{h}\":");
+                    assert!(
+                        zh.contains(&needle) && en.contains(&needle),
+                        "卡片 `{key}` 的说明键 `{h}` 没有两包俱在（zh={} en={}）—— 缺的那一包会把\
+                         原始键名直接显示给用户",
+                        zh.contains(&needle),
+                        en.contains(&needle)
+                    );
+                }
+            }
+        }
+
+        assert!(
+            inerts.len() >= 3 && lives.len() >= 3,
+            "解析出的惰性控件 {} 个、接线控件 {} 个 —— 提取器或射程坏了（空集守卫）",
+            inerts.len(),
+            lives.len()
+        );
+        assert!(
+            inerts.iter().any(|l| l == "settings-nickname")
+                && lives.iter().any(|l| l == "prefs-lang"),
+            "射程里没同时看到「账户卡的昵称」与「偏好卡的语言」—— 卡片区段提取可能串了\
+             （inerts={inerts:?} lives={lives:?}）"
+        );
+    }
+
+    /// 上面那张门禁的**提取器自证**（合成输入）：判别式没牙的话，规则会在空集或错集合上假绿。
+    #[test]
+    fn the_settings_control_extractors_have_teeth() {
+        // ── 控件解析 ──────────────────────────────────────────────────────────────
+        let fake = concat!(
+            "<section class=\"view hidden\" id=\"view-settings\">\n",
+            "  <div class=\"card\">\n",
+            "    <h3 data-i18n=\"settings.account\">账户</h3>\n",
+            "    <div class=\"form\">\n",
+            "      <input class=\"input\" id=\"a-live\" hidden value=\"\">\n",
+            "      <!-- <input id=\"a-in-comment\"> -->\n",
+            "      <input type=\"checkbox\" disabled>\n",
+            "      <select id=\"a-model\" disabled><option value=\"\">—</option></select>\n",
+            "      <button id=\"a-btn\" type=\"button\">确定</button>\n",
+            "    </div>\n",
+            "  </div>\n",
+            "  <div class=\"card\">\n",
+            "    <h3 data-i18n=\"settings.prefs\">偏好</h3>\n",
+            "    <div class=\"form\"><input type=\"radio\" name=\"density\" id=\"d-1\"></div>\n",
+            "  </div>\n",
+            "</section>\n",
+            "<section id=\"view-admin\"><input id=\"not-mine\"></section>\n",
+        );
+        let view = settings_view(fake).expect("设置视图");
+        assert!(
+            !view.contains("not-mine"),
+            "射程越过了 `</section>`，把后面的视图也扫进来了"
+        );
+        let account = card_region(view, "settings.account").expect("账户卡");
+        assert!(
+            !account.contains("settings.prefs"),
+            "卡片区段没有在下一张卡处收口"
+        );
+        let controls = parse_controls(account);
+        assert_eq!(
+            controls.len(),
+            4,
+            "控件解析漏了或多了：{:?}",
+            controls.iter().map(|c| c.id.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(controls[0].id.as_deref(), Some("a-live"));
+        assert!(
+            controls[0].value_bearing && !controls[0].inert,
+            "`hidden` 被当成了惰性标记，或文本输入框被判成按钮"
+        );
+        assert_eq!(
+            controls[1].id, None,
+            "HTML 注释里的控件参与了断言（修法自己就会在控件旁写注释）"
+        );
+        assert!(
+            controls[1].inert && controls[1].value_bearing,
+            "`disabled` 没被认出来"
+        );
+        assert!(
+            controls[2].inert && controls[2].value_bearing,
+            "禁用的 select 必须仍是值控件"
+        );
+        assert!(!controls[3].value_bearing, "按钮被当成了值控件");
+        let radios = parse_controls(card_region(view, "settings.prefs").expect("偏好卡"));
+        assert_eq!(
+            control_handles(&radios[0]),
+            vec!["#d-1".to_string(), "name=\"density\"".to_string()],
+            "单选组的 `name` 句柄没生成 —— 单选组靠它接线"
+        );
+
+        // ── 消费判别式 ────────────────────────────────────────────────────────────
+        let value_ctrl = |id: &str| HtmlControl {
+            tag: "input".into(),
+            id: Some(id.into()),
+            name: None,
+            value_bearing: true,
+            inert: false,
+        };
+        let button = HtmlControl {
+            tag: "button".into(),
+            id: Some("b-go".into()),
+            name: None,
+            value_bearing: false,
+            inert: false,
+        };
+        let radio = HtmlControl {
+            tag: "input".into(),
+            id: Some("d-1".into()),
+            name: Some("density".into()),
+            value_bearing: true,
+            inert: false,
+        };
+
+        // ① 只填不读 ⇒ 未接线
+        assert!(
+            !consumed_in(
+                "  const a = $(\"#a\");\n  if (a) a.value = 1;",
+                &value_ctrl("a")
+            ),
+            "「只被填过」被当成了接线（坑 #338）"
+        );
+        // ② 只把值存起来 ⇒ 未接线（这才是「加个监听器 + 写 localStorage」的分界）
+        assert!(
+            !consumed_in(
+                "  const a = $(\"#a\");\n  a.addEventListener(\"change\", () => localStorage.setItem(\"k\", a.value));",
+                &value_ctrl("a")
+            ),
+            "「把值写进 localStorage」被当成了消费 —— 那么半修（持久化但不消费）就会全绿"
+        );
+        // ③ 读进局部变量给重渲染还原 ⇒ 未接线
+        assert!(
+            !consumed_in(
+                "  const a = $(\"#a\");\n  const cur = a.value;\n  a.value = cur;",
+                &value_ctrl("a")
+            ),
+            "「把当前值读进局部变量」被当成了消费"
+        );
+        // ④ 值作为非存储调用的实参 ⇒ 接线
+        assert!(
+            consumed_in(
+                "  const a = $(\"#a\");\n  a.addEventListener(\"change\", () => applyTheme(a.value));",
+                &value_ctrl("a")
+            ),
+            "值流进产品代码却没被判成接线"
+        );
+        // ⑤ 标识符 token 边界：`themeSel.value` 不是 `sel.value`（坑 #333）
+        assert!(
+            !consumed_in(
+                "  const sel = $(\"#a\");\n  applyTheme(themeSel.value);",
+                &value_ctrl("a")
+            ),
+            "兄弟标识符把证据送进了集合（`themeSel.value` 被算成 `sel.value`）"
+        );
+        // ⑥ 单选组：`querySelectorAll(...).forEach((r) =>` + 值读取 ⇒ 接线
+        assert!(
+            consumed_in(
+                "  document.querySelectorAll('input[name=\"density\"]').forEach((r) => {\n    r.addEventListener(\"change\", () => applyDensity(r.value));\n  });",
+                &radio
+            ),
+            "单选组的 `name` 句柄接不上线"
+        );
+        // ⑦ 按钮：绑监听器即接线；同形写法放在值控件上不算（那正是 ② 的形状）
+        assert!(
+            consumed_in("  $(\"#b-go\").addEventListener(\"click\", go);", &button),
+            "按钮绑了监听器却没被判成接线"
+        );
+        assert!(
+            !consumed_in(
+                "  $(\"#a\").addEventListener(\"change\", () => save(a.value));",
+                &value_ctrl("a")
+            ),
+            "按钮那套判据被用到了值控件上 —— 监听器本身不算消费"
+        );
+        // ⑧ 没有 id / name 的控件：任何代码都认不出它 ⇒ 未接线
+        assert!(
+            !consumed_in(
+                "  document.querySelectorAll(\"input[type=checkbox]\").forEach((c) => use(c.checked));",
+                &HtmlControl {
+                    tag: "input".into(),
+                    id: None,
+                    name: None,
+                    value_bearing: true,
+                    inert: false,
+                }
+            ),
+            "无 id / 无 name 的控件被判成了接线 —— 那三枚通知开关就再也抓不住了"
+        );
+
+        // ── 说明键：两包俱在 ──────────────────────────────────────────────────────
+        let zh = pack_region(I18N_JS, ZH_PACK_START, PACK_END).expect("zh 包");
+        let en = pack_region(I18N_JS, EN_PACK_START, PACK_END).expect("en 包");
+        assert!(
+            zh.contains("\"settings.notify.hint\":") && en.contains("\"settings.notify.hint\":"),
+            "惰性说明键没有两包俱在 —— 规则 2 会在错集合上假绿"
+        );
+        assert!(
+            !zh.contains("\"settings.notify.hint.zzz\":"),
+            "`contains` 判别式认出了不存在的键（自证：阳性对照必须是真键）"
+        );
+        assert_eq!(
+            hint_keys("<span class=\"hint\" data-i18n=\"a.b\">x</span>"),
+            vec!["a.b".to_string()],
+            "说明键提取器"
+        );
+        assert!(
+            hint_keys("<span class=\"hintish\" data-i18n=\"a.b\">x</span>").is_empty(),
+            "`hint` 前缀被当成了说明元素"
         );
     }
 }
