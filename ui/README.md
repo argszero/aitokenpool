@@ -106,6 +106,7 @@ ui/
   - 数字 **1-8** → 切换侧边栏视图（键位 = `NAV_ORDER` 下标 +1，范围由该数组长度决定：仪表盘/市场/共享/钱包/交易/管理/运营/设置；游客模式由 `switchView` 拦截提示登录）；
   - Esc → 关闭行内新建 Key（`#ak-new-inline`）；
 - **导航提示**：nav-item 补 `title`（"快捷键 N · 名称"）+ 右侧 `.nav-key` 键位角标（管理视图带「管理员」tag 时省略角标）。
+- **键位只有一个真源**：角标 = 项在 `NAV_ORDER`（`NAV.flatMap(g => g.items)`）里的下标 +1，数字键处理器按同一数组取项。因此**渲染的每一项都必须取自 `NAV_ORDER`** —— 含游客分支（`NAV_ORDER.filter(it => GUEST_VIEWS.includes(it.id))`）：手搓一个同形字面量会让 `indexOf` 恒 -1，角标印 `0`（死键）、`title` 也跟着印 `Shortcut 0`，而真正生效的键游客看不到（C2141）。静态门禁 `src/state_gate.rs::the_sidebar_advertises_only_digits_that_work` 钉这个形状。
 
 ## 行内校验错误约定（v1.17，rant 2026-08-17T16:57:17 E 表单校验）
 

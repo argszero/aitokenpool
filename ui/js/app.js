@@ -523,10 +523,12 @@
     const roleNav = NAV
       .map((g) => ({ g: g.g, items: g.items.filter((it) => !it.role || D.USER.role === it.role) }))
       .filter((g) => g.items.length > 0);
+    // 游客导航只列市场，但必须**引用登记表 NAV_ORDER 里的同一个对象**：角标由它在那个数组中的
+    // 下标算出、数字键处理器也按同一数组取项（`NAV_ORDER[Number(e.key) - 1]`）。手搓一个同形
+    // 字面量 ⇒ `indexOf` 恒 -1 ⇒ 角标 0（死键、`NAV_ORDER[-1]` 落空），而真正能打开市场的键
+    // （2）游客永远看不到；两边都「看起来正常」，只有按下去才知道。
     const groups = isGuest
-      ? [{ g: "nav.guest", items: [
-          { id: "marketplace", icon: "marketplace", label: T("nav.marketplace") },
-        ]}]
+      ? [{ g: "nav.guest", items: NAV_ORDER.filter((it) => GUEST_VIEWS.includes(it.id)) }]
       : roleNav;
     groups.forEach((group) => {
       const g = document.createElement("div");
