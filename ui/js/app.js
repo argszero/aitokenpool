@@ -547,9 +547,11 @@
           tag.textContent = item.role === "ops" ? T("nav.tag.ops") : T("nav.tag.admin");
           b.appendChild(tag);
         }
-        // 模型市场 badge：模型数量（rant 2026-09-11T16:23:43）——与列表同源：登录态 /api/models，游客用兜底市场
+        // 模型市场 badge：模型数量（rant 2026-09-11T16:23:43）——与列表同源：登录态 /api/models，游客用兜底市场。
+        // 登录态目录缺席时**不显示数字**：上架表单的价格镜像（MODELS）不是市场目录，两者行数与顺序都不同
         if (item.id === "marketplace") {
-          const n = Live.models ? Live.models.length : (isGuest ? (D.MARKET || []).length : (D.MODELS || []).length);
+          // 与列表同源：marketRows() 已按会话状态决定数据源（登录态目录缺席 ⇒ 0，不显示数字）
+          const n = (marketRows() || []).length;
           if (n > 0) {
             const bg = document.createElement("span");
             bg.className = "nav-count";
@@ -758,6 +760,13 @@
 
   /* --- 模型市场 --- */
 
+  // 市场数据源（C2140）：数据源由**会话状态**决定，不由「目录到没到」决定（data.js 契约，
+  // rant 2026-08-19T15:54:06）。登录态只认 /api/models —— 目录缺席（失败/超时/还没到）时返回
+  // `null`，交给各视图自己的降级态（加载失败 + 重试），**绝不**拿 data.js 的游客表冒充自己的数据；
+  // 游客才用兜底表。市场面的每个消费者都走这两个 helper —— 表只在这一处读，判别式只在这一处写。
+  function marketRows() { return Live.models ? modelsToView(Live.models) : (loggedIn() ? null : D.MARKET); }
+  function marketProviders() { return Live.models ? [...new Set(Live.models.map((m) => m.provider))] : (loggedIn() ? [] : D.PROVIDERS); }
+
   // 最近使用（rant 20:46:57 D：localStorage atp-recent-models 最近 5 个去重，复用 .chip，点击直接使用）
   const RECENT_MAX = 5;
   const RECENT_KEY = "atp-recent-models";
@@ -780,7 +789,8 @@
   function renderRecent() {
     const wrap = $("#mk-recent-chips");
     const chips = getRecentKeys().map((key) => {
-      const m = (Live.models ? modelsToView(Live.models) : D.MARKET).find((x) => modelKey(x) === key);
+      // 登录态目录缺席 ⇒ 没有芯片（点开也只会提示加载失败），绝不拿游客市场的模型冒充
+      const m = (marketRows() || []).find((x) => modelKey(x) === key);
       return m ? '<button type="button" class="chip" data-recent-model="' + esc(modelKey(m)) + '" title="' + esc(m.provider) + " · " + T("mk.recent.use") + '">' + esc(m.model) + "</button>" : null;
     }).filter(Boolean);
     wrap.innerHTML = chips.join("");
@@ -813,11 +823,13 @@
     const prov = $("#mk-provider").value;
     const sort = $("#mk-sort").value;
 
-    // 厂商筛选下拉：登录态用 /api/models 真实厂商；游客用 data.js（零 mock，rant 15:54:06）
+    // 厂商筛选下拉：与列表同源（marketProviders()）——登录态只用活目录的厂商，
+    // 目录缺席时下拉里只有「全部」（放一个本部署没有的厂商，只会筛出 0 行）
     const provEl = $("#mk-provider");
-    if (provEl && provEl.dataset.provSource !== (Live.models ? "live" : "mock")) {
-      const providers = Live.models ? [...new Set(Live.models.map((m) => m.provider))] : D.PROVIDERS;
-      provEl.dataset.provSource = Live.models ? "live" : "mock";
+    const provSrc = Live.models ? "live" : (loggedIn() ? "none" : "mock");
+    if (provEl && provEl.dataset.provSource !== provSrc) {
+      const providers = marketProviders();
+      provEl.dataset.provSource = provSrc;
       const cur = provEl.value;
       provEl.innerHTML = '<option value="">' + T("mk.provider.all") + "</option>" +
         providers.map((p) => '<option value="' + p + '">' + p + "</option>").join("");
@@ -826,7 +838,7 @@
 
     // P2-B：登录 → /api/models 真实列表；游客 → data.js mock（mock 仅游客，rant 15:54:06）；
     // 登录态加载失败 → 空态 + 重试（loadErrorRow），绝不 fallback D.MARKET
-    let list = Live.models ? modelsToView(Live.models) : (loggedIn() ? null : D.MARKET);
+    let list = marketRows();
     if (!list) {
       $("#mk-count").textContent = T("cnt.on", { n: 0 });
       setLiveError($("#mk-body"), loadErrorRow(7, T("mk.loadFail"), T("err.loadFail")), () => loadMarketplace());
@@ -2992,7 +3004,7 @@
   function openChat(id) {
     // 零 mock（rant 15:54:06）：登录态绝不回退 D.MARKET
     if (loggedIn() && !Live.models) { toast(T("err.loadFail"), "error"); return; }
-    const m = (Live.models ? modelsToView(Live.models) : D.MARKET).find((x) => modelKey(x) === id);
+    const m = (marketRows() || []).find((x) => modelKey(x) === id);
     if (!m) return;
     if (!m.avail) { toast(T("chat.busy"), "error"); return; }
     markRecentUsed(modelKey(m)); // 记录最近使用（rant 20:46:57 D：去重 + 置顶，最多 5 个）

@@ -140,6 +140,49 @@
 //! ⚠️ 存储层与显示层都**不许**再按位置解析：`renderRecent` / `openChat` / `consumeModel` 一律
 //! `find((x) => modelKey(x) === key)` —— 规则 2/4 是这两个平面的入口。
 //!
+//! # C2140：**数据源由会话状态决定，不由「数据到没到」决定**
+//!
+//! `ui/js/data.js` 开篇写着它的契约：那些表只用于**游客市场**（`MARKET`）与**上架表单兜底**
+//! （`MODELS`/`PLANS`/`PROVIDERS`/`PROVIDER_LABELS`），**登录态一律走后端 API**。
+//! 契约里的判别式是**会话**（`loggedIn()` / `isGuest`）—— 而市场面有三处把它写成了**数据在不在**：
+//!
+//! - `renderMarketplace()` 的厂商下拉：`Live.models ? <活厂商> : D.PROVIDERS` —— 登录态目录缺席
+//!   （500 / 超时 / 还没到）时，下拉里出现**本部署没有的厂商**（实测游客表 10 个、实例目录 5 个），
+//!   选中只会筛出 0 行；
+//! - `renderRecent()` 的「最近使用」芯片：`… : D.MARKET` —— 芯片画的是**游客市场**的模型行，
+//!   而它的唯一消费者 `openChat()` 自带 `if (loggedIn() && !Live.models) … return` 守卫 ⇒
+//!   这枚芯片**点开只会提示加载失败**；
+//! - `renderNav()` 的市场徽标：`… : D.MODELS.length` —— 显示 **13**（上架表单的价格镜像行数），
+//!   而实例目录 6 行、游客市场 7 行 **13 是第三个数**：`MODELS` 与 `MARKET` 行数、顺序都不同。
+//!
+//! **指纹**：同一个 `renderMarketplace` 里，往下十来行的**兄弟**三元式把规则实现对了
+//! （`let list = Live.models ? modelsToView(Live.models) : (loggedIn() ? null : D.MARKET);`，
+//! 并附注释「绝不 fallback D.MARKET」）—— 一行对、一行错、判别式只差一个 `loggedIn()` ⇒ 漏修，
+//! 不是取舍（与 C2128/C2139 同型：**先扫兄弟行，再判是不是漂移**）。
+//!
+//! 三条规则，各有各的牙（A/B 里各自有独立的红集）：
+//!
+//! 1. **每条读市场表（`D.MARKET` / `D.PROVIDERS`）的代码行都必须自己按会话状态分支**
+//!    （行内出现 `loggedIn` / `isGuest`）—— 判别式只写在这些读取点上，**零豁免清单**。
+//! 2. **同一行不得既读市场表又读上架表单表**（`D.MODELS` / `D.PLANS`）：两张表描述的是不同的
+//!    东西（游客市场 vs 上架表单的价格镜像），互为兜底必然显示错（徽标那一行正是如此）。
+//! 3. **每张市场表只有一处读者**（`marketRows()` / `marketProviders()`）：市场面的每个消费者
+//!    （列表 / 厂商下拉 / 最近使用 / 对话 / 徽标）都走这两个 helper。多一处读取就是多一处
+//!    「按数据到没到」的机会（这正是本轮的三个缺陷），也防「兜底被删掉」式修法 ——
+//!    删除会让某张表**没有**读者（游客市场是设计的一部分，探针的游客腿钉它的行为、
+//!    这条钉它的形状）。
+//!
+//! **为什么必须静态钉**：这三处不是「某一次渲染对不对」，而是**每条消费路径的形状** ——
+//! DOM 探针只看得到当前那一次渲染出来的下拉 / 芯片 / 徽标（且「把兜底表删掉」在登录态探针上
+//! 反而全绿，实测见 A/B）。反过来，探针看得到而本门禁**有意放行**的一类：行内**提到了**会话判别
+//! 却仍然用游客表（`isGuest ? D.PROVIDERS : D.PROVIDERS`）—— 那是**撒谎的形状**，门禁只管形状、
+//! 值由探针钉；两条仪器各管一半，缺一不可（与 C2128 坑 #287 同型，但方向相反）。
+//!
+//! 已知边界（如实的射程）：扫描器剔除 `//` 起始行、多行 `/* … */` 块内部的整行、以及行内
+//! 成对的 `/* … */` 片段，但**不做词法分析** —— 字符串字面量里的 `/*` 会被当成块注释起点、
+//! 行尾的 `//` 注释不算注释（`app.js` 当前两者都没有，`is_comment_line` 的兄弟门禁同型）。
+//! 只认字面表名：`const T = D; T.MARKET` 这类别名逃得过。
+//!
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 前端源码在**编译期**读入：测试不依赖工作目录与文件系统布局。
@@ -162,6 +205,14 @@ const MODEL_IDENTITY_DATASETS: [&str; 3] = [
     "dataset.recentModel",
 ];
 
+/// 市场面的**游客**表（`data.js`）：只在游客会话里合法（C2140）。
+const MARKET_TABLES: [&str; 2] = ["D.MARKET", "D.PROVIDERS"];
+/// 上架**表单**的兜底表：它们是「价格镜像 / plan 清单」，**不是**市场目录（行数与顺序都不同），
+/// 不得与市场表在同一条表达式里互为兜底（C2140 规则 2）。
+const FORM_TABLES: [&str; 2] = ["D.MODELS", "D.PLANS"];
+/// 会话状态的判别式：行内出现其一，才算「按会话分支」而不是「按数据到没到」（C2140 规则 1）。
+const SESSION_TESTS: [&str; 2] = ["loggedIn", "isGuest"];
+
 /// 行首为 `//` 的行：注释行，不参与断言。
 fn is_comment_line(line: &str) -> bool {
     line.trim_start().starts_with("//")
@@ -173,6 +224,95 @@ fn code_only(body: &str) -> String {
         .filter(|l| !is_comment_line(l))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// 去掉一行里**成对**的 `/* … */` 片段，返回 `(剩余代码, 是否出现未闭合的 /*)`。
+fn strip_inline_blocks(line: &str) -> (String, bool) {
+    let mut out = String::new();
+    let mut rest = line;
+    loop {
+        match rest.find("/*") {
+            None => {
+                out.push_str(rest);
+                return (out, false);
+            }
+            Some(open) => {
+                out.push_str(&rest[..open]);
+                let after = &rest[open + 2..];
+                match after.find("*/") {
+                    Some(close) => rest = &after[close + 2..],
+                    None => return (out, true),
+                }
+            }
+        }
+    }
+}
+
+/// 逐行的**代码文本**（注释已剥离，行号即下标 + 1；纯注释行是空串）。
+///
+/// 与 `code_only` 的区别只在**块注释**：本门禁的题眼是「读表的那一行有没有按会话分支」，
+/// 而解释性文字里正会提到表名 —— 申报「注释不参与」就必须覆盖两种注释形态
+/// （坑 #309：只剥 `//` 的扫描器会被块注释里的字面标识符绊倒）。三种剥离：
+/// `//` 起始行、多行 `/* … */` 块内部的整行、行内成对的 `/* … */` 片段。
+/// **不做词法分析**：字符串字面量里的 `/*` 会被当成块注释起点（`app.js` 当前没有）。
+fn code_text_by_line(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for line in src.lines() {
+        let mut rest = line;
+        if in_block {
+            match rest.find("*/") {
+                Some(i) => {
+                    rest = &rest[i + 2..];
+                    in_block = false;
+                }
+                None => {
+                    out.push(String::new());
+                    continue;
+                }
+            }
+        }
+        if is_comment_line(rest) {
+            out.push(String::new());
+            continue;
+        }
+        let (code, opened) = strip_inline_blocks(rest);
+        if opened {
+            in_block = true;
+        }
+        out.push(code.trim().to_string());
+    }
+    out
+}
+
+/// 同 `lines_owned_by`，但用 `code_text_by_line` 的代码文本（注释行不参与归属与命中）。
+fn code_lines_owned_by(src: &str, hit: impl Fn(&str) -> bool) -> Vec<(String, usize, String)> {
+    let mut out = Vec::new();
+    let mut owner = String::from("<top-level>");
+    for (i, line) in code_text_by_line(src).into_iter().enumerate() {
+        if let Some(name) = function_name(&line) {
+            owner = name.to_string();
+        }
+        if hit(&line) {
+            out.push((owner.clone(), i + 1, line));
+        }
+    }
+    out
+}
+
+/// 这一行是否读了**市场表**（游客市场：`D.MARKET` / `D.PROVIDERS`）。
+fn reads_market_table(line: &str) -> bool {
+    MARKET_TABLES.iter().any(|t| mentions_identifier(line, t))
+}
+
+/// 这一行是否读了**上架表单的兜底表**（`D.MODELS` / `D.PLANS`）。
+fn reads_form_table(line: &str) -> bool {
+    FORM_TABLES.iter().any(|t| mentions_identifier(line, t))
+}
+
+/// 这一行是否**按会话状态分支**（`loggedIn` / `isGuest`）。
+fn branches_on_session(line: &str) -> bool {
+    SESSION_TESTS.iter().any(|t| mentions_identifier(line, t))
 }
 
 /// 切出 `function <name>(` 之后的**函数体**（含收尾 `}`）。
@@ -1574,6 +1714,174 @@ mod tests {
         assert!(
             !mentions_identifier("return m.valid;", "id"),
             "阴性对照失败：`valid` 里的 `id` 被当成标识符"
+        );
+    }
+
+    /// 市场面的数据源由**会话状态**决定，不由「数据到没到」决定（C2140）。三条规则各有各的牙。
+    #[test]
+    fn market_tables_follow_the_session_not_the_data() {
+        let reads = code_lines_owned_by(APP_JS, reads_market_table);
+
+        // ── 规则 1：每条读市场表的代码行都必须自己按会话状态分支 ─────────────────────────
+        assert!(
+            !reads.is_empty(),
+            "扫描器一条读市场表（`D.MARKET` / `D.PROVIDERS`）的代码行都没扫到 —— 底下三条断言\
+             会在空集上假绿，先查扫描器与注释剥离"
+        );
+        for (owner, line_no, line) in &reads {
+            assert!(
+                branches_on_session(line),
+                "`{owner}` 第 {line_no} 行读了市场表，却没有按**会话状态**分支 —— 它按「数据到没到」\
+                 分支，于是登录态目录缺席时把游客表当自己的数据（C2140）：{line}"
+            );
+        }
+
+        // ── 规则 2：同一行不得既读市场表又读上架表单表 ──────────────────────────────────
+        let mixed: Vec<String> =
+            code_lines_owned_by(APP_JS, |l| reads_market_table(l) && reads_form_table(l))
+                .into_iter()
+                .map(|(o, n, l)| format!("{o}:{n}  {l}"))
+                .collect();
+        assert!(
+            mixed.is_empty(),
+            "有代码行把**市场表**与**上架表单的兜底表**当成彼此的兜底 —— 两者行数与顺序都不同\
+             （`MARKET` 是游客市场、`MODELS` 是价格镜像），互为兜底必然显示错（C2140）：{mixed:?}"
+        );
+
+        // ── 规则 3：每张市场表只有一处读者（市场数据源的唯一真源） ───────────────────────
+        for table in MARKET_TABLES {
+            let owners: BTreeSet<&str> = reads
+                .iter()
+                .filter(|(_, _, l)| mentions_identifier(l, table))
+                .map(|(o, _, _)| o.as_str())
+                .collect();
+            assert!(
+                !owners.is_empty(),
+                "全仓找不到任何读 `{table}` 的代码行 —— 游客市场的兜底被删了（那是设计的一部分），\
+                 或者扫描器坏了：{reads:?}"
+            );
+            assert_eq!(
+                owners.len(),
+                1,
+                "`{table}` 被 {} 个函数读（{owners:?}）—— 市场数据源只许有一处真源\
+                 （`marketRows` / `marketProviders`），市场的每个消费者都走它：多一处读取就多一处\
+                 「按数据到没到」的机会（C2140 的三个缺陷正是这么长出来的）",
+                owners.len()
+            );
+        }
+    }
+
+    /// C2140 的扫描器与三条判别式自证：合成输入（含阴性对照）必须让每条牙都能单独咬合。
+    #[test]
+    fn the_market_source_scanners_have_teeth() {
+        // 注释不参与：`//` 起始行、多行块内部整行、行内成对片段都不该被当成「读表」。
+        let synthetic = concat!(
+            "  // D.PROVIDERS 写在行注释里不算读\n",
+            "  /* 多行块注释里的 D.MARKET 也不算\n",
+            "     连 D.MODELS 一起 */\n",
+            "  const inline = 1; /* D.MARKET */\n",
+            "  function renderNav() {\n",
+            "    const n = Live.models ? Live.models.length : D.MODELS.length;\n",
+            "  }\n"
+        );
+        let text = code_text_by_line(synthetic);
+        assert_eq!(text.len(), 7, "逐行读数不对：{text:?}");
+        assert_eq!(text[0], "", "行注释没被剥掉");
+        assert_eq!(text[1], "", "块注释首行没被剥掉");
+        assert_eq!(text[2], "", "块注释内部行没被剥掉");
+        assert_eq!(text[3], "const inline = 1;", "行内成对 `/* … */` 没被剥掉");
+        assert_eq!(text[4], "function renderNav() {", "函数声明行被误剥");
+        assert!(
+            text[5].contains("D.MODELS"),
+            "代码行里的表名被误剥：{}",
+            text[5]
+        );
+        assert!(
+            !text.iter().any(|l| reads_market_table(l)),
+            "注释里的市场表名被当成了读表：{text:?}"
+        );
+        assert!(
+            !text[..5].iter().any(|l| reads_form_table(l)),
+            "注释里的表单表名被当成了读表：{text:?}"
+        );
+
+        // `reads_*` / `branches_on_session`：标识符边界与判别式
+        assert!(
+            reads_market_table("      const providers = Live.models ? a : D.PROVIDERS;"),
+            "市场表读取行没被认出"
+        );
+        assert!(
+            reads_market_table("          const n = isGuest ? (D.MARKET || []).length : 0;"),
+            "同一行里带括号的市场表没被认出"
+        );
+        assert!(
+            !reads_market_table("      const x = D.MODELS_OLD.length;"),
+            "阴性对照失败：`D.MODELS_OLD` 被当成 `D.MODELS`（表名互为前缀）"
+        );
+        assert!(
+            !branches_on_session("      const providers = Live.models ? a : D.PROVIDERS;"),
+            "阴性对照失败：没有会话判别的行被判成了「按会话分支」"
+        );
+        assert!(
+            branches_on_session(
+                "      const p = Live.models ? a : (loggedIn() ? [] : D.PROVIDERS);"
+            ),
+            "`loggedIn()` 判别没被认出"
+        );
+        assert!(
+            branches_on_session("        const n = isGuest ? (D.MARKET || []).length : 0;"),
+            "`isGuest` 判别没被认出"
+        );
+
+        // 规则 2 的判别式：同现才算错（徽标那一行的形状 vs 修好后的形状）
+        let mixed_line = "          const n = Live.models ? Live.models.length : (isGuest ? (D.MARKET || []).length : (D.MODELS || []).length);";
+        assert!(
+            reads_market_table(mixed_line) && reads_form_table(mixed_line),
+            "规则 2 的判别式没认出徽标那一行"
+        );
+        let fixed_line =
+            "          const n = Live.models ? Live.models.length : (isGuest ? (D.MARKET || []).length : 0);";
+        assert!(
+            reads_market_table(fixed_line) && !reads_form_table(fixed_line),
+            "规则 2 把修好后的徽标行也判成了「两套数据互为兜底」"
+        );
+
+        // 规则 3 的判别式：归属（`code_lines_owned_by`）与「读者集合」的读数
+        let one = concat!(
+            "  function marketRows() { return Live.models ? a : (loggedIn() ? null : D.MARKET); }\n",
+            "  function renderRecent() { return marketRows(); }\n"
+        );
+        let two = concat!(
+            "  function marketRows() { return Live.models ? a : (loggedIn() ? null : D.MARKET); }\n",
+            "  function renderRecent() { return (Live.models ? a : (loggedIn() ? [] : D.MARKET)); }\n"
+        );
+        let owners = |src: &str| -> BTreeSet<String> {
+            code_lines_owned_by(src, reads_market_table)
+                .into_iter()
+                .map(|(o, _, _)| o)
+                .collect()
+        };
+        assert!(
+            reads_market_table("  function marketRows() { return Live.models ? a : (loggedIn() ? null : D.MARKET); }"),
+            "单行 helper 里的市场表没被认出（规则 3 会在空集上假绿）"
+        );
+        assert_eq!(
+            owners(one).len(),
+            1,
+            "单一真源被读成了多个读者：{:?}",
+            owners(one)
+        );
+        assert_eq!(
+            owners(two).len(),
+            2,
+            "第二处读取没被算成第二个读者（规则 3 会假绿）：{:?}",
+            owners(two)
+        );
+        assert!(
+            code_lines_owned_by(two, reads_market_table)
+                .iter()
+                .all(|(_, _, l)| branches_on_session(l)),
+            "合成输入里两处读取都带会话判别，规则 1 不该判红"
         );
     }
 }
