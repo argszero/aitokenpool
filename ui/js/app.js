@@ -2882,7 +2882,11 @@
           await loadOps();
           renderOps();
           if (u.email === D.USER.email) {
-            try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance; $("#side-balance").textContent = D.fmt(D.USER.balance); bump($("#side-balance")); } catch (e) {}
+            // C2145：刷新自己的余额只能走**唯一写者** `refreshWallet()` —— 它同时把
+            // `Live.wallet` 缓存与 `D.USER.balance` 更新为**可花额**（`available = 永久 + 赠送`）。
+            // 此前这里自己再取一次钱包载荷、且只读永久额那一半 ⇒ 运营者给自己充值后侧栏
+            // 少了当天的赠送额，缓存还停在旧值（同一事实两个来源，必然漂移）。
+            try { await refreshWallet(); $("#side-balance").textContent = D.fmt(D.USER.balance); bump($("#side-balance")); } catch (e) {}
           }
           toast(T("ops.users.topup.ok", { name: u.name, amt: D.fmt(amt) }), "success");
         }).catch((err) => toast((err && err.message) ? I18n.mapErr(err.message) : T("ops.users.topup.fail"), "error"));
