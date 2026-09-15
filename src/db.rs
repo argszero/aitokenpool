@@ -21,13 +21,24 @@ pub fn open(path: &str) -> Result<Connection> {
         }
     }
     let conn = Connection::open(path).with_context(|| format!("打开数据库失败: {}", path))?;
-    // v12（rant 2026-08-25T12:02:13）：NFS 库性能——64MB 页缓存 + 64MB mmap 预读，
-    // 整库常驻进程内存，远端存储只首读一次（默认 cache_size 2MB < 库体积 → 每次查询准冷读）。
-    // 注意：不要启用 WAL 模式（SQLite 官方明确不支持网络文件系统，有损坏风险）；
-    // 数据库不能移本地盘（部署硬约束，库必须留在 NAS）。
+    // v12（rant 2026-08-25T12:02:13）：NFS 库性能——64MB 页缓存（默认 cache_size 2MB < 库体积
+    // → 每次查询准冷读）。注意：不要启用 WAL 模式（SQLite 官方明确不支持网络文件系统，有损坏
+    // 风险）；数据库不能移本地盘（部署硬约束，库必须留在 NAS）。
+    //
+    // 更正 v12 的 mmap 那一半（rant 2026-09-15T10:33:34）：**mmap_size 必须为 0，不要「预读」**。
+    // v12 曾同时设了 64MB mmap（注释写作「整库常驻进程内存，远端存储只首读一次」），该说法在
+    // 149MB 库 + 该 NFS 上已被实测证伪：映射页读不进客户端缓存，于是每次查询都真读文件。
+    // 同一条覆盖索引 COUNT（user_id=1，963 页）：
+    //   mmap=64MB → 1.5–1.8s/次（进程实读 216MB / 5 次）；mmap=0 → 13ms 热（实读 2MB）；
+    //   同一副本放本地盘 → 两者都 7ms、零实读 ⇒ 不是存储慢，是 mmap 路径在这台 NFS 上是慢路径
+    //   （pread 路径能吃到 NFS 客户端读缓存 + readahead）。
+    // 尺寸扫描（同库同语句）：0 → 13ms；16MB → 334–407ms；64MB → 1.7–2.2s；128MB → 2.2–2.8s
+    // ⇒ **任何非零值都更差**，所以取 0 而不是「调大一点」。
+    // 为什么只有部分查询中招：文件前 64MB 内的对象走 mmap、窗口外走 pread，而索引落在 77–149MB
+    // ⇒ 两条同为覆盖索引扫描，差 100×，只取决于页在文件里的物理位置。
     conn.pragma_update(None, "cache_size", -65536)
         .with_context(|| "设置 PRAGMA cache_size 失败".to_string())?;
-    conn.pragma_update(None, "mmap_size", 67108864)
+    conn.pragma_update(None, "mmap_size", 0)
         .with_context(|| "设置 PRAGMA mmap_size 失败".to_string())?;
     migrate(&conn)?;
     Ok(conn)
@@ -1367,6 +1378,31 @@ mod tests {
         // 幂等：二次迁移不再变化
         let n2 = migrate_key_encryption(&conn, &crypto).expect("二次迁移");
         assert_eq!(n2, 0, "已加密的 key 不再重复迁移");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn open_does_not_enable_memory_mapping() {
+        // rant 2026-09-15T10:33:34：在这台 NFS 上 mmap 是**慢**路径 —— 映射页读不进客户端缓存，
+        // 每次查询都真读文件。同一条覆盖索引 COUNT：mmap=64MB 1.5–1.8s/次（进程实读 216MB/5 次）
+        // vs mmap=0 13ms（实读 2MB）；同副本放本地盘两者都 7ms、零实读（⇒ 不是存储慢）。
+        // 尺寸扫描 0→13ms / 16MB→334–407ms / 64MB→1.7–2.2s / 128MB→2.2–2.8s ⇒ 任何非零值都更差。
+        // 这条断言就是防回归：谁把 mmap_size 调回非零（v12 曾设 64MB），这里立刻红。
+        let (conn, p) = tmp_db("mmap_off");
+        let mmap: i64 = conn
+            .query_row("PRAGMA mmap_size", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            mmap, 0,
+            "open() 不该启用 mmap（PRAGMA mmap_size = {mmap}）：该 NFS 上非零 mmap 让每次查询\
+             真读文件，同一条 COUNT 从 13ms 退化到 1.5–1.8s"
+        );
+        // 阳性对照：v12 的页缓存这一半要保留（默认 2MB < 库体积 ⇒ 每次查询准冷读）
+        let cache: i64 = conn
+            .query_row("PRAGMA cache_size", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cache, -65536, "64MB 页缓存不该被一起撤掉");
         drop(conn);
         let _ = std::fs::remove_file(p);
     }

@@ -275,10 +275,20 @@ pub fn list_all_models(conn: &Connection) -> Result<Vec<serde_json::Value>> {
     Ok(out)
 }
 
-/// 更新最近使用时间
+/// 更新最近使用时间。
+///
+/// rant 2026-09-15T10:33:34：在这台 NFS 上，**每一次真写都会打掉客户端缓存**，紧随其后的查询
+/// 重新冷读（同一库同一条 COUNT：真写后 1.1s/次 vs 热 13ms）。本函数跑在每个已认证请求的
+/// 鉴权路径上（`routes::mod::AuthUser::from_request_parts`），此前每请求都写一次。
+///
+/// `last_used` 只用于 key 列表展示「最近使用」（分钟级精度足够）⇒ 60 秒内不重复写，把
+/// 「每请求一次真写」降为「每分钟至多一次」。守卫命中 0 行时 SQLite 不落页、不打掉 NFS 缓存
+/// （实测提交 5.8ms vs 真写 39ms）。
 pub fn touch_api_key(conn: &Connection, key: &str) -> Result<()> {
     conn.execute(
-        "UPDATE api_keys SET last_used = datetime('now') WHERE key_value = ?1",
+        "UPDATE api_keys SET last_used = datetime('now') \
+         WHERE key_value = ?1 \
+           AND (last_used IS NULL OR last_used < datetime('now', '-60 seconds'))",
         [key],
     )?;
     Ok(())
@@ -452,5 +462,95 @@ mod tests {
         assert_eq!(utc_iso("  "), "");
         // 非标准原样
         assert_eq!(utc_iso("just now"), "just now");
+    }
+
+    fn tmp_conn(tag: &str) -> (Connection, std::path::PathBuf) {
+        let p = std::env::temp_dir().join(format!("atp_dao_{}_{}.db", std::process::id(), tag));
+        let _ = std::fs::remove_file(&p);
+        let conn = crate::db::open(p.to_str().unwrap()).expect("open tmp db");
+        conn.execute(
+            "INSERT INTO users (id, email, password_hash, name, role) \
+             VALUES (1, 'dao@t.local', 'x', 'u', 'user')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO api_keys (id, user_id, key_value, name, status) \
+             VALUES (1, 1, 'atk_live_x', 'k', 'active')",
+            [],
+        )
+        .unwrap();
+        (conn, p)
+    }
+
+    fn last_used(conn: &Connection) -> Option<String> {
+        conn.query_row(
+            "SELECT last_used FROM api_keys WHERE key_value = 'atk_live_x'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn set_last_used(conn: &Connection, modifier: &str) {
+        conn.execute(
+            &format!("UPDATE api_keys SET last_used = datetime('now', '{modifier}') WHERE id = 1"),
+            [],
+        )
+        .unwrap();
+    }
+
+    /// 调一次 `touch_api_key` 并返回该语句**匹配的行数**（0 = SQLite 无页可落、不会真写文件）。
+    fn touch_rows(conn: &Connection, key: &str) -> usize {
+        touch_api_key(conn, key).unwrap();
+        conn.changes() as usize
+    }
+
+    #[test]
+    fn touch_api_key_writes_at_most_once_per_guard_window() {
+        // rant 2026-09-15T10:33:34：本函数在鉴权路径上（每个已认证请求都会经过），此前每请求
+        // 写一次 `last_used = datetime('now')`（秒级精度 ⇒ 同一秒内同值）；而在这台 NFS 上
+        // **一次真写就打掉客户端缓存**，紧随其后的查询重新冷读（同一条 COUNT 1.1s vs 热 13ms）。
+        // 守卫把「每请求一次真写」降为「每分钟至多一次」——`last_used` 只用于列表展示。
+        let (conn, p) = tmp_conn("touch_guard");
+
+        // ① 从未使用过 → 第一次必须写（否则「最近使用」永远是空）
+        assert_eq!(
+            last_used(&conn),
+            None,
+            "前置：新 key 的 last_used 应为 NULL"
+        );
+        assert_eq!(touch_rows(&conn, "atk_live_x"), 1, "首次调用必须写入");
+        let first = last_used(&conn).expect("首次调用必须写入 last_used");
+
+        // ② 窗口内（30 秒前）重复调用 → **不写**：该 UPDATE 匹配 0 行 ⇒ SQLite 不落页
+        set_last_used(&conn, "-30 seconds");
+        let stale = last_used(&conn).unwrap();
+        assert_eq!(
+            touch_rows(&conn, "atk_live_x"),
+            0,
+            "守卫窗口内仍改动了行（= 每个已认证请求一次真写，会打掉 NFS 客户端缓存）"
+        );
+        assert_eq!(touch_rows(&conn, "atk_live_x"), 0, "连续调用同样不该写");
+        assert_eq!(last_used(&conn).unwrap(), stale, "窗口内 last_used 不该变");
+
+        // ③ 窗口外（90 秒前）→ 必须写，否则展示会永远停在旧值
+        set_last_used(&conn, "-90 seconds");
+        assert_eq!(
+            touch_rows(&conn, "atk_live_x"),
+            1,
+            "超过守护窗口后不再更新 last_used（展示会停在旧值）"
+        );
+        assert!(
+            last_used(&conn).unwrap() > stale,
+            "窗口外刷新后 last_used 应前进"
+        );
+        assert!(first <= last_used(&conn).unwrap(), "时间只能前进");
+
+        // ④ 不存在的 key → 本来就不该产生写入
+        assert_eq!(touch_rows(&conn, "atk_live_missing"), 0);
+
+        drop(conn);
+        let _ = std::fs::remove_file(p);
     }
 }
