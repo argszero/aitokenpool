@@ -965,6 +965,26 @@
     off: { text: () => T("share.status.off"), cls: "dim" },
   };
 
+  // 行内切换按钮的**动作**、它做完之后的**下一状态**、以及**结局文案**，同一条目给出（C2153）。
+  //
+  // 共享 key 有三个状态（后端 `PATCH /api/sharings/:id` 接受 on / paused / off，其中 off 是软删，
+  // 而 `GET /api/sharings` 不做状态过滤 ⇒ 软删过的行仍在列表里）。
+  //
+  // 为什么必须同源：动作标签按**当前状态**三值取，而结局文案是**下一状态**的函数 —— 两者分开
+  // 写的时候，只要结局那条判别式少一个分支，就会有某个动作被报成另一个动作的结局。C2153 实测的
+  // 正是这个：`const next = s.status === "on" ? "paused" : "on"` 只有两个值，于是 off → on
+  // （重新上架）被报成「已恢复」，而命名该分支的键 `share.toggle.relisted` 两个包都在、无人可达。
+  // 把 label / next / outcome 收进同一条目，结构上就不可能再分叉。
+  //
+  // 键集必须与 SHARE_STATUS 相同（`state_gate` 有断言）。未知状态回落到 off —— 后端只返回这三个
+  // 值，回落只是让渲染不炸，不是第四条产品路径。
+  const SHARE_TOGGLE = {
+    on: { label: "share.toggle.pause", next: "paused", outcome: "share.toggle.paused" },
+    paused: { label: "share.toggle.resume", next: "on", outcome: "share.toggle.resumed" },
+    off: { label: "share.toggle.relist", next: "on", outcome: "share.toggle.relisted" },
+  };
+  const shareToggle = (status) => SHARE_TOGGLE[status] || SHARE_TOGGLE.off;
+
   function renderSharing() {
     // 零 mock（rant 2026-08-19T15:54:06）：登录态绝不 fallback D.SHARINGS；
     // 加载失败 → 空态 + 重试（loadErrorRow，tbody 内合法）
@@ -1049,7 +1069,7 @@
       "<td data-label='" + T('share.col.avail') + "'>" + esc(fmtAvailable(s)) + "</td>" +
       "<td data-label='" + T('share.col.status') + "'>" + badge(s.status, SHARE_STATUS) + "</td>" +
       "<td data-label='" + T('share.col.action') + "'><button class='btn btn-ghost btn-sm' data-share-toggle='" + i + "'>" +
-      (s.status === "on" ? T("share.toggle.pause") : s.status === "paused" ? T("share.toggle.resume") : T("share.toggle.relist")) + "</button> " +
+      T(shareToggle(s.status).label) + "</button> " +
       "<button class='btn btn-danger btn-sm' data-share-delete='" + i + "'>" + T("common.delete") + "</button></td></tr>";
     }).join("") : emptyRow(8, T("share.empty"), T("share.empty.sub"),
       '<button type="button" class="btn btn-primary" data-share-add>' + T("share.empty.add") + "</button>");
@@ -1090,11 +1110,14 @@
     if (!Live.sharings) return;
     const s = sharingsToView(Live.sharings)[i];
     if (!s || !s.id) return;
-    const next = s.status === "on" ? "paused" : "on";
+    // 动作与结局取自**同一条目**（C2153）：`next` 与 `outcome` 都来自 `shareToggle(s.status)`，
+    // 两值判别式（旧写法 `const next = s.status === "on" ? "paused" : "on"` 只有两个值）正是
+    // 把「重新上架」报成「已恢复」的原因 —— 见 SHARE_TOGGLE 的注释。
+    const entry = shareToggle(s.status);
     try {
-      await api.patch("/api/sharings/" + s.id, { status: next });
+      await api.patch("/api/sharings/" + s.id, { status: entry.next });
       await loadSharing();
-      toast(next === "paused" ? T("share.toggle.paused", { model: s.model }) : T("share.toggle.resumed", { model: s.model }), "success");
+      toast(T(entry.outcome, { model: s.model }), "success");
     } catch (err) {
       toast((err && err.message) ? I18n.mapErr(err.message) : T("share.op.fail"), "error");
     }
