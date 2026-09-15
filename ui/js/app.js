@@ -4057,9 +4057,16 @@
     });
     renderNav();
     bindEvents();
+    // C2136：boot **不渲染任何视图** —— 此处会话尚未建立（`restoreSession()` 在下面才跑），
+    // 而 `renderView` 是「渲染 + 装载」：带 token 时 `loggedIn()` 此刻已为 true，于是仪表盘
+    // 那一整套查询会在**会话还不存在**时就发出去（实测 `log[0] = GET /api/wallet`，
+    // 会话请求 `/api/me` 才排第 2），随后被 `loadSession()` 的 `resetSessionCaches()` 作废，
+    // 再由 `enterApp() → switchView(目的地)` 重新装一遍 ⇒ 一次 boot 里仪表盘那套**各发两次**；
+    // 目的地不是仪表盘时（如刷新在 `#/transactions`）更白拉一整屏数据。过期 token 时更糟：
+    // 先发的那 6 个请求每个都拿到 401，用户会看到多条一模一样的「登录已过期」。
+    // 视图只由 `switchView` 渲染/装载它**当前的目的地**；boot 只管外壳（导航 / 事件 / 余额占位）。
     // 登录态加载失败的空态重试按钮（rant 2026-08-19T15:48:17 / 15:54:06）：由渲染方经 setLiveError
     // 把 loader 交给容器，这里不再逐个 id 登记。
-    renderView("dashboard");
     $("#side-balance").textContent = D.fmt(D.USER.balance);
 
     // P2-A 会话恢复：已有 token → 拉 /api/me + /api/wallet 直接进 app。

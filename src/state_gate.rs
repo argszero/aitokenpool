@@ -73,9 +73,43 @@
 //! 全仓**没有任何一处**需要豁免清单（豁免清单＝会腐烂的花名册）。
 //!
 //! 已知边界（与上一条同型，如实的射程）：槽宇宙 = `Live` 字面量声明 ∪ 代码里出现过的
-//! `Live.<名>`。**`Live` 字面量本身漏登记的槽**（C2135 记账：`Live.dashboardTrend` 只被读写、
-//! 未在字面量里声明 ⇒ `resetSessionCaches` 的派生名册清不到它）本门禁**看不见** ——
-//! 那属于「身份边界」那条不变量，已记账待单独处理，不在本条射程内。
+//! `Live.<名>`。**`Live` 字面量里漏登记的槽**（`Live.dashboardTrend` 只被读写、未在字面量里
+//! 声明）本门禁看不见 —— 那是「字面量是不是槽的唯一真源」的可读性问题，属于身份边界那条
+//! 不变量的**说明**范畴；⚠️ 它**不影响** `resetSessionCaches()`：`Live.x = v` 会**新建**一个
+//! own enumerable 属性，因此调用时的 `Object.keys(Live)` 就包含它（C2136 仪器实测：写后登出 ⇒
+//! 该槽为 `null`；C2135 的记账曾断言「派生名册清不到它」，已被该仪器证伪，见下方 §C2136 边界）。
+
+//! # C2136：**boot 不渲染视图** —— 视图数据只在「会话建立之后、且它是当前目的地」时才装载
+//!
+//! `renderView` 的形状是「先渲染缓存、再（登录时）异步装载」（C2132 起）。它只有一个合法的
+//! 触发点：`switchView` —— 即**当前目的地**。`DOMContentLoaded` 里那句无条件的
+//! `renderView("dashboard")` 违反了这条：它跑在 `restoreSession()` **之前**，而带 token 时
+//! `loggedIn()` 此刻已为 true ⇒ 仪表盘那整套查询在**会话还不存在**时就发了出去
+//! （实测 `log[0] = GET /api/wallet`，`/api/me` 才排第 2），随后 `loadSession()` 的
+//! `resetSessionCaches()` 把它全部作废，`enterApp() → switchView(目的地)` 又装一遍：
+//! - 目的地是仪表盘 → 同一套查询**各发两次**（C2136 实测 1 次 boot 14 个请求：`/api/dashboard`、
+//!   趋势 `type=all&bucket=day`、`page=1&page_size=1`、`/api/sharings` 各 2 次，`/api/wallet` 3 次）；
+//! - 目的地不是仪表盘（刷新在 `#/transactions`）→ 仍白拉仪表盘那套 5 次；
+//! - 过期 token → 先发的 6 个请求各拿 401，`__atpLogout()` 被调用 6 次（`TOAST_MAX = 3`，
+//!   用户看到 3 条一模一样的「登录已过期」）。
+//!
+//! 本门禁钉三条**形状**断言（都是**派生**的，不写名册）：
+//!
+//! 1. boot 处理器体内**不得**调用视图层的「渲染器 / 装载器」（视图层 = `renderView` 各分支里的
+//!    `render…`/`load…` 调用名，由 `view_router_branches` 派生）；`renderView(...)` 只许以
+//!    **当前目的地**为实参 —— 全仓唯一合法的一处是语言切换监听器里的 `renderView(activeView)`。
+//! 2. **每一个** `renderView(...)` 的实参必须是「当前目的地」（裸标识符 / `activeView` 之类），
+//!    不得是字面量视图名 —— 否则又会出现「渲染一个不在屏幕上的视图」。
+//! 3. `renderView` 必须仍由 `switchView` 调用（**防止矫枉过正**：把 boot 那句删掉之后，
+//!    再顺手把 `renderView` 的调用点也清空，就会得到一个什么都不渲染的空壳）。
+//!
+//! 为什么必须静态钉（而探针只能钉住值）：`renderDashboard()` 单独留在 boot 里（不装载）也能让
+//! 探针的请求日志全绿，`if (!api.getToken()) renderView("dashboard")` 同样能全绿 ——
+//! 三者都是「症状消失」。本门禁管的是**形状**：boot 不碰视图层。
+//!
+//! 已知边界：只认字面调用名。`const f = renderView; f("dashboard")` 这类别名逃得过（与兄弟
+//! 不变量同型）；boot 体内的**间接**渲染（调一个自己写的、内部再 `renderView("x")` 的函数）
+//! 也看不见 —— 射程是「静态调用点」，不是运行期可达性。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -447,6 +481,55 @@ fn all_live_slots(src: &str) -> Vec<String> {
         }
     }
     out.into_iter().collect()
+}
+
+/// boot 处理器（`document.addEventListener("DOMContentLoaded", () => { … });`）的函数体。
+///
+/// 它**不是** `function NAME(` 声明，所以 [`js_function_body`] 取不到：按行收尾，收尾行恰为
+/// `  });`（2 空格缩进 —— 处理器内部的内联箭头函数一律 4 空格缩进收尾）。与兄弟提取器一样，
+/// **调用方必须自证它停对了地方**（见 `the_boot_body_extractor_stops_at_the_right_place`）。
+fn boot_body(src: &str) -> Option<&str> {
+    const HEAD: &str = "document.addEventListener(\"DOMContentLoaded\"";
+    let start = src.find(HEAD)?;
+    let rest = &src[start..];
+    let mut offset = 0usize;
+    for line in rest.split_inclusive('\n') {
+        offset += line.len();
+        if line.trim_end_matches(['\n', '\r']) == "  });" {
+            return Some(&rest[..offset]);
+        }
+    }
+    None
+}
+
+/// 视图层的调用名：`renderView` 每个分支里的 `render…` / `load…`，外加 `renderView` 自己。
+///
+/// **派生自路由器本身** ⇒ 新增视图自动纳入，不需要在门禁里补一份名册（名册会腐烂）。
+fn view_layer_callees(src: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    out.insert("renderView".to_string());
+    let Some(rv) = js_function_body(src, "renderView") else {
+        return out;
+    };
+    for branch in view_router_branches(rv) {
+        if let Some(r) = callee_with_prefix(&branch, "render") {
+            out.insert(r);
+        }
+        if let Some(l) = callee_with_prefix(&branch, "load") {
+            out.insert(l);
+        }
+    }
+    out
+}
+
+/// 一行里 `renderView(` 的实参（`renderView(` 之后到第一个 `)` 之间的文本）。
+///
+/// 返回 `None` 表示这一行没调用 `renderView`。注释行由调用方先剔除。
+fn render_view_argument(line: &str) -> Option<String> {
+    let at = line.find("renderView(")?;
+    let after = &line[at + "renderView(".len()..];
+    let end = after.find(')').unwrap_or(after.len());
+    Some(after[..end].trim().to_string())
 }
 
 #[cfg(test)]
@@ -959,6 +1042,164 @@ mod tests {
             all_live_slots(undeclared),
             vec!["a".to_string(), "hidden".to_string()],
             "槽宇宙没纳入「代码里出现过但字面量漏登记」的槽"
+        );
+    }
+
+    /// C2136：**boot 不渲染视图** —— 视图数据只在会话建立之后、且它是当前目的地时才装载。
+    ///
+    /// 反例（实测，见文件头部）：`DOMContentLoaded` 里那句无条件的 `renderView("dashboard")`
+    /// 跑在 `restoreSession()` 之前 ⇒ 仪表盘那套查询在会话不存在时就发出、被
+    /// `resetSessionCaches()` 作废、再被 `switchView(目的地)` 重发一遍；目的地不是仪表盘时
+    /// 白拉一屏；过期 token 时每个先发的请求都各报一次「登录已过期」。
+    #[test]
+    fn the_boot_handler_touches_no_view() {
+        let src = code_only(APP_JS);
+        let boot = boot_body(&src).expect("找不到 DOMContentLoaded 处理器");
+        let boot_code = code_lines(boot);
+        let view_layer = view_layer_callees(&src);
+
+        // ── 前置：提取器必须真的看见东西（空集上的断言会假绿，坑 68）───────────────────
+        assert!(
+            view_layer.len() >= 8,
+            "视图层调用名只算出 {} 个：{view_layer:?} —— 派生器坏了",
+            view_layer.len()
+        );
+        for expected in ["renderView", "renderDashboard", "loadDashboard"] {
+            assert!(
+                view_layer.contains(expected),
+                "视图层派生漏了 `{expected}`：{view_layer:?}"
+            );
+        }
+        assert!(
+            boot_code.lines().count() >= 40,
+            "boot 处理器体只切出 {} 行 —— 提取器停早了",
+            boot_code.lines().count()
+        );
+
+        // ── 不变量 A：boot 不得调用视图层的「渲染器 / 装载器」；`renderView` 只许以当前
+        //             目的地为实参（语言切换监听器里的 `renderView(activeView)` 是合法的一处：
+        //             它渲染的就是当前目的地，且只在切语言时触发）────────────────────────
+        let mut offenders: Vec<(String, String)> = Vec::new();
+        for line in boot_code.lines() {
+            for callee in callee_names(line) {
+                if !view_layer.contains(&callee) {
+                    continue;
+                }
+                if callee == "renderView" {
+                    let arg = render_view_argument(line).unwrap_or_default();
+                    if arg.contains('"') || arg.contains('\'') {
+                        offenders.push((callee, line.trim().to_string()));
+                    }
+                } else {
+                    offenders.push((callee, line.trim().to_string()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "boot 处理器碰了视图层 —— 会话还没有，视图数据不该在此时装载；\
+             `renderView` 只许渲染**当前目的地**。命中：{offenders:?}"
+        );
+
+        // ── 不变量 B：每个 `renderView(...)` 的实参都是「当前目的地」，不是字面量视图名 ──
+        let mut call_sites = 0usize;
+        for line in src.lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                continue;
+            }
+            let Some(arg) = render_view_argument(line) else {
+                continue;
+            };
+            call_sites += 1; // `function renderView(id) {` 自身的签名行
+            if line.contains("function renderView(") {
+                continue;
+            }
+            assert!(
+                !arg.contains('"') && !arg.contains('\''),
+                "`renderView({arg})` 传了字面量视图名 —— 只许渲染**当前目的地**（形参 / \
+                 `activeView`），否则又会出现「渲染一个不在屏幕上的视图」（C2136）：{t}"
+            );
+        }
+        assert!(
+            call_sites >= 2,
+            "只找到 {call_sites} 处 `renderView(` —— 提取器坏了"
+        );
+
+        // ── 不变量 C：`renderView` 仍由 `switchView` 触发（防止矫枉过正：删成了一个空壳）──
+        let router = function_code(&src, "switchView");
+        assert!(
+            callee_names(&router).contains("renderView"),
+            "`switchView` 不再调用 `renderView()` —— 删掉 boot 那句之后，再也没有人渲染目的地视图了"
+        );
+    }
+
+    /// 提取器自证：`boot_body` 必须停在 boot 处理器自己的收尾行，而不是紧随其后的内容。
+    #[test]
+    fn the_boot_body_extractor_stops_at_the_right_place() {
+        // 处理器内部的内联箭头函数以 4 空格缩进收尾；只有处理器自己以 `  });` 收尾。
+        let synthetic = concat!(
+            "  document.addEventListener(\"DOMContentLoaded\", () => {\n",
+            "    window.addEventListener(\"hashchange\", () => {\n",
+            "      switchView(\"a\");\n",
+            "    });\n",
+            "    renderView(\"b\");\n",
+            "  });\n",
+            "  function after() {\n",
+            "    renderView(\"c\");\n",
+            "    return 1;\n",
+            "  }\n"
+        );
+        let body = boot_body(synthetic).expect("合成输入上找不到 boot 处理器");
+        assert!(
+            body.contains("switchView(\"a\")") && body.contains("renderView(\"b\")"),
+            "提取器停早了：处理器内部的行没被切进来"
+        );
+        assert!(
+            !body.contains("function after()"),
+            "提取器停晚了：把紧随其后的函数也吞进来了"
+        );
+        assert!(
+            boot_body("  function f() {\n    return 1;\n  }\n").is_none(),
+            "阴性对照失败：没有 boot 处理器时不该返回函数体"
+        );
+
+        // `render_view_argument` 取的是实参本身（含字面量的引号，供断言判形态）
+        assert_eq!(
+            render_view_argument("    renderView(\"dashboard\");").as_deref(),
+            Some("\"dashboard\"")
+        );
+        assert_eq!(
+            render_view_argument("    renderView(activeView);").as_deref(),
+            Some("activeView")
+        );
+        assert_eq!(
+            render_view_argument("  function renderView(id) {").as_deref(),
+            Some("id")
+        );
+        assert_eq!(
+            render_view_argument("    const x = 1;"),
+            None,
+            "阴性对照失败：没调用 `renderView(` 的行被判成调用"
+        );
+
+        // 视图层必须**派生自**路由器：给一组合成分支，它就该产出对应的 render/load 名
+        let synthetic_router = concat!(
+            "  function renderView(id) {\n",
+            "    if (id === \"a\") { renderA(); if (loggedIn()) loadA(); }\n",
+            "    else if (id === \"b\") { renderB(); if (loggedIn()) loadB(); }\n",
+            "  }\n"
+        );
+        let derived = view_layer_callees(synthetic_router);
+        for expected in ["renderView", "renderA", "loadA", "renderB", "loadB"] {
+            assert!(
+                derived.contains(expected),
+                "合成路由器上漏掉了 `{expected}`：{derived:?}"
+            );
+        }
+        assert!(
+            !derived.contains("renderC"),
+            "阴性对照失败：没出现过的名字被凭空派生了出来"
         );
     }
 }
