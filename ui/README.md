@@ -726,3 +726,48 @@ function txQuerySig() {                      // 只此一处定义「载荷是�
 `A2`（持久化但不消费）拒掉；但 CI 里没有 JS 运行器，长期守住这条约定的是上面那条静态门禁
 （原地变异 6/6 如声明：未修树红、过度纠正红、半修红、只标记不解释红、只写一包红、修复树绿）。
 
+
+## 静态 `data-i18n` 属性归语言层所有，不属于它的子元素（C2150）
+
+`applyStatic()`（`ui/js/i18n.js`）对每个 `[data-i18n]` 元素执行 `innerHTML = t(key)`。
+因此**一个已经带文本 `data-i18n` 的元素，不能同时指望它子元素上的语言层钩子生效** ——
+祖先那一步会把后代元素连同它自己的 `data-i18n*` 属性一起从文档里摘掉；随后循环再对那个
+**已分离**的节点设值，无异常、无效果（jsdom 实测 `isConnected === false`）。
+
+改前的两张脸：
+
+| 位置 | 缺陷 |
+|------|------|
+| `index.html` 加额申请卡片 | `<h3 data-i18n="admin.raise.title">加额申请 <span data-i18n="admin.raise.sub">（…）</span></h3>` —— 两个包的值都是**纯文本**，子 `span` 被摘掉 ⇒ 提示「（成员申请 → 管理员批准 / 驳回）」**两种语言都不显示**，且 `app.js` 只写 `#raise-requests`、从不重画那个 `h3` ⇒ **永不恢复** |
+| `index.html` 登录页底 | `<p data-i18n="login.foot">…<a id="reg-link" data-i18n="login.register">注册</a>…</p>` —— 值**自带**同样的标记（含 `id="reg-link"`），复原后文本正确、点击是 document 委托在 `app.js` 里按 `t.id` 匹配 ⇒ **行为无损**；但那个属性是死的 ⇒ 键 `login.register` 沦为只喂死钩子的孤儿 |
+
+**约定**：
+
+1. 带文本 `data-i18n` 的元素**内部不得**再出现任何 `data-i18n*` 属性。要在一行里放两段文案，
+   写成**兄弟**元素（成例：`wallet.hint` + `wallet.tx` + `wallet.hint.suffix` 那个 `<p class="wallet-hint">`，
+   父元素不带 `data-i18n`）。
+2. **值自带宽标记**是另一种合法形态（`login.brand.headline` 的值含 `<span class="nb">`、
+   `ops.users.sub` 含 `<strong>`、`login.foot` 含两个 `<a>`）—— 之所以有效，是因为**值自己把它写了出来**。
+   只在该标记必须携带 `id` 等属性时才用它；否则用兄弟元素。
+3. **只有文本属性会砸后代**：`data-i18n-title` / `data-i18n-label` / `data-i18n-ph` 走 `setAttribute`，
+   各写一个属性，子标记原样保留。故 `select#tx-range`（带 `data-i18n-title`）里的五个
+   `<option data-i18n="tx.range.*">`、以及 `div#help-panel`（带 `data-i18n-label`）里的
+   `<strong data-i18n="help.title">` 都是**合法**形态。
+4. 两种既有门禁都看不见这类缺陷：`every_static_i18n_attribute_resolves` 只问「键在不在两个包里」，
+   而「按文本找引用」的死键扫描会看到键的**字面量就写在 `index.html` 里** ⇒ 判「有人用」。
+
+**CI 覆盖**（`src/i18n_pack.rs::no_data_i18n_attribute_nests_inside_a_data_i18n_element`）：
+对 `index.html` 做标签栈扫描，`data-i18n*` 属性落在带文本 `data-i18n` 的祖先内部即红；
+先剥 HTML 注释（注释里的标记不参与结构），空元素/自闭合不入栈，属性值里的 `>` 不截断标签
+（判别式由 `nested_i18n_detector_detects_injected_defects` 用合成输入钉住）。**零豁免清单**。
+扫描器另报三个阳性对照（起始标签数、文本载体数、EOF 未闭合栈），避免「0 违规」被误读成「扫描器瞎了」。
+
+⚠️ **射程只到「嵌套」这一条轴**：A/B 里那条竞争修法 `m_drop_parent`（把祖先的 `data-i18n` 整个删掉，
+例如让 `<h3>` 不带钩子）**确能让本门禁通过** —— 它真的消掉了嵌套。但它换来的是**另一条轴**上的缺陷：
+那位祖先的文案从此不再本地化，键 `admin.raise.title` 沦为**孤儿**（除语言包外零引用，实测孤儿集
+恰好 +1）。孤儿键今天无人守（全仓已有 60 余个不可达键）、**本次不入射程**，A/B 如实记录这条腿
+按声明为 GREEN，而不是伪装成被拒绝。
+
+⚠️ **本次未覆盖的边界**（已测量、非盲区）：`data-i18n*` 属性若落在**被 JS 整体替换内容的容器**里
+（`app.js` 对某 id 做 `innerHTML =`）同样是死的。今日实测为 **0 处**，故未建门禁 ——
+该判定的词法近似（按 id 找 `innerHTML =`）比本条脆弱，留待需要时再收。
