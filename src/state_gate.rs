@@ -1131,6 +1131,27 @@ const WALLET_READERS: [&str; 2] = ["loadSession", "refreshWallet"];
 /// 钱包缓存的槽名（`Live.wallet`）。
 const WALLET_SLOT: &str = "wallet";
 
+/// 共享状态的过渡表与它必须覆盖的状态集合（两侧都**从源码推出来**，不写花名册）。
+const SHARE_TOGGLE_TABLE: &str = "SHARE_TOGGLE";
+const SHARE_STATUS_TABLE: &str = "SHARE_STATUS";
+
+/// 过渡表里**逐条目必须唯一**的两列：动作标签与结局文案。
+///
+/// 两列共用一个值的两条目 = 两个动作被报成同一个结局 —— 那正是 C2153 的缺陷本身。
+const SHARE_TOGGLE_UNIQUE_COLUMNS: [&str; 2] = ["label", "outcome"];
+
+/// 过渡表条目命名的键前缀（`share.toggle.relisted` 一族）。
+const SHARE_TOGGLE_KEY_PREFIX: &str = "\"share.toggle.";
+
+/// 行内切换按钮的点击句柄（`data-share-toggle=`）。它同时是「动作」与「结局」的接线点。
+const SHARE_TOGGLE_BUTTON: &str = "data-share-toggle=";
+
+/// 按钮标记的收尾 —— 动作标签与 `data-share-toggle=` 不必在同一行（本仓就是分成两行的）。
+const SHARE_TOGGLE_BUTTON_END: &str = "</button>";
+
+/// 语言层原语：任何「两侧共用的访问器」判别式都必须先把它排除（它在每一行都会出现）。
+const I18N_PRIMITIVE: &str = "T";
+
 /// 去掉一行里**字符串之外**的 `// …` 尾注释（成对 `/* … */` 由 [`code_text_by_line`] 处理）。
 ///
 /// 门禁被自己的说明性注释满足是假绿里最坏的一种（坑 #296 的镜像）：本轮的修法就会在合计旁边
@@ -1859,6 +1880,275 @@ fn pack_region<'a>(src: &'a str, start: &str, end: &str) -> Option<&'a str> {
     let rest = &src[at..];
     let stop = rest.find(end)?;
     Some(&rest[..stop])
+}
+
+/// `const NAME = { … }` 对象字面量体的字节区间（从 `{` 到配对的 `}` **之后**）。
+///
+/// 字符串里的花括号不参与配对 —— 语言包与过渡表的值里都有 `{`。传入的应是**已剥注释**的代码
+/// 文本（[`code_text_by_line`] 的拼接结果）：说明性注释里也会出现表名与键名（坑 #296 的镜像，
+/// 本轮的修法就在表旁边写了一整段解释）。
+fn object_literal_span(src: &str, name: &str) -> Option<(usize, usize)> {
+    let needle = format!("const {name} = {{");
+    let open = src.find(&needle)? + needle.len() - 1;
+    let bytes = src.as_bytes();
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut i = open;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(q) = quote {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' | b'\'' | b'`' => quote = Some(c),
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open, i + 1));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 对象字面量里**顶层**的键（`状态:` 形式）。嵌套对象里的键、字符串里的冒号都不算。
+fn object_literal_keys(src: &str, name: &str) -> Option<Vec<String>> {
+    let (open, close) = object_literal_span(src, name)?;
+    let body = &src[open + 1..close - 1];
+    let bytes = body.as_bytes();
+    let mut keys: Vec<String> = Vec::new();
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(q) = quote {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if c == b'"' || c == b'\'' || c == b'`' {
+            quote = Some(c);
+            i += 1;
+            continue;
+        }
+        if c == b'{' || c == b'[' || c == b'(' {
+            depth += 1;
+        } else if c == b'}' || c == b']' || c == b')' {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0 && is_ident_byte(c) && (i == 0 || !is_ident_byte(bytes[i - 1])) {
+            let start = i;
+            let mut end = i;
+            while end < bytes.len() && is_ident_byte(bytes[end]) {
+                end += 1;
+            }
+            let mut j = end;
+            while j < bytes.len() && bytes[j] == b' ' {
+                j += 1;
+            }
+            // `ident:` 且不是 `::`
+            if j < bytes.len() && bytes[j] == b':' && bytes.get(j + 1) != Some(&b':') {
+                keys.push(body[start..end].to_string());
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    Some(keys)
+}
+
+/// 对象字面量里**顶层**的嵌套条目：`状态键 → 该条目自身 `{ … }` 内的文本`（布局无关）。
+fn nested_entries(src: &str, name: &str) -> Vec<(String, String)> {
+    let Some((open, close)) = object_literal_span(src, name) else {
+        return Vec::new();
+    };
+    let body = &src[open + 1..close - 1];
+    let bytes = body.as_bytes();
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut opened: Option<(String, usize)> = None;
+    let mut from = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(q) = quote {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' | b'\'' | b'`' => quote = Some(c),
+            b'{' => {
+                depth += 1;
+                if depth == 1 {
+                    // 键 = `from..i` 里**最后一个标识符**（键后面跟的是 `:` 与空格，直接用
+                    // `rsplit` 取最后一段会取到空串 —— 那个空键会让 `next` 自环检查恒真）
+                    let head = &body[from..i];
+                    let hb = head.as_bytes();
+                    let mut e = hb.len();
+                    while e > 0 && !is_ident_byte(hb[e - 1]) {
+                        e -= 1;
+                    }
+                    let mut s = e;
+                    while s > 0 && is_ident_byte(hb[s - 1]) {
+                        s -= 1;
+                    }
+                    opened = Some((head[s..e].to_string(), i + 1));
+                }
+            }
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if let Some((key, inner)) = opened.take() {
+                        out.push((key, body[inner..i].to_string()));
+                    }
+                    from = i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// 一段代码里 `field: "…"` 的字符串值。字段名必须是**标识符**（`xlabel:` 里的 `label` 不算）。
+fn string_field(text: &str, field: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(field) {
+        let at = from + rel;
+        let after = at + field.len();
+        let before_ok = at == 0 || !is_ident_byte(bytes[at - 1]);
+        if before_ok {
+            let tail = text[after..].trim_start();
+            if let Some(value) = tail.strip_prefix(':') {
+                let value = value.trim_start();
+                if let Some(rest) = value.strip_prefix('"') {
+                    if let Some(close) = rest.find('"') {
+                        return Some(rest[..close].to_string());
+                    }
+                }
+            }
+        }
+        from = after;
+    }
+    None
+}
+
+/// 一行里**被调用**的标识符（`name(` / `a.b(` 取最后一段）。
+///
+/// **不**过滤 `if(` / `catch(` 这类关键字 —— 判别式只在**两行之间取交集**时使用，关键字出现在
+/// 另一行是极不可能的；过滤名单反而是需要维护的花名册。
+fn called_identifiers(line: &str) -> BTreeSet<String> {
+    let bytes = line.as_bytes();
+    let mut out = BTreeSet::new();
+    for i in 0..bytes.len() {
+        if bytes[i] != b'(' {
+            continue;
+        }
+        let mut j = i;
+        while j > 0 && bytes[j - 1] == b' ' {
+            j -= 1;
+        }
+        let mut k = j;
+        while k > 0 && is_ident_byte(bytes[k - 1]) {
+            k -= 1;
+        }
+        if k < j {
+            out.insert(line[k..j].to_string());
+        }
+    }
+    out
+}
+
+/// 两行**共用**的访问器（排除语言层原语）。
+///
+/// 「按钮渲染那一行」与「切换处理器」共用的、非 `T` 的调用，就是让两侧从**同一张表的同一条目**
+/// 取值的那个访问器。缺陷形状（两侧各自解释状态）在这条判别式下交集为空。
+fn shared_accessor(button_line: &str, handler: &str) -> Vec<String> {
+    let in_handler = called_identifiers(handler);
+    let mut out: Vec<String> = called_identifiers(button_line)
+        .into_iter()
+        .filter(|n| n != I18N_PRIMITIVE && in_handler.contains(n))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// 从含 `needle` 的行起、到含 `end` 的行为止（含两端）的代码文本。
+///
+/// 一段标记会被写成多行（按钮的 `data-share-toggle=` 与它的动作标签就不在同一行），
+/// 只看一行会把「动作」那一半漏掉。
+fn code_block_containing(src: &str, needle: &str, end: &str) -> Option<String> {
+    let mut started = false;
+    let mut out: Vec<&str> = Vec::new();
+    for line in src.lines() {
+        if !started {
+            if line.contains(needle) {
+                started = true;
+            } else {
+                continue;
+            }
+        }
+        out.push(line);
+        if line.contains(end) {
+            return Some(out.join("\n"));
+        }
+    }
+    if started {
+        Some(out.join("\n"))
+    } else {
+        None
+    }
+}
+
+/// 把状态值交给 `/api/sharings/` 的端点里，**由状态推出**（而非写成字面量）的那些函数名。
+///
+/// 直接端点（删除 = `{ status: "off" }`）不算：本轴的处理器是「状态 → 下一状态」那一个，
+/// 它由构造就必须是从状态推出来的 —— 所以这里不需要写函数名（推导，不是花名册）。
+fn dynamic_status_owners(src: &str) -> Vec<String> {
+    code_lines_owned_by(src, |l| {
+        l.contains("/api/sharings/") && l.contains("status:")
+    })
+    .into_iter()
+    .filter(|(_, _, line)| !line.contains("status: \"") && !line.contains("status: '"))
+    .map(|(owner, _, _)| owner)
+    .collect()
+}
+
+/// 某个字节位置所在的行（去掉首尾空白）。
+fn line_at(src: &str, at: usize) -> String {
+    let start = src[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let end = src[at..].find('\n').map(|i| at + i).unwrap_or(src.len());
+    src[start..end].trim().to_string()
 }
 
 #[cfg(test)]
@@ -3978,6 +4268,294 @@ mod tests {
         assert!(
             hint_keys("<span class=\"hintish\" data-i18n=\"a.b\">x</span>").is_empty(),
             "`hint` 前缀被当成了说明元素"
+        );
+    }
+
+    /// 共享行的「切换动作」与它的「结局文案」必须由**同一条目**给出（C2153）。
+    ///
+    /// 轴：共享 key 有三个状态（`on` / `paused` / `off`，三个都可达 —— `PATCH /api/sharings/:id`
+    /// 接受这三个值，而 `GET /api/sharings` 不做状态过滤 ⇒ 软删过的行仍在列表里）。行内按钮按
+    /// **当前状态**三值取（暂停 / 恢复 / 重新上架），而**结局消息**按**下一状态**取两值
+    /// （`const next = s.status === "on" ? "paused" : "on"`）⇒ `off → on`（重新上架）被报成
+    /// 「已恢复」。命名那个分支的键 `share.toggle.relisted` 两个包都在、无人可达 ——
+    /// 「不可达的键」正是「丢了一条分支」的指纹（orphan 60 → 59）。
+    ///
+    /// 三条规则各有各的牙：
+    /// 1. 全文件里 `share.toggle.*` 的**字面量**只许出现在过渡表里（表外出现 = 有人自己挑结局）；
+    ///    表里承担「动作」与「结局」的两列**逐条目互不相同**（把三条压成两条 = 又有一个动作被
+    ///    报成另一个动作的结局），`next` 不得指向自己（切换必然改状态）。
+    /// 2. 表的键集**恰好等于** `SHARE_STATUS` 的键集 —— 两侧都是**从源码推出来的**，不写花名册：
+    ///    徽标认识的状态，切换表都必须有对应条目。
+    /// 3. 处理器（＝那个把**非字面量**状态交给 `/api/sharings/` 的函数，推导得出）**不许自己挑
+    ///    结局**：体内不得出现 `share.toggle.*` 字面量、不得按状态字面量分支，且必须与**按钮渲染
+    ///    那一行**共用同一个访问器（两侧同源）。
+    #[test]
+    fn the_sharing_toggle_outcome_comes_from_the_same_entry_as_its_action() {
+        let code = code_text_by_line(APP_JS).join("\n");
+        let zh = pack_region(I18N_JS, ZH_PACK_START, PACK_END).expect("zh 语言包区段");
+        let en = pack_region(I18N_JS, EN_PACK_START, PACK_END).expect("en 语言包区段");
+
+        // ── 前置：右侧的表必须被真的解析出来（空集上的断言会假绿，坑 68）───────────────
+        let status_keys = object_literal_keys(&code, SHARE_STATUS_TABLE)
+            .expect("app.js 里没有 `const SHARE_STATUS = { … }` —— 状态徽标表不见了");
+        assert!(
+            status_keys.len() >= 3,
+            "`{SHARE_STATUS_TABLE}` 只解析出 {} 个键 —— 提取器坏了（规则 2 的右侧会是空集）",
+            status_keys.len()
+        );
+
+        // ── 规则 1：键字面量只许出现在过渡表里 ─────────────────────────────────────
+        let span = object_literal_span(&code, SHARE_TOGGLE_TABLE);
+        let mut outside: Vec<String> = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find(SHARE_TOGGLE_KEY_PREFIX) {
+            let at = from + rel;
+            if !matches!(span, Some((s, e)) if at >= s && at < e) {
+                outside.push(line_at(&code, at));
+            }
+            from = at + SHARE_TOGGLE_KEY_PREFIX.len();
+        }
+        assert!(
+            outside.is_empty(),
+            "`share.toggle.*` 的字面量出现在过渡表之外（{} 处）：{outside:?} —— 结局文案必须取自\
+             过渡表的条目；自己挑结局正是 C2153 的形状（`off → on` 重新上架被报成「已恢复」）",
+            outside.len()
+        );
+
+        let entries = nested_entries(&code, SHARE_TOGGLE_TABLE);
+        assert_eq!(
+            entries.len(),
+            status_keys.len(),
+            "过渡表 `{SHARE_TOGGLE_TABLE}` 有 {} 个条目，而 `{SHARE_STATUS_TABLE}` 有 {} 个状态 —— \
+             每个可达状态都必须在表里有一条目（C2153 就是 `off` 那一条被漏掉）",
+            entries.len(),
+            status_keys.len()
+        );
+        // 两个独立提取器必须给出同一串键（坑 #291：读数不一致时**先查规则**）——
+        // 条目键若是空串，`next` 自环检查会恒真，规则 1 的后半就没有牙。
+        let table_keys = object_literal_keys(&code, SHARE_TOGGLE_TABLE).unwrap_or_default();
+        let entry_keys: Vec<String> = entries.iter().map(|(k, _)| k.clone()).collect();
+        assert_eq!(
+            entry_keys, table_keys,
+            "条目键与顶层键两个提取器的读数不一致 —— 先查提取规则，别改数据"
+        );
+
+        // ── 规则 1（后半）：动作 / 结局两列逐条目唯一，`next` 不自环，键两包俱在 ──────
+        for (key, inner) in &entries {
+            let next = string_field(inner, "next")
+                .unwrap_or_else(|| panic!("过渡表条目 `{key}` 没有 `next` 列"));
+            assert_ne!(
+                next.as_str(),
+                key.as_str(),
+                "过渡表条目 `{key}` 的 `next` 指向它自己 —— 切换不会产生状态变化"
+            );
+            for column in SHARE_TOGGLE_UNIQUE_COLUMNS {
+                let value = string_field(inner, column)
+                    .unwrap_or_else(|| panic!("过渡表条目 `{key}` 没有 `{column}` 列"));
+                assert!(
+                    value.starts_with("share.toggle."),
+                    "过渡表条目 `{key}` 的 `{column}` 是 `{value}` —— 不是 `share.toggle.*` 键"
+                );
+                for (pack, name) in [(zh, "zh"), (en, "en")] {
+                    assert!(
+                        pack.contains(&format!("\"{value}\":")),
+                        "过渡表引用了 `{value}`，而 {name} 语言包里没有这个键 —— \
+                         界面上会显示原始键名"
+                    );
+                }
+            }
+        }
+        for column in SHARE_TOGGLE_UNIQUE_COLUMNS {
+            let mut seen: Vec<(String, String)> = Vec::new();
+            for (key, inner) in &entries {
+                let value = string_field(inner, column).unwrap_or_default();
+                if let Some((_, other)) = seen.iter().find(|(v, _)| v == &value) {
+                    panic!(
+                        "过渡表的 `{column}` 列在 `{other}` 与 `{key}` 上重复（都取 `{value}`）—— \
+                         两个不同的动作被报成同一个结局：这正是 C2153 的缺陷本身"
+                    );
+                }
+                seen.push((value, key.clone()));
+            }
+        }
+
+        // ── 规则 2：键集相等（两侧都从源码推出来）──────────────────────────────────
+        let mut toggle_keys = table_keys;
+        toggle_keys.sort();
+        toggle_keys.dedup();
+        let mut status_sorted = status_keys.clone();
+        status_sorted.sort();
+        status_sorted.dedup();
+        assert_eq!(
+            toggle_keys, status_sorted,
+            "过渡表的键集与 `{SHARE_STATUS_TABLE}` 的状态集不等 —— 徽标认识的状态，切换表都必须有\
+             对应的动作与结局（漏一个 = 那个状态的切换会被报成另一个动作的结局，C2153）"
+        );
+
+        // ── 规则 3：处理器不许自己挑结局 ───────────────────────────────────────────
+        let handlers = dynamic_status_owners(&code);
+        assert_eq!(
+            handlers.len(),
+            1,
+            "把状态交给 `/api/sharings/` 的端点里，应**恰好一个**是由状态推出的切换（把状态写成\
+             字面量的是删除这类直接端点），实际 {handlers:?} —— 多于一个即两条各自解释状态的路径，\
+             那正是本轴要消掉的形状"
+        );
+        let handler_name = handlers[0].clone();
+        let handler = code_body(APP_JS, &handler_name);
+        assert!(
+            handler.contains("s.status"),
+            "提取到的 `{handler_name}` 体里没有行状态 —— 提取器坏了（规则 3 会假绿）"
+        );
+        assert!(
+            !handler.contains(SHARE_TOGGLE_KEY_PREFIX),
+            "`{handler_name}` 体内出现 `share.toggle.*` 字面量 —— 结局必须由过渡表的条目给出"
+        );
+        for status in &status_keys {
+            for lit in [format!("\"{status}\""), format!("'{status}'")] {
+                assert!(
+                    !handler.contains(&lit),
+                    "`{handler_name}` 体内按状态字面量 `{lit}` 分支 —— 处理器必须把当前状态交给\
+                     过渡表；自己用两值判别式挑 `next` / 结局正是 C2153 的形状（三个状态被压成两个）"
+                );
+            }
+        }
+        let button_line =
+            code_block_containing(&code, SHARE_TOGGLE_BUTTON, SHARE_TOGGLE_BUTTON_END)
+                .expect("找不到行内切换按钮那一段标记 —— 规则 3 的射程会静默变空");
+        assert!(
+            button_line.contains(SHARE_TOGGLE_BUTTON_END),
+            "按钮那一段没有收尾（`{SHARE_TOGGLE_BUTTON_END}`）—— 取到的不是完整按钮"
+        );
+        let shared = shared_accessor(&button_line, &handler);
+        assert_eq!(
+            shared.len(),
+            1,
+            "按钮那一行与 `{handler_name}` 之间没有**唯一**的共同访问器（实际 {shared:?}）—— \
+             动作与结局必须取自同一张表的同一条目（两边各自解释状态时，三个状态的切换必然有一边\
+             少一个分支）"
+        );
+        assert!(
+            mentions_identifier(&handler, &shared[0]),
+            "共同访问器 `{}` 没出现在处理器体里",
+            shared[0]
+        );
+
+        // ── 判别式自证（合成输入）──────────────────────────────────────────────────
+        // ① 注释里的表名/键名不成证据（坑 #296 的镜像：本轮的修法就在表旁边写了一整段解释）
+        let commented = concat!(
+            "  // const SHARE_TOGGLE = { a: { label: \"l\" }, b: { label: \"m\" } };\n",
+            "  const SHARE_TOGGLE = {\n",
+            "    on: { label: \"share.toggle.pause\", next: \"paused\", outcome: \"share.toggle.paused\" },\n",
+            "  };\n"
+        );
+        assert_eq!(
+            nested_entries(commented, SHARE_TOGGLE_TABLE).len(),
+            2,
+            "自证失效：未剥注释的文本本该把注释里那张表也读出来"
+        );
+        assert_eq!(
+            nested_entries(&code_text_by_line(commented).join("\n"), SHARE_TOGGLE_TABLE).len(),
+            1,
+            "注释里的过渡表被当成了真表 —— 规则 1/2 的射程会被解释性注释撑大"
+        );
+
+        // ② 字符串里的花括号不参与配对（表里两处都有）
+        let braces = concat!(
+            "  const SHARE_TOGGLE = {\n",
+            "    a: { label: \"}\", next: \"b\", outcome: \"{\" },\n",
+            "    b: { label: \"x\", next: \"a\", outcome: \"y\" },\n",
+            "  };\n"
+        );
+        assert_eq!(
+            object_literal_keys(braces, SHARE_TOGGLE_TABLE),
+            Some(vec!["a".to_string(), "b".to_string()]),
+            "字符串里的花括号参与了配对（规则 1 的射程会偏）"
+        );
+        assert_eq!(
+            nested_entries(braces, SHARE_TOGGLE_TABLE).len(),
+            2,
+            "字符串里的花括号让条目提取提前收尾"
+        );
+        assert_eq!(
+            string_field("{ label: \"}\", next: \"b\" }", "next").as_deref(),
+            Some("b"),
+            "字段值被字符串里的花括号截断"
+        );
+
+        // ③ 嵌套对象的键不算外层键；`xlabel` 不是 `label`（坑 #333 的判别式边界）
+        assert_eq!(
+            object_literal_keys("  const X = {\n    a: { b: { c: 1 } },\n  };\n", "X"),
+            Some(vec!["a".to_string()]),
+            "嵌套对象里的键被当成了外层键"
+        );
+        // 条目键必须真的取出来 —— 键后跟的是 `:` 与空格，`rsplit` 直接取最后一段会拿到空串，
+        // 而空键会让「`next` 不自环」恒真（A/B 的 M2b 腿当场把这条缺陷印了出来）
+        assert_eq!(
+            nested_entries(
+                "  const X = {\n    a: { label: \"l\" },\n    b: { label: \"m\" },\n  };\n",
+                "X"
+            )
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect::<Vec<_>>(),
+            vec!["a".to_string(), "b".to_string()],
+            "条目键没被取出来（空键让 `next` 自环检查恒真）"
+        );
+        assert_eq!(
+            string_field("{ xlabel: \"nope\", label: \"yes\" }", "label").as_deref(),
+            Some("yes"),
+            "`label` 的前缀匹配把 `xlabel` 当成了证据"
+        );
+
+        // ④ 规则 3 的判别式必须**在缺陷形状上**取空集、在修复形状上取到那一个访问器
+        let base_button = "      (s.status === \"on\" ? T(\"share.toggle.pause\") : \
+                            s.status === \"paused\" ? T(\"share.toggle.resume\") : \
+                            T(\"share.toggle.relist\")) + \"</button> \";";
+        let base_handler = concat!(
+            "  async function toggleSharing(i) {\n",
+            "    const next = s.status === \"on\" ? \"paused\" : \"on\";\n",
+            "    await api.patch(\"/api/sharings/\" + s.id, { status: next });\n",
+            "    toast(next === \"paused\" ? T(\"share.toggle.paused\") : T(\"share.toggle.resumed\"));\n",
+            "  }"
+        );
+        assert!(
+            shared_accessor(base_button, base_handler).is_empty(),
+            "缺陷形状的那两段被认成了「有共同访问器」—— 规则 3 没有牙"
+        );
+        assert!(
+            base_handler.contains("\"paused\""),
+            "自证失效：缺陷的处理器本该按状态字面量 `\"paused\"` 分支"
+        );
+        assert_eq!(
+            shared_accessor(
+                "      T(shareToggle(s.status).label) + \"</button> \";",
+                "  toast(T(shareToggle(s.status).outcome));"
+            ),
+            vec!["shareToggle".to_string()],
+            "两侧共用访问器时判别式没认出来（规则 3 会假红）"
+        );
+        assert!(
+            called_identifiers("  toast(T(x));").contains("toast"),
+            "调用识别漏了普通调用"
+        );
+
+        // ⑤ 处理器是**推**出来的：把状态写成字面量的直接端点不算切换
+        assert!(
+            dynamic_status_owners(
+                "  async function d() {\n    await api.patch(\"/api/sharings/\" + s.id, \
+                 { status: \"off\" });\n  }\n"
+            )
+            .is_empty(),
+            "把状态写成字面量的端点被当成了切换处理器"
+        );
+        assert_eq!(
+            dynamic_status_owners(
+                "  async function t() {\n    await api.patch(\"/api/sharings/\" + s.id, \
+                 { status: entry.next });\n  }\n"
+            ),
+            vec!["t".to_string()],
+            "由状态推出的切换端点没被认出来（规则 3 的射程会静默变空）"
         );
     }
 }
