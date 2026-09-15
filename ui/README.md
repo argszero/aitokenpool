@@ -456,6 +456,17 @@ ui/
 - **冒烟测试注意**（`tmp/c2136_probe.js`）：① 判「仪表盘那套」时要连**查询形状**一起比 —— 交易视图自己也拉 `/api/transactions/trend`（`bucket=hour`），只按路径匹配会把别人的请求算进来（假红）；② 参数匹配要锚定（`page_size=1` 不能用裸子串，否则命中 `page_size=10`）；③ 计数不要数 DOM：`TOAST_MAX` 会把 6 条截成 3 条，用 `Object.defineProperty(window, "__atpLogout", { set })` 截住赋值再包装计数；④ 阴性对照腿＝**无 token** 的 boot（必须 0 个视图数据请求）。
 
 
+## 模型身份：`provider/model`，不是数组下标（C2138）
+
+- **位置不是身份**。`modelsToView()` 曾给每行发 `id: i`（数组下标），而「最近使用」把它**存进 `localStorage`**（`atp-recent-models`）⇒ 这个身份跨了渲染 / 跨了会话 / 跨了**数组**：
+  - **跨数组**：游客兜底表 `data.js > MARKET` 是**另一张表**（7 行、id `1..7`、顺序与长度都不同），只是**数字上看起来**是同一个空间。实测：登录态用了 `xai/grok-4.6`（下标 5）→ 登出进游客市场，芯片写成 `google/gemini-3.1-pro`；下标 0（登录态第一行）在 1-based 的游客表里查无此号 ⇒ 芯片**整条消失**。
+  - **跨渲染**：`/api/models` 按 `provider, model` 排序 ⇒ 上架 / 下架 / 改名任何一个模型，后面所有下标整体**位移**。实测：管理员加一个排在前面的模型后，芯片写成 `moonshot/kimi-k3`，而**点开那枚芯片打开的对话也是 kimi-k3**（显示上的错升级成动作上的错）。
+- **约定**：**跨渲染 / 跨会话 / 跨数组的模型身份一律走 `modelKey(m)`**（= `provider + "/" + model`）；**数组下标只在生成本次渲染的那个数组里有意义**，不得进入视图行（`modelsToView` 不再发 `id`）、不得进 DOM 的 `data-*`、不得进 `localStorage`。三处身份载体（市场行展开 `data-mk-expand`、「使用」`data-use-model`、最近使用芯片 `data-recent-model`）都由 `esc(modelKey(m))` 产出，点击侧**原样传递**（不得再用 `Number(...)` 把身份串转回数字）。
+- **存储层只认身份串**：`getRecentKeys()` 只接受 `typeof x === "string" && x.indexOf("/") > 0`；**旧版本存下来的下标无法被诚实地还原成某个模型**，按空处理、一次性丢弃（刻意的 —— 把它「尽力翻译」成某个模型正是本缺陷本身）。解析一律 `find((x) => modelKey(x) === key)`（`renderRecent` / `openChat` / `consumeModel`）。
+- **不变量（`src/state_gate.rs::the_model_row_identity_is_the_model_not_its_position`）**：① `modelsToView` 的 `.map(` 回调**只许一个形参**、行对象里不得声明字段 `id`；② 三处 `data-*` 必须由 `modelKey(` 产出、点击侧不得出现 `Number(`；③ `modelKey` 全仓**只有一处定义**，体内同时提到 `provider` 与 `model`、从不提到 `id`；④ `markRecentUsed(...)` 的每个调用点都在写 `modelKey(...)`。
+- **判别式注意**：渲染侧与读取侧**长得像**（`data-x="…"` vs `querySelector('[data-x="' + id + '"]')`）⇒ `renders_attr` 必须**同时**要求「属性后跟 `=`」**且**「这一行不是选择器查询」，否则消费者会被算成渲染点（门禁第一版正是这样假红的）。
+- **冒烟测试注意**（`tmp/c2138_probe.js`）：① 控制腿要落在**这条路径对该身份本来就成立**的会话里 —— 游客点「最近使用」芯片是被刻意拦住的（`chat.login.need`），把它写成控制腿会恒红（坑 #316）；② 断言必须**逐条目**判「叫的是用过的那个模型」（两个身份空间部分重叠，重叠的那一项看起来是对的，坑 #317）；③ 只有**目录位移**那条腿拒得掉「手工把游客表 id 对齐今日目录」这种竞争修法 —— 它骗得过游客市场那张脸（坑 #318）。
+
 ## 后端自造的显示文案：分界线在「数据字段 / 文案字段」（C2133）
 
 - **咽喉只覆盖文案字段**：`api.js` 把后端 `error` 字段整串交给 `I18n.mapErr()`（词表 `ERR_MAP`），所以**错误文案**有兜底（C2129）。但**响应数据字段**是前端原样渲染的 —— 后端在数据字段里自造一句中文，`en` 界面上就是中文，而 `cargo test` 全绿。

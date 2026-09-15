@@ -111,6 +111,35 @@
 //! 不变量同型）；boot 体内的**间接**渲染（调一个自己写的、内部再 `renderView("x")` 的函数）
 //! 也看不见 —— 射程是「静态调用点」，不是运行期可达性。
 
+//! # C2138：**位置不是身份** —— 模型行的身份必须是 `provider/model`，不能是数组下标
+//!
+//! `modelsToView()` 把 `/api/models` 的行适配成视图行时**自己造过一个身份**：`id: i` —— 数组
+//! 下标。而那个下标会被 `markRecentUsed()` **存进 `localStorage`**（「最近使用」芯片），于是它
+//! 跨了渲染、跨了会话、跨了数组：
+//!
+//! - **跨数组**：游客兜底表 `data.js > MARKET` 是**另一张表**（7 行、id `1..7`、顺序与长度都
+//!   不同），只是**数字上看起来**是同一个空间 —— 实测：登录态用了 `xai/grok-4.6`（下标 5），
+//!   登出进游客市场后芯片写成 `google/gemini-3.1-pro`；下标 0（登录态第一行）在 1-based 的游客
+//!   表里查无此号 ⇒ 芯片**整条消失**。
+//! - **跨渲染**：`/api/models` 是 `ORDER BY provider, model`（`src/dao.rs` 的 `list_models…`）——
+//!   上架/下架/改名任何一个模型，后面所有下标整体位移。实测：管理员加一个排在前面的模型后，
+//!   芯片写成 `moonshot/kimi-k3`，而**点开那枚芯片打开的对话也是 kimi-k3** —— 用户以为自己在用
+//!   用过的那个模型（错误从显示变成了动作）。
+//!
+//! 四条规则，各有各的牙（A/B 里各自有独立的红集，互不遮蔽）：
+//!
+//! 1. **位置不得进入行对象** —— `modelsToView` 的 `.map(` 回调只许**一个**形参（第二个通常就是
+//!    下标），返回的对象里不得声明字段 `id`；
+//! 2. **三处 `data-*` 身份必须由 `modelKey(` 产出**（市场行的展开 / 「使用」、最近使用芯片），
+//!    且点击侧必须**原样传递**（不得再用 `Number(` 把身份串转回数字）；
+//! 3. **`modelKey` 有且只有一处定义**，体内同时提到 `provider` 与 `model`（单靠 model 名会在
+//!    多厂商重名时相撞），且**从不**提到 `id`；
+//! 4. **写进「最近使用」的值必须是 `modelKey(...)` 表达式** —— 存储层只接受身份串；旧版本存下来
+//!    的**下标**无法被诚实地还原成某个模型，按空处理、一次性丢弃（刻意的，见 `getRecentKeys`）。
+//!
+//! ⚠️ 存储层与显示层都**不许**再按位置解析：`renderRecent` / `openChat` / `consumeModel` 一律
+//! `find((x) => modelKey(x) === key)` —— 规则 2/4 是这两个平面的入口。
+//!
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 前端源码在**编译期**读入：测试不依赖工作目录与文件系统布局。
@@ -124,6 +153,14 @@ const TX_EVIDENCE: &str = "txTable.loaded";
 const DASH_SLOT: &str = "tradeCount";
 /// 仪表盘那条「只取 total」的查询（阳性对照：修法不得把它删掉，只许换槽）。
 const DASH_TX_QUERY: &str = "/api/transactions?page=1&page_size=1";
+/// 承载**模型身份**的三处 `data-*`（C2138）：渲染侧必须由 `modelKey(` 产出。
+const MODEL_IDENTITY_ATTRS: [&str; 3] = ["data-mk-expand", "data-use-model", "data-recent-model"];
+/// 点击侧读回这三处身份的 `dataset` 名（不得再经 `Number(` 转回位置）。
+const MODEL_IDENTITY_DATASETS: [&str; 3] = [
+    "dataset.mkExpand",
+    "dataset.useModel",
+    "dataset.recentModel",
+];
 
 /// 行首为 `//` 的行：注释行，不参与断言。
 fn is_comment_line(line: &str) -> bool {
@@ -530,6 +567,108 @@ fn render_view_argument(line: &str) -> Option<String> {
     let after = &line[at + "renderView(".len()..];
     let end = after.find(')').unwrap_or(after.len());
     Some(after[..end].trim().to_string())
+}
+
+/// 这一行是否在**渲染** `attr` 这个 HTML 属性（`data-x="…"`）。
+///
+/// 判别式有两条牙：属性后面跟 `=`（渲染侧写 `data-x=`），且这一行**不是选择器查询**
+/// （`querySelector('[data-use-model="' + id + '"]')` 也带 `=`，但它是**读取**，不是产出身份）。
+/// 不区分的话，「谁渲染了身份」会被消费者污染（C2138 A/B 实测：`closest("[data-mk-expand]")`
+/// 与 `querySelector('[data-use-model="' + id + '"]')` 都被算成渲染点）。
+fn renders_attr(line: &str, attr: &str) -> bool {
+    line.contains(&format!("{attr}=")) && !is_selector_query(line)
+}
+
+/// 这一行是否在做**选择器查询**（读 DOM 里的控件，而不是拼 HTML）。
+fn is_selector_query(line: &str) -> bool {
+    line.contains("querySelector") || line.contains("closest(") || line.contains("getElementById")
+}
+
+/// 这一行是否在**读** `attr` 这个 HTML 属性（`closest("[data-x]")` / `querySelector`）。
+fn reads_attr(line: &str, attr: &str) -> bool {
+    line.contains(&format!("[{attr}]")) || line.contains(&format!("{attr}]"))
+}
+
+/// 取一个函数的源码。**单行函数**（`function f(m) { return …; }`）只取那一行 ——
+/// [`js_function_body`] 按「首个恰为 `  }` 的行」收尾，而单行函数的收尾 `}` 在同一行里，
+/// 于是它会一路吞到**下一个**多行函数的收尾（模型身份就是这种单行函数，坑 #319）。
+/// 与兄弟提取器一样，**调用方必须自证**（见 `the_model_identity_extractors_have_teeth`）。
+fn function_source(src: &str, name: &str) -> Option<String> {
+    let head = format!("function {name}(");
+    let start = src.find(&head)?;
+    let line_end = src[start..]
+        .find('\n')
+        .map(|i| start + i)
+        .unwrap_or(src.len());
+    let first_line = src[start..line_end].trim_end();
+    if first_line.ends_with('}') && first_line.contains('{') {
+        return Some(first_line.to_string());
+    }
+    js_function_body(src, name).map(str::to_string)
+}
+
+/// 一个 `.map((…) =>` 回调的形参表（已去空白）。`list.map((m) =>` → `["m"]`、`map((m, i) =>` → `["m","i"]`。
+fn map_callback_params(body: &str) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = body[from..].find(".map((") {
+        let at = from + rel + ".map((".len();
+        let end = body[at..].find(')').map(|i| at + i).unwrap_or(body.len());
+        out.push(
+            body[at..end]
+                .split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect(),
+        );
+        from = at;
+        if from >= body.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// `text` 里是否把 `name` 当**标识符**提到（前后不是标识符字符）。`id` 不该被 `valid` 之类绊到。
+fn mentions_identifier(text: &str, name: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let bytes = text.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(name) {
+        let at = from + rel;
+        let end = at + name.len();
+        let before_ok = at == 0 || !is_word(bytes[at - 1] as char);
+        let after_ok = end >= bytes.len() || !is_word(bytes[end] as char);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = at + 1;
+        if from >= text.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// 这一行是否在**对象字面量里声明了字段** `field`（`id: i,` / `{ id: i }` / `, id: i`）。
+///
+/// 不认 `x.id:` 这类属性访问（前一个非空白字符既不是行首，也不是 `{`/`,`）。
+fn declares_field(line: &str, field: &str) -> bool {
+    let needle = format!("{field}:");
+    let t = line.trim();
+    let mut from = 0usize;
+    while let Some(rel) = t[from..].find(&needle) {
+        let at = from + rel;
+        let before = t[..at].trim_end().chars().last();
+        if before.is_none() || matches!(before, Some('{') | Some(',')) {
+            return true;
+        }
+        from = at + 1;
+        if from >= t.len() {
+            break;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1200,6 +1339,241 @@ mod tests {
         assert!(
             !derived.contains("renderC"),
             "阴性对照失败：没出现过的名字被凭空派生了出来"
+        );
+    }
+
+    /// 模型行的身份是**模型本身**，不是它在某个数组里的位置（C2138）。四条规则各有各的牙。
+    #[test]
+    fn the_model_row_identity_is_the_model_not_its_position() {
+        // ── 规则 1：位置不得进入行对象 ──────────────────────────────────────────────────
+        let row = function_code(APP_JS, "modelsToView");
+        assert!(
+            !row.trim().is_empty(),
+            "提取器没取到 `modelsToView` 的函数体（后面几条断言会在空集上假绿）"
+        );
+        let params = map_callback_params(&row);
+        assert_eq!(
+            params.len(),
+            1,
+            "`modelsToView` 里应当有且只有一个 `.map(` 回调：{params:?}"
+        );
+        assert_eq!(
+            params[0].len(),
+            1,
+            "`modelsToView` 的 `.map(` 回调声明了 {} 个形参 —— 第二个通常就是数组下标，\
+             而位置不是身份：它会随目录位移、随表换人（C2138）：{:?}",
+            params[0].len(),
+            params[0]
+        );
+        let id_fields: Vec<&str> = row.lines().filter(|l| declares_field(l, "id")).collect();
+        assert!(
+            id_fields.is_empty(),
+            "视图行里声明了字段 `id` —— 那是「模型在本数组里的位置」，一旦被存进 \
+             localStorage（最近使用）就跨了渲染/会话/数组（C2138）：{id_fields:?}"
+        );
+
+        // ── 规则 2：三处 `data-*` 身份来自 `modelKey(`，点击侧原样传递 ────────────────────
+        let mut rendered = 0usize;
+        for attr in MODEL_IDENTITY_ATTRS {
+            let hits: Vec<String> =
+                lines_owned_by(APP_JS, |l| !is_comment_line(l) && renders_attr(l, attr))
+                    .into_iter()
+                    .map(|(_, _, l)| l)
+                    .collect();
+            assert!(
+                !hits.is_empty(),
+                "找不到渲染 `{attr}` 的地方 —— 属性被改名或提取器坏了（空集断言会假绿）"
+            );
+            for h in &hits {
+                assert!(
+                    h.contains("modelKey("),
+                    "`{attr}` 的值不是由 `modelKey(` 产出的 —— 位置（下标 / `id`）不是身份（C2138）：{h}"
+                );
+            }
+            rendered += hits.len();
+        }
+        assert!(
+            rendered >= MODEL_IDENTITY_ATTRS.len(),
+            "承载模型身份的 `data-*` 只找到 {rendered} 处（应 ≥ {}），扫描器没看全",
+            MODEL_IDENTITY_ATTRS.len()
+        );
+
+        let mut consumed = 0usize;
+        for ds in MODEL_IDENTITY_DATASETS {
+            let hits: Vec<String> =
+                lines_owned_by(APP_JS, |l| !is_comment_line(l) && l.contains(ds))
+                    .into_iter()
+                    .map(|(_, _, l)| l)
+                    .collect();
+            assert!(
+                !hits.is_empty(),
+                "找不到读 `{ds}` 的点击侧 —— 提取器坏了（空集断言会假绿）"
+            );
+            for h in &hits {
+                assert!(
+                    !h.contains("Number("),
+                    "`{ds}` 被 `Number(` 转回了数字 —— 身份串又被当成位置用（C2138）：{h}"
+                );
+            }
+            consumed += hits.len();
+        }
+        assert!(
+            consumed >= MODEL_IDENTITY_DATASETS.len(),
+            "读模型身份的点击侧只找到 {consumed} 处（应 ≥ {}）",
+            MODEL_IDENTITY_DATASETS.len()
+        );
+
+        // ── 规则 3：`modelKey` 只有一处定义，且身份由 provider+model 构成 ────────────────
+        let defs = APP_JS.matches("function modelKey(").count();
+        assert_eq!(
+            defs, 1,
+            "`modelKey` 应当全仓只有一处定义（两份定义会各漂各的）：找到 {defs} 处"
+        );
+        let key = function_source(APP_JS, "modelKey").expect("取不到 `modelKey` 的定义");
+        assert!(
+            mentions_identifier(&key, "provider") && mentions_identifier(&key, "model"),
+            "`modelKey` 必须同时用 `provider` 与 `model` 构成身份 —— 只用 model 名会在多厂商\
+             重名时把两个模型认成同一个：{key}"
+        );
+        assert!(
+            !mentions_identifier(&key, "id"),
+            "`modelKey` 体内提到了标识符 `id` —— 位置不得进入身份（C2138）：{key}"
+        );
+
+        // ── 规则 4：写进「最近使用」的值必须是 `modelKey(...)` 表达式 ────────────────────
+        let writes: Vec<String> = lines_owned_by(APP_JS, |l| {
+            !is_comment_line(l) && l.contains("markRecentUsed(")
+        })
+        .into_iter()
+        .map(|(_, _, l)| l)
+        .filter(|l| !l.contains("function markRecentUsed("))
+        .collect();
+        assert!(
+            writes.len() >= 2,
+            "`markRecentUsed(` 的调用点少于 2 处（应有 openChat 与 consumeModel 两个）—— \
+             提取器坏了或调用点被删：{writes:?}"
+        );
+        for h in &writes {
+            assert!(
+                h.contains("modelKey("),
+                "写进「最近使用」的值不是 `modelKey(...)` —— 存下来的位置活不过一次目录变更\
+                 （C2138）：{h}"
+            );
+        }
+    }
+
+    /// C2138 的提取器与判别式自证：合成输入（含阴性对照）必须让每条牙都能单独咬合。
+    #[test]
+    fn the_model_identity_extractors_have_teeth() {
+        // `function_source`：单行函数只取那一行（否则会一路吞到下一个多行函数的收尾，坑 #319）
+        let synthetic = concat!(
+            "  function modelKey(m) { return m.provider + \"/\" + m.model; }\n",
+            "  function modelsToView(list) {\n",
+            "    return list.map((m, i) => {\n",
+            "      return { id: i, provider: m.provider };\n",
+            "    });\n",
+            "  }\n"
+        );
+        let one = function_source(synthetic, "modelKey").expect("取不到单行函数");
+        assert!(
+            !one.contains("modelsToView"),
+            "`function_source` 把紧随其后的函数吞进来了（判别式会读到别人的 `id`）：{one}"
+        );
+        assert!(
+            mentions_identifier(&one, "provider") && !mentions_identifier(&one, "id"),
+            "单行函数体读数不对：{one}"
+        );
+        let multi = function_source(synthetic, "modelsToView").expect("取不到多行函数");
+        assert!(multi.contains("id: i"), "多行函数体没被取到：{multi}");
+        assert!(
+            !multi.contains("function modelKey"),
+            "多行函数体取过头了：{multi}"
+        );
+
+        // `map_callback_params`：形参个数就是判别式
+        assert_eq!(
+            map_callback_params(&code_only(&multi)),
+            vec![vec!["m".to_string(), "i".to_string()]],
+            "形参表读数不对"
+        );
+        assert_eq!(
+            map_callback_params("    return list.map((m) => m);"),
+            vec![vec!["m".to_string()]],
+            "单形参回调被读错了"
+        );
+        assert!(
+            map_callback_params("  const x = list.map(f);").is_empty(),
+            "阴性对照失败：没有 `.map((` 的行被读出了形参"
+        );
+
+        // `declares_field`：只认对象字面量里的字段声明，不认属性访问
+        assert!(declares_field("        id: i,", "id"), "行首字段没被认出");
+        assert!(
+            declares_field("      return { id: i,", "id"),
+            "`{{` 后字段没被认出"
+        );
+        assert!(
+            declares_field("      return { a: 1, id: i };", "id"),
+            "`,` 后字段没被认出"
+        );
+        assert!(
+            !declares_field("      const x = m.id;", "id"),
+            "阴性对照失败：属性访问被误判成字段声明"
+        );
+        assert!(
+            !declares_field("      const idx = 1;", "id"),
+            "阴性对照失败：`idx` 被误判成 `id`"
+        );
+        assert!(
+            !declares_field("      api.del(\"/api/admin/models/\" + m.id);", "id"),
+            "阴性对照失败：URL 里的 `models/\" + m.id` 被误判成字段声明"
+        );
+
+        // `renders_attr` / `reads_attr`：渲染侧写 `data-x=`，读取侧写 `[data-x]` —— 判别式是那个 `=`
+        assert!(
+            renders_attr(
+                "      '<button data-mk-expand=\"' + esc(modelKey(m)) + '\">'",
+                "data-mk-expand"
+            ),
+            "合成渲染行没被判成渲染"
+        );
+        assert!(
+            !renders_attr(
+                "      const ex = e.target.closest(\"[data-mk-expand]\");",
+                "data-mk-expand"
+            ),
+            "阴性对照失败：读取侧被误判成渲染侧（会把消费者也算成渲染点）"
+        );
+        assert!(
+            !renders_attr(
+                "      const btn = document.querySelector('[data-use-model=\"' + id + '\"]');",
+                "data-use-model"
+            ),
+            "阴性对照失败：带值的选择器查询被误判成渲染侧（消费者的属性选择器带 `=`）"
+        );
+        assert!(
+            reads_attr(
+                "      const ex = e.target.closest(\"[data-mk-expand]\");",
+                "data-mk-expand"
+            ),
+            "合成读取行没被判成读取"
+        );
+        assert!(
+            !reads_attr(
+                "      '<button data-mk-expand=\"' + esc(modelKey(m)) + '\">'",
+                "data-mk-expand"
+            ),
+            "阴性对照失败：渲染侧被误判成读取侧"
+        );
+
+        // `mentions_identifier`：词边界（`modelKey` 里的 `model` 不是标识符 `model`）        assert!(mentions_identifier("return m.model;", "model"));
+        assert!(
+            !mentions_identifier("function modelKey(m) {", "model"),
+            "阴性对照失败：`modelKey` 里的 `model` 被当成标识符"
+        );
+        assert!(
+            !mentions_identifier("return m.valid;", "id"),
+            "阴性对照失败：`valid` 里的 `id` 被当成标识符"
         );
     }
 }
