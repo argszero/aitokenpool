@@ -46,7 +46,38 @@
 //! 这两条与第一条不同：它们**不能用 DOM 探针钉方向**（改前/改后都是「屏幕上对不对」），
 //! 必须由静态断言钉住形状（C2128 坑 #287）。
 
-use std::collections::BTreeSet;
+//! # C2135：**渲染谁就装载谁** —— 视图的 loader 必须装载它的 renderer 读到的每个槽
+//!
+//! 前两条说的是「槽自身的纪律」。这一条说的是**槽与视图的对应关系**：`renderView` 的每个分支
+//! 都要 `render` 一个视图、并（登录时）`load` 它自己的数据 —— 但**「它自己的」不是由分支名
+//! 决定的，而是由渲染闭包读了哪些槽决定的**。一个视图会读**别的**视图的槽（共享槽），
+//! 那时只拉自己那份数据就会让那一格永远空着。
+//!
+//! C2135 实测的形状：`#month-changes`（钱包视图）与 `#dash-month-changes`（仪表盘）由**同一个**
+//! `renderMonthChanges()` 绘制，两者都读 `Live.dashboard`；而该槽的写者只有仪表盘的 `loadDashboard`。
+//! 钱包分支只调 `loadWallet()`（它只刷 `Live.wallet`）⇒ **会话在钱包视图上建立时**（hash `#/wallet`
+//! 后登录；以及在钱包页登出再登录）没有任何人装载那个槽：净变化印 `0` + 「本月暂无变动」，
+//! 而同一份载荷在仪表盘上渲染正确，且**永不自愈**（钱包的 loader 不碰该槽）。
+//! ⚠️ 带 token **刷新**看不到它 —— boot 在 `DOMContentLoaded` 里**无条件** `renderView("dashboard")`
+//! 顺手把槽装好了（这正是它长期潜伏的原因）。
+//!
+//! 修法＝**共享槽只能有一个写者**（C2131），装载它的事收进一个函数（`refreshDashboard()`），
+//! 由**每个渲染它的视图**各调一次。本门禁钉的就是这条对应关系：
+//!
+//! > 对每个槽 `S`、每个 `renderView` 分支 `B`：若 `B` 的**渲染闭包**（`render…` 的传递调用集）
+//! > 里有人读 `Live.S`，则 `B` 的 **loader 闭包**（`load…` 的传递调用集 ∪ 会话级 `loadSession`
+//! > 的闭包）里必须有人写 `Live.S`。
+//!
+//! 为什么要把 `loadSession` 算进来：`models` / `publicUrl` 是**会话级**数据（`loadSession` 装载，
+//! 所有视图共用），它们的「装载者」本来就不是某个视图的 loader。把会话级写者计入后，
+//! 全仓**没有任何一处**需要豁免清单（豁免清单＝会腐烂的花名册）。
+//!
+//! 已知边界（与上一条同型，如实的射程）：槽宇宙 = `Live` 字面量声明 ∪ 代码里出现过的
+//! `Live.<名>`。**`Live` 字面量本身漏登记的槽**（C2135 记账：`Live.dashboardTrend` 只被读写、
+//! 未在字面量里声明 ⇒ `resetSessionCaches` 的派生名册清不到它）本门禁**看不见** ——
+//! 那属于「身份边界」那条不变量，已记账待单独处理，不在本条射程内。
+
+use std::collections::{BTreeMap, BTreeSet};
 
 /// 前端源码在**编译期**读入：测试不依赖工作目录与文件系统布局。
 const APP_JS: &str = include_str!("../ui/js/app.js");
@@ -217,6 +248,205 @@ fn view_router_branches(body: &str) -> Vec<String> {
         .filter(|l| l.contains("id === \""))
         .map(|l| l.trim().to_string())
         .collect()
+}
+
+// ── C2135：传递闭包（渲染闭包读哪些槽 / loader 闭包写哪些槽）──────────────────────────
+
+/// 函数体里出现的调用名（`ident(` 形状）。用于算**传递闭包**：视图的渲染函数会调用别的渲染
+/// 函数（`renderDashboard → renderMonthChanges`），loader 亦然（`loadWallet → refreshDashboard`）。
+/// 注释行不参与（否则一段解释性的散文就能造出幻影调用点，坑 #296）。
+fn callee_names(body: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in body.lines() {
+        let t = line.trim_start();
+        if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if c.is_ascii_alphabetic() || c == b'_' || c == b'$' {
+                let start = i;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$')
+                {
+                    i += 1;
+                }
+                if i < bytes.len() && bytes[i] == b'(' {
+                    out.insert(line[start..i].to_string());
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// 全仓函数名 → 它的调用名集合（BFS 闭包用）。
+fn call_graph(src: &str) -> BTreeMap<String, BTreeSet<String>> {
+    let mut graph = BTreeMap::new();
+    for line in src.lines() {
+        let Some(name) = function_name(line) else {
+            continue;
+        };
+        if graph.contains_key(name) {
+            continue;
+        }
+        if let Some(body) = js_function_body(src, name) {
+            graph.insert(name.to_string(), callee_names(body));
+        }
+    }
+    graph
+}
+
+/// 从 `roots` 出发能到达的函数集合（含 `roots` 自身）。名字不在图里也保留 —— 外部/未解析的调用
+/// 不该让闭包缩水。
+fn reachable(graph: &BTreeMap<String, BTreeSet<String>>, roots: &[String]) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut queue: Vec<String> = roots.to_vec();
+    while let Some(f) = queue.pop() {
+        if !seen.insert(f.clone()) {
+            continue;
+        }
+        if let Some(callees) = graph.get(&f) {
+            for c in callees {
+                if !seen.contains(c) {
+                    queue.push(c.clone());
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// 行里是否出现 `Live.<slot>`（**标识符边界严格**：`Live.dashboardTrend` 不算提到 `dashboard`）。
+fn mentions_slot(line: &str, slot: &str) -> bool {
+    let needle = format!("Live.{slot}");
+    let bytes = line.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find(&needle) {
+        let end = from + rel + needle.len();
+        let boundary_ok = end >= bytes.len()
+            || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b'$');
+        if boundary_ok {
+            return true;
+        }
+        from += rel + 1;
+        if from >= line.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// 这一行是否**写到** `Live.<slot>`。比 [`writes_slot`] 严格：标识符边界必须闭合，
+/// 所以 `Live.dashboardTrend = …` **不是**写 `dashboard`（`writes_slot` 会误判为是）。
+fn writes_slot_exact(line: &str, slot: &str) -> bool {
+    let needle = format!("Live.{slot}");
+    let bytes = line.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find(&needle) {
+        let at = from + rel;
+        let end = at + needle.len();
+        let boundary_ok = end >= bytes.len()
+            || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b'$');
+        if boundary_ok {
+            let trimmed = line[end..].trim_start();
+            if trimmed.starts_with('=') && !trimmed.starts_with("==") {
+                return true;
+            }
+        }
+        from = at + 1;
+        if from >= line.len() {
+            break;
+        }
+    }
+    // 通用缓存写入：`liveLoad("<slot>", …)`
+    line.contains(&format!("liveLoad(\"{slot}\""))
+}
+
+/// 只看代码行（剔除 `//` 行、`/* … */` 块注释行与 `*` 续行）。C2135 的几个闭包判别式用它，
+/// 理由与 [`code_only`] 相同，只是块注释也要挡住 —— 否则一段 `/* Live.d */` 就能造出幻影读点。
+fn code_lines(src: &str) -> String {
+    src.lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 某个函数的**代码行**（剔除注释行）。
+fn function_code(src: &str, name: &str) -> String {
+    js_function_body(src, name)
+        .map(code_lines)
+        .unwrap_or_default()
+}
+
+/// 闭包里是否有人**读** `Live.<slot>`。
+fn closure_reads(
+    src: &str,
+    graph: &BTreeMap<String, BTreeSet<String>>,
+    roots: &[String],
+    slot: &str,
+) -> bool {
+    reachable(graph, roots).iter().any(|f| {
+        function_code(src, f)
+            .lines()
+            .any(|l| mentions_slot(l, slot))
+    })
+}
+
+/// 闭包里是否有人**写** `Live.<slot>`。
+fn closure_writes(
+    src: &str,
+    graph: &BTreeMap<String, BTreeSet<String>>,
+    roots: &[String],
+    slot: &str,
+) -> bool {
+    reachable(graph, roots).iter().any(|f| {
+        function_code(src, f)
+            .lines()
+            .any(|l| writes_slot_exact(l, slot))
+    })
+}
+
+/// 一行里以 `prefix` 开头的调用名（`renderView` 分支里的 `render…` / `load…`）。
+fn callee_with_prefix(line: &str, prefix: &str) -> Option<String> {
+    callee_names(line)
+        .into_iter()
+        .find(|c| c.starts_with(prefix))
+}
+
+/// 槽宇宙：`Live` 字面量声明的字段 ∪ 代码里出现过的 `Live.<名>`。
+///
+/// 只用字面量会让**漏登记**的槽静默逃逸（C2135 记账：`dashboardTrend` 只被读写、不在字面量里）。
+fn all_live_slots(src: &str) -> Vec<String> {
+    let mut out: BTreeSet<String> = live_slots(src).into_iter().collect();
+    for line in code_lines(src).lines() {
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find("Live.") {
+            let start = from + rel + "Live.".len();
+            let bytes = line.as_bytes();
+            let mut end = start;
+            while end < bytes.len()
+                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b'$')
+            {
+                end += 1;
+            }
+            if end > start {
+                out.insert(line[start..end].to_string());
+            }
+            from = start;
+            if from >= line.len() {
+                break;
+            }
+        }
+    }
+    out.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -539,6 +769,196 @@ mod tests {
             live_slots(synthetic_literal),
             vec!["a".to_string(), "b".to_string()],
             "合成输入上 `live_slots` 的派生结果不对"
+        );
+    }
+
+    /// C2135：**渲染谁就装载谁** —— 每个视图分支的 loader 闭包必须装载该分支渲染闭包读到的每个槽。
+    ///
+    /// 反例（实测）：钱包视图渲染 `#month-changes`（读 `Live.dashboard`），而它的 loader 只刷
+    /// `Live.wallet` ⇒ 会话在钱包视图上建立时那一格永远是空的（详见本文件头部）。
+    ///
+    /// `loadSession` 的闭包算**所有**分支的写者：`models` / `publicUrl` 是会话级数据，
+    /// 由它装载、各视图共用。有了这一条，全仓**零豁免清单**。
+    #[test]
+    fn every_view_branch_loads_each_slot_its_renderer_reads() {
+        let src = code_only(APP_JS);
+        let slots = all_live_slots(&src);
+        let graph = call_graph(&src);
+        let rv = js_function_body(&src, "renderView").expect("找不到 renderView()");
+        let branches = view_router_branches(rv);
+
+        // ── 前置：提取器必须真的看见东西（空集上的断言会假绿，坑 68）───────────────────
+        assert!(
+            slots.len() >= 8 && graph.len() >= 50,
+            "槽宇宙/调用图太小（slots={} funcs={}）—— 提取器坏了",
+            slots.len(),
+            graph.len()
+        );
+        assert!(
+            branches.len() >= 5,
+            "只扫到 {} 个视图分支：{branches:?}",
+            branches.len()
+        );
+        let session = reachable(&graph, &["loadSession".to_string()]);
+        assert!(
+            session.len() >= 2,
+            "`loadSession` 的闭包只算出 {} 个函数 —— 会话级写者认不出来",
+            session.len()
+        );
+
+        let mut checked = 0usize;
+        for b in &branches {
+            let renderer = callee_with_prefix(b, "render")
+                .unwrap_or_else(|| panic!("分支行里找不到 render… 调用：{b}"));
+            let loader = callee_with_prefix(b, "load")
+                .unwrap_or_else(|| panic!("分支行里找不到 load… 调用：{b}"));
+            let mut loader_roots = reachable(&graph, std::slice::from_ref(&loader));
+            loader_roots.extend(session.iter().cloned());
+            let loader_roots: Vec<String> = loader_roots.into_iter().collect();
+
+            for slot in &slots {
+                if !closure_reads(&src, &graph, std::slice::from_ref(&renderer), slot) {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    closure_writes(&src, &graph, &loader_roots, slot),
+                    "`{renderer}()` 读了 `Live.{slot}`，但分支的 loader 闭包 \
+                     （`{loader}()` ∪ `loadSession()`）里没有任何人写它 ⇒ 会话在该视图上建立时\
+                     这一格永远空着（C2135 的钱包缺陷形状）。共享槽的正解是「一个写者 \
+                     （如 `refreshDashboard()`）+ 每个渲染它的视图各调一次」。分支：{b}"
+                );
+            }
+        }
+        // 前置：闭合检查的次数必须够多，否则判别式可能什么都没比
+        assert!(
+            checked >= 10,
+            "只做了 {checked} 次「读了 ⇒ 被装载」检查 —— 判别式太弱"
+        );
+    }
+
+    /// 提取器/判别式自证：闭包、注释剥离、标识符边界，都要在**合成输入**上有牙齿。
+    #[test]
+    fn the_slot_closure_scanners_have_teeth() {
+        // (a) 传递闭包必须跨函数：renderer 自己只调用，真正读槽的是它调用的那个函数
+        let src = concat!(
+            "  const Live = {\n    shared: null,\n    own: null,\n  };\n",
+            "  function renderA() {\n",
+            "    paintA();\n",
+            "  }\n\n",
+            "  function paintA() {\n",
+            "    if (Live.shared) body();\n",
+            "  }\n\n",
+            "  function loadA() {\n",
+            "    Live.own = 1;\n",
+            "  }\n\n",
+            "  function refreshShared() {\n",
+            "    Live.shared = api.get(\"/x\");\n",
+            "  }\n\n",
+            "  function loadB() {\n",
+            "    refreshShared();\n",
+            "  }\n"
+        );
+        let graph = call_graph(src);
+        assert_eq!(
+            callee_with_prefix(
+                "if (id === \"a\") { renderA(); if (loggedIn()) loadA(); }",
+                "render"
+            ),
+            Some("renderA".to_string()),
+            "分支行里的 render… 调用没被取出"
+        );
+        assert!(
+            closure_reads(src, &graph, &["renderA".to_string()], "shared"),
+            "闭包没跨函数：renderA → paintA 读到 Live.shared 应被认出"
+        );
+        assert!(
+            !closure_reads(src, &graph, &["renderA".to_string()], "own"),
+            "阴性对照失败：renderA 的闭包不该「读」Live.own"
+        );
+        // 竞争修法形状：loader 只写自己的槽 ⇒ 必须红
+        assert!(
+            !closure_writes(
+                src,
+                &graph,
+                &reachable(&graph, &["loadA".to_string()])
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                "shared"
+            ),
+            "判别式没有牙齿：只写 `Live.own` 的 loader 竟被判成装载了 `Live.shared`"
+        );
+        // 正解形状：loader 调的那个写者写了共享槽 ⇒ 绿
+        assert!(
+            closure_writes(
+                src,
+                &graph,
+                &reachable(&graph, &["loadB".to_string()])
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                "shared"
+            ),
+            "闭包没跨函数：loadB → refreshShared 写 Live.shared 应被认出"
+        );
+
+        // (b) 标识符边界：`Live.dashboardTrend` 不等于 `Live.dashboard`
+        assert!(
+            mentions_slot(
+                "    const tr = Live.dashboardTrend || null;",
+                "dashboardTrend"
+            ),
+            "阳性对照失败：Live.dashboardTrend 本身没被认出"
+        );
+        assert!(
+            !mentions_slot("    const tr = Live.dashboardTrend || null;", "dashboard"),
+            "阴性对照失败：`Live.dashboardTrend` 被当成了 `Live.dashboard`"
+        );
+        assert!(
+            !writes_slot_exact(
+                "    Live.dashboardTrend = await api.get(\"/t\");",
+                "dashboard"
+            ),
+            "阴性对照失败：写 `Live.dashboardTrend` 被当成了写 `Live.dashboard`"
+        );
+        assert!(
+            writes_slot_exact("    Live.dashboard = await api.get(\"/d\");", "dashboard")
+                && writes_slot_exact("  } catch (e) { Live.dashboard = null; }", "dashboard"),
+            "阳性对照失败：`Live.dashboard = …` 的两种形态（赋值 / catch 兜底）没被认出"
+        );
+        assert!(
+            writes_slot_exact("    await liveLoad(\"models\", \"/api/models\");", "models"),
+            "阳性对照失败：通用缓存写入 `liveLoad(\"models\", …)` 没被认出"
+        );
+
+        // (c) 注释不参与：解释性的散文里出现 `Live.dashboard` 不得造出「读」
+        let commented = concat!(
+            "  const Live = {\n    d: null,\n  };\n",
+            "  function renderC() {\n",
+            "    // 这里必须能提到 Live.d 而不触发门禁（本文件的题眼就是这种注释）\n",
+            "    return 1;\n",
+            "  }\n"
+        );
+        let g2 = call_graph(commented);
+        assert!(
+            !closure_reads(commented, &g2, &["renderC".to_string()], "d"),
+            "阴性对照失败：`//` 注释里的 `Live.d` 被当成了读（坑 #296）"
+        );
+        let block_commented = "  function renderD() {\n    /* Live.d */\n    return 1;\n  }\n";
+        let g3 = call_graph(block_commented);
+        assert!(
+            !closure_reads(block_commented, &g3, &["renderD".to_string()], "d"),
+            "阴性对照失败：`/* Live.d */` 块注释被当成了读"
+        );
+
+        // (d) 槽宇宙包含「未在字面量里登记但被读写过」的槽
+        let undeclared = concat!(
+            "  const Live = {\n    a: null,\n  };\n",
+            "  function f() {\n    Live.hidden = 1;\n  }\n"
+        );
+        assert_eq!(
+            all_live_slots(undeclared),
+            vec!["a".to_string(), "hidden".to_string()],
+            "槽宇宙没纳入「代码里出现过但字面量漏登记」的槽"
         );
     }
 }
