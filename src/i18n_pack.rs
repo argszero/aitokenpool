@@ -94,10 +94,10 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 809;
-const EN_KEY_COUNT: usize = 809;
-const STATIC_ATTR_COUNT: usize = 330;
-const STATIC_ATTR_DISTINCT: usize = 305;
+const ZH_KEY_COUNT: usize = 812;
+const EN_KEY_COUNT: usize = 812;
+const STATIC_ATTR_COUNT: usize = 333;
+const STATIC_ATTR_DISTINCT: usize = 308;
 const T_LITERAL_COUNT: usize = 542;
 const T_LITERAL_DISTINCT: usize = 433;
 
