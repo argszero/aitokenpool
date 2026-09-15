@@ -178,6 +178,43 @@
 //! 却仍然用游客表（`isGuest ? D.PROVIDERS : D.PROVIDERS`）—— 那是**撒谎的形状**，门禁只管形状、
 //! 值由探针钉；两条仪器各管一半，缺一不可（与 C2128 坑 #287 同型，但方向相反）。
 //!
+//! # C2141：侧边栏只 advertise「按得响」的键位
+//!
+//! 侧边栏每个 nav-item 都带一个**角标数字**与 `title`（「快捷键 N · 名称」），而键盘上有**一个**
+//! 数字键处理器。两侧都是同一个契约的两半，且**必须取自同一个数组**：
+//!
+//! ```text
+//!   const NAV_ORDER = NAV.flatMap((g) => g.items);      // 登记表（视图增删 ⇒ 这里自动跟着变）
+//!   … renderNav 内 …
+//!   const short = NAV_ORDER.indexOf(item) + 1;          // 角标 = 项在登记表里的下标 +1
+//!   … 全局 keydown …
+//!   const item = NAV_ORDER[Number(e.key) - 1];          // 按下的数字 → 同一数组里取项
+//! ```
+//!
+//! `renderNav()` 的**游客**分支曾手搓一个同形字面量
+//! （`{ id: "marketplace", icon: "marketplace", label: T("nav.marketplace") }`）——
+//! 它不是登记表的成员，于是 `indexOf(item)` 恒 **-1**，角标印 **0**（`NAV_ORDER[-1]` 落空 ⇒
+//! **死键**），而真正能打开市场的键是 **2**：一个游客永远看不到的数字。`title` 也跟着撒谎
+//! （「Shortcut 0 · Marketplace」）。该形状自 #44（v1.17 D 无障碍快捷键）写下即在，与文档
+//! `ui/README.md` §键盘可达性（「数字 1-8 → 切换侧边栏视图（键位 = `NAV_ORDER` 下标 +1）」）
+//! 直接冲突 ⇒ **漂移，不是取舍**。
+//!
+//! 四条规则，各有各的牙：
+//!
+//! 1. **`renderNav` 只渲染登记表里的项**：体内不得出现导航项字面量（`id: "…"`）。游客分支要从
+//!    登记表里**筛**（`NAV_ORDER.filter(…)`），与处理器同源。
+//! 2. **角标 = 项在登记表里的位置，且不随会话改变**：算角标的行恰好一处，且该行不得按会话
+//!    分支（`isGuest ? 2 : …` 这种「按会话另给一个数字」的修法，那个数字没人负责让它按得响）。
+//! 3. **数字键处理器索引同一个登记表**：全仓索引 `NAV_ORDER[…]` 的行恰好一处（就是那个处理器），
+//!    且它用**按下的数字**取项（`Number(`）。
+//! 4. **登记表是推导出来的**（`NAV.flatMap(…)`），不是手抄的第二份清单。规则 3 与 4 合起来把
+//!    「两侧同源」钉成等号：生产者读它、消费者索引它、它自己从 `NAV` 展开。
+//!
+//! **已知边界（如实的射程）**：规则 2 的「不随会话改变」是**逐行**扫描 —— 把关卡写成跨行的
+//! `isGuest\n ? 2\n : NAV_ORDER.indexOf(item) + 1`（角标那一行里看不到 `isGuest`）逃得过；
+//! 规则 3/4 只认字面名 `NAV_ORDER`（别名的登记表看不见）。值（角标与生效键是否一致）由探针钉，
+//! 形状由本门禁钉，两条仪器各管一半。
+//!
 //! 已知边界（如实的射程）：扫描器剔除 `//` 起始行、多行 `/* … */` 块内部的整行、以及行内
 //! 成对的 `/* … */` 片段，但**不做词法分析** —— 字符串字面量里的 `/*` 会被当成块注释起点、
 //! 行尾的 `//` 注释不算注释（`app.js` 当前两者都没有，`is_comment_line` 的兄弟门禁同型）。
@@ -212,6 +249,11 @@ const MARKET_TABLES: [&str; 2] = ["D.MARKET", "D.PROVIDERS"];
 const FORM_TABLES: [&str; 2] = ["D.MODELS", "D.PLANS"];
 /// 会话状态的判别式：行内出现其一，才算「按会话分支」而不是「按数据到没到」（C2140 规则 1）。
 const SESSION_TESTS: [&str; 2] = ["loggedIn", "isGuest"];
+
+/// 侧边栏**视图登记表**（C2141）：角标位（`indexOf + 1`）与数字键处理器（`[n - 1]`）必须取自它。
+const NAV_REGISTRY: &str = "NAV_ORDER";
+/// 登记表的定义式：它是从 `NAV` **推导**出来的展开结果，不是一个手抄的第二份清单。
+const NAV_REGISTRY_DERIVATION: &str = "NAV.flatMap";
 
 /// 行首为 `//` 的行：注释行，不参与断言。
 fn is_comment_line(line: &str) -> bool {
@@ -313,6 +355,34 @@ fn reads_form_table(line: &str) -> bool {
 /// 这一行是否**按会话状态分支**（`loggedIn` / `isGuest`）。
 fn branches_on_session(line: &str) -> bool {
     SESSION_TESTS.iter().any(|t| mentions_identifier(line, t))
+}
+
+/// 这一行是否声明了一个**导航项字面量** —— 即 `id:` 之后直接跟一个字符串（`{ id: "marketplace", … }`）。
+///
+/// 判别式只认「`id` 是**标识符** + 后面紧跟 `:` + 值是**字符串字面量**」三件事同时成立：
+/// - `b.dataset.view = item.id;`、`item.id === activeView`、`d.itemid:` 都不算（左边不是标识符边界；
+///   `item.id` 的 `id` 前面是 `.`，仍然不是标识符边界 —— 但 `item.id` 后面跟的是 `;`/` ` 而不是 `:`）。
+/// - `dataset.adminTab`、`data-emp-row` 这类别的字段名不会被 `id` 绊到（`mentions_identifier` 式的边界）。
+///
+/// 导航项的**身份**就是那个 `id`，所以「手搓一个同形字面量」与「从登记表取项」的差别，正是本门禁
+/// 要钉的形状（C2141）。
+fn declares_nav_item(line: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let bytes = line.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find("id:") {
+        let at = from + rel;
+        let left_ok = at == 0 || !is_word(bytes[at - 1] as char);
+        let value = line[at + 3..].trim_start();
+        if left_ok && value.starts_with('"') {
+            return true;
+        }
+        from = at + 3;
+        if from >= line.len() {
+            break;
+        }
+    }
+    false
 }
 
 /// 切出 `function <name>(` 之后的**函数体**（含收尾 `}`）。
@@ -1882,6 +1952,203 @@ mod tests {
                 .iter()
                 .all(|(_, _, l)| branches_on_session(l)),
             "合成输入里两处读取都带会话判别，规则 1 不该判红"
+        );
+    }
+
+    /// 侧边栏只 advertise「按得响」的键位（C2141）。四条规则各有各的牙。
+    ///
+    /// 契约（`ui/README.md` §键盘可达性）说：nav-item 的角标 = 项在 `NAV_ORDER` 里的下标 +1，
+    /// 数字键处理器按**同一个数组**取项，「视图增删后两者自动保持一致」。本门禁钉的就是这个
+    /// 「同一个数组」—— 任一侧另立一份清单，角标与生效键就会脱钩（C2141：游客角标 0、死键，
+    /// 真正生效的是 2）。
+    #[test]
+    fn the_sidebar_advertises_only_digits_that_work() {
+        let nav = function_source(APP_JS, "renderNav").expect("找不到 renderNav");
+        assert!(
+            nav.contains("nav-item"),
+            "renderNav 提取错了地方（正文里没有 nav-item），下面四条断言会在空集上假绿：{nav}"
+        );
+        let nav_text = code_text_by_line(&nav).join("\n");
+        let all_text = code_text_by_line(APP_JS);
+
+        // ── 规则 1：侧边栏只渲染登记表里的项，不手搓导航项字面量 ─────────────────────────
+        let literals: Vec<&str> = nav_text.lines().filter(|l| declares_nav_item(l)).collect();
+        assert!(
+            literals.is_empty(),
+            "`renderNav` 里手搓了导航项字面量 —— 它不在登记表 {NAV_REGISTRY} 里，于是 \
+             `indexOf(item)` 恒 -1、角标印 0（`{NAV_REGISTRY}[-1]` 落空 ⇒ 死键），而真正能打开\
+             这一页的键游客永远看不到（C2141）。游客分支要从登记表里**筛**（`{NAV_REGISTRY}.filter(…)`），\
+             与数字键处理器同源：{literals:?}"
+        );
+
+        // ── 规则 2：角标是「项在登记表里的位置」，且不随会话改变 ─────────────────────────
+        let badges: Vec<&str> = nav_text
+            .lines()
+            .filter(|l| l.contains(&format!("{NAV_REGISTRY}.indexOf(")))
+            .collect();
+        assert_eq!(
+            badges.len(),
+            1,
+            "`renderNav` 里算角标的行有 {} 处（须恰好 1 处）—— 多一处就是多一种「这个数字从哪来」\
+             的说法，两侧就会再次脱钩：{badges:?}",
+            badges.len()
+        );
+        assert!(
+            !branches_on_session(badges[0]),
+            "角标按**会话**分支了（`isGuest ? … : {NAV_REGISTRY}.indexOf(…)`）—— 快捷键是项在登记表里的\
+             位置，不是会话的属性；按会话另给一个数字，那个数字没人负责让它按得响：{}",
+            badges[0]
+        );
+
+        // ── 规则 3：数字键处理器**索引同一个登记表**，且用按下的数字取项 ─────────────────
+        let indexes: Vec<(usize, &str)> = all_text
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.contains(&format!("{NAV_REGISTRY}[")))
+            .map(|(i, l)| (i + 1, l.as_str()))
+            .collect();
+        assert_eq!(
+            indexes.len(),
+            1,
+            "全仓索引登记表（`{NAV_REGISTRY}[…]`）的行有 {} 处（须恰好 1 处）：它就是数字键处理器。\
+             换成另一份清单，角标与生效键就分家了：{indexes:?}",
+            indexes.len()
+        );
+        assert!(
+            indexes[0].1.contains("Number("),
+            "索引登记表的那一行不是用**按下的数字**取项（看不到 `Number(`）—— 处理器得按角标印的\
+             那个数字去取项：{}:{}",
+            indexes[0].0,
+            indexes[0].1
+        );
+        assert!(
+            !nav_text.contains(&format!("{NAV_REGISTRY}[")),
+            "角标这一侧也在**索引**登记表 —— `indexOf` 的 +1 才是角标，索引只该出现在数字键处理器里"
+        );
+
+        // ── 规则 4：登记表是**推导**出来的展开结果，不是手抄的第二份清单 ─────────────────
+        let decls: Vec<&str> = all_text
+            .iter()
+            .filter(|l| l.contains(&format!("const {NAV_REGISTRY} =")))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            decls.len(),
+            1,
+            "`const {NAV_REGISTRY} =` 有 {} 处（须恰好 1 处）—— 两份登记表必然各自漂移：{decls:?}",
+            decls.len()
+        );
+        assert!(
+            decls[0].contains(NAV_REGISTRY_DERIVATION),
+            "登记表 `{NAV_REGISTRY}` 不是从 `NAV` 推导（`{NAV_REGISTRY_DERIVATION}`）而是另抄的一份\
+             清单 —— 它与侧边栏的分组立刻会不一致：{}",
+            decls[0]
+        );
+    }
+
+    /// C2141 的扫描器与四条判别式自证：合成输入（含阴性对照）必须让每条牙都能单独咬合。
+    #[test]
+    fn the_nav_shortcut_scanners_have_teeth() {
+        // 注释不参与：注释里的导航项字面量不算「手搓」（坑 #296：门禁会被自己的说明性注释判红）。
+        let synthetic = concat!(
+            "  function renderNav() {\n",
+            "    // { id: \"marketplace\", icon: \"marketplace\" } 写在行注释里不算\n",
+            "    /* { id: \"wallet\" }\n",
+            "       多行块注释里的也不算 */\n",
+            "    const groups = isGuest ? [{ g: \"nav.guest\", items: NAV_ORDER.filter((it) => GUEST_VIEWS.includes(it.id)) }] : roleNav;\n",
+            "  }\n"
+        );
+        let text = code_text_by_line(synthetic);
+        assert_eq!(text.len(), 6, "逐行读数不对：{text:?}");
+        assert_eq!(text[1], "", "行注释没被剥掉");
+        assert_eq!(text[2], "", "块注释首行没被剥掉");
+        assert_eq!(text[3], "", "块注释内部行没被剥掉");
+        assert!(
+            text[4].contains("NAV_ORDER.filter("),
+            "代码行被误剥：{}",
+            text[4]
+        );
+        assert!(
+            !text.iter().any(|l| declares_nav_item(l)),
+            "注释里的导航项字面量被当成了手搓项：{text:?}"
+        );
+
+        // 判别式 `declares_nav_item`：阳性（登记表里的项 / 老的那条游客字面量）与阴性对照
+        assert!(
+            declares_nav_item(
+                "      { id: \"dashboard\", icon: \"dashboard\", label: \"nav.dashboard\" },"
+            ),
+            "登记表里的项没被认出（规则 1 会在空集上假绿）"
+        );
+        assert!(
+            declares_nav_item("          { id: \"marketplace\", icon: \"marketplace\", label: T(\"nav.marketplace\") },"),
+            "C2141 那条手搓的游客项没被认出 —— 这正是规则 1 要咬的地方"
+        );
+        assert!(
+            !declares_nav_item("        b.dataset.view = item.id;"),
+            "阴性对照失败：读 `item.id` 被当成了声明导航项"
+        );
+        assert!(
+            !declares_nav_item(
+                "        b.className = \"nav-item\" + (item.id === activeView ? \" active\" : \"\");"
+            ),
+            "阴性对照失败：`item.id === …` 被当成了声明导航项"
+        );
+        assert!(
+            !declares_nav_item("        const ok = D.valid ? 1 : 2;"),
+            "阴性对照失败：`valid` 里的 `id:`（不，是 `valid`）被绊到了"
+        );
+        assert!(
+            !declares_nav_item("        const key = obj.id + \"x\";"),
+            "阴性对照失败：`obj.id` 后面不是字符串值"
+        );
+
+        // 提取器：`renderNav` 停在正确的地方（真源码里没有字面量；而 `NAV` 登记表里有）
+        let nav = function_source(APP_JS, "renderNav").expect("找不到 renderNav");
+        let nav_text = code_text_by_line(&nav).join("\n");
+        assert!(
+            nav_text.contains("marketRows()"),
+            "renderNav 提取短了（市场的 badge 那一行不在里面）：{nav_text}"
+        );
+        assert_eq!(
+            nav_text.matches("function ").count(),
+            1,
+            "renderNav 提取长了（正文里出现了第二个函数声明，说明它吞进了下一个函数）：{nav_text}"
+        );
+        assert!(
+            !nav_text.lines().any(declares_nav_item),
+            "真源码里 renderNav 仍含导航项字面量（规则 1 的判别式或提取器有误）"
+        );
+        assert!(
+            code_text_by_line(APP_JS)
+                .iter()
+                .filter(|l| declares_nav_item(l))
+                .count()
+                >= 3,
+            "登记表 `NAV` 里的项没被认出来（规则 1 的判别式坏了）"
+        );
+
+        // 规则 2 的分支判别式：按会话给角标必须判红，按登记表位置必须放行
+        assert!(
+            branches_on_session("        const short = isGuest ? 2 : NAV_ORDER.indexOf(item) + 1;"),
+            "规则 2 没认出「角标按会话分支」这条竞争修法"
+        );
+        assert!(
+            !branches_on_session("        const short = NAV_ORDER.indexOf(item) + 1;"),
+            "规则 2 把修好后的角标行判成了按会话分支"
+        );
+
+        // 规则 3：`.filter(` 不算索引（修好后的游客行必须放行）
+        let fixed_guest = "      ? [{ g: \"nav.guest\", items: NAV_ORDER.filter((it) => GUEST_VIEWS.includes(it.id)) }]";
+        assert!(
+            !fixed_guest.contains(&format!("{NAV_REGISTRY}[")),
+            "规则 3 把 `{NAV_REGISTRY}.filter(` 当成了索引登记表"
+        );
+        assert!(
+            "        const item = NAV_ORDER[Number(e.key) - 1];"
+                .contains(&format!("{NAV_REGISTRY}["))
+                && "        const item = NAV_ORDER[Number(e.key) - 1];".contains("Number("),
+            "规则 3 认不出真正的数字键处理器"
         );
     }
 }
