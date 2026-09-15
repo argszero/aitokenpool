@@ -594,3 +594,45 @@ stat(T("admin.emp.stats.total"), D.fmt(total) + " " + T("common.points"), T("adm
 **为什么 CI 用静态门禁**：CI 里没有 JS 运行器，`cargo test` 是唯一能长期守住的关口；探针
 （`tmp/c2142_probe.js`）只用于本地证明**方向**（卡片值 == 同视图「可用」列的和；每行「可用」单元 ==
 `balance + gift_balance`），并拒掉竞争修法。
+
+## 会话余额是一个事实：一个来源，且取的是**可花额**那一半（C2145）
+
+`D.USER.balance` 是「我还剩多少可花点数」这个事实在客户端的载体 —— 侧栏 `#side-balance`、钱包页、
+聊天余额都印它。它的定义由产品给出：
+
+```
+wallet.rs:  "available": balance + gift_balance      // 赠送是可花、会过期的真钱（gift.rs 清扫真的划走）
+```
+
+**改前的形状**：这个数字有多个写者，其中 `inlineOpsTopup`（运营者给**自己**充值后的自刷新）
+**自己又取了一次钱包载荷**，且只读 `w.balance`（永久额那一半）：
+
+```
+try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance; … } catch (e) {}
+```
+
+`gift::ensure_daily_gift` 挂在**每个已认证请求**与 `GET /api/wallet` 上、**与角色无关** ⇒
+运营者/管理员恒有 `gift_balance > 0` ⇒ 给自己充值后侧栏**立刻少掉当天赠送额**，且永不自愈
+（`loadSession` 只在会话建立时跑）；同一条路径还**绕过缓存槽的唯一写者**，`Live.wallet` 停在充值前的
+载荷。实测 `balance=100 + gift=1`、充值 +100 ⇒ 屏幕 **200**、真值 **201**，`Live.wallet.available` 仍是 **101**。
+
+**约定**：
+
+1. **会话余额的绝对值只能取 `available`**：每一处 `D.USER.balance = …` 要么是**相对量**
+   （`D.USER.balance ± x`，充值/消费的演示路径）、要么是错误兜底的字面 `0`，要么取 `available`。
+2. **取钱包载荷的函数恰为 `{loadSession, refreshWallet}`**：`loadSession` 在 boot/登录时装上会话
+   （此时还没有任何视图 loader），`refreshWallet` 是缓存槽 `Live.wallet` 的**唯一写者**。
+   任何**第三处**取载荷的代码都同时犯错：自造「同一事实的第二个来源」却不更新缓存 ⇒ 数字与缓存漂移。
+   ⇒ 需要「刷新自己的余额」的调用点一律调 **`refreshWallet()`**，不要自己取数。
+3. **为「让屏幕上的数字对上」而只改字段不是修法**：保留那次多余的取数、把 `w.balance` 换成
+   `w.available`，屏幕上数字对了，缓存仍是旧的（这正是被拒的竞争修法）。
+
+**CI 覆盖**（`src/state_gate.rs::the_session_balance_has_one_source_and_it_is_the_spendable_half`，
+三条规则各有独立的牙：赋值必须取可花额 / 取载荷的函数集合恰为那两处 / `Live.wallet` 的唯一写者仍是
+`refreshWallet`），附 `session_balance_rhs`（只认重新绑定，`+=` / `==` / `!==` 都不是）、
+`session_balance_rhs_is_relative` 与 `fetches_wallet_payload`（须同时有 `api.get(` 与端点 —— `Live`
+字面量里那行 `wallet: null, // GET /api/wallet` 是代码 + 尾注释，只按端点匹配会幻影红）的判别式自证。
+
+**为什么 CI 用静态门禁**：规则 2 钉的是「同一事实只有一个来源」这个**形状**，而 DOM 探针只能证明
+「屏幕上数字对」—— 竞争修法在探针下全绿（`tmp/c2145_probe.js` 实测：修复树 9/9、改前树恰 `A2`/`A3`
+两腿红、竞争者 8/9 被 `A3` 拒绝）。CI 里没有 JS 运行器，`cargo test` 是唯一能长期守住的关口。

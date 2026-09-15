@@ -464,6 +464,40 @@ fn writes_evidence(line: &str) -> bool {
     assignment_after(line, TX_EVIDENCE)
 }
 
+/// 一行里 `D.USER.balance = <expr>` 的 `<expr>`（C2145）。
+///
+/// 只认**重新绑定**：`+=` / `-=`（相对量）与 `==` / `===` / `!==`（读取）都返回 `None`。
+/// 返回值保留原文本（可能带尾随 `;` 与同一行的后续语句），由调用方自行判读。
+fn session_balance_rhs(line: &str) -> Option<String> {
+    let at = line.find(SESSION_BALANCE)?;
+    let rest = line[at + SESSION_BALANCE.len()..].trim_start();
+    let rest = rest.strip_prefix('=')?;
+    if rest.starts_with('=') {
+        return None; // `==` / `===`
+    }
+    Some(rest.trim().to_string())
+}
+
+/// 该赋值是不是**相对量**（右值又读了当前值，如 `D.USER.balance + amt`）—— 不是从载荷取的绝对值。
+///
+/// 只看**第一条语句**（到第一个 `;` 为止）：`session_balance_rhs` 取的是「该行从赋值处到行尾」，
+/// 而 UI 里这行的常例是「赋值 + 立刻把它印出来」——
+/// `… D.USER.balance = w.balance; $("#side-balance").textContent = D.fmt(D.USER.balance); …`
+/// 若按整行判，末尾那次**读取**（`D.fmt(D.USER.balance)`）会把 `w.balance` 伪装成相对量，
+/// 规则 1 就此哑掉（实测：改前树上规则 1 不响、只有规则 2 响）。
+fn session_balance_rhs_is_relative(rhs: &str) -> bool {
+    let stmt = rhs.split(';').next().unwrap_or(rhs);
+    stmt.contains(SESSION_BALANCE)
+}
+
+/// 一行是否在**取**钱包载荷（`api.get("…/api/wallet")`）。
+///
+/// 判据必须同时要 `api.get(` 与那个端点：`Live` 对象字面量里那行 `wallet: null,  // GET /api/wallet`
+/// 是**代码 + 尾注释**（本模块只剥整行注释），只按端点匹配会把它算成一个读者（坑 #296 的镜像）。
+fn fetches_wallet_payload(line: &str) -> bool {
+    line.contains("api.get(") && line.contains(WALLET_PAYLOAD)
+}
+
 /// 逐行归属到「它之前最近声明的那个函数」，返回命中的 `(归属函数, 行号, 行内容)`。
 fn lines_owned_by(src: &str, hit: impl Fn(&str) -> bool) -> Vec<(String, usize, String)> {
     let mut out = Vec::new();
@@ -894,6 +928,25 @@ const I18N_JS: &str = include_str!("../ui/js/i18n.js");
 const ZH_PACK_START: &str = "var ZH = {";
 const EN_PACK_START: &str = "var EN = {";
 const PACK_END: &str = "\n  };";
+
+// ── C2145：会话余额是一个**事实**，只能读钱包载荷的**可花额**那一半 ───────────────────────
+
+/// 会话余额这个事实在客户端的名字（侧栏 `#side-balance`、钱包页、聊天余额都印它）。
+const SESSION_BALANCE: &str = "D.USER.balance";
+
+/// 钱包载荷的字面量端点。
+const WALLET_PAYLOAD: &str = "/api/wallet";
+
+/// 允许**取**钱包载荷的函数：会话建立（`loadSession`）与缓存写者（`refreshWallet`）。
+///
+/// 两者缺一不可、多一不可：`loadSession` 在 boot/登录时装上会话（此时还没有任何视图 loader），
+/// `refreshWallet` 是缓存槽 `Live.wallet` 的**唯一写者**。任何**第三处**取载荷的代码都同时
+/// 犯了两个错 —— 它自己造了「同一事实的第二个来源」，却又不更新缓存，于是屏幕上的数字与
+/// 缓存必然漂移（C2145 实测：运营者给自己充值后侧栏少了赠送额，而 `Live.wallet` 停在旧值）。
+const WALLET_READERS: [&str; 2] = ["loadSession", "refreshWallet"];
+
+/// 钱包缓存的槽名（`Live.wallet`）。
+const WALLET_SLOT: &str = "wallet";
 
 /// 去掉一行里**字符串之外**的 `// …` 尾注释（成对 `/* … */` 由 [`code_text_by_line`] 处理）。
 ///
@@ -2704,5 +2757,150 @@ mod tests {
             "x = \"http://a/b\";",
             "字符串里的 `//` 被当成了注释"
         );
+    }
+
+    /// 会话余额（`D.USER.balance`）是一个**事实**：它的绝对值只能来自钱包载荷的**可花额**
+    /// （`available = balance + gift_balance`），而且只能由取载荷的那**一处**写（C2145）。
+    ///
+    /// 轴：这个数字在客户端有**一个定义、多个写者**，其中 `inlineOpsTopup`（运营者给**自己**
+    /// 充值后的自刷新）自己又取了一次 `/api/wallet`，且只读 `w.balance`（永久额那一半）。
+    /// 赠送点数是**可花、会过期**的真钱（`gift.rs` 的清扫真的把它划走），而
+    /// `gift::ensure_daily_gift` 挂在**每个已认证请求**与 `GET /api/wallet` 上、
+    /// **与角色无关** ⇒ 运营者/管理员恒有 `gift_balance > 0`。于是给自己充值后侧栏
+    /// **立刻少掉当天赠送额**，且永不自愈（`loadSession` 只在会话建立时跑）；同一条路径
+    /// 还绕过了缓存槽的唯一写者 ⇒ `Live.wallet` 停在充值前的载荷。实测 `balance=100 +
+    /// gift=1`、充值 +100 ⇒ 屏幕 **200**、真值 **201**；`Live.wallet.available` 仍是 **101**。
+    ///
+    /// 三条规则，各有各的牙：
+    /// 1. 每一处 `D.USER.balance = …` 要么是**相对量**、要么是字面 `0`（错误兜底），
+    ///    要么取的是 `available` —— 取 `w.balance` 就是拿走永久额那一半。
+    /// 2. 取钱包载荷的函数**恰为** `{loadSession, refreshWallet}` —— 多的那一处就是
+    ///    「同一事实的第二个来源」（它取载荷却不更新缓存）。这一条拒掉「保留多余取数、
+    ///    只把字段换成 `w.available`」的化妆式修法：屏幕上数字对了，缓存仍是旧的。
+    /// 3. 缓存槽 `Live.wallet` 的唯一写者仍必须是 `refreshWallet`（否则证据与事实再次脱钩）。
+    #[test]
+    fn the_session_balance_has_one_source_and_it_is_the_spendable_half() {
+        let code = code_text_by_line(APP_JS).join("\n");
+
+        // 阳性对照：赋值点与读者都非空（空集上的集合断言会假绿，坑 68）
+        let assignments = code_lines_owned_by(APP_JS, |l| session_balance_rhs(l).is_some());
+        assert!(
+            assignments.len() >= 3,
+            "`{SESSION_BALANCE} = …` 只找到 {} 处 —— 提取器坏了，下面三条规则会在空集上假绿",
+            assignments.len()
+        );
+        let readers = owners_of(&code, fetches_wallet_payload);
+        assert!(
+            !readers.is_empty(),
+            "找不到任何取钱包载荷（`{WALLET_PAYLOAD}`）的函数 —— 规则 2 会假绿"
+        );
+
+        // 规则 1：绝对值必须取**可花额**
+        for (owner, line_no, line) in &assignments {
+            let rhs = session_balance_rhs(line).expect("session_balance_rhs 与命中判据不一致");
+            if session_balance_rhs_is_relative(&rhs) || rhs.trim_end_matches(';').trim() == "0" {
+                continue; // 相对量（充值/消费演示路径）或错误兜底
+            }
+            assert!(
+                rhs.contains("available"),
+                "`{owner}`（第 {line_no} 行）把 `{SESSION_BALANCE}` 从载荷的非可花额字段取了值：`{rhs}`\n\
+                 产品定义是 `available = balance + gift_balance`（`wallet.rs`），赠送与永久一样是可花的真钱；\
+                 取 `w.balance` 会让这个数字比真值**少掉赠送额**，且永不自愈"
+            );
+        }
+
+        // 规则 2：取载荷的函数恰为这两处
+        let want: BTreeSet<String> = WALLET_READERS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            readers, want,
+            "取钱包载荷（`{WALLET_PAYLOAD}`）的函数集合应恰为 {want:?}，实际 {readers:?} —— \
+             多出来的那一处就是「同一事实的第二个来源」：它自己取载荷、却不更新缓存 \
+             (`Live.{WALLET_SLOT}`)，于是屏幕上的数字与缓存必然漂移（C2145）"
+        );
+
+        // 规则 3：缓存槽的唯一写者
+        let cache_writers = owners_of(&code, |l| writes_slot(l, WALLET_SLOT));
+        assert_eq!(
+            cache_writers,
+            BTreeSet::from(["refreshWallet".to_string()]),
+            "`Live.{WALLET_SLOT}` 的写者应恰为 `refreshWallet`，实际 {cache_writers:?}"
+        );
+
+        // ── 判别式自证（合成输入）─────────────────────────────────────────────────────
+        // 只认重新绑定：`+=` / `==` / `!==` 都不是 `D.USER.balance = …`
+        assert_eq!(
+            session_balance_rhs("  D.USER.balance += amt;").as_deref(),
+            None,
+            "相对量 `+=` 被当成了重新绑定"
+        );
+        assert_eq!(
+            session_balance_rhs(
+                "      D.USER.balance = Math.round((D.USER.balance - cost) * 100) / 100;"
+            )
+            .as_deref()
+            .map(session_balance_rhs_is_relative),
+            Some(true),
+            "相对量没被判成相对量"
+        );
+        assert_eq!(
+            session_balance_rhs("        if (D.USER.balance === 0) return;"),
+            None,
+            "读取（`===`）被当成了赋值"
+        );
+        assert_eq!(
+            session_balance_rhs("        if (w) D.USER.balance = w.balance;").as_deref(),
+            Some("w.balance;"),
+            "真正的赋值没取出来"
+        );
+
+        // 规则 1 的判别式：`w.available` 放行，`w.balance` 判红
+        assert!(
+            session_balance_rhs("  D.USER.balance = w.available;")
+                .unwrap()
+                .contains("available"),
+            "规则 1 把「取可花额」判红了"
+        );
+        assert!(
+            !session_balance_rhs("  D.USER.balance = w.balance;")
+                .unwrap()
+                .contains("available"),
+            "规则 1 的判别式坏了：`w.balance` 被当成了可花额"
+        );
+        // 同一条语句后面又**读**了一次同一个标识符（UI 的常例：赋值后立刻印出来）——
+        // 末尾那次读取不得把 `w.balance` 伪装成相对量（改前树上规则 1 就是这样哑掉的）
+        let same_line = session_balance_rhs(
+            "            try { const w = await api.get(\"/api/wallet\"); if (w) D.USER.balance = w.balance; \
+             $(\"#side-balance\").textContent = D.fmt(D.USER.balance); } catch (e) {}",
+        )
+        .unwrap();
+        assert!(
+            !session_balance_rhs_is_relative(&same_line) && !same_line.contains("available"),
+            "规则 1 被同一行末尾的**读取**骗过了（`w.balance` 被当成相对量）：`{same_line}`"
+        );
+
+        // 规则 2 的判别式：第三处取载荷必须被点名（这正是被拒的化妆式修法）
+        let third = concat!(
+            "  function loadSession() { const w = await api.get(\"/api/wallet\"); D.USER.balance = w.available; }\n",
+            "  function refreshWallet() { Live.wallet = await api.get(\"/api/wallet\"); D.USER.balance = Live.wallet.available; }\n",
+            "  function inlineOpsTopup() { const w = await api.get(\"/api/wallet\"); D.USER.balance = w.available; }\n"
+        );
+        let third_readers = owners_of(&code_text_by_line(third).join("\n"), fetches_wallet_payload);
+        assert_ne!(
+            third_readers, want,
+            "规则 2 认不出第三处取载荷 —— 保留多余取数、只换字段的化妆式修法会全绿"
+        );
+        assert!(
+            third_readers.contains("inlineOpsTopup"),
+            "规则 2 的读者集合里没有那一处多余的取数：{third_readers:?}"
+        );
+
+        // `fetch` 判据不能把 `Live` 字面量里那行「代码 + 尾注释」算成读者
+        assert!(
+            !fetches_wallet_payload("    wallet: null,        // GET /api/wallet"),
+            "尾注释里的端点被当成了真正的取数（规则 2 会幻影红）"
+        );
+        assert!(fetches_wallet_payload(
+            "      Live.wallet = await api.get(\"/api/wallet\");"
+        ));
     }
 }
