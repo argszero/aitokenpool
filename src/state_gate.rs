@@ -881,6 +881,339 @@ fn declares_field(line: &str, field: &str) -> bool {
     false
 }
 
+// ── C2142：管理页「总余额」卡的**取值**必须折进它副标题具名的每一项 ─────────────────────
+
+/// 「总余额」卡片副标题的语言包键。它是本卡**意义的陈述**（不是装饰）：
+/// 「余额 + 赠送」（zh）/ `balance + gift`（en）。
+const ADMIN_TOTAL_CARD_SUBTITLE: &str = "admin.emp.stats.total.sub";
+
+/// i18n 语言包源码：`app.js` 只放**键**，这句话的正文在语言包里（本门禁要读两边）。
+const I18N_JS: &str = include_str!("../ui/js/i18n.js");
+
+/// 语言包区段标记（口径同 `i18n_pack.rs`：终点取对象字面量自身的收尾，不取 `window.I18N`）。
+const ZH_PACK_START: &str = "var ZH = {";
+const EN_PACK_START: &str = "var EN = {";
+const PACK_END: &str = "\n  };";
+
+/// 去掉一行里**字符串之外**的 `// …` 尾注释（成对 `/* … */` 由 [`code_text_by_line`] 处理）。
+///
+/// 门禁被自己的说明性注释满足是假绿里最坏的一种（坑 #296 的镜像）：本轮的修法就会在合计旁边
+/// 写一句解释，里面正提到 `gift_balance`。
+fn strip_trailing_comment(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut in_str: Option<u8> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match in_str {
+            Some(q) => {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    in_str = None;
+                }
+            }
+            None => {
+                if c == b'"' || c == b'\'' || c == b'`' {
+                    in_str = Some(c);
+                } else if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                    return line[..i].to_string();
+                }
+            }
+        }
+        i += 1;
+    }
+    line.to_string()
+}
+
+/// 代码文本：逐行剔除注释（行首 `//`、`/* … */` 块、行尾尾注释）。C2142 的一切证据文本都过它 ——
+/// 一段解释性散文不该满足（也不该破坏）断言（坑 #296 与它的镜像）。
+fn code_text(src: &str) -> String {
+    code_text_by_line(src)
+        .iter()
+        .map(|l| strip_trailing_comment(l))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 文本里的标识符 token（`[A-Za-z_$][A-Za-z0-9_$]*`），**字符串字面量里不算**。
+fn identifiers(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for raw in text.lines() {
+        let line = strip_trailing_comment(raw);
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        let mut in_str: Option<u8> = None;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if let Some(q) = in_str {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    in_str = None;
+                }
+                i += 1;
+                continue;
+            }
+            if c == b'"' || c == b'\'' || c == b'`' {
+                in_str = Some(c);
+                i += 1;
+                continue;
+            }
+            if c.is_ascii_alphabetic() || c == b'_' || c == b'$' {
+                let start = i;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$')
+                {
+                    i += 1;
+                }
+                out.insert(line[start..i].to_string());
+            } else {
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// `stat(<label>, <value>, <sub>…)` 调用里**第二段实参**（取值表达式）的文本。
+///
+/// 逗号按圆括号配平切分、字符串里的逗号不算分隔符 ⇒ 取值里可以嵌函数调用
+/// （`D.fmt(total) + " " + T("common.points")` 整段取出）。返回 `None` 表示这一行不是一张三段式卡片。
+fn stat_value_argument(line: &str) -> Option<String> {
+    let at = line.find("stat(")? + "stat(".len();
+    let rest = &line[at..];
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0isize;
+    let mut in_str: Option<char> = None;
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        if let Some(q) = in_str {
+            cur.push(c);
+            if c == '\\' {
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            } else if c == q {
+                in_str = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' | '`' => {
+                in_str = Some(c);
+                cur.push(c);
+            }
+            '(' | '[' | '{' => {
+                depth += 1;
+                cur.push(c);
+            }
+            ')' | ']' | '}' => {
+                if c == ')' && depth == 0 {
+                    parts.push(cur.clone());
+                    break;
+                }
+                depth -= 1;
+                cur.push(c);
+            }
+            ',' if depth == 0 => {
+                parts.push(cur.clone());
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    if parts.len() >= 2 {
+        Some(parts[1].trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// **取值表达式**（连同它在本函数里用到的变量定义、以及这些文本调用的函数体）是否**每一项**都读到。
+///
+/// 闭包的意义：等价写法都该放行 —— `D.fmt(total)`（`total` 的定义在别处）、
+/// `D.fmt(total + giftTotal)`、`D.fmt(memberSum(users))`。门禁钉的是**读到了**，不是写法。
+/// 所有证据文本都剥掉注释（行首 / 成对块 / 行尾尾注释）—— 见 [`strip_trailing_comment`]。
+///
+/// ⚠️ 两项都要钉：只钉 `gift_balance` 会放行「合计里只剩赠送」这种把轴修反的写法（探针会拒、
+/// 门禁不会 ⇒ 门禁比探针松一格）。反过来也**不能**用 `contains("balance")` —— `gift_balance`
+/// 本身就以它结尾，哑字符串匹配恒真 ⇒ 必须按标识符 token 比（[`identifiers`] 已排除字符串字面量）。
+fn value_reaches_all_fields(src: &str, scope: &str, value: &str, fields: &[&str]) -> bool {
+    let mut texts: Vec<String> = vec![code_text(value)];
+    // 变量定义：一层层往里展开（`D.fmt(total)` → `const total = …`），循环有界。
+    for _ in 0..4 {
+        let names: Vec<String> = texts
+            .iter()
+            .flat_map(|t| identifiers(t).into_iter())
+            .collect();
+        let mut added = false;
+        for n in names {
+            if let Some(stmt) = assignment_statement(scope, &n) {
+                let stmt = code_text(&stmt);
+                if !texts.contains(&stmt) {
+                    texts.push(stmt);
+                    added = true;
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    // 只有**标识符 token** 算证据（`gift_balance` 含 `balance` ⇒ 子串匹配是哑的）。
+    let mut seen_ids: BTreeSet<String> = BTreeSet::new();
+    for t in &texts {
+        seen_ids.extend(identifiers(t));
+    }
+    if fields.iter().all(|f| seen_ids.contains(*f)) {
+        return true;
+    }
+    // 函数调用：`memberSum(users)` 这类 helper 的体内也算。
+    //
+    // ⚠️ 这里的闭包**不能用 `call_graph` + `reachable`**（C2135 那两个 helper 建在
+    // `js_function_body` 上）：`js_function_body` 按「首个恰为 `  }` 的行」收尾，**单行函数**
+    // （`function memberAvailSum(list) { return …; }` —— 本轴最自然的抽法）的收尾 `}` 就在同一行，
+    // 于是它会一路吞到下一个多行函数的收尾（坑 #319）。A/B 实测：M6「抽成 helper 但漏了赠送」
+    // 因此假绿 —— 被吞进来的那段区域里有 `(u.gift_balance || 0)`。改用 `function_source`
+    // （单行安全）自己走闭包。
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut queue: Vec<String> = texts
+        .iter()
+        .flat_map(|t| callee_names(t).into_iter())
+        .collect();
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    while let Some(f) = queue.pop() {
+        if !seen.insert(f.clone()) {
+            continue;
+        }
+        let Some(body) = function_source(src, &f) else {
+            continue;
+        };
+        let body = code_text(&body);
+        let mut body_ids = identifiers(&body);
+        if fields.iter().all(|x| body_ids.contains(*x)) {
+            return true;
+        }
+        // 一个 helper 只覆盖一部分项时（`D.fmt(total + giftSum(users))`），其余项仍须在别处读到
+        // ⇒ 累计所有走到过的函数体里的标识符，最后统一判定。
+        reached.append(&mut body_ids);
+        for c in callee_names(&body) {
+            if !seen.contains(&c) {
+                queue.push(c);
+            }
+        }
+    }
+    fields
+        .iter()
+        .all(|f| seen_ids.contains(*f) || reached.contains(*f))
+}
+
+/// 语言包里某个键的字符串值（`"key": "value",` 的第一处）。取不到 ⇒ `None`。
+///
+/// 只认「`"key": ` 紧跟一个字符串字面量」这一种形状 —— 值里没有转义引号（真源码如此）。
+fn pack_string(region: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\": ");
+    let at = region.find(&needle)? + needle.len();
+    let rest = region[at..].strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// 切出语言包区段（起点标记 → 终点标记，含起点）。口径同 `i18n_pack::pack_region`。
+fn pack_region_strict<'a>(src: &'a str, start_mark: &str, end_mark: &str) -> &'a str {
+    let s = src
+        .find(start_mark)
+        .unwrap_or_else(|| panic!("语言包起点标记 `{start_mark}` 未找到 —— 语言包结构变了？"));
+    let rest = &src[s..];
+    let e = rest
+        .find(end_mark)
+        .unwrap_or_else(|| panic!("语言包终点标记 `{end_mark}` 未找到 —— 语言包结构变了？"));
+    &rest[..e]
+}
+
+/// 副标题是否**同时具名两项**：中文含「余额」+「赠送」，英文含 `balance` + `gift`（大小写不敏感）。
+///
+/// 这一条挡的是「把承诺删掉让两边对上」那种化妆式修法：卡片与副标题若不一致，两个方向都能
+/// 让它们一致，而**哪个方向才对是由产品自己的定义决定的**（见门禁的文档注释）。
+fn caption_names_both_components(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    (value.contains("余额") && value.contains("赠送"))
+        || (lower.contains("balance") && lower.contains("gift"))
+}
+
+/// `ident` 的**赋值语句**文本：从 `const <ident> = ` / `let <ident> = ` / `<ident> = ` 那一行起，
+/// 按圆括号配平向后延伸（允许跨行），直到深度回到 0。
+///
+/// 归属判别式：赋值头前面那个非空白字符必须是**语句边界**（行首 / `{` / `;`）—— 只认行首会漏掉
+/// 单行函数（`function f() { const total = … }`），不认边界则 `const total = ` 里那截
+/// `total = ` 会把任何提到它的行都算成赋值。
+///
+/// 只数 `(` / `)`：真源码里 reduce 的字符串字面量不含圆括号（自证测试覆盖该形状）。`ident` 在同一
+/// 函数里出现两次赋值 ⇒ 返回 `None`（调用方据此判红：归属必须唯一）。
+fn assignment_statement(src: &str, ident: &str) -> Option<String> {
+    let heads = [
+        format!("const {ident} = "),
+        format!("let {ident} = "),
+        format!("{ident} = "),
+    ];
+    let lines: Vec<&str> = src.lines().collect();
+    let mut found: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+            continue;
+        }
+        let hit = heads.iter().any(|h| {
+            let mut from = 0usize;
+            while let Some(rel) = line[from..].find(h.as_str()) {
+                let at = from + rel;
+                let before = line[..at].trim_end().chars().last();
+                if before.is_none() || matches!(before, Some('{') | Some(';')) {
+                    return true;
+                }
+                from = at + 1;
+                if from >= line.len() {
+                    break;
+                }
+            }
+            false
+        });
+        if !hit {
+            continue;
+        }
+        if found.is_some() {
+            return None; // 同一函数里两次赋值 ⇒ 归属不唯一
+        }
+        found = Some(i);
+    }
+    let start = found?;
+    let mut depth: isize = 0;
+    let mut out = String::new();
+    for line in &lines[start..] {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+        for c in line.chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        if depth <= 0 {
+            break;
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2149,6 +2482,227 @@ mod tests {
                 .contains(&format!("{NAV_REGISTRY}["))
                 && "        const item = NAV_ORDER[Number(e.key) - 1];".contains("Number("),
             "规则 3 认不出真正的数字键处理器"
+        );
+    }
+
+    /// 管理页「总余额」卡片的**取值**必须折进它副标题具名的每一项（C2142）。
+    ///
+    /// 轴：卡片副标题写的是「余额 + 赠送」（两包同款），同视图表格的列口径也一样
+    /// （`admin.emp.list.sub`：「余额 / 赠送 / 可用（永久点数 + 每日赠送）」），而改前的合计
+    /// 只加 `balance` —— 卡片因此比它正下方「可用」列的和少掉**全部赠送额**，屏幕上写着的公式
+    /// 却声称加了。
+    ///
+    /// 哪个方向才是对的，由**产品自己的定义**钉死（不是偏好）：
+    /// - `wallet.rs` 的 `available = balance + gift_balance`；赠送点数是可花的、会过期的真钱
+    ///   （`gift.rs` 的过期清扫真的把它们从账户里划走）；
+    /// - 用户自己看到的那张「余额」（侧栏 / 仪表盘）取的就是 `available`（`loadSession` 里
+    ///   `D.USER.balance = w.available`）—— 所以「总余额」= Σ 成员的可用额。
+    ///
+    /// 三条规则，各有各的牙：
+    /// 1. 卡片唯一（`renderAdmin` 里提到副标题键的行恰好一条）。
+    /// 2. 卡片**取值表达式**的闭包（表达式 ∪ 其中变量在本函数里的定义 ∪ 它们调用的函数体）必须
+    ///    读到 `gift_balance`。只钉「读到了」，不钉写法 —— 抽成 helper、换个变量名都放行。
+    /// 3. 副标题**仍须具名两项**（两包都要）：把承诺删掉、让卡片与它对上，不是修法。
+    #[test]
+    fn the_admin_total_balance_card_sums_what_its_caption_names() {
+        let admin = function_source(APP_JS, "renderAdmin").expect("找不到 renderAdmin");
+        let admin_code = code_text_by_line(&admin).join("\n");
+
+        // 提取器自证：停在 renderAdmin 里（下一站是 renderAdminModels，本函数不该含它的标记）
+        assert!(
+            admin_code.contains("emp-stats") && !admin_code.contains("admin-models"),
+            "renderAdmin 提取错了地方（规则 1/2 会在空集上假绿）：{admin_code}"
+        );
+        assert_eq!(
+            admin_code.matches("function ").count(),
+            1,
+            "renderAdmin 提取长了（吞进了下一个函数）：{admin_code}"
+        );
+
+        // 规则 1：卡片唯一
+        let admin_lines = code_text_by_line(&admin);
+        let cards: Vec<&String> = admin_lines
+            .iter()
+            .filter(|l| l.contains(ADMIN_TOTAL_CARD_SUBTITLE))
+            .collect();
+        assert_eq!(
+            cards.len(),
+            1,
+            "副标题键 `{ADMIN_TOTAL_CARD_SUBTITLE}` 在 renderAdmin 里出现了 {} 次（卡片要么没了要么重复）：{cards:?}",
+            cards.len()
+        );
+
+        // 规则 2：取值表达式的闭包必须把副标题具名的**两项**都读进来
+        let value = stat_value_argument(cards[0]).unwrap_or_else(|| {
+            panic!("总余额卡不再是「标签 / 取值 / 副标题」三段式：{}", cards[0])
+        });
+        assert!(
+            value_reaches_all_fields(APP_JS, &admin, &value, &["balance", "gift_balance"]),
+            "总余额卡的取值没有同时读到 `balance` 与 `gift_balance` —— 它副标题（{ADMIN_TOTAL_CARD_SUBTITLE}）\
+             写的就是「余额 + 赠送」，可卡片比正下方「可用」列的和少掉全部赠送额：取值 = `{value}`"
+        );
+
+        // 规则 3：两包的同一条文案都仍须具名两项
+        let zh = pack_region_strict(I18N_JS, ZH_PACK_START, EN_PACK_START);
+        let en = pack_region_strict(I18N_JS, EN_PACK_START, PACK_END);
+        for (pack, region) in [("zh", zh), ("en", en)] {
+            let caption = pack_string(region, ADMIN_TOTAL_CARD_SUBTITLE)
+                .unwrap_or_else(|| panic!("{pack} 包里没有键 `{ADMIN_TOTAL_CARD_SUBTITLE}`"));
+            assert!(
+                caption_names_both_components(&caption),
+                "{pack} 包的 `{ADMIN_TOTAL_CARD_SUBTITLE}`（\"{caption}\"）不再同时具名两项 —— \
+                 删掉承诺让卡片与它对上不是修法（这张卡说的就是成员的可用额 = 永久 + 赠送）"
+            );
+        }
+
+        // ── 判别式自证（合成输入）─────────────────────────────────────────────────────
+        // 规则 2：等价写法都放行，缺任一项判红
+        let both = &["balance", "gift_balance"];
+        let direct = "  function renderAdmin() { const total = users.reduce((a, u) => a + (u.balance || 0) + (u.gift_balance || 0), 0); }";
+        assert!(
+            value_reaches_all_fields(
+                direct,
+                direct,
+                "D.fmt(total) + \" \" + T(\"common.points\")",
+                both
+            ),
+            "规则 2 把「合计里直接两项都加」判红了"
+        );
+        let bare = "  function renderAdmin() { const total = users.reduce((a, u) => a + (u.balance || 0), 0); }";
+        assert!(
+            !value_reaches_all_fields(
+                bare,
+                bare,
+                "D.fmt(total) + \" \" + T(\"common.points\")",
+                both
+            ),
+            "规则 2 的判别式坏了：只加 balance 的合计被当成了「两项都读到」"
+        );
+        // 轴修反了：合计里只剩赠送 —— 探针会拒（卡片 ≠ Σ可用），门禁也必须拒，否则两者松紧不一
+        let gift_only = "  function renderAdmin() { const total = users.reduce((a, u) => a + (u.gift_balance || 0), 0); }";
+        assert!(
+            !value_reaches_all_fields(gift_only, gift_only, "D.fmt(total)", both),
+            "规则 2 放行了「合计里只剩赠送」—— 钉单项时 `gift_balance` 会把它判绿（哑子串匹配）"
+        );
+        // 换个变量名、或把两项分在两条语句里 —— 都还是「两项都读到了」
+        let split = "  function renderAdmin() { const total = users.reduce((a, u) => a + (u.balance || 0), 0); const gift = users.reduce((a, u) => a + (u.gift_balance || 0), 0); }";
+        assert!(
+            value_reaches_all_fields(split, split, "D.fmt(total + gift)", both),
+            "规则 2 把「取值里另加一条赠送合计」判红了（等价写法）"
+        );
+        // 抽成 helper：体内读到也算
+        let helper = concat!(
+            "  function memberSum(list) { return list.reduce((a, u) => a + (u.balance || 0) + (u.gift_balance || 0), 0); }\n",
+            "  function renderAdmin() { const total = memberSum(users); }\n"
+        );
+        assert!(
+            value_reaches_all_fields(helper, helper, "D.fmt(total)", both),
+            "规则 2 把「抽成 helper」这种等价写法判红了（只该钉读到了，不该钉写法）"
+        );
+        // 两个 helper 各读一项（`D.fmt(balSum(users) + giftSum(users))`）—— 也是两项都读到了
+        let two_helpers = concat!(
+            "  function balSum(list) { return list.reduce((a, u) => a + (u.balance || 0), 0); }\n",
+            "  function giftSum(list) { return list.reduce((a, u) => a + (u.gift_balance || 0), 0); }\n",
+            "  function renderAdmin() { const total = balSum(users) + giftSum(users); }\n"
+        );
+        assert!(
+            value_reaches_all_fields(two_helpers, two_helpers, "D.fmt(total)", both),
+            "规则 2 把「两项各抽一个 helper」判红了（等价写法）"
+        );
+        // 单行 helper 的闭包不许「吞掉」它下面那段区域（坑 #319 的本轴复发）：
+        // helper 自己只含 balance，而它下面十几行外有 gift_balance ⇒ 必须判红
+        let swallow = concat!(
+            "  function memberSum(list) { return list.reduce((a, u) => a + (u.balance || 0), 0); }\n",
+            "  function renderAdmin() {\n",
+            "    const total = memberSum(users);\n",
+            "    const cell = D.fmt((u.balance || 0) + (u.gift_balance || 0));\n",
+            "  }\n"
+        );
+        assert!(
+            !value_reaches_all_fields(swallow, swallow, "D.fmt(total)", both),
+            "单行 helper 的闭包吞掉了下面的区域（假绿：坑 #319 的本轴复发）"
+        );
+
+        // 注释里的 gift_balance 不算证据（坑 #296 的镜像：被自己的说明性注释满足）
+        let commented = "  function renderAdmin() { const total = users.reduce((a, u) => a + (u.balance || 0), 0); // sums gift_balance elsewhere\n  }";
+        assert!(
+            !value_reaches_all_fields(commented, commented, "D.fmt(total)", both),
+            "规则 2 被行尾注释里的 `gift_balance` 满足了（假绿）"
+        );
+
+        // `stat_value_argument`：嵌了调用与字符串的取值整段取出；两段式调用取不到
+        let card_line = "        stat(T(\"admin.emp.stats.total\"), D.fmt(total) + \" \" + T(\"common.points\"), T(\"admin.emp.stats.total.sub\")),";
+        assert_eq!(
+            stat_value_argument(card_line).as_deref(),
+            Some("D.fmt(total) + \" \" + T(\"common.points\")"),
+            "规则 2 的取值提取器取错了段"
+        );
+        assert_eq!(
+            stat_value_argument("        stat(T(\"a\"), D.fmt(x)),").as_deref(),
+            Some("D.fmt(x)"),
+            "两段式卡片（无副标题）的取值没取出来"
+        );
+        assert_eq!(
+            stat_value_argument("        stat(T(\"a\"),").as_deref(),
+            None,
+            "一段式调用被当成了卡片"
+        );
+
+        // 规则 2 **只咬这一张卡**（对照）：同函数里还有一条按 token 的 `reduce` 合计，它走 `barRow`
+        // 不走 `stat` ⇒ 取值提取器对它取不到东西，这条规则不会越界去咬它。
+        assert!(
+            admin_code.contains("month_tokens"),
+            "renderAdmin 里那条用量合计不见了 —— 「只咬一张卡」的对照失去意义"
+        );
+        let usage_line = admin_lines
+            .iter()
+            .find(|l| l.contains("month_tokens"))
+            .expect("找不到用量合计行");
+        assert!(
+            stat_value_argument(usage_line).is_none(),
+            "用量行被当成了三段式卡片（规则 2 会越界咬到别的合计）：{usage_line}"
+        );
+
+        // `assignment_statement`：跨行合计整段取出，且不吞下一条语句
+        let multi = concat!(
+            "      const users = x;\n",
+            "      const total = users.reduce((a, u) =>\n",
+            "        a + (u.balance || 0) + (u.gift_balance || 0), 0);\n",
+            "      const other = 1;\n"
+        );
+        let stmt_multi = assignment_statement(multi, "total").expect("跨行合计没被取出");
+        assert!(
+            stmt_multi.contains("gift_balance") && stmt_multi.contains("(u.balance || 0)"),
+            "跨行合计被截短了（规则 2 会假红）：{stmt_multi}"
+        );
+        assert!(
+            !stmt_multi.contains("const other"),
+            "跨行合计吞进了下一条语句：{stmt_multi}"
+        );
+        assert!(
+            assignment_statement("      const a = 1;\n      const a = 2;\n", "a").is_none(),
+            "同一函数里两次赋值没被判成「归属不清」"
+        );
+
+        // 规则 3 的判别式：阳性 / 阴性
+        assert!(caption_names_both_components("余额 + 赠送"));
+        assert!(caption_names_both_components("balance + gift"));
+        assert!(caption_names_both_components("Balances and Gifts"));
+        assert!(
+            !caption_names_both_components("余额") && !caption_names_both_components("balance"),
+            "规则 3 认不出「把承诺删掉」的化妆式修法"
+        );
+        assert!(
+            !caption_names_both_components("赠送"),
+            "规则 3 认不出只有赠送、没有余额的半个承诺"
+        );
+
+        // `strip_trailing_comment`：字符串里的 `//` 不是注释
+        assert_eq!(strip_trailing_comment("  a = 1; // note").trim(), "a = 1;");
+        assert_eq!(
+            strip_trailing_comment("  x = \"http://a/b\";").trim(),
+            "x = \"http://a/b\";",
+            "字符串里的 `//` 被当成了注释"
         );
     }
 }

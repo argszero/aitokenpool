@@ -2406,7 +2406,9 @@
       // P2-B/P2-C：/api/admin/users（真实成员）+ /api/raise-requests（真实加额申请）
       const users = Live.adminUsers;
       const depts = Live.departments || [];
-      const total = users.reduce((a, u) => a + (u.balance || 0), 0);
+      // 卡片的副标题（admin.emp.stats.total.sub）与正下方「可用」列都写的是「余额 + 赠送」，
+      // 取值必须同口径，否则卡片比它自己的承诺少掉全部赠送额（C2142）。
+      const total = users.reduce((a, u) => a + (u.balance || 0) + (u.gift_balance || 0), 0);
       $("#emp-stats").innerHTML = [
         stat(T("admin.emp.stats.members"), T("cnt.members", { n: users.length }), T("admin.emp.stats.members.sub.real")),
         stat(T("admin.emp.stats.total"), D.fmt(total) + " " + T("common.points"), T("admin.emp.stats.total.sub")),
