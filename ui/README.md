@@ -553,3 +553,44 @@ A/B 里各自有互不相交的红集）**：
   降级态」的对照腿 —— 缺陷不在列表，在旁边三张脸。
 - 必须有**游客腿**（真点 `#guest-browse-btn`，`C0`–`C3`）作为对照组：游客下拉 = 游客表厂商、芯片 =
   游客市场模型、徽标 = `MARKET.length` —— 「把兜底表删掉/清空」式修法会在这里变红。
+
+## 「总余额」卡：取值必须折进副标题具名的每一项（C2142）
+
+管理视图（`renderAdmin` 的成员支）那张「总余额 / Total balance」卡的副标题本身就是**口径的陈述**：
+
+```
+stat(T("admin.emp.stats.total"), D.fmt(total) + " " + T("common.points"), T("admin.emp.stats.total.sub"))
+                                          ↑ 合计                    ↑ "余额 + 赠送" / "balance + gift"
+```
+
+改前 `total = users.reduce((a, u) => a + (u.balance || 0), 0)` **只加永久余额** ⇒ 卡片比它正下方
+「可用」列（`admin.emp.col.avail` = `balance + gift_balance`）的和**少掉全部赠送额**，而屏幕上写着的
+公式说它加了。
+
+**哪个方向才对，由产品自己的定义钉死**（不是偏好，所以「把副标题改成『余额』让两边对上」不是修法）：
+
+1. `src/routes/wallet.rs` 的 `available = balance + gift_balance`；赠送点数是**可花的、会过期的真钱**
+   （`gift.rs` 的过期清扫真的把它们从账户里划走）；
+2. 用户自己看到的那张「余额」（侧栏 `#side-balance` / 仪表盘 `dash.balance`）取的就是 `available`
+   （`loadSession` 里 `D.USER.balance = w.available`）⇒ 「总余额」= **Σ 成员的可用额**；
+3. 同一张表的表注（`admin.emp.list.sub`）也写着「余额 / 赠送 / 可用（永久点数 + 每日赠送）」。
+
+**约定**：
+
+1. **一个汇总只能有一个口径，且必须与它自己的副标题同源**：叠加了成员合计的卡片，其取值表达式的
+   **传递闭包**里必须读到副标题具名的**每一项**（抽成 helper 也行，规则只钉「读到了」）。
+2. **副标题是合同，不许为了「对上」而删**：两包都必须同时具名两项；让卡片与一个被削弱的承诺一致，
+   等于把这张卡「在说什么」抹掉。
+3. **只约束这一条合计**：同函数里另有按月 token 的 reduce（用量报表），它不该被这条规则咬到
+   （门禁对「只咬这一条」有对照断言）。
+
+**CI 覆盖**（`src/state_gate.rs::the_admin_total_balance_card_sums_what_its_caption_names`，三条规则
+各有独立的牙：卡片唯一且取值是标识符 / 合计闭包必须读到 `balance` **与** `gift_balance` 两项 / 两包副标题仍具名两项），附
+`stat_value_argument`（嵌了调用与字符串的取值整段取出）、`assignment_statement`（跨行合计按圆括号配平整段取出，
+自证不吞下一条语句）与 `caption_names_both_components`（「余额 + 赠送」「balance + gift」放行，「余额」「balance」判红）
+的判别式自证。⚠️ 两项都钉是刻意的：只钉 `gift_balance` 会放行「合计里只剩赠送」这种把轴修反的写法；而用
+`contains("balance")` 又会被 `gift_balance` 这个后缀满足（哑子串匹配）⇒ 判别式按**标识符 token** 比。
+
+**为什么 CI 用静态门禁**：CI 里没有 JS 运行器，`cargo test` 是唯一能长期守住的关口；探针
+（`tmp/c2142_probe.js`）只用于本地证明**方向**（卡片值 == 同视图「可用」列的和；每行「可用」单元 ==
+`balance + gift_balance`），并拒掉竞争修法。
