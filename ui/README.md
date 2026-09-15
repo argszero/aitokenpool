@@ -439,7 +439,21 @@ ui/
 - **不变量**：对每个槽 `S`、每个 `renderView` 分支 `B` —— 若 `B` 的**渲染闭包**（`render…` 的传递调用集）里有人读 `Live.S`，则 `B` 的 **loader 闭包**（`load…` 的传递调用集 ∪ 会话级 `loadSession` 的闭包）里必须有人写 `Live.S`。`models` / `publicUrl` 是会话级数据（`loadSession` 装载、各视图共用）⇒ 把 `loadSession` 的闭包计入写者之后，**无需任何豁免清单**。
 - **修法＝共享槽一个写者，装载事由每个渲染它的视图各做一次**：槽的写入收进 `refreshDashboard()`（`Live.dashboard` 的唯一写者，C2131 的纪律），`loadDashboard()` 与 `loadWallet()` 各 `await refreshDashboard();`。**不要让渲染函数自己去拉数据**（渲染保持纯同步；「先同步渲染缓存、再异步拉取」只允许发生在 `renderView` 的分支里）。
 - **修前的脸**（jsdom 启真 `index.html` + 四脚本、只 stub `fetch`、驱动**真登录表单**）：`#/wallet` 页面上登录 ⇒ `#month-changes` 印「本月暂无变动」+ 净变化 `0`，而同一份 `/api/dashboard` 载荷在仪表盘上渲染正确（`-7.5` / 各类型行齐全），且**永不自愈**。**带 token 刷新看不到** —— boot 在 `DOMContentLoaded` 里**无条件** `renderView("dashboard")`，顺手就把槽装好了（这正是它长期潜伏的原因）。
-- **CI 覆盖**：`src/state_gate.rs::every_view_branch_loads_each_slot_its_renderer_reads`（传递闭包 + 会话级写者；改前树**恰好**红在钱包那一支）。判别式自带牙齿对照：`Live.dashboardTrend` 不得被当成 `Live.dashboard`（标识符边界）、`//` 与 `/* */` 注释里的 `Live.x` 不得造出幻影读点、只写自己槽的 loader 必须判红、经 `refreshShared()` 间接写入必须判绿。**射程**：槽宇宙 = `Live` 字面量 ∪ 代码里出现过的 `Live.<名>`；字面量本身**漏登记**的槽（记账：`Live.dashboardTrend` 未在字面量里声明 ⇒ `resetSessionCaches` 的派生名册清不到它）不在本条射程内。
+- **CI 覆盖**：`src/state_gate.rs::every_view_branch_loads_each_slot_its_renderer_reads`（传递闭包 + 会话级写者；改前树**恰好**红在钱包那一支）。判别式自带牙齿对照：`Live.dashboardTrend` 不得被当成 `Live.dashboard`（标识符边界）、`//` 与 `/* */` 注释里的 `Live.x` 不得造出幻影读点、只写自己槽的 loader 必须判红、经 `refreshShared()` 间接写入必须判绿。**射程**：槽宇宙 = `Live` 字面量 ∪ 代码里出现过的 `Live.<名>`。⚠️ `Live` 字面量**漏登记**的槽（`Live.dashboardTrend` 未在字面量里声明）只是「字面量是不是唯一真源」的可读性问题 —— **不影响清缓存**：`Live.x = v` 会**新建**一个 own enumerable 属性，调用时的 `Object.keys(Live)` 就包含它（C2136 仪器实测：写后登出 ⇒ 该槽为 `null`；本节的旧说法「派生名册清不到它」已被证伪）。
+
+## boot 不渲染视图：数据只在「会话已建立 + 它是当前目的地」时装载（C2136）
+
+- **`renderView` 只有一个合法触发点：`switchView`**（＝当前目的地）。它做的是「先同步渲染缓存、再（登录时）异步装载」（见上节），所以任何**在会话建立之前**触发的 `renderView` 都必然:先按旧的/空的状态渲染一个**不在屏幕上**的视图，并在 `loggedIn()` 已为 true 时把它整套查询发出去。
+- **修前的形状**（`app.js` 的 `DOMContentLoaded`）：`renderView("dashboard")` 被**无条件**调用，而它跑在 `restoreSession()` 之前 ⇒ 带 token 刷新时：
+  1. **会话还不存在**，仪表盘那套就已经发了 —— 实测 `log[0] = GET /api/wallet`，会话请求 `/api/me` 才排第 2；
+  2. 这些响应随后被 `loadSession()` 的 `resetSessionCaches()` **全部作废**；
+  3. `enterApp() → switchView(目的地)` 再装一遍 ⇒ 一次 boot 里仪表盘那套查询**各发两次**（实测 14 个请求：`/api/dashboard`、趋势 `type=all&bucket=day`、`page=1&page_size=1`、`/api/sharings` 各 2 次，`/api/wallet` 3 次）；
+  4. **目的地不是仪表盘也照拉**（刷新在 `#/transactions` 时仍白拉仪表盘那套 5 次）；
+  5. **过期 token 最刺眼**：先发出去的 6 个请求各拿一次 401，`__atpLogout()` 被调用 **6** 次（`TOAST_MAX = 3`，用户看到 3 条一模一样的「登录已过期，请重新登录」）。
+- **修法**：boot 只搭外壳（`renderNav()` / `bindEvents()` / 余额占位），**不渲染也不装载任何视图**；视图一律由 `switchView` 按当前目的地渲染装载（登录后由 `enterApp`、游客由 `enterGuest` 触发）。带 token 刷新不会白屏：`restoreSession()` 成功即 `enterApp()`，非 401 失败也照常 `enterApp()`（C2124），401 则 `api.js` 已回登录页。
+- **不变量（`src/state_gate.rs::the_boot_handler_touches_no_view`）**：① boot 处理器体内**不得**调用视图层的「渲染器 / 装载器」（视图层名册**派生自** `renderView` 的各分支，不写第二份名册）；② `renderView(...)` 只许以**当前目的地**为实参（全仓唯一合法的一处是语言切换监听器里的 `renderView(activeView)`）；③ `switchView` **必须仍调用** `renderView`（防止矫枉过正 —— 把 boot 那句删掉之后顺手清空 `renderView` 的调用点，就得到一个什么都不渲染的空壳）。
+- **为什么必须静态钉**：`renderDashboard()` 单独留在 boot（只渲染不装载）、或 `if (!api.getToken()) renderView("dashboard")`，都能让请求日志／通知计数全绿 —— 三者都只是**症状消失**。C2136 的 A/B：三种「最小改法」变体在探针上**全绿**，而门禁按形状收窄到「boot 不碰视图层」。
+- **冒烟测试注意**（`tmp/c2136_probe.js`）：① 判「仪表盘那套」时要连**查询形状**一起比 —— 交易视图自己也拉 `/api/transactions/trend`（`bucket=hour`），只按路径匹配会把别人的请求算进来（假红）；② 参数匹配要锚定（`page_size=1` 不能用裸子串，否则命中 `page_size=10`）；③ 计数不要数 DOM：`TOAST_MAX` 会把 6 条截成 3 条，用 `Object.defineProperty(window, "__atpLogout", { set })` 截住赋值再包装计数；④ 阴性对照腿＝**无 token** 的 boot（必须 0 个视图数据请求）。
 
 
 ## 后端自造的显示文案：分界线在「数据字段 / 文案字段」（C2133）
