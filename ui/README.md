@@ -433,6 +433,14 @@ ui/
 - **CI 覆盖**：`src/state_gate.rs` 再加两条 —— `the_identity_boundaries_drop_every_session_cache`（清空必须含 `Object.keys(Live)`；体内**不得**出现逐个槽的赋值，否则就是第二份名册；`loadSession` 与 `exitGuest` 都必须调用它）与 `the_view_router_renders_and_loads_in_every_branch`（`renderView` 每个分支行都既含 `render` 又含 `load`）。两条都带**提取器自证**与**合成输入**（手抄名册 / 缺 loader 的分支必须变红）。
 - **冒烟测试注意**：① 夹具必须让两个账号的钱包**可区分**，且 **`available ≠ balance`**（有当日赠送）—— 否则「拿到了自己的永久余额」与「回落到 available」不可区分；② 冻结点要**精确**：`loadSession` 自己的 `/api/wallet` 必须放行（否则会话建立就卡住），只扣住**仪表盘刷新**那一次（按序放行第 1 个、冻结第 2 个）；③ 隔离瞬态脸时，乙的**落点**必须是仪表盘 —— 若乙落在钱包，钱包的新 loader 会在登录过程中就把共享的 `Live.wallet` 刷新掉，瞬态脸**看不见**（这正是「只加 loader 不清缓存」这条竞争修法能让探针全绿的原因）；④ 断言按**读到的 DOM 文本**，不要读 `Live` 内部（探针可临时注入 `window.__Live = Live` 仅用于**诊断**）。
 
+## 渲染谁就装载谁：一个视图可能渲染**别的视图的槽**（C2135）
+
+- **分支名不等于数据来源**。`renderView` 的每个分支 `load` 的必须是**它的渲染闭包真正读到的那些槽**——而渲染闭包会读到别人的槽。C2135 实测：`#month-changes`（钱包视图）与 `#dash-month-changes`（仪表盘）由**同一个** `renderMonthChanges()` 绘制，两者都读 `Live.dashboard`，而该槽此前只有仪表盘的 `loadDashboard()` 会写 ⇒ 钱包分支只调 `loadWallet()`（它只刷 `Live.wallet`）时，**会话在钱包视图上建立**（hash `#/wallet` 后登录；在钱包页登出再登录）那一格就永远是空的。
+- **不变量**：对每个槽 `S`、每个 `renderView` 分支 `B` —— 若 `B` 的**渲染闭包**（`render…` 的传递调用集）里有人读 `Live.S`，则 `B` 的 **loader 闭包**（`load…` 的传递调用集 ∪ 会话级 `loadSession` 的闭包）里必须有人写 `Live.S`。`models` / `publicUrl` 是会话级数据（`loadSession` 装载、各视图共用）⇒ 把 `loadSession` 的闭包计入写者之后，**无需任何豁免清单**。
+- **修法＝共享槽一个写者，装载事由每个渲染它的视图各做一次**：槽的写入收进 `refreshDashboard()`（`Live.dashboard` 的唯一写者，C2131 的纪律），`loadDashboard()` 与 `loadWallet()` 各 `await refreshDashboard();`。**不要让渲染函数自己去拉数据**（渲染保持纯同步；「先同步渲染缓存、再异步拉取」只允许发生在 `renderView` 的分支里）。
+- **修前的脸**（jsdom 启真 `index.html` + 四脚本、只 stub `fetch`、驱动**真登录表单**）：`#/wallet` 页面上登录 ⇒ `#month-changes` 印「本月暂无变动」+ 净变化 `0`，而同一份 `/api/dashboard` 载荷在仪表盘上渲染正确（`-7.5` / 各类型行齐全），且**永不自愈**。**带 token 刷新看不到** —— boot 在 `DOMContentLoaded` 里**无条件** `renderView("dashboard")`，顺手就把槽装好了（这正是它长期潜伏的原因）。
+- **CI 覆盖**：`src/state_gate.rs::every_view_branch_loads_each_slot_its_renderer_reads`（传递闭包 + 会话级写者；改前树**恰好**红在钱包那一支）。判别式自带牙齿对照：`Live.dashboardTrend` 不得被当成 `Live.dashboard`（标识符边界）、`//` 与 `/* */` 注释里的 `Live.x` 不得造出幻影读点、只写自己槽的 loader 必须判红、经 `refreshShared()` 间接写入必须判绿。**射程**：槽宇宙 = `Live` 字面量 ∪ 代码里出现过的 `Live.<名>`；字面量本身**漏登记**的槽（记账：`Live.dashboardTrend` 未在字面量里声明 ⇒ `resetSessionCaches` 的派生名册清不到它）不在本条射程内。
+
 
 ## 后端自造的显示文案：分界线在「数据字段 / 文案字段」（C2133）
 

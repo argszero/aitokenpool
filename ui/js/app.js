@@ -719,9 +719,7 @@
   async function loadDashboard() {
     if (!loggedIn()) return;
     try { await refreshWallet(); } catch (e) { /* 降级 */ }
-    try {
-      Live.dashboard = await api.get("/api/dashboard");
-    } catch (e) { Live.dashboard = null; }
+    await refreshDashboard();
     // 近 14 天双色趋势（rant 2026-09-11T16:23:43 第 3 节）：复用交易页趋势接口，
     // 按日聚合 income/expense，与列表同口径；失败 → null（renderDashTrend 显示空态，不 mock）。
     // start 取「今天 UTC 零点 - 13 天」而非 now-13d：与后端 strftime('%Y-%m-%d', time)（UTC 日桶）
@@ -3393,6 +3391,18 @@
     });
   }
 
+  // 本月点数变化（`#dash-month-changes` / `#month-changes`）那一格的**唯一**写者。
+  //
+  // 这一格被**两个**视图渲染：仪表盘 `renderDashboard` 与钱包 `renderWallet` 都经 `renderMonthChanges`
+  // 读 `Live.dashboard` ⇒ 它是**共享**槽，写者只能有一个（C2131：一个槽两个写者会让「缓存」与
+  // 「它的有效性证据」脱钩）。装载它的每个视图各调一次即可 —— 这正是 C2135 的修法：
+  // 此前 `renderWallet` 渲染这一格，而它的 loader 只刷 `Live.wallet`，于是会话若在钱包视图上
+  // 建立（hash `#/wallet` 后登录 / 在钱包页登出再登录），这一格永远印「本月暂无变动」。
+  async function refreshDashboard() {
+    try { Live.dashboard = await api.get("/api/dashboard"); }
+    catch (e) { Live.dashboard = null; }
+  }
+
   // 刷新钱包缓存（登录后）；返回最新 available
   async function refreshWallet() {
     try {
@@ -3404,9 +3414,11 @@
 
   // 钱包视图自己的 loader（C2132）：`renderView("wallet")` 此前只渲染不拉取，是八个视图里
   // **唯一**没有 loader 的分支 —— 缓存一旦有值（哪怕是上一位用户的）就永远不会刷新。
-  // 镜像 loadDashboard 的尾段：先拉真实钱包，再重渲染。
+  // C2135：渲染谁就装载谁 —— 钱包页同样渲染「本月点数变化」，它的数据在 `Live.dashboard` 里，
+  // 只拉钱包的话那一格在「会话建立于钱包视图」时永远是空的（详见 refreshDashboard 的注释）。
   async function loadWallet() {
     await refreshWallet();
+    await refreshDashboard();
     renderWallet();
   }
 
