@@ -94,10 +94,10 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 812;
-const EN_KEY_COUNT: usize = 812;
-const STATIC_ATTR_COUNT: usize = 333;
-const STATIC_ATTR_DISTINCT: usize = 308;
+const ZH_KEY_COUNT: usize = 811;
+const EN_KEY_COUNT: usize = 811;
+const STATIC_ATTR_COUNT: usize = 332;
+const STATIC_ATTR_DISTINCT: usize = 307;
 const T_LITERAL_COUNT: usize = 542;
 const T_LITERAL_DISTINCT: usize = 433;
 
@@ -193,6 +193,232 @@ fn scan_static_attributes(src: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// `data-i18n` 的四种静态属性形态（与 `scan_static_attributes` 的后缀集合一致）。
+const I18N_ATTRS: [&str; 4] = [
+    "data-i18n",
+    "data-i18n-ph",
+    "data-i18n-title",
+    "data-i18n-label",
+];
+
+/// 从 `lt`（`<` 的下标）出发，返回该标签 `>` 的下标。
+///
+/// **必须跳过引号内的 `>`**：属性值里出现 `>` 是合法 HTML（本仓真实形态：
+/// `title="搜索用户名 / 邮箱…"` 之类倒没有，但 `data-i18n` 的**值**由语言包决定，
+/// 未来随时可能含尖括号）。一个被 `>` 提前截断的解析器会把后续标记错位、静默漏检。
+fn html_tag_end(src: &str, lt: usize) -> Option<usize> {
+    let b = src.as_bytes();
+    let mut i = lt + 1;
+    let mut quote: Option<u8> = None;
+    while i < b.len() {
+        let c = b[i];
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == b'"' || c == b'\'' {
+                    quote = Some(c);
+                } else if c == b'>' {
+                    return Some(i);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 把起始标签体（`<` 与 `>` 之间，不含尖括号）切成 `(属性名, 属性值)`，值已去引号。
+///
+/// 逐属性切分而不是在整段里搜 `data-i18n=`：后者会命中**别的属性值里**的字符串
+/// （如 `title="data-i18n=x"`），把一个装饰性文本当成真属性。
+fn tag_attributes(body: &str) -> Vec<(String, String)> {
+    fn ws(c: u8) -> bool {
+        matches!(c, b' ' | b'\t' | b'\n' | b'\r')
+    }
+    let b = body.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    // 跳过标签名
+    while i < b.len() && !ws(b[i]) && b[i] != b'/' {
+        i += 1;
+    }
+    while i < b.len() {
+        while i < b.len() && ws(b[i]) {
+            i += 1;
+        }
+        if i >= b.len() || b[i] == b'/' {
+            break;
+        }
+        let ns = i;
+        while i < b.len() && !ws(b[i]) && b[i] != b'=' {
+            i += 1;
+        }
+        let name = body[ns..i].to_string();
+        let mut j = i;
+        while j < b.len() && ws(b[j]) {
+            j += 1;
+        }
+        if j < b.len() && b[j] == b'=' {
+            j += 1;
+            while j < b.len() && ws(b[j]) {
+                j += 1;
+            }
+            if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
+                let q = b[j];
+                let vs = j + 1;
+                let mut e = vs;
+                while e < b.len() && b[e] != q {
+                    e += 1;
+                }
+                out.push((name, body[vs..e.min(b.len())].to_string()));
+                i = (e + 1).min(b.len());
+            } else {
+                let vs = j;
+                while j < b.len() && !ws(b[j]) {
+                    j += 1;
+                }
+                out.push((name, body[vs..j].to_string()));
+                i = j;
+            }
+        } else {
+            out.push((name, String::new()));
+            i = j;
+        }
+    }
+    out
+}
+
+/// `scan_i18n_nesting` 的结果。带阳性对照字段，好让「0 违规」不被误读为「扫描器瞎了」。
+struct I18nNestingScan {
+    /// 违规清单（已格式化成可直接断言的文本）
+    violations: Vec<String>,
+    /// 带**文本** `data-i18n` 属性的元素个数（阳性对照：为 0 ⇒ 扫描器没在看）
+    text_carriers: usize,
+    /// 解析到的起始标签数（阳性对照：为 0 ⇒ 扫描器没在看）
+    start_tags: usize,
+    /// EOF 时仍未闭合的元素名（非空 ⇒ 语料把扫描器弄瞎了，拒绝据此判绿）
+    leftover: Vec<String>,
+}
+
+/// 扫描 `index.html`：`data-i18n*` 属性**绝不能**落在「带文本 `data-i18n` 的祖先元素」内部。
+///
+/// 为什么（`ui/js/i18n.js::applyStatic`）：
+/// ```js
+/// els = document.querySelectorAll("[data-i18n]");
+/// for (i = 0; i < els.length; i++) { if (key && ZH[key]) els[i].innerHTML = t(key); }
+/// ```
+/// 祖先那一步把 `innerHTML` **整体换成语包值** ⇒ 后代元素（连同它自己的 `data-i18n` 属性）
+/// 被从文档里摘掉；随后循环再对那个**已分离**的节点设值 —— 无异常、无效果。
+/// 实测（jsdom）：`<h3 data-i18n="admin.raise.title">加额申请 <span data-i18n="admin.raise.sub">…</span></h3>`
+/// 里那个 span 的 `isConnected` 为 `false`，两种语言下都不显示。
+///
+/// ⚠️ 只有**文本**属性（`data-i18n`）会砸后代：`data-i18n-title` / `-label` / `-ph`
+/// 走 `setAttribute`，只写那一个属性，子标记原样保留。因此 `select#tx-range`（带
+/// `data-i18n-title`）里的五个 `<option data-i18n="tx.range.*">` 是**合法**形态，
+/// 本规则不会误报 —— 这条边界由 `nested_i18n_detector_detects_injected_defects` 钉住。
+///
+/// ⚠️ 为什么两道既有门禁都看不见这类缺陷：`every_static_i18n_attribute_resolves` 只问
+/// 「键在不在两个包里」（在 ⇒ 过），而「按文本找引用」的死键扫描会看到那个键的**字面量
+/// 就写在 `index.html` 里**（⇒ 判「有人用」）。于是「一个永远不会被应用的属性」是它们的盲区。
+fn scan_i18n_nesting(src: &str) -> I18nNestingScan {
+    // HTML 空元素：没有闭合标签，不入栈
+    const VOID: [&str; 14] = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+        "source", "track", "wbr",
+    ];
+    let b = src.as_bytes();
+    // 栈元素：元素名 + 该元素自己的**文本** `data-i18n` 键（没有则 None）
+    let mut stack: Vec<(String, Option<String>)> = Vec::new();
+    let mut violations: Vec<String> = Vec::new();
+    let mut text_carriers = 0usize;
+    let mut start_tags = 0usize;
+    let mut i = 0usize;
+    while let Some(off) = src[i..].find('<') {
+        let lt = i + off;
+        // 注释：整段跳过（注释里的标记不是结构）—— #296 同族：证据文本必须先剥注释
+        if src[lt + 1..].starts_with("!--") {
+            match src[lt..].find("-->") {
+                Some(p) => {
+                    i = lt + p + 3;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        // doctype / 处理指令
+        if matches!(b.get(lt + 1), Some(b'!') | Some(b'?')) {
+            match src[lt..].find('>') {
+                Some(p) => {
+                    i = lt + p + 1;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        let gt = match html_tag_end(src, lt) {
+            Some(g) => g,
+            None => break,
+        };
+        let body = &src[lt + 1..gt];
+        i = gt + 1;
+        if let Some(rest) = body.strip_prefix('/') {
+            // 闭合标签：弹到最近的同名元素（连同它一起弹出）
+            let name = rest.trim().to_ascii_lowercase();
+            if let Some(pos) = stack.iter().rposition(|(n, _)| *n == name) {
+                stack.truncate(pos);
+            }
+            continue;
+        }
+        let self_close = body.trim_end().ends_with('/');
+        let name = body
+            .split(|c: char| c.is_ascii_whitespace() || c == '/' || c == '>')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        start_tags += 1;
+        let attrs = tag_attributes(body);
+        let i18n: Vec<(&str, &str)> = attrs
+            .iter()
+            .filter(|(n, _)| I18N_ATTRS.contains(&n.as_str()))
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        if !i18n.is_empty() {
+            if let Some((_, Some(ancestor))) = stack.iter().rev().find(|(_, k)| k.is_some()) {
+                let line = src[..lt].bytes().filter(|c| *c == b'\n').count() + 1;
+                let desc: Vec<String> = i18n.iter().map(|(n, v)| format!("{n}=\"{v}\"")).collect();
+                violations.push(format!(
+                    "index.html:{line}: {} 落在 data-i18n=\"{ancestor}\" 的元素内部 —— \
+                     祖先的 innerHTML 替换会把它连同属性一起摘掉，该属性永远不会生效",
+                    desc.join(" ")
+                ));
+            }
+        }
+        if VOID.contains(&name.as_str()) || self_close {
+            continue;
+        }
+        match i18n.iter().find(|(n, _)| *n == "data-i18n") {
+            Some((_, v)) => {
+                text_carriers += 1;
+                stack.push((name, Some((*v).to_string())));
+            }
+            None => stack.push((name, None)),
+        }
+    }
+    I18nNestingScan {
+        violations,
+        text_carriers,
+        start_tags,
+        leftover: stack.into_iter().map(|(n, _)| n).collect(),
+    }
 }
 
 /// 扫描 `T("字面量")` 形态的文案键，返回其中的字面量。
@@ -711,6 +937,126 @@ mod tests {
         assert!(
             missing.is_empty(),
             "以下 data-i18n* 属性在语言包中不存在（页面会原样显示键名）：{missing:?}"
+        );
+    }
+
+    /// 内容归属门禁（C2150）：`data-i18n*` 属性不得嵌在另一个**带文本 `data-i18n`** 的元素内部。
+    ///
+    /// 这类属性永远不会生效 —— 祖先的 `innerHTML = t(key)` 会把它连同元素一起从文档里摘掉。
+    /// 它同时是**必须**的：`every_static_i18n_attribute_resolves` 与任何「按文本找引用」的
+    /// 死键扫描都看不见它（键在两包俱在、字面量也写在 `index.html` 里）。
+    #[test]
+    fn no_data_i18n_attribute_nests_inside_a_data_i18n_element() {
+        let scan = scan_i18n_nesting(INDEX_HTML);
+        assert!(
+            scan.leftover.is_empty(),
+            "index.html 的标签栈在 EOF 未清空（{:?}）—— 扫描器被语料弄瞎了，拒绝据此判绿",
+            scan.leftover
+        );
+        // 阳性对照：扫描器真的在看，且看到了东西
+        assert!(scan.start_tags > 0, "未解析到任何起始标签 —— 扫描器已失真");
+        assert!(
+            scan.text_carriers > 0,
+            "未扫到任何带文本 data-i18n 的元素 —— 扫描器已失真，「0 违规」是假的"
+        );
+        assert!(
+            scan.violations.is_empty(),
+            "以下 data-i18n* 属性永远不会生效（祖先的 innerHTML 替换会把它们摘掉）：\n  - {}",
+            scan.violations.join("\n  - ")
+        );
+    }
+
+    /// 阴性对照：内容归属检查器必须真的会失败。
+    ///
+    /// 只断言「当前 0 违规」是不够的 —— 一个恒真的检查等价于没有检查。
+    /// 这里拿真实缺陷形态（含修复前的那两处原文）构造语料，断言检查器把它们报出来。
+    #[test]
+    fn nested_i18n_detector_detects_injected_defects() {
+        // ① 缺陷原形：修复前的 `admin.raise.title`（文本祖先 + 后代 `data-i18n` 子元素）
+        //    ⚠️ 语料含 `href="#"` ⇒ 必须用 `r##"…"##`：`r#"…"#` 会被 `"#` 提前闭合。
+        for bad in [
+            r##"<h3 data-i18n="admin.raise.title">加额申请 <span data-i18n="admin.raise.sub">（…）</span></h3>"##,
+            r##"<p data-i18n="login.foot">x<a href="#" id="reg-link" data-i18n="login.register">注册</a></p>"##,
+        ] {
+            let s = scan_i18n_nesting(bad);
+            assert_eq!(
+                s.violations.len(),
+                1,
+                "阴性对照失败：嵌套属性未被检出：{bad}"
+            );
+            assert!(
+                s.violations[0].contains("index.html:1:"),
+                "违规应带行号：{:?}",
+                s.violations[0]
+            );
+            assert!(s.leftover.is_empty(), "对照语料应为良构：{bad}");
+        }
+
+        // ② 正确形态：兄弟 span（修复后的写法）⇒ 不得报出
+        let good = r#"<h3><span data-i18n="admin.raise.title">加额申请</span> <span data-i18n="admin.raise.sub">（…）</span></h3>"#;
+        let s = scan_i18n_nesting(good);
+        assert!(
+            s.violations.is_empty(),
+            "阳性对照失败：兄弟写法被误报：{:?}",
+            s.violations
+        );
+        assert_eq!(s.text_carriers, 2, "阳性对照：应看到 2 个文本载体");
+
+        // ③ 合法形态：祖先只带**属性型**钩子（`data-i18n-title`），子标记存活。
+        //    真实形态＝`select#tx-range` 里的五个 `<option data-i18n="tx.range.*">`。
+        let title_parent = r#"<select data-i18n-title="tx.range.title"><option data-i18n="tx.range.24h">24 小时</option><option data-i18n="tx.range.7d">7 天</option></select>"#;
+        assert!(
+            scan_i18n_nesting(title_parent).violations.is_empty(),
+            "阳性对照失败：仅写属性的祖先（data-i18n-title）被误报"
+        );
+        // 同理，`data-i18n-label` 祖先（真实形态＝`div#help-panel`）
+        let label_parent = r#"<div id="help-panel" data-i18n-label="help.title"><strong data-i18n="help.title">快捷键</strong></div>"#;
+        assert!(
+            scan_i18n_nesting(label_parent).violations.is_empty(),
+            "阳性对照失败：data-i18n-label 祖先被误报"
+        );
+
+        // ④ 反向：后代带的是**属性型**钩子，同样会被文本祖先摘掉 ⇒ 必须报出
+        let nested_attr_kind =
+            r##"<p data-i18n="login.foot">x<a href="#" data-i18n-title="login.or">y</a></p>"##;
+        assert_eq!(
+            scan_i18n_nesting(nested_attr_kind).violations.len(),
+            1,
+            "阴性对照失败：被摘掉的属性型钩子未被检出"
+        );
+
+        // ⑤ 解析器不得被属性值里的 `>` / 引号骗到（否则会静默漏检后面的缺陷）
+        let tricky = r#"<p data-i18n="a.b" title="x > y" data-note='a "quoted" b'><span data-i18n="c.d">z</span></p>"#;
+        assert_eq!(
+            scan_i18n_nesting(tricky).violations.len(),
+            1,
+            "解析器被属性值里的尖括号/引号骗了"
+        );
+
+        // ⑥ 空元素与自闭合标签不得破坏标签栈
+        let voids = r#"<div data-i18n="a.b">t<br><img src="x"><input value="y"><span data-i18n="c.d">z</span></div>"#;
+        let s = scan_i18n_nesting(voids);
+        assert_eq!(s.violations.len(), 1, "空元素破坏了标签栈");
+        assert!(s.leftover.is_empty(), "空元素应不入栈：{:?}", s.leftover);
+
+        // ⑦ 注释里的标记不参与结构（#296 同族：证据文本必须先剥注释）
+        let commented = r#"<div data-i18n="a.b">t<!-- <span data-i18n="c.d">z</span> --></div>"#;
+        let s = scan_i18n_nesting(commented);
+        assert!(
+            s.violations.is_empty(),
+            "注释里的标记被当成了结构：{:?}",
+            s.violations
+        );
+
+        // ⑧ 违规行号必须是真的行号（不是恒 1）
+        let multiline =
+            "<div data-i18n=\"a.b\">\n  <p>x</p>\n  <span data-i18n=\"c.d\">z</span>\n</div>";
+        let s = scan_i18n_nesting(multiline);
+        assert_eq!(s.violations.len(), 1);
+        assert!(
+            s.violations[0].contains("index.html:3:"),
+            "违规行号应为 3，实得 {:?}",
+            s.violations[0]
         );
     }
 
