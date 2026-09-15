@@ -636,3 +636,48 @@ try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance;
 **为什么 CI 用静态门禁**：规则 2 钉的是「同一事实只有一个来源」这个**形状**，而 DOM 探针只能证明
 「屏幕上数字对」—— 竞争修法在探针下全绿（`tmp/c2145_probe.js` 实测：修复树 9/9、改前树恰 `A2`/`A3`
 两腿红、竞争者 8/9 被 `A3` 拒绝）。CI 里没有 JS 运行器，`cargo test` 是唯一能长期守住的关口。
+
+## 载荷签名覆盖所有输入，控件变更只有一个重拉触发器（C2146）
+
+交易列表/趋势的请求体由**两份**状态渲染：列筛选（`txTable.filters`）与时间段
+（`txRange` / `txCustomStart` / `txCustomEnd`）。而「缓存还新不新」的判据只有一处 ——
+`renderTransactions()` 里的三元比对（`loadedPage` / `loadedPageSize` / **载荷签名**），
+所以**签名必须覆盖每一个改变请求体的输入**：
+
+```
+function txQuerySig() {                      // 只此一处定义「载荷是什么」
+  const f = txTable.filters || {};
+  const cols = Object.keys(f).sort().map((k) => k + "=" + String(f[k] == null ? "" : f[k])).join("&");
+  return cols + "|" + txRange + "|" + txCustomStart + "|" + txCustomEnd;
+}
+```
+
+**改前的形状**：签名只哈希列筛选，于是三个时间段控件**各自补一次显式 `loadTransactions()`**。
+补丁在「守卫也成立」时会并发第二次请求 —— `#tx-range` 处理器**先把页码重置为 1**，用户只要不在
+第 1 页，`loadedPage !== page` 就让守卫自己发一次并 `return`，随后那句显式调用再发一次 ⇒
+**两份逐字相同的列表请求（趋势请求也两遍）**。第 1 页上只有一次，所以它潜伏至今。
+
+**约定**：
+
+1. **`txQuerySig()` 是「交易载荷由什么决定」的唯一陈述**：新增任何一个会改变请求体的状态，
+   都必须折进它；签名只取**状态值**。
+2. **⚠️ 签名不得由 `txRangeParams()` 派生**：后者含「now − 窗口」的毫秒时间戳，每次调用都不同
+   ⇒ 签名恒变 ⇒ 守卫每次渲染都重拉，**请求风暴**（比原缺陷更坏；探针实测请求数 3→3→2→4→5 递增）。
+3. **控件的状态一改只调 `reloadTransactions()`**（它把「页码重置」与「重拉」当作同一个动作）：
+   控件的绑定函数体内**不得**出现 `loadTransactions()` —— 守卫已经会按签名/页码决定要不要重拉。
+4. **触发器的显式取数只在槽为空时用**（首次进入 / 上次失败时 `renderTransactions()` 只画降级态、不拉取），
+   否则它必然与守卫重复拉取。
+
+**CI 覆盖**（`src/state_gate.rs::the_transaction_payload_has_one_signature_and_one_reload_trigger`，
+四条规则各有独立的牙：签名读时间段状态且不由 `txRangeParams()` 派生 / 控件绑定函数不自带取数 /
+「重置页码 + 直接取数」的函数**恰好一个**且被四个控件共用 / 触发器提到 `!Live.transactions`）。
+⚠️ 两个判别式陷阱都已在门禁里自证：`code_body()` **剥注释**（本轮的修法就在控件旁边写着两句提到
+`loadTransactions()` 的解释，原文判定会把门禁自己判红）、`mentions_tx_loader()` 按**标识符 token**
+比（`reloadTransactions()` **以** `loadTransactions()` 结尾 —— 子串匹配会让规则 2 在每一个修好的树上判红）。
+控件归属不写名册：取**文件里第一个**「函数体含该控件字面量」的函数（`bindEvents` 内部还有嵌套函数，
+「命中行之前最近声明的函数」会把归属判给那个嵌套函数）。
+
+**为什么 CI 用静态门禁**：请求次数是运行期可观测量，但 CI 里没有 JS 运行器；探针
+（`tmp/c2146_probe.js`）只用于本地证明**方向**（改前树恰 `A1`/`B1` 红 = 第 2 页上改时间段发两遍列表 +
+两遍趋势），并拒掉最诱人的错修（签名取 `txRangeParams()` ⇒ 请求风暴）。
+

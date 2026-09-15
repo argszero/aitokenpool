@@ -513,6 +513,151 @@ fn lines_owned_by(src: &str, hit: impl Fn(&str) -> bool) -> Vec<(String, usize, 
     out
 }
 
+/// 这一行是否在**写** `txTable.page`。
+///
+/// 判别式有两颗牙：`=`（不是 `==`），且标识符**边界**要收口 —— `txTable.pageSize = 5` 里的
+/// `txTable.page` 是**更长标识符的前缀**，不是同一个字段（`assignment_after` 只处理反方向的
+/// 前缀，这里必须自己跨过剩余标识符字符）。
+fn writes_tx_page(line: &str) -> bool {
+    const NEEDLE: &str = "txTable.page";
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find(NEEDLE) {
+        let at = from + rel;
+        let mut end = at + NEEDLE.len();
+        while end < line.len()
+            && (line.as_bytes()[end].is_ascii_alphanumeric()
+                || line.as_bytes()[end] == b'_'
+                || line.as_bytes()[end] == b'$')
+        {
+            end += 1;
+        }
+        if end > at + NEEDLE.len() {
+            from = at + 1; // `txTable.pageSize`：另一个字段，继续往后找
+            continue;
+        }
+        let trimmed = line[end..].trim_start();
+        if trimmed.starts_with('=') && !trimmed.starts_with("==") {
+            return true;
+        }
+        from = at + 1;
+        if from >= line.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// 判据（守卫）行里「已加载证据 vs 当前值」比对中**右边**那个签名函数的名字。
+///
+/// 守卫把三项已加载证据与当前值比对，其中签名那一项的右边是一次**函数调用**（另两项的右边
+/// 是 `txTable.page` / `txTable.pageSize` 之类的值）。要在**不假设比对顺序**的前提下取出它：
+/// 逐个 `!== ` 的右侧取到第一个 `(` 之间，只有「整段恰好是一个标识符」才算签名函数 ——
+/// 前两项的右侧会把后面的比较式一并带进来（含空格），自然被刷掉。
+///
+/// 找不到调用（守卫被改写成比对一个普通值）⇒ `None`：调用方**必须** `expect` 报错，
+/// 否则规则 1 会在空集上假绿。
+fn query_sig_name(body: &str) -> Option<String> {
+    for line in body.lines() {
+        if !line.contains("txTable.loaded") {
+            continue;
+        }
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find("!== ") {
+            let at = from + rel + "!== ".len();
+            let after = &line[at..];
+            if let Some(end) = after.find('(') {
+                let name = after[..end].trim();
+                if !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+                {
+                    return Some(name.to_string());
+                }
+            }
+            from = at;
+        }
+    }
+    None
+}
+
+/// 交易控件（`#tx-range` 的绑定）所在的函数名 —— 由**文件顺序**派生，不写名册。
+///
+/// 不能用「命中行之前最近声明的那个函数」：`bindEvents` 内部还声明了嵌套函数
+/// （`showAuthForm`），位置启发式会把归属判给**最后**那个嵌套函数，而控件绑定写在它**之外**、
+/// 外层函数体内。改为：取**文件里第一个**「函数体含该控件字面量」的函数 —— 外层函数总在嵌套
+/// 函数之前声明，因此拿到的就是属主。
+fn tx_control_owner(src: &str) -> Option<String> {
+    let mut names: Vec<String> = Vec::new();
+    for line in src.lines() {
+        if let Some(n) = function_name(line) {
+            names.push(n.to_string());
+        }
+    }
+    names
+        .into_iter()
+        .find(|n| code_body(src, n).contains(TX_RANGE_CONTROL))
+}
+
+/// 函数体的**代码文本**（注释已剥离，含 `/* … */` 块）—— 逐行与 [`code_text_by_line`] 对齐。
+///
+/// 拿 [`function_code`] 的原文判定会被门禁**自己的说明性注释**判红/判绿（坑 #296 的镜像）：
+/// 本轮的修法恰好在控件旁边写了两句解释，里面正提到 `loadTransactions()`；而 `code_only` 只剥
+/// `//` 行，够不着块注释（坑 #309）。收尾仍按「首个恰为 `  }` 的行」⇒ 只适用于**多行**函数，
+/// 调用方须自证提取结果非空且确实是那个函数。
+fn code_body(src: &str, name: &str) -> String {
+    let text = code_text_by_line(src);
+    let mut out: Vec<String> = Vec::new();
+    let mut started = false;
+    for (i, line) in src.lines().enumerate() {
+        if !started {
+            if function_name(line) == Some(name) {
+                started = true;
+            } else {
+                continue;
+            }
+        } else if line == "  }" {
+            break;
+        }
+        if let Some(c) = text.get(i) {
+            if !c.is_empty() {
+                out.push(c.clone());
+            }
+        }
+    }
+    out.join("\n")
+}
+
+/// 这段代码是否**提到**交易载荷装载器 `loadTransactions`（以标识符为界）。
+///
+/// 不能写成 `body.contains("loadTransactions()")`：本轴的两个符号是前缀关系 ——
+/// `reloadTransactions()` **以** `loadTransactions()` 结尾（坑 #333 同族：子串匹配会把兄弟
+/// 标识符当证据）。调用方传来的文本已由 [`code_body`] 剥离注释。
+fn mentions_tx_loader(text: &str) -> bool {
+    mentions_identifier(text, "loadTransactions")
+}
+
+/// 「重拉触发器」的候选：体内**既重置页码、又直接调用 `loadTransactions()`** 的函数。
+///
+/// 这就是触发器的语义定义（「重置页码并重拉一次」），因此不需要名册；它必须**唯一** ——
+/// 两个候选意味着两条各自独立的触发路径，正是本门禁要挡的形态。判据走 [`code_body`]
+/// （注释已剥离），否则解释性注释里提一句 `loadTransactions()` 就会凭空多出一个候选。
+fn reload_trigger_candidates(src: &str) -> Vec<String> {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for line in src.lines() {
+        if let Some(n) = function_name(line) {
+            names.insert(n.to_string());
+        }
+    }
+    names
+        .into_iter()
+        .filter(|n| {
+            let body = code_body(src, n);
+            body.lines().any(writes_tx_page) && mentions_tx_loader(&body)
+        })
+        .collect()
+}
+
 fn owners_of(src: &str, hit: impl Fn(&str) -> bool) -> BTreeSet<String> {
     lines_owned_by(src, hit)
         .into_iter()
@@ -928,6 +1073,25 @@ const I18N_JS: &str = include_str!("../ui/js/i18n.js");
 const ZH_PACK_START: &str = "var ZH = {";
 const EN_PACK_START: &str = "var EN = {";
 const PACK_END: &str = "\n  };";
+
+// ── C2146：交易载荷的**载荷签名**必须覆盖每一个改变请求体的状态 ──────────────────────────────
+
+/// 决定交易载荷请求体的**时间段**状态（模块级变量，与列筛选是两份状态）。
+///
+/// 交易列表/趋势请求的 URL 由 `txRangeParams()` 从这三个变量渲染，而「缓存还新不新」的判据是
+/// `renderTransactions` 里的签名比对 —— 判据必须覆盖**渲染请求体的全部输入**，否则那个控件
+/// 改完没人重拉，只能由调用方补一次显式拉取，而补的那一次会在判据也成立时并发第二次请求。
+const TX_RANGE_STATE: [&str; 3] = ["txRange", "txCustomStart", "txCustomEnd"];
+
+/// 时间段 → 查询参数的渲染器。它含「now − 窗口」的毫秒时间戳，**每次调用都不同** ⇒
+/// 拿它当签名会让签名恒变（守卫每次渲染都重拉，形成请求风暴）。签名只许取状态值。
+const TX_RANGE_RENDERER: &str = "txRangeParams(";
+
+/// 列筛选状态（签名必须覆盖的另一半）。
+const TX_FILTER_STATE: &str = "txTable.filters";
+
+/// `#tx-range` 控件所在的绑定函数（交易控件的归属函数由它派生，不写名册）。
+const TX_RANGE_CONTROL: &str = "\"#tx-range\"";
 
 // ── C2145：会话余额是一个**事实**，只能读钱包载荷的**可花额**那一半 ───────────────────────
 
@@ -2902,5 +3066,209 @@ mod tests {
         assert!(fetches_wallet_payload(
             "      Live.wallet = await api.get(\"/api/wallet\");"
         ));
+    }
+
+    /// 交易载荷有两件事必须**同源**：① 「缓存还新不新」的判据（载荷签名）必须覆盖每一个改变
+    /// 请求体的输入；② 任何一次「控件改了查询状态」只许有**一个**重拉触发器（C2146）。
+    ///
+    /// 轴：交易列表/趋势的 URL 由 `txRangeParams()` 从**时间段状态**渲染，而守卫比对的
+    /// `txFilterSig()` 只哈希**列筛选**。两份状态、一份判据 ⇒ 时间段控件改完没人重拉，于是三个
+    /// 时间段处理器各自**补一次显式 `loadTransactions()`**。补丁在「守卫也成立」时会并发第二次
+    /// 请求：`#tx-range` 处理器**先把页码重置为 1**，再渲染 —— 只要用户不在第 1 页，
+    /// `loadedPage !== page` 就让守卫成立、`renderTransactions()` 自己发一次并 return，随后那句
+    /// 显式调用再发一次 ⇒ **两份逐字相同的列表请求（外加趋势请求也两遍）**。第 1 页上只有一次，
+    /// 所以它潜伏至今（要复现必须先翻页）。
+    ///
+    /// 四条规则，各有各的牙：
+    /// 1. **判据覆盖全部输入**：守卫比对的签名函数必须同时读列筛选与三个时间段状态变量，且
+    ///    **不得**由 `txRangeParams()` 派生（它含「now − 窗口」的时间戳，每次调用都不同 ⇒
+    ///    签名恒变 ⇒ 守卫每次渲染都重拉，形成请求风暴 —— 比原缺陷更坏）。
+    /// 2. **控件不许自带取数**：控件绑定所在函数体内不得出现 `loadTransactions()`。
+    /// 3. **触发器唯一且被所有控件使用**：候选（体内既重置页码、又直接调 `loadTransactions()`）
+    ///    必须恰好一个；两个候选就是两条各自独立的触发路径。
+    /// 4. **触发器的显式取数只在槽为空时用**：它必须提到 `!Live.transactions` —— 槽非空时
+    ///    `renderTransactions()` 的守卫会自己决定要不要重拉，触发器再无条件拉一次就又是两次。
+    #[test]
+    fn the_transaction_payload_has_one_signature_and_one_reload_trigger() {
+        // 提取器自证（坑 #296 的镜像：本轮的修法**就在控件旁边**写着两句提到
+        // `loadTransactions()` 的解释，原文判定会把门禁自己判红）
+        let noisy = "  function demo() {\n    // loadTransactions() 出现在注释里\n    /* txTable.page = 1; */\n    return 1;\n  }\n";
+        assert_eq!(
+            code_body(noisy, "demo"),
+            "function demo() {\nreturn 1;",
+            "`code_body` 没剥掉注释（含块注释）—— 规则 2/3 会被说明性注释判红"
+        );
+        assert_eq!(
+            reload_trigger_candidates(noisy),
+            Vec::<String>::new(),
+            "注释里的 `loadTransactions()` / `txTable.page = 1` 被当成了证据"
+        );
+        assert!(
+            mentions_tx_loader("      loadTransactions();"),
+            "装载器调用没认出来"
+        );
+        assert!(
+            !mentions_tx_loader("      reloadTransactions();"),
+            "`reloadTransactions()` 被当成了 `loadTransactions()` 的证据 —— 两个符号是前缀关系，\
+             子串匹配会让规则 2 在**每一个**修好的树上判红（坑 #333）"
+        );
+        assert_eq!(
+            tx_control_owner(
+                "  function outer() {\n    const el = $(\"#tx-range\");\n    function inner() {}\n    el.addEventListener(\"change\", () => {});\n  }\n"
+            )
+            .as_deref(),
+            Some("outer"),
+            "归属被判给了后声明的嵌套函数（位置启发式的老毛病）"
+        );
+
+        let guard = code_body(APP_JS, "renderTransactions");
+        assert!(
+            mentions_tx_loader(&guard),
+            "提取到的 `renderTransactions` 体里没有守卫的重拉调用 —— 提取器坏了，规则 1 会假绿"
+        );
+
+        // 阳性对照：签名函数必须被提取到（空集上的断言会假绿）。**不写函数名** ——
+        // 写死名字会让改前树因为「名字对不上」而红，红在错的那条规则上。
+        let sig = query_sig_name(&guard)
+            .expect("守卫里找不到「已加载签名 !== <函数>()」的比对 —— 判别式坏了（或守卫被改写）");
+        assert!(
+            js_function_body(APP_JS, &sig).is_some(),
+            "守卫比对的 `{sig}` 不是本文件里的函数"
+        );
+        let sig_body = code_body(APP_JS, &sig);
+        assert!(
+            sig_body.lines().count() >= 2,
+            "签名函数 `{sig}` 的体只提取到 {} 行 —— `code_body` 只适用多行函数，先自证再说规则",
+            sig_body.lines().count()
+        );
+
+        // 规则 1：签名覆盖**列筛选 + 时间段**，且只取状态值
+        assert!(
+            sig_body.contains(TX_FILTER_STATE),
+            "签名函数 `{sig}` 没读列筛选状态（`{TX_FILTER_STATE}`）—— 列筛选改完不会重拉"
+        );
+        for state in TX_RANGE_STATE {
+            assert!(
+                mentions_identifier(&sig_body, state),
+                "签名函数 `{sig}` 没读时间段状态 `{state}` —— 那个控件改完守卫看不见，\
+                 只能靠调用方补一次显式拉取，而补的那一次会在守卫也成立时变成第二次请求（C2146）"
+            );
+        }
+        assert!(
+            !sig_body.contains(TX_RANGE_RENDERER),
+            "签名函数 `{sig}` 由 `{TX_RANGE_RENDERER}` 派生 —— 它含「now − 窗口」的毫秒时间戳，\
+             每次调用都不同 ⇒ 签名恒变 ⇒ 守卫每次渲染都重拉（请求风暴，比原缺陷更坏）"
+        );
+
+        // 规则 2：控件绑定所在函数不得自己取数
+        let wiring = tx_control_owner(APP_JS)
+            .expect("找不到注册 `#tx-range` 的函数 —— 规则 2 的射程会静默变空");
+        let wiring_body = code_body(APP_JS, &wiring);
+        assert!(
+            wiring_body.contains(TX_RANGE_CONTROL),
+            "`{wiring}` 的体里没有 `{TX_RANGE_CONTROL}` —— 提取错了函数（规则 2 会假绿）"
+        );
+        assert!(
+            !mentions_tx_loader(&wiring_body),
+            "`{wiring}`（交易控件的绑定函数）自己调了 `loadTransactions()` —— 控件必须只调唯一的\
+             重拉触发器：`renderTransactions()` 的守卫已经会按签名/页码决定重拉，再补一次会在守卫\
+             也成立时并发第二次请求（C2146：第 2 页起改一次时间段发两遍列表 + 两遍趋势）"
+        );
+
+        // 规则 3：触发器唯一，且被控件使用
+        let triggers = reload_trigger_candidates(APP_JS);
+        assert_eq!(
+            triggers.len(),
+            1,
+            "「体内重置页码、又直接调 `loadTransactions()`」的函数应恰好一个，实际 {triggers:?} —— \
+             多于一个即两条各自独立的触发路径（本轴要消掉的就是这种形状）"
+        );
+        let trigger = &triggers[0];
+        let trigger_body = code_body(APP_JS, trigger);
+        assert!(
+            trigger_body.contains("renderTransactions()"),
+            "触发器 `{trigger}` 没走 `renderTransactions()` —— 那就绕过了签名守卫，\
+             槽非空时它必然与守卫重复拉取"
+        );
+        let uses = wiring_body.matches(&format!("{trigger}()")).count();
+        assert!(
+            uses >= 4,
+            "`{wiring}` 里只调了 `{trigger}()` {uses} 次 —— 四个控件（顶部 tab + 时间段快捷/起/止）\
+             都必须走这一个触发器（漏掉的那个就只能自带取数）"
+        );
+
+        // 规则 4：触发器里的显式取数只在槽为空时用
+        assert!(
+            trigger_body.contains("!Live.transactions"),
+            "触发器 `{trigger}` 里的显式 `loadTransactions()` 没有被「槽为空」守住 —— \
+             槽非空时守卫会自己重拉，这里再拉一次就是两次请求"
+        );
+
+        // ── 判别式自证（合成输入）─────────────────────────────────────────────────────
+        // 规则 1 的判别式：`!==` 右侧取到的是**签名函数**，不是页码/每页行数那些值
+        let real_guard = "    if (Live.transactions && (txTable.loadedPage !== txTable.page \
+                          || txTable.loadedPageSize !== txTable.pageSize \
+                          || txTable.loadedQuerySig !== txQuerySig())) {";
+        assert_eq!(
+            query_sig_name(real_guard).as_deref(),
+            Some("txQuerySig"),
+            "判别式没从守卫里取出签名函数名（前两项的右侧把后面的比较式一起带进来，必须被刷掉）"
+        );
+        // 顺序无关：签名比对写在最前面也一样取得到
+        assert_eq!(
+            query_sig_name(
+                "    if (txTable.loadedQuerySig !== txQuerySig() || txTable.loadedPage !== txTable.page) {"
+            )
+            .as_deref(),
+            Some("txQuerySig"),
+            "判别式假设了签名比对排在最后 —— 换个顺序就取不到（规则 1 会假绿）"
+        );
+        // 只比页码的守卫：右侧不是调用 ⇒ `None`（调用方 `expect` 会当场报错，而不是静默假绿）
+        assert_eq!(
+            query_sig_name("    if (txTable.loadedPage !== txTable.page) {"),
+            None,
+            "「右侧不是函数调用」的守卫被当成了签名比对"
+        );
+
+        // 规则 1 的牙：`txRangeParams()` 派生的签名必须被这条断言看见
+        let storm_sig = function_source(
+            "  function txQuerySig() { return txTable.filters + txRangeParams(); }",
+            "txQuerySig",
+        )
+        .expect("`function_source` 取不到单行函数（自证提取器）");
+        assert!(
+            storm_sig.contains(TX_RANGE_RENDERER),
+            "自证失败：由 `txRangeParams()` 派生的签名本该被 `contains({TX_RANGE_RENDERER:?})` 命中 —— \
+             规则 1 的第三条断言没有牙"
+        );
+
+        // 规则 2/3 的判别式
+        assert!(
+            !writes_tx_page("    const page = Math.max(1, txTable.page || 1);"),
+            "读 `txTable.page` 被当成了写"
+        );
+        assert!(
+            !writes_tx_page("    txTable.pageSize = Math.min(100, x);"),
+            "`txTable.pageSize` 被当成了 `txTable.page`（前缀没收到标识符边界）"
+        );
+        assert!(writes_tx_page("    txTable.page = 1;"), "真正的写没认出来");
+
+        // 规则 3：合成输入 —— 两条触发路径必须被点名
+        let two_triggers = concat!(
+            "  function reloadTransactions() { txTable.page = 1; loadTransactions(); renderTransactions(); }\n",
+            "  function otherReload() { txTable.page = 1; loadTransactions(); }\n"
+        );
+        assert_eq!(
+            reload_trigger_candidates(two_triggers),
+            vec!["otherReload".to_string(), "reloadTransactions".to_string()],
+            "规则 3 认不出第二条触发路径（半修会全绿）"
+        );
+        assert!(
+            reload_trigger_candidates(
+                "  function reloadTransactions() { txTable.page = 1; renderTransactions(); }\n"
+            )
+            .is_empty(),
+            "不含显式取数的函数被当成了触发器"
+        );
     }
 }

@@ -738,7 +738,7 @@
     //
     // C2130：这是**另一种查询**的载荷（`page_size=1`，只为读 `total`），只能进仪表盘**自己的**槽。
     // 它曾写进 `Live.transactions` —— 那是**交易视图自己的**载荷缓存，由 `loadTransactions` 写入，
-    // 并由同一个函数写下它的有效性证据（`txTable.loadedPage/loadedPageSize/loadedFilterSig`）。
+    // 并由同一个函数写下它的有效性证据（`txTable.loadedPage/loadedPageSize/loadedQuerySig`）。
     // 换了写者，证据就与缓存内容脱钩：`renderTransactions` 的守卫比的正是那三项，
     // 于是**放行**仪表盘的载荷 —— 再入交易页时表格只剩 1 行（page_size=1）、汇总卡挂着
     // 「当前筛选」却显示全时段数字（仪表盘那次请求不带时间范围）、趋势卡谎报「加载失败」
@@ -1631,9 +1631,11 @@
       setLiveError($("#tx-table"), loadErrorHtml(T("tx.loadFail"), T("err.loadFail")), () => loadTransactions());
       return;
     }
-    // 真后端分页 + 列筛选（rant 2026-08-24T10:51:57 + 2026-08-25T10:33:26）：页码/每页行数/筛选条件
-    // 任一与已加载不一致 → 重新向后端拉取对应页（筛选变化同样触发，不再只过滤本地当前页）
-    if (Live.transactions && (txTable.loadedPage !== txTable.page || txTable.loadedPageSize !== txTable.pageSize || txTable.loadedFilterSig !== txFilterSig())) {
+    // 真后端分页 + 列筛选 + 时间段（rant 2026-08-24T10:51:57 + 2026-08-25T10:33:26 + C2146）：
+    // 页码/每页行数/**载荷签名**任一与已加载不一致 → 重新向后端拉取对应页。签名要覆盖每一个
+    // 改变请求体的输入（列筛选 **与** 时间段），否则那个控件就只能靠调用方补一次显式拉取 ——
+    // 而补的那一次会在本守卫也成立时变成第二次请求（C2146 实测：第 2 页起改一次时间段发两遍）。
+    if (Live.transactions && (txTable.loadedPage !== txTable.page || txTable.loadedPageSize !== txTable.pageSize || txTable.loadedQuerySig !== txQuerySig())) {
       loadTransactions();
       return;
     }
@@ -1717,10 +1719,25 @@
     const sel = document.querySelector('#tx-table select[data-filter-key="type"]');
     if (sel) sel.value = txTable.filters.type;
   }
-  // 列筛选签名：筛选条件变化 → renderTransactions 触发重拉（rant 2026-08-25T10:33:26）
-  function txFilterSig() {
+  // 载荷签名（C2146）：**决定请求体的全部状态** —— 列筛选 + 时间段（范围值 + 自定义起止）。
+  // 它必须覆盖每一个会改变载荷的输入，否则控件改完没人重拉，只能由调用方**补一次显式拉取**，
+  // 而那个补丁会在「重拉触发条件也成立」时并发第二次请求（C2112 已为顶部 tab 记下这个坑）。
+  // ⚠️ 取**状态值**，不能取 `txRangeParams()`：后者含「now − 窗口」的毫秒时间戳，每调用一次都不同
+  //    ⇒ 签名恒变 ⇒ 守卫每次渲染都重拉 ⇒ 请求风暴（比原缺陷更坏）。
+  function txQuerySig() {
     const f = txTable.filters || {};
-    return Object.keys(f).sort().map((k) => k + "=" + String(f[k] == null ? "" : f[k])).join("&");
+    const cols = Object.keys(f).sort().map((k) => k + "=" + String(f[k] == null ? "" : f[k])).join("&");
+    return cols + "|" + txRange + "|" + txCustomStart + "|" + txCustomEnd;
+  }
+
+  // 交易载荷的**唯一重拉触发器**（C2146）：控件的状态一改就调它一次 —— 页码重置与重拉是同一个
+  // 动作，谁也不许绕过（显式 `loadTransactions()` 只在这里出现，且只在**槽为空**时用：首次进入
+  // 或上次失败时 `renderTransactions()` 只画降级态、不拉取）。槽非空时交给它内部基于签名的比对
+  // 决定 ⇒ 任何一次控件变更**至多一次**请求，而不是「渲染一次 + 补一次」。
+  function reloadTransactions() {
+    txTable.page = 1;
+    if (loggedIn() && !Live.transactions) { loadTransactions(); return; }
+    renderTransactions();
   }
 
   // P2-B：按 tab 拉取交易（真后端分页 rant 2026-08-24T10:51:57：页码/每页行数随请求发出；
@@ -1748,7 +1765,7 @@
       if (Live.transactions) Live.transactions.trend = trend;
       txTable.loadedPage = page;
       txTable.loadedPageSize = pageSize;
-      txTable.loadedFilterSig = txFilterSig(); // 记录已加载的筛选条件，变化时 renderTransactions 重拉
+      txTable.loadedQuerySig = txQuerySig(); // 记录已加载的载荷签名，变化时 renderTransactions 重拉
     } catch (e) { Live.transactions = null; /* 登录态降级空态 */ }
     renderTransactions();
     // 翻页后滚动到列表顶部（rant 2026-08-24T10:51:57 需求 4）
@@ -3901,16 +3918,18 @@
     $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
 
     // 交易 Tab（P2-B：切 tab 重新拉后端过滤数据）：tab 写的就是类型筛选本身（setTxTypeFilter）
-    // —— 它也负责把「类型」列筛选控件同步成同一个值，否则两份控件又会各说各话；控件状态一变，
-    // renderTransactions 里的签名比对自会重拉（勿再显式调 loadTransactions，会与它并发两次请求）。
+    // —— 它也负责把「类型」列筛选控件同步成同一个值，否则两份控件又会各说各话。控件状态一变只调
+    // reloadTransactions()：它重置页码，然后由 renderTransactions() 的签名比对决定是否重拉
+    // （勿再显式调 loadTransactions，那会与守卫并发两次请求；C2146 起四个控件都走这一个触发器）。
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => {
       setTxTypeFilter(b.dataset.txTab === "all" ? "" : b.dataset.txTab);
-      txTable.page = 1;
-      renderTransactions();
+      reloadTransactions();
     }));
     $("#tx-export-btn").addEventListener("click", exportTxCsv); // 导出 CSV（rant 20:46:57 E）
 
-    // 交易时间段（rant 2026-08-22T10:50:00：快捷范围 + 自定义起止，切换后重载列表与汇总）
+    // 交易时间段（rant 2026-08-22T10:50:00：快捷范围 + 自定义起止，切换后重载列表与汇总）。
+    // C2146：时间段是**载荷签名的一部分**（txQuerySig），故与顶部 tab 同款 —— 只调唯一触发器，
+    // 不再自己补一次 loadTransactions()（那会在「页码从第 2 页重置为 1」时与守卫并发两次请求）。
     const txRangeEl = $("#tx-range");
     const txStartEl = $("#tx-range-start");
     const txEndEl = $("#tx-range-end");
@@ -3923,12 +3942,10 @@
       txRangeEl.addEventListener("change", () => {
         txRange = txRangeEl.value;
         showCustom();
-        txTable.page = 1;
-        renderTransactions();
-        if (loggedIn()) loadTransactions();
+        reloadTransactions();
       });
-      txStartEl.addEventListener("change", () => { txCustomStart = txStartEl.value; txTable.page = 1; if (loggedIn()) loadTransactions(); });
-      txEndEl.addEventListener("change", () => { txCustomEnd = txEndEl.value; txTable.page = 1; if (loggedIn()) loadTransactions(); });
+      txStartEl.addEventListener("change", () => { txCustomStart = txStartEl.value; reloadTransactions(); });
+      txEndEl.addEventListener("change", () => { txCustomEnd = txEndEl.value; reloadTransactions(); });
       showCustom();
     }
 
