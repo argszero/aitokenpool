@@ -761,25 +761,27 @@
   // 最近使用（rant 20:46:57 D：localStorage atp-recent-models 最近 5 个去重，复用 .chip，点击直接使用）
   const RECENT_MAX = 5;
   const RECENT_KEY = "atp-recent-models";
-  function getRecentIds() {
+  function getRecentKeys() {
     try {
       const arr = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
-      return Array.isArray(arr) ? arr.filter((x) => Number.isFinite(+x)).map(Number) : [];
+      // 只认身份串（provider/model）。旧版本存的是**下标**（数字）—— 它无法被诚实地还原成
+      // 某个模型（数组顺序一变、换一张表，同一个数字就是另一个模型），故按空处理、一次性丢弃。
+      return Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && x.indexOf("/") > 0) : [];
     } catch (e) { return []; } // 旧数据/隐私模式：按空处理
   }
-  function saveRecentIds(ids) {
-    try { localStorage.setItem(RECENT_KEY, JSON.stringify(ids.slice(0, RECENT_MAX))); } catch (e) { /* 隐私模式忽略 */ }
+  function saveRecentKeys(keys) {
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(keys.slice(0, RECENT_MAX))); } catch (e) { /* 隐私模式忽略 */ }
   }
-  function markRecentUsed(id) {
-    const ids = getRecentIds().filter((x) => x !== id); // 去重：已存在则先移除
-    ids.unshift(id);                                     // 最新使用放最前
-    saveRecentIds(ids);
+  function markRecentUsed(key) {
+    const keys = getRecentKeys().filter((x) => x !== key); // 去重：已存在则先移除
+    keys.unshift(key);                                     // 最新使用放最前
+    saveRecentKeys(keys);
   }
   function renderRecent() {
     const wrap = $("#mk-recent-chips");
-    const chips = getRecentIds().map((id) => {
-      const m = (Live.models ? modelsToView(Live.models) : D.MARKET).find((x) => x.id === id);
-      return m ? '<button type="button" class="chip" data-recent-model="' + id + '" title="' + esc(m.provider) + " · " + T("mk.recent.use") + '">' + esc(m.model) + "</button>" : null;
+    const chips = getRecentKeys().map((key) => {
+      const m = (Live.models ? modelsToView(Live.models) : D.MARKET).find((x) => modelKey(x) === key);
+      return m ? '<button type="button" class="chip" data-recent-model="' + esc(modelKey(m)) + '" title="' + esc(m.provider) + " · " + T("mk.recent.use") + '">' + esc(m.model) + "</button>" : null;
     }).filter(Boolean);
     wrap.innerHTML = chips.join("");
     $("#mk-recent").hidden = chips.length === 0;
@@ -853,7 +855,7 @@
     $("#mk-body").innerHTML = guestHint + (list.length ? list.map((m) =>
       "<tr><td data-label='" + T('mk.col.providerModel') + "'>" +
       '<div class="provider-cell">' +
-      '<button type="button" class="row-expand" data-mk-expand="' + m.id + '" title="' + (mkExpanded === m.id ? T("mk.collapse") : T("mk.expand")) + '">' + (mkExpanded === m.id ? "−" : "+") + "</button>" +
+      '<button type="button" class="row-expand" data-mk-expand="' + esc(modelKey(m)) + '" title="' + (mkExpanded === modelKey(m) ? T("mk.collapse") : T("mk.expand")) + '">' + (mkExpanded === modelKey(m) ? "−" : "+") + "</button>" +
       '<span class="dot' + (m.avail ? "" : " muted") + '"></span>' +
       '<span><span class="muted" style="font-size:11.5px;display:block">' + hl(m.provider, rawQ) + "</span>" +
       '<span class="model-name">' + hl(m.model, rawQ) + "</span></span></div></td>" +
@@ -866,10 +868,10 @@
       // 可用性 pill（rant 第 4 节：keys>=2 可用·N key / keys==1 紧张 / 无计数但标着可用 → 可用 / 无 key）
       // —— 有计数用计数，没计数用 `avail`（游客兜底表只有布尔，见 availPill 的注释）
       "<td data-label='" + T('mk.col.avail') + "'>" + availPill(m) + "</td>" +
-      "<td data-label='" + T('mk.col.action') + "'><button class='btn btn-primary btn-sm' data-use-model='" + m.id + "'" + (m.avail ? "" : " disabled") + ">" + T("mk.use") + "</button>" +
+      "<td data-label='" + T('mk.col.action') + "'><button class='btn btn-primary btn-sm' data-use-model='" + esc(modelKey(m)) + "'" + (m.avail ? "" : " disabled") + ">" + T("mk.use") + "</button>" +
       // 零 mock：成功率后端暂无字段 → 仅当有真实值时展示（multi/success 已从 data.js 移除）
       (m.success != null ? "<div class='muted' style='margin-top:4px;font-size:12px'>" + T("mk.success", { p: m.success }) + "</div>" : "") + "</td></tr>" +
-      (mkExpanded === m.id ? '<tr class="mk-detail"><td colspan="7">' + mkDetailHtml(m) + "</td></tr>" : "")
+      (mkExpanded === modelKey(m) ? '<tr class="mk-detail"><td colspan="7">' + mkDetailHtml(m) + "</td></tr>" : "")
     ).join("") : emptyRow(7, T("mk.empty"), T("mk.empty.sub"),
       '<button type="button" class="btn btn-ghost" data-mk-clear-filters>' + T("mk.clearFilters") + "</button>"));
     pulseTbody($("#mk-body"));
@@ -2990,10 +2992,10 @@
   function openChat(id) {
     // 零 mock（rant 15:54:06）：登录态绝不回退 D.MARKET
     if (loggedIn() && !Live.models) { toast(T("err.loadFail"), "error"); return; }
-    const m = (Live.models ? modelsToView(Live.models) : D.MARKET).find((x) => x.id === id);
+    const m = (Live.models ? modelsToView(Live.models) : D.MARKET).find((x) => modelKey(x) === id);
     if (!m) return;
     if (!m.avail) { toast(T("chat.busy"), "error"); return; }
-    markRecentUsed(id); // 记录最近使用（rant 20:46:57 D：去重 + 置顶，最多 5 个）
+    markRecentUsed(modelKey(m)); // 记录最近使用（rant 20:46:57 D：去重 + 置顶，最多 5 个）
     renderRecent();     // 立即刷新最近使用 chips
     chatModel = m;
     $("#chat-title").textContent = T("chat.title", { model: m.model });
@@ -3015,11 +3017,11 @@
     // 零 mock（rant 15:54:06）：登录态绝不回退 D.MARKET
     if (loggedIn() && !Live.models) { toast(T("err.loadFail"), "error"); return; }
     const src = Live.models ? modelsToView(Live.models) : [];
-    const m = src.find((x) => x.id === id);
+    const m = src.find((x) => modelKey(x) === id);
     if (!m) return;
     if (!m.avail) { toast(T("chat.busy"), "error"); return; }
     if (!loggedIn()) { toast(T("chat.login.need"), "error"); return; }
-    markRecentUsed(id); // 记录最近使用（rant 20:46:57 D）
+    markRecentUsed(modelKey(m)); // 记录最近使用（rant 20:46:57 D）
     renderRecent();
     const btn = document.querySelector('[data-use-model="' + id + '"]');
     if (btn) { btn.disabled = true; btn.textContent = T("chat.calling"); }
@@ -3267,13 +3269,21 @@
   // multi=available_keys>=2 真实计算；success 后端暂无字段 → null，视图不渲染假成功率；
   // peak 高峰时段价（rant 2026-08-20T11:58:40）：peak_input_per_m>0 → 启用高峰计费，展示 ×N 标注）
   // 零 mock（rant 2026-08-19T15:54:06）：不读 data.js MARKET 兜底
+  // 模型行的**稳定身份**（C2138）：`provider/model`。**位置不是身份** —— `modelsToView()` 曾用
+  // `id: i`（数组下标）当模型的身份，而下标只在生成它的那一次渲染里有意义：`/api/models` 按
+  // `provider, model` 排序（加/删一个模型就让后面全部位移），游客兜底表 `data.js > MARKET` 更是
+  // 另一张表（7 行、id 1..7、顺序与长度都不同，只是**数字上看起来**是同一个空间）。
+  // 一旦下标被存进 localStorage（「最近使用」），它就跨了渲染 / 跨了会话 / 跨了数组 —— 芯片于是
+  // 指向**另一个模型**（实测：用了 xai/grok-4.6，游客市场里显示 google/gemini-3.1-pro），或者
+  // 因为对不上号而**整条消失**（登录态下标从 0 起，游客表 id 从 1 起）。
+  function modelKey(m) { return (m && m.provider ? m.provider : "") + "/" + (m && m.model ? m.model : ""); }
+
   function modelsToView(list) {
-    return list.map((m, i) => {
+    return list.map((m) => {
       const cny = m.currency === "CNY";
       const mult = cny ? 1 : 7.2;
       const peak = (m.peak_input_per_m || 0) > 0;
       return {
-        id: i,
         provider: m.provider,
         model: m.model,
         in: Math.round(m.input_per_m * mult * 1e5) / 1e5,
@@ -3695,7 +3705,7 @@
       // 行展开 / 收起（rant 20:39:30 F：仅展开当前行，点其它行自动收起）
       const ex = e.target.closest("[data-mk-expand]");
       if (ex) {
-        const id = Number(ex.dataset.mkExpand);
+        const id = ex.dataset.mkExpand;
         mkExpanded = mkExpanded === id ? null : id;
         renderMarketplace();
         return;
@@ -3703,7 +3713,7 @@
       const b = e.target.closest("[data-use-model]");
       if (b) {
         if (isGuest) { toast(T("chat.login.need"), "error"); return; }
-        consumeModel(Number(b.dataset.useModel));
+        consumeModel(b.dataset.useModel);
         return;
       }
       // 空状态：清除筛选
@@ -3718,14 +3728,14 @@
     // 最近使用 chips（rant 20:46:57 D：点击直接使用 / 清空）
     $("#mk-recent").addEventListener("click", (e) => {
       if (e.target.closest("[data-mk-recent-clear]")) {
-        saveRecentIds([]);
+        saveRecentKeys([]);
         renderRecent();
         return;
       }
       const c = e.target.closest("[data-recent-model]");
       if (c) {
         if (isGuest) { toast(T("chat.login.need"), "error"); return; }
-        openChat(Number(c.dataset.recentModel));
+        openChat(c.dataset.recentModel);
       }
     });
     $("#chat-send").addEventListener("click", sendChat);
