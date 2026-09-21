@@ -826,3 +826,27 @@ toast(next === "paused" ? T("share.toggle.paused", …) : T("share.toggle.resume
 取的是同一字段（把 `outcome` 写成 `label` 的门禁看不出来，仪器能）。静态门禁挡的是**形状**
 （两侧各自解释状态），值是探针在它所跑的那棵树上覆盖的。
 
+## 共享行的 plan 显示名：一个来源，四个渲染点（C2157）
+
+共享行（`/api/sharings` 的 `keys.plan`）只存**配置 id**；显示名必须由**语言包感知**的解析器从 id 派生，
+而不是把 id 直接印出来。此前同屏两个口径：上架下拉与成功 toast 印标签（`DeepSeek · API（按量）`），
+而共享表单元格（`#share-body`）与仪表盘「我的共享」卡（`#dash-sharings`）印 id
+（`DeepSeek · deepseek-paygo`）。
+
+**约定（三条，缺一不可）**：
+
+1. **一对 helper 就是全部**：`planList()` 是两张 plan 表（`Live.plans` / `D.PLANS`）的**唯一**合读点，
+   `planById(id)` 是**唯一**的 id→plan 解析，`planLabelById(id)` 是**唯一**的「存储 id → 标签」产出；
+   渲染点消费**派生值**（`esc(s.plan)`），不得再内联 `s.plan || "API"`。未知 id（config 变更后的陈旧 id）
+   由 `planLabelById` 原样返回 —— 语言中性，与旧行为一致。
+2. **解析器判别式必须覆盖全部解析器**：`i18n_pack::backend_neutral_data_labels_are_localized_in_the_client`
+   的判别式接受 `planLabel(` **或** `planLabelById(`。锚在单个函数名上会把第二个合法入口判成红
+   （同族：#347「名字不是唯一载体」）—— 要放宽的是**判别式**，不是把 helper 改名去迁就子串。
+3. **跨视图的槽：每个渲染它的分支都要接上写者**：`renderDashboard` 经 `sharingsToView` →
+   `planLabelById` 读 `Live.plans`，因此该槽的唯一写者 `refreshPlans()` 必须由 `loadSharing()`
+   **和** `loadDashboard()` 各调一次（与 C2135 的 `refreshDashboard()` 同形）。少一个分支，会话若在
+   该视图上建立就只拿得到兜底表（卡片显示**类型级**标签而非该 plan 的名字），且**永不自愈**。
+
+⚠️ **射程**：门禁是**词法**的 —— 它证明四个渲染点渲染的是派生值、`sharingsToView` 的 `plan:` 走了
+`planLabelById`、`planLabelById` 不读 `name`（兜底表 `D.PLANS[].name` 是中文硬编码，C2133 ⛔ 未修）。
+它**不**证明运行期标签取到的是哪一支 —— 那是 jsdom 仪器的职责，而 `cargo test` 里没有 JS 运行器。
