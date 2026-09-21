@@ -2507,9 +2507,580 @@ fn caption_names_spendable_half(
     c.contains(spendable_marker) && !c.contains(permanent_marker)
 }
 
+// ============================== PART A: module-level helpers ================================
+
+// ── R139：表单控件的 property 式 `disabled` 必须在回收路径上被清除 ──────────────────────────────
+//
+// 共享上架表单的「每天」快捷勾选，用 **property** 方式给七个单日 chip 打上 `disabled`
+// （`cb.disabled = allCb.checked`），而成功上架后表单走 `e.target.reset()` 回收 ——
+// **`HTMLFormElement.reset()` 只还原「值 / 勾选态」到默认值，不清 `disabled` property**。
+// 于是勾着「每天」成功上架一次之后，七枚 chip 是「未勾选 + 禁用」：点任何一天都没反应，
+// 且**整个会话不自愈**（表单卡片是静态 HTML，不参与重渲染；`showShareForm` / `renderSharing`
+// / `fillPlans` 都不碰它）。唯一恢复路径是把「每天」再勾上又取消一次。
+//
+// 本门禁钉的是**形状**：凡「按 CSS 标签 `input` 取到的表单控件被 property 式禁成非 `false`」
+// 的写点，都必须能在**表单回收路径**上找到**同一频道**的 `.disabled = false`。
+//
+// ⚠️ 浏览器事实（`reset()` 不清 property）与「点一个星期没反应」只有 DOM 仪器能证
+// （`r139_probe.js`：未修树恰 `{B1,B2}` 红 / 修复树 9/9 绿 / 竞争修法 `m_drop` 被 `{C3,C2,A3}` 拒绝）。
+// 本模块只钉**代码形状** —— 与 C2148 同款分工：**形状归门禁、事实归探针**。
+//
+// 已知边界（如实的射程，不是承诺）：
+// - 频道只认**双引号**选择器字面量（`$("…")` / `$$("…")` / `querySelector(All)("…")`）。仓内的
+//   `$` / `$$` 工具一律双引号，而十几处**按钮**瞬时禁用走 `querySelector('button…')`（单引号）
+//   或事件目标 ⇒ 天然不在射程内（不是靠名册排除的）。
+// - 写点的频道按**向上 80 行内最近的一个**含 `input` 标签的选择器字面量归属；今日全仓只有一个
+//   这样的频道（`#sf-days .chip input`），`r139_verify_anchors.py` 的 `D4` 腿把它钉成 1。
+
+/// 从一行里取出 `const NAME = (` / `let NAME = (` / `var NAME = (` 的 `NAME`（只认行首声明）。
+fn arrow_name(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let rest = t
+        .strip_prefix("const ")
+        .or_else(|| t.strip_prefix("let "))
+        .or_else(|| t.strip_prefix("var "))?;
+    let (name, _) = rest.split_once(" = (")?;
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        return None;
+    }
+    Some(name)
+}
+
+/// 声明（`function NAME(` 或 `const NAME = (`）的**字节区间**。
+///
+/// 既有的 [`js_function_body`] 靠「首个恰为 `  }` 的行」收尾 ⇒ 只适用于**两空格缩进的多行函数**，
+/// 既看不见本轴的三个符号（`afterOk` / `showShareForm` / `resetShareAvail` 都是深缩进的箭头常量），
+/// 也会被**单行函数**吞掉一整段（坑 #319 / #332：`const hideShareForm = () => { … };` 会让
+/// 「首个恰为 `};` 的行」落到几百行之外）。这里改用**花括号配平**收尾；声明行上没有 `{`
+/// （`const shareFormCard = () => $("#share-form-card");`）时退回该行本身。
+fn decl_spans(src: &str) -> Vec<(String, usize, usize)> {
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    for line in src.split_inclusive('\n') {
+        if let Some(name) = function_name(line).or_else(|| arrow_name(line)) {
+            out.push((name.to_string(), offset, decl_end(src, offset)));
+        }
+        offset += line.len();
+    }
+    out
+}
+
+/// 声明区间的收尾（花括号配平；声明行上没有 `{` ⇒ 该行末尾）。
+fn decl_end(src: &str, start: usize) -> usize {
+    let line_end = src[start..]
+        .find('\n')
+        .map(|i| start + i)
+        .unwrap_or(src.len());
+    let Some(open) = src[start..line_end].find('{').map(|i| start + i) else {
+        return line_end;
+    };
+    let mut depth = 0i32;
+    for (i, c) in src[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return open + i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    src.len()
+}
+
+/// 包含 `pos` 的**最内层**声明名。
+///
+/// 不能用「命中行之前最近声明的那个函数」：`showShareForm` / `afterOk` 都声明在 `bindEvents`
+/// 体内，那个启发式会把它们的语句全归给 `bindEvents`，而 `bindEvents` 的调用闭包是**整个文件**
+/// —— 于是「闭包里有没有一处清 `disabled`」对任何树都恒真（坑 #336 的归属启发式正是这样失效的）。
+fn span_owner(spans: &[(String, usize, usize)], pos: usize) -> Option<String> {
+    spans
+        .iter()
+        .filter(|(_, s, e)| *s <= pos && pos < *e)
+        .min_by_key(|(_, s, e)| e - s)
+        .map(|(n, _, _)| n.clone())
+}
+
+/// 某个声明的**区间文本**。
+fn span_body<'a>(src: &'a str, spans: &[(String, usize, usize)], name: &str) -> Option<&'a str> {
+    spans
+        .iter()
+        .find(|(n, _, _)| n == name)
+        .map(|(_, s, e)| &src[*s..*e])
+}
+
+/// 逐行的 `(行首字节偏移, 注释剥离后的代码文本)`。
+///
+/// 归属判定要**原始偏移**：`code_text_by_line` 剥掉注释后偏移就变了，拿它去查区间会把归属查错
+/// （本轮 R139 第一版就是这样把 `e.target.reset()` 归给了 `sendChat`，`reset_fn` 直接判错）。
+fn code_lines_at(src: &str) -> Vec<(usize, String)> {
+    let text = code_text_by_line(src);
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    for (i, line) in src.split('\n').enumerate() {
+        let body = text.get(i).cloned().unwrap_or_default();
+        out.push((offset, strip_trailing_comment(&body).trim().to_string()));
+        offset += line.len() + 1;
+    }
+    out
+}
+
+/// 一行里的 `$$("SEL")` / `$("SEL")` / `querySelector(All)("SEL")` 选择器**双引号**字面量。
+fn selector_literals(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for pat in ["$$(\"", "$(\"", "querySelectorAll(\"", "querySelector(\""] {
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find(pat) {
+            let s = from + rel + pat.len();
+            let Some(end) = line[s..].find('"') else {
+                break;
+            };
+            out.push(line[s..s + end].to_string());
+            from = s + end + 1;
+        }
+    }
+    out
+}
+
+/// CSS 标识符字节（`-` 也算 —— `#chat-input` 是一个整体）。
+fn is_css_ident_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'$'
+}
+
+/// `sel` 是否按 **CSS 标签** `input` 取控件。
+///
+/// 不能写成 `sel.contains("input")`：`#chat-input`（对话输入框）也含 `input`，而 `-` 是 CSS
+/// 标识符字符 ⇒ 子串匹配会把兄弟标识符当证据（坑 #333 同族）。本轮实测：首版就是这样把
+/// `#chat-input` 判成了表单控件频道。
+fn selects_input_tag(sel: &str) -> bool {
+    let bytes = sel.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = sel[from..].find("input") {
+        let a = from + rel;
+        let z = a + "input".len();
+        let before_ok = a == 0 || !is_css_ident_byte(bytes[a - 1]);
+        let after_ok = z == bytes.len() || !is_css_ident_byte(bytes[z]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = a + 1;
+    }
+    false
+}
+
+/// `#foo .bar` 里的 `foo`（选择器里第一个 id）。
+fn css_id_of(selector: &str) -> Option<String> {
+    let rest = selector.strip_prefix('#')?;
+    let id: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+/// `index.html` 里落在 `<form …>…</form>` 内的元素 id（本轴的控件因此确实是**表单控件**）。
+fn form_control_ids(html: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut inside = false;
+    for line in html.lines() {
+        if !inside && line.contains("<form") {
+            inside = true;
+        }
+        if inside {
+            let mut from = 0usize;
+            while let Some(rel) = line[from..].find("id=\"") {
+                let s = from + rel + 4;
+                let Some(e) = line[s..].find('"') else { break };
+                out.insert(line[s..s + e].to_string());
+                from = s + e + 1;
+            }
+            if line.contains("</form>") {
+                inside = false;
+            }
+        }
+    }
+    out
+}
+
+/// 含有控件 `control` 的那个 `<form …>` 的 id（从 `<form>` 标签自身取，不写名册）。
+fn form_of_control(html: &str, control: &str) -> Option<String> {
+    let at = html.find(&format!("id=\"{control}\""))?;
+    let form_at = html[..at].rfind("<form")?;
+    let tag_end = html[form_at..].find('>').map(|i| form_at + i)?;
+    let tag = &html[form_at..tag_end];
+    let s = tag.find("id=\"")? + 4;
+    let e = tag[s..].find('"')? + s;
+    Some(tag[s..e].to_string())
+}
+
+/// 承载该 `<form …>` 的那张卡片 —— 表单标签**之前**最近的一个 `id="…"`。
+fn form_card_id(html: &str, form_id: &str) -> Option<String> {
+    let at = html.find(&format!("<form id=\"{form_id}\""))?;
+    let prefix = &html[..at];
+    let s = prefix.rfind("id=\"")? + 4;
+    let e = prefix[s..].find('"')? + s;
+    Some(prefix[s..e].to_string())
+}
+
+/// R139 的读数（每条规则各取自己那一份，测试里逐条断言）。
+#[derive(Debug)]
+struct R139Reading {
+    /// 规则 1：被 property 式禁用的**表单控件**频道（派生）。
+    channels: BTreeSet<String>,
+    /// 频道所属的那个 `<form>` 的 id（派生自 `index.html`）。
+    lead_form: Option<String>,
+    /// 承载该表单的卡片 id（派生自 `index.html`）。
+    card: Option<String>,
+    /// 回收路径的宿主：调用 `form.reset()` 的那个函数。
+    reset_fn: Option<String>,
+    /// 把表单卡片打开的函数的集合（派生：自己那层写 `.hidden = false` 且提到卡片 id）。
+    open_fns: Vec<String>,
+    /// 回收闭包 = `reset_fn` 的闭包 ∪ 每个 `open_fns` 的闭包。
+    closure: BTreeSet<String>,
+    /// 规则 2 的见证：闭包里那个**同频道**清 `disabled` 的函数。
+    witness: Option<String>,
+    /// 规则 3：调用 `reset_fn` 的函数集合（除它自己）。
+    callers: BTreeSet<String>,
+}
+
+fn r139_reading(app: &str, html: &str) -> R139Reading {
+    let lines = code_lines_at(app);
+    let spans = decl_spans(app);
+
+    // ── 规则 1：property 式禁用的表单控件频道 ────────────────────────────────────────────────
+    let mut channels: BTreeSet<String> = BTreeSet::new();
+    for (i, (_off, text)) in lines.iter().enumerate() {
+        let Some((_, rhs)) = text.split_once(".disabled = ") else {
+            continue;
+        };
+        let value = rhs.split([';', '}', ')']).next().unwrap_or("").trim();
+        if value == "false" {
+            continue; // 清除，不是禁用
+        }
+        let mut channel = None;
+        for j in (0..=i).rev().take(80) {
+            let Some((_, prev)) = lines.get(j) else {
+                continue;
+            };
+            if let Some(s) = selector_literals(prev)
+                .into_iter()
+                .find(|s| selects_input_tag(s))
+            {
+                channel = Some(s);
+                break;
+            }
+        }
+        if let Some(c) = channel {
+            channels.insert(c);
+        }
+    }
+
+    // ── 派生：频道 → 表单 id → 卡片 id ───────────────────────────────────────────────────────
+    let controls = form_control_ids(html);
+    let mut lead_form = None;
+    for c in &channels {
+        let Some(id) = css_id_of(c) else { continue };
+        if controls.contains(&id) {
+            lead_form = form_of_control(html, &id);
+            break;
+        }
+    }
+    let card = lead_form.as_deref().and_then(|f| form_card_id(html, f));
+
+    // ── 规则 3 的宿主：调用 `form.reset()` 的函数 ────────────────────────────────────────────
+    let reset_fn = lines
+        .iter()
+        .find(|(_off, text)| text.contains(".reset()"))
+        .and_then(|(off, _)| span_owner(&spans, *off));
+
+    // ── 回收路径的另一半：把表单卡片打开的函数 ──────────────────────────────────────────────
+    let mut open_fns: Vec<String> = Vec::new();
+    if let Some(card) = &card {
+        let needle = format!("#{card}");
+        for (name, s, e) in &spans {
+            if e <= s {
+                continue;
+            }
+            let body = &app[*s..*e];
+            let owners: BTreeSet<String> = body
+                .match_indices(".hidden = false")
+                .filter_map(|(i, _)| span_owner(&spans, s + i))
+                .collect();
+            if !owners.contains(name) {
+                continue; // `.hidden = false` 全部落在嵌套函数里 ⇒ 这一层不是「打开表单的人」
+            }
+            let direct = body.contains(&needle);
+            let via_callee = callee_names(body).iter().any(|c| {
+                span_body(app, &spans, c)
+                    .map(|b| b.contains(&needle))
+                    .unwrap_or(false)
+            });
+            if direct || via_callee {
+                open_fns.push(name.clone());
+            }
+        }
+    }
+
+    // ── 回收闭包 ────────────────────────────────────────────────────────────────────────────
+    let mut closure: BTreeSet<String> = BTreeSet::new();
+    let mut queue: Vec<String> = reset_fn
+        .iter()
+        .cloned()
+        .chain(open_fns.iter().cloned())
+        .collect();
+    while let Some(f) = queue.pop() {
+        if !closure.insert(f.clone()) {
+            continue;
+        }
+        let Some(body) = span_body(app, &spans, &f) else {
+            continue;
+        };
+        for c in callee_names(body) {
+            if !closure.contains(&c) && span_body(app, &spans, &c).is_some() {
+                queue.push(c);
+            }
+        }
+    }
+
+    // ── 规则 2 的见证：闭包里**同频道**的 `.disabled = false` ──────────────────────────────
+    let witness = closure
+        .iter()
+        .find(|f| {
+            span_body(app, &spans, f)
+                .map(|b| {
+                    let text = code_text(b);
+                    text.contains(".disabled = false") && channels.iter().any(|c| text.contains(c))
+                })
+                .unwrap_or(false)
+        })
+        .cloned();
+
+    // ── 规则 3：`reset_fn` 仍被别人调用 ─────────────────────────────────────────────────────
+    let callers: BTreeSet<String> = match &reset_fn {
+        None => BTreeSet::new(),
+        Some(rf) => lines
+            .iter()
+            .filter(|(_off, text)| mentions_identifier(text, rf))
+            .filter_map(|(off, _)| span_owner(&spans, *off))
+            .collect(),
+    };
+
+    R139Reading {
+        channels,
+        lead_form,
+        card,
+        reset_fn,
+        open_fns,
+        closure,
+        witness,
+        callers,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ============================== PART B: tests (inside `mod tests`) ==========================
+
+    /// 表单控件的 property 式 `disabled` 必须在**回收路径**上被清除（R139）。
+    ///
+    /// 三条规则各有独立的牙：
+    /// - 规则 1（**阳性对照**）：控件写者集合非空。空集上的集合断言会假绿（坑 68），而且「把
+    ///   `cb.disabled = allCb.checked` 整句删掉」这种**取消互斥**的竞争修法正是先让这里变空
+    ///   —— 探针实测它被 `{C3, C2, A3}` 拒绝（「每天」还勾着而周三已被取消 ⇒ 快捷勾选开始说谎）。
+    /// - 规则 2：每个频道都能在**回收闭包**里找到同频道的清除。改前树在这里红（缺陷就在）。
+    /// - 规则 3（**防矫枉过正**）：回收路径的宿主仍然被调用 —— 否则「把 `reset()` 一起删掉」
+    ///   也能让规则 2 变绿。
+    #[test]
+    fn a_form_control_disabled_by_the_property_is_cleared_on_the_recycle_path() {
+        let r = r139_reading(APP_JS, INDEX_HTML);
+
+        // ── 规则 1（阳性对照 + 派生自证）────────────────────────────────────────────────────
+        assert!(
+            !r.channels.is_empty(),
+            "没扫到任何「表单控件被 property 式禁用」的写点 ⇒ 下面的断言会在空集上通过。\
+         本轴靠 `$(\"… input\")` 的双引号选择器派生频道；改动控件写法时扫描器要一起改。"
+        );
+        assert_eq!(
+            r.lead_form.as_deref(),
+            Some("share-form"),
+            "频道 {:?} 没有派生出一个 `<form>` id ⇒ 控件归属/卡片派生都断了（今天应为 share-form）",
+            r.channels
+        );
+        assert_eq!(
+            r.card.as_deref(),
+            Some("share-form-card"),
+            "没有从 `<form id=\"share-form\">` 之前派生出卡片 id ⇒ 开表单那一半的射程会静默变空"
+        );
+        assert!(
+            r.reset_fn.is_some(),
+            "找不到承载 `form.reset()` 的函数 ⇒ 表单回收路径不存在（或声明区间提取器失效）"
+        );
+        assert!(
+        !r.open_fns.is_empty(),
+        "找不到「把表单卡片打开」的函数 ⇒ 轨道派生失效（它由 index.html 的卡片 id 推出，不写名册）"
+    );
+
+        // ── 规则 2（不变量）──────────────────────────────────────────────────────────────────
+        assert!(
+            r.witness.is_some(),
+            "表单控件被 property 式禁用（{:?}），但**回收闭包**里没有任何一处把它清回 `false`。\
+         `form.reset()` 只还原「值 / 勾选态」、不清这个 property ⇒ 成功上架一次之后这些控件\
+         永久冻死（R139 实测：勾着「每天」上架成功后七枚星期 chip 点不动，整会话不自愈）。\
+         回收闭包 = `{}` 的闭包 ∪ 开表单函数 {:?} 的闭包 = {:?}",
+            r.channels,
+            r.reset_fn.as_deref().unwrap_or("?"),
+            r.open_fns,
+            r.closure
+        );
+
+        // ── 规则 3（反向：别把回收路径一起删掉）─────────────────────────────────────────────
+        let reset_fn = r.reset_fn.clone().expect("规则 2 的前置已断言它存在");
+        assert!(
+            r.callers.iter().any(|f| f != &reset_fn),
+            "`{reset_fn}` 不再被任何函数调用（callers={:?}）⇒ 表单回收路径被删掉了",
+            r.callers
+        );
+    }
+
+    /// 合成输入自证：四条判别式各有各的牙（R139 门禁的**可杀性**）。
+    ///
+    /// ⚠️ 语料用 `r##"…"##` 而不能用 `r#"…"#`：样本里有 `$("#f-days .chip input")`，
+    /// `"#` 会把 `r#"…"#` 提前闭合（坑 #342）。
+    #[test]
+    fn the_form_recycle_path_scanners_have_teeth() {
+        // 语料自带一个 `<form id="f">` 与承载它的 `<div … id="f-card">`。
+        let html = r##"<div class="card" id="f-card"><form id="f"><span id="f-days"><input value="1"></span><input id="f-all"></form></div>"##;
+
+        // (a) 未修：控件被 property 禁用，回收路径上**没有**清除 ⇒ 规则 2 开口
+        let base = r##"
+function bind() {
+  const showForm = () => { $("#f-card").hidden = false; };
+  const allCb = $("#f-all input");
+  if (allCb) allCb.addEventListener("change", () => {
+    $$("#f-days .chip input").forEach((cb) => {
+      if (cb !== allCb) { cb.checked = allCb.checked; cb.disabled = allCb.checked; }
+    });
+  });
+  $("#f").addEventListener("submit", (e) => {
+    const afterOk = () => { e.target.reset(); };
+    afterOk();
+  });
+}
+"##;
+        let r = r139_reading(base, html);
+        assert!(
+            !r.channels.is_empty(),
+            "合成语料：频道派生失败（{:?}），后面的断言会在空集上通过",
+            r.channels
+        );
+        assert_eq!(
+            r.reset_fn.as_deref(),
+            Some("afterOk"),
+            "合成语料：回收宿主判错"
+        );
+        assert_eq!(
+            r.open_fns,
+            vec!["showForm".to_string()],
+            "合成语料：开表单函数判错"
+        );
+        assert!(
+            r.witness.is_none(),
+            "合成语料是**未修**形状，却找到了清除见证 {witness:?} ⇒ 规则 2 没有牙",
+            witness = r.witness
+        );
+
+        // (b) 修在回收闭包上（helper 被 `afterOk` 调用）⇒ 规则 2 闭嘴
+        let fixed = r##"
+function bind() {
+  const showForm = () => { $("#f-card").hidden = false; };
+  const resetAvail = () => { $$("#f-days .chip input").forEach((cb) => { cb.disabled = false; }); };
+  const allCb = $("#f-all input");
+  if (allCb) allCb.addEventListener("change", () => {
+    $$("#f-days .chip input").forEach((cb) => {
+      if (cb !== allCb) { cb.checked = allCb.checked; cb.disabled = allCb.checked; }
+    });
+  });
+  $("#f").addEventListener("submit", (e) => {
+    const afterOk = () => { e.target.reset(); resetAvail(); };
+    afterOk();
+  });
+}
+"##;
+        let rf = r139_reading(fixed, html);
+        assert_eq!(
+            rf.witness.as_deref(),
+            Some("resetAvail"),
+            "合成语料：修在回收路径上却找不到见证 ⇒ 规则 2 会把正确修法判红"
+        );
+
+        // (c) 只清在「每天」勾选处理器里（闭包外）⇒ 规则 2 仍红（最诱人的半修）
+        let handler_only = r##"
+function bind() {
+  const showForm = () => { $("#f-card").hidden = false; };
+  const allCb = $("#f-all input");
+  if (allCb) allCb.addEventListener("change", () => {
+    $$("#f-days .chip input").forEach((cb) => {
+      if (cb !== allCb) { cb.checked = allCb.checked; cb.disabled = allCb.checked; }
+      else { $$("#f-days .chip input").forEach((c2) => { c2.disabled = false; }); }
+    });
+  });
+  $("#f").addEventListener("submit", (e) => {
+    const afterOk = () => { e.target.reset(); };
+    afterOk();
+  });
+}
+"##;
+        assert!(
+            r139_reading(handler_only, html).witness.is_none(),
+            "把清除放在「每天」处理器里（不在回收闭包上）却被判合格 ⇒ 规则 2 认错了地方"
+        );
+
+        // (d) 删掉互斥写入（竞争修法 `m_drop`）⇒ 规则 1 开口
+        let dropped = base.replace(
+            "if (cb !== allCb) { cb.checked = allCb.checked; cb.disabled = allCb.checked; }",
+            "if (cb !== allCb) { cb.checked = allCb.checked; }",
+        );
+        assert!(
+            r139_reading(&dropped, html).channels.is_empty(),
+            "删掉 property 式禁用之后频道集合仍非空 ⇒ 规则 1 的阳性对照认错了东西"
+        );
+
+        // (e) `input` 必须按 **CSS 标签**匹配：`#chat-input` 是兄弟标识符，不是表单控件
+        assert!(
+            !selects_input_tag("#chat-input") && selects_input_tag("#f-days .chip input"),
+            "`input` 的子串匹配把 `#chat-input` 判成了控件频道（坑 #333 同族）"
+        );
+
+        // (f) 归属必须取**最内层**声明（否则 `bind` 的闭包是整个语料，规则 2 恒真）
+        let spans = decl_spans(base);
+        let reset_at = base.find(".reset()").expect("语料里有 e.target.reset()");
+        assert_eq!(
+            span_owner(&spans, reset_at).as_deref(),
+            Some("afterOk"),
+            "`form.reset()` 的归属不是最内层声明 ⇒ 闭包会缩水/膨胀（坑 #336）"
+        );
+        let single_line = "  const showForm = () => { $(\"#f-card\").hidden = false; };\n  const after = () => { other(); };\n";
+        assert_eq!(
+            span_body(single_line, &decl_spans(single_line), "showForm")
+                .map(|b| b.contains("other()")),
+            Some(false),
+            "**单行**箭头函数被吞进了下一个函数（坑 #319 / #332）"
+        );
+    }
+
+    // ============================ END OF R139 GATE FRAGMENT ============================
 
     /// 交易视图的缓存槽只有一个写者，且它就是写下该槽有效性证据的那个函数。
     ///
