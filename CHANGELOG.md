@@ -2,6 +2,20 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.26 (2026-09-21)
+
+自 v0.7.25 起累计 10 个 PR（#261–#270）。本版两条主线：**「一个事实只有一个真源 / 显示口径必须等于消费口径」的第 2 批**（前端 6 处），以及 **i18n 的可达性收口**（先上门禁、再删死键）。另含**网关请求体上限真正生效的那一层**（rant `2026-09-18T09:14:18` 的应用侧一半）。**无 schema 变更、无 config 变更**（`config.toml` 无需同步）。
+
+- **请求体上限改挂在 axum 真正读取的那一层（#267 2ccbc76）** — v0.7.10 起的那句 `RequestBodyLimitLayer::new(70MB)` 从未生效：tower-http 那层只把**外层流**包成 `Limited`，**不往请求扩展里写任何东西**；而 axum 提取器读的是 `DefaultBodyLimitKind` 扩展，缺失时回落到 `DEFAULT_LIMIT = 2MB` ⇒ 实际上限 = min(70MB, 2MB) = **2MB**（直连实测 2.02MB → `413 Failed to buffer the request body`）。改为三条网关路由（`/v1/chat/completions`、`/anthropic/v1/messages`、`/v1/responses`）各挂 `.layer(DefaultBodyLimit::max(GATEWAY_BODY_LIMIT))`（`GATEWAY_BODY_LIMIT = 8 MiB`），未认证端点保持 2MB 默认；A/B 在真 crate 内跑（还原路由层 ⇒ 正向测试在 `/v1/chat/completions` 上 413、负对照仍绿）。⚠️ 本 PR 落在 `v0.7.25` **之后** ⇒ v0.7.24 / v0.7.25 都不含它；**且公网仍受 prod nginx 的 1MB 内置默认限制**（给反代加 per-domain `client_max_body_size` 是宿主的部署动作，尚未做）。同 PR 更正了下方 v0.7.10 那条被实测证伪的「raised to 70MB」。
+- **侧栏「永久点数」改读可花的那一半（#261 13898d6）** — 运营者给自己充值后，`inlineOpsTopup` 的自刷新分支自己又取一次 `/api/wallet` 且只读 `w.balance`（永久额），而产品把可用余额定义为 `available = balance + gift_balance`、赠送与角色无关（`gift::ensure_daily_gift` 挂每个已认证请求）⇒ 实测「100 + 1、充 100」屏幕显示 **200**、真值 **201**，且永不自愈。改为调用唯一写者 `refreshWallet()`（只把字段换成 `w.available` 是被探针拒掉的竞争修法）；门禁 `the_session_balance_has_one_source_and_it_is_the_spendable_half`。
+- **交易载荷签名必须覆盖时间段（#262 03b6be7）** — 缓存签名只含列筛选、不含三个时间段状态值 ⇒ 从第 2 页起改一次时间段**不发新请求**（屏幕停在旧数据）。改为 `txQuerySig()`（**不可**由 `txRangeParams()` 派生 —— 其中的毫秒时间戳会让签名恒变、退化成自喂请求风暴）＋新增**唯一**重拉触发器 `reloadTransactions()`，四个控件全走它；门禁 `the_transaction_payload_has_one_signature_and_one_reload_trigger`。
+- **设置页三族控件：要么接线、要么显式惰性（#263 ad72020）** — 昵称可编辑却无人消费（后端无 name 写路径）、`#prefs-model` 看着能选但全仓无消费者（设计稿那个 `<select>` 本就无引用）、三枚通知开关渲染成**已勾选**却无 id/无 name/无通知子系统 ⇒ 输入在下次渲染时被抹掉。按仓内惰性成例（`readonly`/`disabled` ＋ 卡片级提示）处理并摘掉误导性的 `checked`；门禁 `settings_controls_are_either_live_or_marked_inert`（`inert ⟺ ¬consumed` **双向**，反向挡「一键全禁用」）。
+- **语言层拥有元素内容（#264 ba486b2）** — `applyStatic()` 对每个 `[data-i18n]` 元素做 `innerHTML = t(key)` ⇒ **一个带文本 `data-i18n` 的元素，其后代上的语言层钩子永不生效**（祖先那步把后代连同属性从文档摘掉，随后对已分离节点设值：无异常、无效果）。恰 2 处：加额申请卡的提示**两种语言都不显示**、登录页底部那个键成孤儿。改为**兄弟 span**；门禁 `no_data_i18n_attribute_nests_inside_a_data_i18n_element`。
+- **「重新上架」不再被报成「已恢复」（#265 6936973）** — 共享动作按钮按状态**三值**取（`on→pause` / `paused→resume` / `off→relist`），而处理器用**两值** `next` 报结局 ⇒ `off → on`（重新上架）的 toast 是「已恢复」，正确键 `share.toggle.relisted` 两包俱在却**无人可达**。新增 `SHARE_TOGGLE`（状态 → {标签, 下一状态, 结局}）作唯一真源；门禁 `the_sharing_toggle_outcome_comes_from_the_same_entry_as_its_action`（表键集 == 徽标状态集）。
+- **共享行 / 仪表盘印 plan 的标签而非配置 id（#268 7b1929a）** — `keys.plan` 只存配置 id（如 `deepseek-paygo`），上架下拉与成功 toast 一直经 `planLabel()` 印**标签**，而共享表单元格与仪表盘卡把 **id 原样印出** ⇒ 同屏两个口径、中文界面印出未翻译 token。新增 `planList()` / `planById()` / `planLabelById()`，渲染点只消费派生值。同 PR 必须带走两个阻断：`i18n_pack` 的判别式把**解析器**认成一个函数名（改判两个入口之一）＋ `state_gate` 槽闭合门禁（抽 `refreshPlans()` 作唯一写者）。
+- **运营卡不再把「禁用计数」当「健康判定」念（#269 e5ee178）** — 数据里**没有**任何健康信息（`/api/ops/runtime` 只回 `total`/`on`/`off`）⇒ 用户**暂停自己的 key**（正常操作）会让运营者看到红色「全部失败」。三个判定键**重命名且改写**（`healthy/abnormal/failed` → `allOn/someOff/allOff`，标题「健康」→「状态」），全停用改中性色 —— **会撒谎的键名没法被门禁钉住**，故键名也改。**零新 i18n 键**。
+- **整包可达性门禁、并删掉 23 个无人可达的键（#266 a4cb622 / #270 77b2a82）** — 先建门禁 `every_pack_key_reaches_a_consumer`（标识符边界 ＋ 唯一动态前缀 ＋ **精确相等**的日落清单：新增孤儿红、砍清单条目红、把日落键接上线也红），它算出 **59** 对不可达；再把其中 **23 对确定死键删掉**（两个包各 −23 行、清单 59 → **36**、`ZH/EN_KEY_COUNT` 811 → **788**）。⚠️ 门禁**不是**这次的安全网（它只证「清单 == 计算出的不可达集合」⇒ 删一个**其实可达**的键它照常绿）——真正的判据是**零消费者**复核：独立跑边界精确谓词（语料 `index.html` ＋ `app.js` ＋ `api.js` ＋ `ui/README.md`，**不含语言包本身**），实测 **23/23 命中 0**。剩下的 36 条已逐条判负（一次更大的产品裁定 / 值同时是静态文本 / 该接线 / 宿主裁定）。
+
 ## v0.7.25 (2026-09-15)
 
 自 v0.7.24 起累计 18 个 PR（#242–#259）。⚠️ **数据库 schema 14 → 15**：新增两条覆盖索引，迁移在启动时执行。本版两条主线：dev 上 NFS 的**查询/写入性能**，以及前端一批「**显示口径必须等于筛选口径、一个事实只有一个真源**」的缺陷。**无 config 变更**（`config.toml` 无需同步改动）。
@@ -130,7 +144,7 @@ All notable changes are recorded here. Versions follow [SemVer](https://semver.o
 
 ## v0.7.10 (2026-08-23)
 
-- **Request body limit raised to 70MB** — axum's default 2MB body limit rejected long LLM contexts (~1M token) and large image-base64 payloads with 413; gateway now applies `RequestBodyLimitLayer::new(70 * 1024 * 1024)` (rant 2026-08-22T23:20:00)
+- ~~**Request body limit raised to 70MB**~~ — ⚠️ **correction (v0.7.26, #267): this never took effect.** `RequestBodyLimitLayer` only wraps the outer stream; it never writes the request extension that axum's extractors read, so the effective limit stayed at axum's 2 MB default (direct measurement: a 2.02 MB body → `413 Failed to buffer the request body`). The limit is applied where axum actually reads it in v0.7.26. (rant 2026-08-22T23:20:00)
 - **P0 cache-billing fix** — DeepSeek's native top-level `prompt_cache_hit_tokens` was silently dropped (cached=0 → cache hits billed at full miss price, ~30x overcharge); all three spellings (DeepSeek `prompt_cache_hit_tokens` / OpenAI `prompt_tokens_details.cached_tokens` / Anthropic `cache_read_input_tokens`) are now extracted with DeepSeek priority, and all 6 `record_usage` sites disjoint input (`prompt_tokens − cached`) so cached tokens are never double-billed; downstream `input_tokens` forwarding is disjoint too (rant 2026-08-23T08:20:38)
 
 ## v0.7.9 (2026-08-22)
