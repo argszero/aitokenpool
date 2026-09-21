@@ -1116,6 +1116,51 @@ mod tests {
         v["api_key"].as_str().unwrap().to_string()
     }
 
+    /// 请求体上限（rant 2026-09-18T09:14:18）：三条网关路由必须收得下 > 2 MiB 的请求体。
+    ///
+    /// 改前：`axum-core` 的 `DEFAULT_LIMIT = 2_097_152` 生效 —— `main.rs:239` 那层
+    /// `RequestBodyLimitLayer(70MB)` 抬不动它（它不写 `DefaultBodyLimitKind` 扩展），
+    /// 3 MiB 的体在提取器里就被拒成 413；改后：per-route `DefaultBodyLimit::max` 抬到 8 MiB。
+    #[tokio::test]
+    async fn gateway_routes_accept_bodies_past_the_default_limit() {
+        for (tag, uri) in [
+            ("bl_chat", "/v1/chat/completions"),
+            ("bl_anth", "/anthropic/v1/messages"),
+            ("bl_resp", "/v1/responses"),
+        ] {
+            let st = test_state(tag, "test-plan", "http://127.0.0.1:9");
+            let key = login_key(st.clone()).await;
+            let pad = "a".repeat(3 * 1024 * 1024);
+            let body = format!(r#"{{"model":"no-such-model","pad":"{pad}"}}"#);
+            let (status, bytes) = post_raw(st, uri, &body, Some(&key)).await;
+            let msg = String::from_utf8_lossy(&bytes);
+            assert_ne!(
+                status,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "{uri}: 3 MiB 的体被提取器的默认上限拒了（改前即此断言失败）"
+            );
+            // 体确实进了 handler：拿到的是网关自己的「无可用 key」而不是提取器的 413
+            assert!(
+                msg.contains("暂无可用 key"),
+                "{uri}: 期望 handler 的错误响应，实际 {status} {msg}"
+            );
+        }
+    }
+
+    /// 负对照：同一次改动**不得**顺带放宽未认证端点。
+    #[tokio::test]
+    async fn auth_endpoints_stay_at_the_default_limit() {
+        let st = test_state("bl_neg", "test-plan", "http://127.0.0.1:9");
+        let pad = "a".repeat(3 * 1024 * 1024);
+        let body = format!(r#"{{"email":"x@y.z","password":"{pad}"}}"#);
+        let (status, _) = post_raw(st, "/api/auth/login", &body, None).await;
+        assert_eq!(
+            status,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "/api/auth/login 不该被放宽（未认证端点缓冲 8 MiB 是另一种风险）"
+        );
+    }
+
     /// 假上游：返回固定 usage（listener 预绑定避免并行测试端口冲突）
     async fn fake_upstream(listener: tokio::net::TcpListener) {
         let app = axum::Router::new().route(

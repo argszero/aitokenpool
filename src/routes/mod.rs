@@ -20,7 +20,7 @@ pub mod wallet;
 
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{FromRequestParts, State};
+use axum::extract::{DefaultBodyLimit, FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -36,6 +36,19 @@ use crate::router::RouterState;
 
 /// 上游请求的时限（连接与读取共用同一个数字，沿用 P0-B 写下的 120 s）。
 pub(crate) const UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// 网关请求体的上限（rant 2026-09-18T09:14:18）：三条网关路由各自挂一层
+/// `DefaultBodyLimit::max(8 MiB)`。
+///
+/// 为什么 `main.rs` 里那层 `RequestBodyLimitLayer(70MB)` 不算数：它由 tower-http 提供，
+/// 不写 axum 用来覆盖默认值的那条请求扩展（`DefaultBodyLimitKind`）；而 `String` / `Json`
+/// 等提取器的 2 MiB 上限来自 `axum-core` 的 `DEFAULT_LIMIT`，只认那条扩展。所以那层是
+/// **惰性的** —— 实测 2 MiB + 1 字节即 413，与它写的 70 MB 无关。抬上限只能用 axum
+/// 自己的 `DefaultBodyLimit`。
+///
+/// 为什么**不**全局挂：认证 / 注册 / 找回密码等未认证端点若也放宽到 8 MiB，等于给匿名
+/// 请求一个 8 MiB 的内存放大面；只有网关三条路由需要大请求体（1M token 上下文的对话）。
+pub(crate) const GATEWAY_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
 /// 非流式出站客户端：`timeout` 是**总**时限（建连到读完响应体），适合一次性响应。
 pub(crate) fn upstream_client(timeout: std::time::Duration) -> reqwest::Client {
@@ -622,9 +635,19 @@ pub fn router() -> Router<AppState> {
             "/api/api-keys/:id",
             axum::routing::delete(api_keys::remove).patch(api_keys::rename),
         )
-        .route("/v1/chat/completions", post(gateway::chat_completions))
-        .route("/anthropic/v1/messages", post(gateway::anthropic_messages))
-        .route("/v1/responses", post(gateway::responses))
+        // 网关三条：请求体可能很大（长上下文 / 多模态），放宽到 GATEWAY_BODY_LIMIT。
+        .route(
+            "/v1/chat/completions",
+            post(gateway::chat_completions).layer(DefaultBodyLimit::max(GATEWAY_BODY_LIMIT)),
+        )
+        .route(
+            "/anthropic/v1/messages",
+            post(gateway::anthropic_messages).layer(DefaultBodyLimit::max(GATEWAY_BODY_LIMIT)),
+        )
+        .route(
+            "/v1/responses",
+            post(gateway::responses).layer(DefaultBodyLimit::max(GATEWAY_BODY_LIMIT)),
+        )
         .route("/v1/models", get(gateway::v1_models))
         .route("/models", get(gateway::v1_models))
         .route("/api/models", get(gateway::models))
