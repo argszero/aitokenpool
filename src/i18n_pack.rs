@@ -3401,4 +3401,174 @@ mod tests { fn t() { json!({ "x": "测试中文" }) } }
         }
         Some(&src[at..end?])
     }
+    // ── C2158：运营卡「上游 key 健康」的判定语必须说**数据说的那件事** ──────────────────────────
+    //
+    // 数据只有**启用 / 停用**（`keys` 表没有 health/error 列；`/api/ops/runtime` 只回
+    // `total`/`on`/`off`，`off = total − on` 由后端算）。把这份计数渲染成「健康 / N 个异常 /
+    // 全部失败」= 给数据加戏：用户**暂停/下架自己的 key**（正常操作）会让运营者看到**红色
+    // 「全部失败」**（C2158 侦察实测，jsdom 真控件复现）。
+    //
+    // 三条规则**各有独立的牙**（A/B 逐腿见 `c2158_gate_ab.py`）：
+    //   ① 键名不得是判定词 —— **改文案不改键名仍红**（键名会撒谎就没法用门禁钉）
+    //   ② 消费到的键必须已登记 —— 防「另起一个新判定语键」
+    //   ③ 三个状态键必须**都被渲染** —— 防「把 pill 整块删掉」的逃逸
+    // ＋ `the_ops_key_state_scanners_have_teeth`（合成输入自证两条判别式）。
+    //
+    // ⚠️ 射程：门禁是**词法**的 —— 它证明**键名与键集**，不证明渲染出来的**句子**与数据一致
+    // （那一半由 jsdom 探针 `A1`–`A4`/`B1`/`C1` 承接）。已按 #341 写进 `ui/README.md`。
+
+    /// 判定词（比对的是**键名**，不是文案）：`ops.keys.` 之后的第一段命中其一即为「用键名断言健康」。
+    const OPS_KEY_VERDICT_WORDS: [&str; 7] = [
+        "healthy",
+        "abnormal",
+        "failed",
+        "fail",
+        "error",
+        "down",
+        "unhealthy",
+    ];
+
+    /// 已登记的状态系键全集（C2158 之后）。消费者**只能**用这些。
+    const OPS_KEY_REGISTERED: [&str; 5] = [
+        "ops.keys.allOn",
+        "ops.keys.someOff",
+        "ops.keys.allOff",
+        "ops.keys.count",
+        "ops.keys.empty",
+    ];
+
+    /// 三个**状态**键：必须都被渲染（`count`/`empty` 不是状态判定语，不在其中）。
+    const OPS_KEY_STATES: [&str; 3] = ["ops.keys.allOn", "ops.keys.someOff", "ops.keys.allOff"];
+
+    /// `ops.keys.<head>[.…]` 的 `<head>`（小写）。不是 `ops.keys.*` ⇒ `None`。
+    fn ops_key_head(key: &str) -> Option<String> {
+        let rest = key.strip_prefix("ops.keys.")?;
+        Some(rest.split('.').next().unwrap_or("").to_ascii_lowercase())
+    }
+
+    /// 键集里「以判定词命名」的那些（规则 ① 的判别式；纯函数 ⇒ 可被合成输入自证）。
+    fn ops_key_verdict_keys<'a, I: IntoIterator<Item = &'a String>>(keys: I) -> Vec<String> {
+        keys.into_iter()
+            .filter(|k| {
+                ops_key_head(k).is_some_and(|h| OPS_KEY_VERDICT_WORDS.contains(&h.as_str()))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// 源码里**消费到**的 `ops.keys.*` 键名（调用方须先剥注释；键名取**整串 token**）。
+    fn ops_key_consumed(src: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let mut from = 0usize;
+        while let Some(rel) = src[from..].find("\"ops.keys.") {
+            let at = from + rel + 1; // 指向 `o`
+            let tail = &src[at..];
+            let end = tail.find('"').unwrap_or(tail.len());
+            let key = &tail[..end];
+            if !key.is_empty() && key.chars().all(is_key_token_char) {
+                out.insert(key.to_string());
+            }
+            from = at + key.len().max(1);
+        }
+        out
+    }
+
+    #[test]
+    fn the_ops_key_health_pill_names_the_state_it_counts() {
+        let LanguagePacks {
+            zh_keys, en_keys, ..
+        } = packs();
+        let app = strip_js_comments(APP_JS);
+
+        // 提取器阳性对照：扫不到键 ⇒ 后面几条断言全是空转。
+        assert!(
+            !zh_keys.is_empty() && !en_keys.is_empty(),
+            "语言包键集为空 —— 提取器已失真，拒绝继续"
+        );
+        let consumed = ops_key_consumed(&app);
+        assert!(
+            !consumed.is_empty(),
+            "在 ui/js/app.js 里一个 `ops.keys.*` 键都没扫到 —— 提取器已失真（键名或语料变了？）"
+        );
+
+        // ① 键名不得是判定词。
+        let offenders = ops_key_verdict_keys(zh_keys.iter().chain(en_keys.iter()));
+        assert!(
+            offenders.is_empty(),
+            "语言包里仍有以「判定词」命名的键：{offenders:?} —— 数据只有启用/停用，\
+             用 healthy/failed 命名就是在宣称健康信息（C2158）"
+        );
+
+        // ② 消费到的键必须已登记。
+        let unregistered: Vec<&String> = consumed
+            .iter()
+            .filter(|k| !OPS_KEY_REGISTERED.contains(&k.as_str()))
+            .collect();
+        assert!(
+            unregistered.is_empty(),
+            "运营卡的 key 状态块消费了**未登记**的键：{unregistered:?} —— 登记集是 \
+             {OPS_KEY_REGISTERED:?}；新键必须先想清楚它说的是哪个状态"
+        );
+
+        // ③ 三个状态键必须都被渲染。
+        let missing: Vec<&str> = OPS_KEY_STATES
+            .iter()
+            .copied()
+            .filter(|k| !consumed.contains(*k))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "运营卡**少渲染**了状态键 {missing:?} —— 三态（全部启用 / N 个停用 / 全部停用）\
+             必须都印出来：删掉 pill 不是修法（C2158）"
+        );
+    }
+
+    #[test]
+    fn the_ops_key_state_scanners_have_teeth() {
+        // ① 判定词判别式：判定词命中，状态系键不得被绊倒。
+        let synthetic: Vec<String> = [
+            "ops.keys.healthy",
+            "ops.keys.failed",
+            "ops.keys.fail",
+            "ops.keys.unhealthy",
+            "ops.keys.allOn",
+            "ops.keys.someOff",
+            "ops.keys.allOff",
+            "ops.keys.count",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let got = ops_key_verdict_keys(synthetic.iter());
+        assert_eq!(
+            got.len(),
+            4,
+            "判定词判别式应恰命中 healthy/failed/fail/unhealthy 四个，实得 {got:?}"
+        );
+        assert!(
+            !got.iter()
+                .any(|k| k.contains("all") || k.contains("someOff")),
+            "状态系键不得被判为判定词：{got:?}"
+        );
+
+        // ② 消费者扫描器：取**整串**键名，不取前缀；且只认 `"ops.keys.` 引号形态。
+        let sample =
+            "const a = T(\"ops.keys.allOn\"); const b = T(\"ops.keys.someOff\", { n: 1 });";
+        let seen = ops_key_consumed(sample);
+        assert_eq!(seen.len(), 2, "扫描器应取到两个键，实得 {seen:?}");
+        assert!(seen.contains("ops.keys.allOn") && seen.contains("ops.keys.someOff"));
+        let nested = ops_key_consumed("T(\"ops.keys.allOnExtra\")");
+        assert_eq!(nested.len(), 1, "扫描器必须取整串键名而非前缀：{nested:?}");
+        assert!(nested.contains("ops.keys.allOnExtra"), "{nested:?}");
+
+        // ③ 剥注释是调用方的责任：注释里的键名**不得**被算作消费。
+        let commented =
+            strip_js_comments("// T(\"ops.keys.healthy\")\nconst x = T(\"ops.keys.allOn\");");
+        assert_eq!(
+            ops_key_consumed(&commented).len(),
+            1,
+            "剥注释后注释里的键名仍被算作消费 —— 正是 C2158 之前那个假「健康」的残留形态：\
+             实得 {commented:?}"
+        );
+    }
 }

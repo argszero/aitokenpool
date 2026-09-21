@@ -2876,16 +2876,17 @@
         ? hours.map((h) => barRow(String(h.hour).padStart(2, "0") + ":00", h.calls || 0, maxH, T("cnt.calls.unit"))).join("")
         : '<div class="empty-state compact"><p>' + T("ops.hours.empty") + "</p></div>";
 
-      // 上游 key 健康：按厂商聚合（健康 / N 个异常 / 全部失败 三态，对齐原型 .mini-list）
+      // 上游 key 启用状态：按厂商聚合（全部启用 / N 个停用 / 全部停用 三态，对齐原型 .mini-list）
+      // C2158：数据只有 keys.status（后端不产出任何健康信号）⇒ 判定语必须说数据说的那件事。
       const kh = rt.key_health || [];
       $("#ops-keys").innerHTML = kh.length ? kh.map((k) => {
         const total = k.total || 0;
         const off = k.off || 0;
         const pill = off === 0
-          ? '<span class="pill pill-ok">' + T("ops.keys.healthy") + "</span>"
+          ? '<span class="pill pill-ok">' + T("ops.keys.allOn") + "</span>"
           : (off >= total
-            ? '<span class="pill pill-danger">' + T("ops.keys.failed") + "</span>"
-            : '<span class="pill pill-warn">' + T("ops.keys.abnormal", { n: off }) + "</span>");
+            ? '<span class="pill pill-muted">' + T("ops.keys.allOff") + "</span>"
+            : '<span class="pill pill-warn">' + T("ops.keys.someOff", { n: off }) + "</span>");
         return '<div class="mini-item"><div><div class="t">' + esc(k.provider || "—") + '</div>' +
           '<div class="d">' + T("ops.keys.count", { total: total, on: k.on || 0 }) + "</div></div>" +
           '<div class="r">' + pill + "</div></div>";
