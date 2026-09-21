@@ -643,6 +643,14 @@ try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance;
 「屏幕上数字对」—— 竞争修法在探针下全绿（`tmp/c2145_probe.js` 实测：修复树 9/9、改前树恰 `A2`/`A3`
 两腿红、竞争者 8/9 被 `A3` 拒绝）。CI 里没有 JS 运行器，`cargo test` 是唯一能长期守住的关口。
 
+## 运营成员表的「余额」列 = 可花额 = 用户自己所见（C2173）
+
+- **一个词一个数**：全站把**不带限定的**「点数余额 / Points balance」绑给 `available = balance + gift_balance`（`common.balance` / `dash.balance` / `wallet.balance` 三处），把「**永久**点数 / Permanent points」绑给 `balance`（`wallet.forever` / `admin.emp.col.perm`）。运营成员表的列头用的正是**前者**（`ops.users.col.balance` zh「余额（点数）」/ en「Balance (pts)」），而取值只印 `u.balance` ⇒ 用户自己看 101、运营者看 100，差的正是「赠送」那一半（可花、会过期、真划走，`gift.rs` 清扫时真扣）。
+- **修法**：取值折进 `gift_balance`，**与兄弟表逐字同形** —— `admin.emp.col.avail` 那一格早就是 `D.fmt((u.balance || 0) + (u.gift_balance || 0))`（同一个 PR 家族里写对了的范本）。**零新 i18n 键**。
+- **CI 覆盖**：`src/state_gate.rs::the_ops_members_balance_cell_is_the_half_its_caption_names`（三规则：① 取值表达式按**标识符 token** 同时读到 `balance` 与 `gift_balance` ② 两包列头须落在**可花族**（标记由 `wallet.balance` 的包值派生）③ 反向：`admin.emp.col.perm` 仍只读 `balance`）。
+- ⚠️ **射程**：门禁是**词法**的 —— 它证明取值**读到**两个字段、名字落在可花族，**不证明算术是 `+`**；行为由仪器 `c2173_probe.js` 钉（19 腿；甲/乙两棵合法树全绿，三条「半个答案 / 化妆 / 自相矛盾」被拒）。
+
+
 ## 载荷签名覆盖所有输入，控件变更只有一个重拉触发器（C2146）
 
 交易列表/趋势的请求体由**两份**状态渲染：列筛选（`txTable.filters`）与时间段

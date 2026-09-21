@@ -2909,7 +2909,7 @@
     $("#ops-body").innerHTML = list.length ? list.map((u) =>
       "<tr><td data-label='" + T('ops.users.col.user') + "'><strong>" + hl(u.name, rawQ) + "</strong></td>" +
       "<td data-label='" + T('ops.users.col.email') + "'>" + hl(u.email, rawQ) + "</td>" +
-      '<td class="num" data-label="' + T("ops.users.col.balance") + '">' + D.fmt(u.balance || 0) + " " + T("common.points") + "</td>" +
+      '<td class="num" data-label="' + T("ops.users.col.balance") + '">' + D.fmt((u.balance || 0) + (u.gift_balance || 0)) + " " + T("common.points") + "</td>" +
       "<td data-label='" + T('ops.users.col.action') + "'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-ops-topup='" + u.id + "'>" + T("ops.users.topup") + "</button></td></tr>"
     ).join("") : emptyRow(4, T("ops.users.empty"), T("ops.users.empty.sub"));
     pulseTbody($("#ops-body"));

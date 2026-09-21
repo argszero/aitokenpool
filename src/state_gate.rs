@@ -2272,6 +2272,100 @@ fn csv_class_matches(elems: &[String], tail: &str, s: &str) -> bool {
         .any(|c| elems.iter().any(|e| csv_element_matches(e, c)))
 }
 
+// ── C2173：运营成员表的「余额」列说的是哪一半 ──────────────────────────────────────
+
+/// 运营成员表余额列的**列头键**（单元格的 `data-label` 与列头用的是同一个键）。
+const OPS_BALANCE_CAPTION: &str = "ops.users.col.balance";
+
+/// 管理页「永久点数」列的键 —— 规则 3 的**反向对照**：那一列的名字说它只有永久额。
+const ADMIN_PERM_CAPTION: &str = "admin.emp.col.perm";
+
+/// 全站给两个半区起名的那两个键 —— 规则 2 的**尺子**（可花额 / 永久额）。
+///
+/// 不写死词表：标记从语言包自己的这两个值里推出来（见 [`half_markers`]），两种语言同一条规则。
+const SPENDABLE_WORD_KEY: &str = "wallet.balance";
+const PERMANENT_WORD_KEY: &str = "wallet.forever";
+
+/// 一个用户的配额被切成的那两项（规则 1 必须**同时**读到）。
+const HALF_FIELDS: [&str; 2] = ["balance", "gift_balance"];
+
+/// `'<td … data-label="' + T("<caption>") + '">' + <取值> + "</td>"` 里那截**取值表达式**（C2173）。
+///
+/// 判别式按 `data-label` 的**收尾标记** `'">'`（引号里就是闭合那个 `td` 的 `>`）与 `"</td>"` 收口，
+/// 不写死空格：只要还是「一个 td 的取值段」，重排空白也取得到。取不到 ⇒ `None`，
+/// 调用方**必须**报错（空集上的断言会假绿，坑 68）。
+fn cell_value_rhs(line: &str, caption_key: &str) -> Option<String> {
+    let needle = format!("\"{caption_key}\"");
+    let at = line.find(&needle)? + needle.len();
+    let rest = &line[at..];
+    let close = rest.find("'\">'")? + "'\">'".len();
+    let value = rest[close..].trim_start().strip_prefix('+')?.trim_start();
+    let end = value.find("\"</td>\"")?;
+    let head = value[..end].trim_end();
+    let head = head.strip_suffix('+').unwrap_or(head).trim_end();
+    if head.is_empty() {
+        None
+    } else {
+        Some(head.to_string())
+    }
+}
+
+/// `a` / `b` 的**最长公共子串**（按字符，长度相同取先遇到的那条）。
+///
+/// 尺子用：全站给两个半区起的名字共享的那截「名词」（en: `points`；zh: `点数`）。
+fn longest_common_substring(a: &str, b: &str) -> String {
+    let ac: Vec<char> = a.chars().collect();
+    let mut best = String::new();
+    for i in 0..ac.len() {
+        for j in (i + 1)..=ac.len() {
+            let cand: String = ac[i..j].iter().collect();
+            if cand.chars().count() > best.chars().count() && b.contains(cand.as_str()) {
+                best = cand;
+            }
+        }
+    }
+    best
+}
+
+/// 从全站给两个半区起的**名字**里取出各自的**标记**：去掉共同名词后剩下的那截。
+///
+/// `("点数余额", "永久点数") -> ("余额", "永久")`；`("Points balance", "Permanent points") ->
+/// ("balance", "permanent")`。两边都去空白与标点。
+///
+/// 取不到（没有共同名词、或某一边去掉共同名词后为空）⇒ `None`：调用方必须报错，
+/// **不得**退化成空标记（空标记会让 `contains` 恒真 ⇒ 规则 2 静默变哑）。
+fn half_markers(spendable: &str, permanent: &str) -> Option<(String, String)> {
+    let a = spendable.to_lowercase();
+    let b = permanent.to_lowercase();
+    let common = longest_common_substring(&a, &b);
+    if common.trim().is_empty() {
+        return None;
+    }
+    let strip = |s: &str| {
+        s.split(&common)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_matches(|c: char| c.is_whitespace() || "（）()·,、:：".contains(c))
+            .trim()
+            .to_string()
+    };
+    let (x, y) = (strip(&a), strip(&b));
+    if x.is_empty() || y.is_empty() {
+        return None;
+    }
+    Some((x, y))
+}
+
+/// 这一条文案是否落在**可花族**：含可花标记，且**不含**永久标记（C2173 规则 2）。
+fn caption_names_spendable_half(
+    caption: &str,
+    spendable_marker: &str,
+    permanent_marker: &str,
+) -> bool {
+    let c = caption.to_lowercase();
+    c.contains(spendable_marker) && !c.contains(permanent_marker)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4864,5 +4958,227 @@ mod tests {
         format!(
             "  const cell = (v) => {{ const s = String(v == null ? \"\" : v); return /{class}/.test(s) ? '\"' + s.replace(/\"/g, '\"\"') + '\"' : s; }};\n"
         )
+    }
+    /// 运营成员表的「余额」列说的必须是它列头那个词所指的那一半 —— **可花额**（C2173）。
+    ///
+    /// 产品定义：`available = balance + gift_balance`（`src/routes/wallet.rs`），而全站把**不带限定**的
+    /// 「点数余额 / Points balance」（`wallet.balance` / `common.balance` / `dash.balance`）绑给
+    /// `available`、把「永久点数 / Permanent points」（`wallet.forever` / `admin.emp.col.perm`）绑给
+    /// `balance`。`/api/ops/users` 两个半区**都**返回，前端却只印了 `u.balance` ⇒ 同一张屏幕上，
+    /// 用户自己看到 101、运营者在成员表里看到 100，差的就是**可花、会过期**的赠送那一半。
+    ///
+    /// 三条规则各有各的牙：
+    /// - 规则 1（取值）：单元格的取值必须**同时**读到两个半区 —— 只读到永久额＝本缺陷；
+    ///   只读到赠送＝把轴修反。
+    /// - 规则 2（词）：两包的列头文案必须仍落在**可花族**。把列头改名成「永久点数」也能让两边对上，
+    ///   但那是**改这一列声明的口径**（设计变更），不是修 —— 列头用的就是全站给可花额起的那个名字。
+    /// - 规则 3（反向）：管理页的「永久点数」列必须**仍然只**读永久额 —— 挡「一键全改成 available」
+    ///   那种过度纠正（同屏那份兄弟表把两半各自起对了名，正确范例就是从它那里来的）。
+    #[test]
+    fn the_ops_members_balance_cell_is_the_half_its_caption_names() {
+        let ops = function_source(APP_JS, "renderOps").expect("找不到 renderOps");
+        let ops_lines = code_text_by_line(&ops);
+
+        // ── 前置：提取器停对了地方，且填充位点唯一（空集上的断言会假绿，坑 68）──────────────
+        assert!(
+            ops_lines.iter().any(|l| l.contains("ops-body"))
+                && !ops_lines.iter().any(|l| l.contains("function loadOps(")),
+            "renderOps 提取错了地方（规则 1 会在空集上假绿）：{}",
+            ops_lines.join("\n")
+        );
+        assert_eq!(
+            ops_lines.iter().filter(|l| l.contains("function ")).count(),
+            1,
+            "renderOps 提取长了（吞进了下一个函数）：{}",
+            ops_lines.join("\n")
+        );
+        let fills: Vec<&String> = ops_lines
+            .iter()
+            .filter(|l| l.contains(OPS_BALANCE_CAPTION))
+            .collect();
+        assert_eq!(
+            fills.len(),
+            1,
+            "`{OPS_BALANCE_CAPTION}` 在 renderOps 里出现了 {} 次（单元格要么没了要么重复）",
+            fills.len()
+        );
+        let value = cell_value_rhs(fills[0], OPS_BALANCE_CAPTION)
+            .unwrap_or_else(|| panic!("取不到余额单元格的取值表达式：{}", fills[0]));
+        assert!(
+            value.contains("D.fmt"),
+            "取值表达式取错了地方（规则 1 可能判在别的文本上）：`{value}`"
+        );
+
+        // ── 规则 1：取值同时读到两个半区 ────────────────────────────────────────────────
+        assert!(
+            value_reaches_all_fields(APP_JS, &ops, &value, &HALF_FIELDS),
+            "运营成员表的余额列没有同时读到 `balance` 与 `gift_balance` —— 列头（`{OPS_BALANCE_CAPTION}`）\
+             用的是全站给**可花额**起的那个名字，而这一列只印了永久额，比用户自己在侧栏/钱包里看到的\
+             余额少掉全部赠送额：取值 = `{value}`"
+        );
+
+        // ── 规则 2：两包的列头文案仍须落在可花族 ────────────────────────────────────────
+        let zh = pack_region_strict(I18N_JS, ZH_PACK_START, EN_PACK_START);
+        let en = pack_region_strict(I18N_JS, EN_PACK_START, PACK_END);
+        for (pack, region) in [("zh", zh), ("en", en)] {
+            let spendable = pack_string(region, SPENDABLE_WORD_KEY)
+                .unwrap_or_else(|| panic!("{pack} 包里没有键 `{SPENDABLE_WORD_KEY}`"));
+            let permanent = pack_string(region, PERMANENT_WORD_KEY)
+                .unwrap_or_else(|| panic!("{pack} 包里没有键 `{PERMANENT_WORD_KEY}`"));
+            let (s_mark, p_mark) = half_markers(&spendable, &permanent).unwrap_or_else(|| {
+                panic!(
+                    "{pack} 包的两个半区名推不出各自的标记（尺子坏了）：\"{spendable}\" / \"{permanent}\""
+                )
+            });
+            let caption = pack_string(region, OPS_BALANCE_CAPTION)
+                .unwrap_or_else(|| panic!("{pack} 包里没有键 `{OPS_BALANCE_CAPTION}`"));
+            assert!(
+                caption_names_spendable_half(&caption, &s_mark, &p_mark),
+                "{pack} 包的 `{OPS_BALANCE_CAPTION}`（\"{caption}\"）不再落在**可花族**\
+                 （标记：可花 `{s_mark}` / 永久 `{p_mark}`）—— 把列头改名成永久族也能让两边对上，\
+                 但这一列的头用的就是全站给可花额起的那个名字，改它就是改这一列声明的口径"
+            );
+        }
+
+        // ── 规则 3（反向）：管理页的「永久点数」列仍只读永久额 ──────────────────────────
+        let admin = function_source(APP_JS, "renderAdmin").expect("找不到 renderAdmin");
+        let admin_lines = code_text_by_line(&admin);
+        let perm: Vec<&String> = admin_lines
+            .iter()
+            .filter(|l| l.contains(ADMIN_PERM_CAPTION))
+            .collect();
+        assert_eq!(
+            perm.len(),
+            1,
+            "`{ADMIN_PERM_CAPTION}` 在 renderAdmin 里出现了 {} 次（反向对照的位点不唯一）",
+            perm.len()
+        );
+        let perm_value = cell_value_rhs(perm[0], ADMIN_PERM_CAPTION)
+            .unwrap_or_else(|| panic!("取不到「永久点数」列的取值表达式：{}", perm[0]));
+        assert!(
+            mentions_identifier(&perm_value, "balance"),
+            "管理页的「永久点数」列不再读永久额（反向对照失去意义）：取值 = `{perm_value}`"
+        );
+        assert!(
+            !mentions_identifier(&perm_value, "gift_balance"),
+            "管理页的「永久点数」列读到了赠送额 —— 那一列的名字说它只有永久额；\
+             同一张表本来就另有两列（赠送 / 可用）。这条挡的是「一键全改 available」式过度纠正：\
+             取值 = `{perm_value}`"
+        );
+    }
+
+    /// 规则 1/2/3 的三把尺子各有各的牙（合成输入，坑 68 与 #348）。
+    #[test]
+    fn the_ops_balance_half_checkers_have_teeth() {
+        // 单元格取值提取器：真形状取得到、且**停在取值段**；没有该单元格 ⇒ None
+        let line = "      '<td class=\"num\" data-label=\"' + T(\"ops.users.col.balance\") + '\">' + D.fmt(u.balance || 0) + \" \" + T(\"common.points\") + \"</td>\" +";
+        assert_eq!(
+            cell_value_rhs(line, OPS_BALANCE_CAPTION).as_deref(),
+            Some("D.fmt(u.balance || 0) + \" \" + T(\"common.points\")"),
+            "取值提取器取错了（规则 1 会判在别的文本上）"
+        );
+        let admin_line = "        '<td class=\"num\" data-label=\"' + T(\"admin.emp.col.perm\") + '\">' + D.fmt(u.balance || 0) + \"</td>\" +";
+        assert_eq!(
+            cell_value_rhs(admin_line, ADMIN_PERM_CAPTION).as_deref(),
+            Some("D.fmt(u.balance || 0)"),
+            "同一个提取器在反向对照那一列上取错了"
+        );
+        assert!(
+            cell_value_rhs("      \"<td></td>\"", OPS_BALANCE_CAPTION).is_none(),
+            "没有该单元格时提取器凭空取到了值（规则 1 会在空集上假绿）"
+        );
+        // 少了 `data-label` 的收尾标记（`'">'`）⇒ 取不到，而不是把后面的东西当取值
+        assert!(
+            cell_value_rhs(
+                "      '<td data-label=\"' + T(\"ops.users.col.balance\") + D.fmt(u.balance || 0) + \"</td>\"",
+                OPS_BALANCE_CAPTION
+            )
+            .is_none(),
+            "少了收尾标记时提取器仍取到值（形状变了却静默取值）"
+        );
+
+        // 尺子：在**真语言包**上推出的标记
+        let zh = pack_region_strict(I18N_JS, ZH_PACK_START, EN_PACK_START);
+        let en = pack_region_strict(I18N_JS, EN_PACK_START, PACK_END);
+        let (zs, zp) = half_markers(
+            &pack_string(zh, SPENDABLE_WORD_KEY).expect("zh 包缺 wallet.balance"),
+            &pack_string(zh, PERMANENT_WORD_KEY).expect("zh 包缺 wallet.forever"),
+        )
+        .expect("zh 半区标记取不到");
+        assert_eq!(
+            (zs.as_str(), zp.as_str()),
+            ("余额", "永久"),
+            "zh 半区标记取错了"
+        );
+        let (es, ep) = half_markers(
+            &pack_string(en, SPENDABLE_WORD_KEY).expect("en 包缺 wallet.balance"),
+            &pack_string(en, PERMANENT_WORD_KEY).expect("en 包缺 wallet.forever"),
+        )
+        .expect("en 半区标记取不到");
+        assert_eq!(
+            (es.as_str(), ep.as_str()),
+            ("balance", "permanent"),
+            "en 半区标记取错了"
+        );
+        // 两个名字完全相同 ⇒ 取不到标记（**不得**静默退化成空标记：空标记让 contains 恒真、规则 2 变哑）
+        assert!(
+            half_markers("points", "points").is_none(),
+            "两个名字相同时尺子给出了空标记（规则 2 会静默变哑）"
+        );
+
+        // 分类判别式：可花族、永久族、谁都不指（化妆）三态都要判对
+        assert!(caption_names_spendable_half("余额（点数）", &zs, &zp));
+        assert!(caption_names_spendable_half("Balance (pts)", &es, &ep));
+        assert!(
+            !caption_names_spendable_half("永久点数（点数）", &zs, &zp),
+            "改名成永久族没有被拒（那一列口径被换了却判绿）"
+        );
+        assert!(
+            !caption_names_spendable_half("Permanent points (pts)", &es, &ep),
+            "改名成永久族没有被拒（en 侧）"
+        );
+        assert!(
+            !caption_names_spendable_half("点数", &zs, &zp),
+            "谁都不指的化妆文案没有被拒（它既不是可花族也不是永久族）"
+        );
+        assert!(
+            !caption_names_spendable_half("Points", &es, &ep),
+            "谁都不指的化妆文案没有被拒（en 侧）"
+        );
+
+        // 规则 1 的牙：只读永久额 ⇒ 判红；只读赠送 ⇒ 判红；两项都读（含抽 helper 的等价写法）⇒ 判绿
+        let bare =
+            "  function renderOps() { const row = \"<td>\" + D.fmt(u.balance || 0) + \"</td>\"; }";
+        assert!(
+            !value_reaches_all_fields(bare, bare, "D.fmt(u.balance || 0)", &HALF_FIELDS),
+            "规则 1 放行了只读永久额的取值（本缺陷的形状）"
+        );
+        let gift_only =
+            "  function renderOps() { const row = \"<td>\" + D.fmt(u.gift_balance || 0) + \"</td>\"; }";
+        assert!(
+            !value_reaches_all_fields(
+                gift_only,
+                gift_only,
+                "D.fmt(u.gift_balance || 0)",
+                &HALF_FIELDS
+            ),
+            "规则 1 放行了只读赠送的取值（轴修反）"
+        );
+        let both = "  function renderOps() { const row = \"<td>\" + D.fmt((u.balance || 0) + (u.gift_balance || 0)) + \"</td>\"; }";
+        assert!(
+            value_reaches_all_fields(
+                both,
+                both,
+                "D.fmt((u.balance || 0) + (u.gift_balance || 0))",
+                &HALF_FIELDS
+            ),
+            "规则 1 把两项都读到的取值判红了"
+        );
+        // 说明性注释里提到 `gift_balance` 不算证据（#296 的镜像：被自己的解释满足）
+        let commented = "  function renderOps() { const row = \"<td>\" + D.fmt(u.balance || 0) + \"</td>\"; // 另一半是 u.gift_balance\n  }";
+        assert!(
+            !value_reaches_all_fields(commented, commented, "D.fmt(u.balance || 0)", &HALF_FIELDS),
+            "规则 1 被注释里的 `gift_balance` 满足了（假绿）"
+        );
     }
 }
