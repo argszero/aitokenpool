@@ -26,6 +26,11 @@ const APP_JS: &str = include_str!("../ui/js/app.js");
 /// en 模式下直接抛给用户，而 `cargo test` 全程是绿的（实测 8 种真实后端响应形态里 6 种如此）。
 /// 三条断言见 `api_client_error_text_is_key_based`。
 const API_JS: &str = include_str!("../ui/js/api.js");
+/// `ui/js/data.js` —— 游客兜底表（`MARKET` / `PROVIDERS` / `MODELS` / `PLANS`）。
+///
+/// 它是**消费语料**（`consumer_code`）的一部分：兜底表被 `marketRows()` 等喂给渲染器，
+/// 因此它里面的键引用与 `index.html`、`app.js` 里的同样算可达路径。
+const DATA_JS: &str = include_str!("../ui/js/data.js");
 
 /// 后端**用户可见错误文案**的所在地（C2129）。
 ///
@@ -869,6 +874,230 @@ fn pack_values(region: &str) -> (BTreeMap<String, String>, usize) {
     (map, non_string)
 }
 
+/// 语言包**不可达键**的日落清单（C2155）。
+///
+/// 判据：一个语言包键「可达」当且仅当它以**键 token 边界**出现在消费语料
+/// （`consumer_code()`）里，或以**动态前缀**（`dynamic_key_prefixes()`，
+/// 今日恰好一个 `share.day.`）开头。
+///
+/// ⚠️ 这是**日落清单**（sunset list），不是豁免注册表 —— 清单即契约，零豁免：
+/// - 新增一个没人引用的键 ⇒ 它落进计算出的不可达集合而清单里没有 ⇒ **红**；
+/// - 从清单删一条而该键仍不可达 ⇒ **红**（断言是**精确相等**，不是子集）；
+/// - 把某条日落键**接上线** ⇒ 它离开不可达集合却仍留在清单里 ⇒ **红**
+///   （必须**同时**把该条目从清单删掉）。
+///
+/// 分类标签来自 C2154 的全量裁定（零活缺陷），逐条证据见
+/// `.emrg/memory/latent-unreachable-observations-20260913.md` §39.2：
+/// - `dup-sibling`     同包已有一个可达键携带**逐字相同**的值（改名/合并后的重复体，删除零损失）
+/// - `zero-mock`       #94（`89963f3`）删掉了 mock 的**渲染**却把**键**留下
+/// - `old-design`      被现行设计取代（如成员级「配额」旧表 —— 现行只有**部门**有配额）
+/// - `neutral-literal` 值本身就是语言中性字面量（`you@company.com` / `✕` / `中文（简体）`）
+/// - `composite`       文本已嵌在一个**可达**的复合键值里
+/// - `rename`          改名残留（列头已改用另一个键）
+/// - `weak-should-wire` 代码手工拼了更优文案，专键存在但没人用
+/// - `host-decision`   宿主裁定族，⛔ 勿自修
+const UNREACHABLE_PACK_KEYS: &[(&str, &str)] = &[
+    ("admin.emp.dept.unassigned", "dup-sibling"),
+    ("admin.emp.status.near", "dup-sibling"),
+    ("admin.emp.status.normal", "dup-sibling"),
+    ("common.calls", "dup-sibling"),
+    ("common.copy", "dup-sibling"),
+    ("common.month", "dup-sibling"),
+    ("common.people", "dup-sibling"),
+    ("common.rename", "dup-sibling"),
+    ("mk.count", "dup-sibling"),
+    ("share.stats.listings.sub", "dup-sibling"),
+    ("share.stats.used.sub", "dup-sibling"),
+    ("admin.emp.stats.members.sub.mock", "zero-mock"),
+    ("admin.emp.stats.members.sub.mock2", "zero-mock"),
+    ("admin.org.demo", "zero-mock"),
+    ("admin.raise.demo", "zero-mock"),
+    ("ops.demo", "zero-mock"),
+    ("ops.stats.in.sub.mock", "zero-mock"),
+    ("ops.stats.keys.sub.mock", "zero-mock"),
+    ("ops.stats.out.sub.mock", "zero-mock"),
+    ("ops.stats.users.sub.mock", "zero-mock"),
+    ("admin.emp.col.empty", "old-design"),
+    ("admin.emp.col.quota", "old-design"),
+    ("admin.emp.col.remain", "old-design"),
+    ("admin.emp.col.status", "old-design"),
+    ("admin.emp.role.admin", "old-design"),
+    ("admin.emp.role.ops", "old-design"),
+    ("admin.emp.stats.quota", "old-design"),
+    ("admin.emp.stats.quota.sub", "old-design"),
+    ("admin.emp.stats.remain", "old-design"),
+    ("admin.emp.stats.remain.sub", "old-design"),
+    ("admin.emp.stats.used", "old-design"),
+    ("admin.emp.stats.used.sub", "old-design"),
+    ("admin.org.col.empty", "old-design"),
+    ("admin.raise.col.empty", "old-design"),
+    ("cnt.items", "old-design"),
+    ("common.close", "old-design"),
+    ("common.none", "old-design"),
+    ("common.ok", "old-design"),
+    ("common.save", "old-design"),
+    ("common.search", "old-design"),
+    ("login.demo", "old-design"),
+    ("login.subtitle", "old-design"),
+    ("ops.users.col.empty", "old-design"),
+    ("settings.ak.col.empty", "old-design"),
+    ("settings.ak.gen.ok.mock", "old-design"),
+    ("share.col.empty", "old-design"),
+    ("tx.brk.cache", "old-design"),
+    ("tx.brk.input", "old-design"),
+    ("tx.brk.output", "old-design"),
+    ("tx.brk.title", "old-design"),
+    ("chat.close", "neutral-literal"),
+    ("login.email.ph", "neutral-literal"),
+    ("settings.prefs.lang.en", "neutral-literal"),
+    ("settings.prefs.lang.zh", "neutral-literal"),
+    ("login.forgot", "composite"),
+    ("wallet.withdraw.disabled", "composite"),
+    ("tx.col.key", "rename"),
+    ("admin.emp.dept.ok.unassigned", "weak-should-wire"),
+    ("admin.usage.unit.points", "host-decision"),
+];
+
+/// `ui/js/i18n.js` 语言包区段**之外**的两段代码：前段（`ERR_MAP` 词表等）与后段（运行期代码）。
+fn i18n_non_pack_parts() -> [&'static str; 2] {
+    let zh = I18N_JS
+        .find(ZH_START)
+        .expect("语言包起点标记未见 —— 语言包结构变了？");
+    let en = I18N_JS
+        .find(EN_START)
+        .expect("英文包起点标记未见 —— 语言包结构变了？");
+    let end = en
+        + I18N_JS[en..]
+            .find(EN_END)
+            .expect("英文包终点标记未见 —— 语言包结构变了？");
+    [&I18N_JS[..zh], &I18N_JS[end..]]
+}
+
+/// 剥掉 HTML 注释（`<!-- … -->`）。
+///
+/// 注释里的 `data-i18n` 标记**不是**消费者：`applyStatic()` 用 `querySelectorAll` 走
+/// **DOM**，注释不在 DOM 里，永远不会被替换（#296 同族 —— 证据文本必须先剥注释）。
+fn strip_html_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(i) = rest.find("<!--") {
+        out.push_str(&rest[..i]);
+        out.push('\n'); // 保留一个分隔，避免注释两侧的 token 被粘成一个
+        match rest[i..].find("-->") {
+            Some(j) => rest = &rest[i + j + 3..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 消费语料：**谁可以引用一个语言包键**。
+///
+/// 组成（与 C2154 侦察的「边界尺子」逐字一致，其稳定性见 §39.3）：
+/// `app.js` / `api.js` / `data.js` 剥注释后的代码 ＋ `index.html` 剥注释后的标记
+/// ＋ `i18n.js` 语言包区段之外的代码。
+///
+/// ⚠️ 两处都必须**先剥注释**（#296）：注释里出现的键名**不是**消费者。
+/// 剥注释**保留字符串字面量**（`strip_js_comments` 逐字透传 `"…"` / `'…'` / `` `…` ``），
+/// 因为引用键的正是那些字面量。
+fn consumer_code() -> String {
+    let [i18n_head, i18n_tail] = i18n_non_pack_parts();
+    [
+        strip_js_comments(APP_JS),
+        strip_js_comments(API_JS),
+        strip_js_comments(DATA_JS),
+        strip_html_comments(INDEX_HTML),
+        strip_js_comments(i18n_head),
+        strip_js_comments(i18n_tail),
+    ]
+    .join("\n")
+}
+
+/// 键 token 的组成字符：ASCII 字母数字 ＋ `_` `.` `-`。
+///
+/// ⚠️ `.` 必须在集合里 —— 否则 `common.ok` 会被 `common.ok.mock` **里面**的子串命中，
+/// 让一个孤儿键**假可达**（「子串匹配把兄弟标识符当证据」，坑 #333）。
+fn is_key_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')
+}
+
+/// `key` 是否以**键 token 边界**出现在 `corpus` 里。
+fn key_token_occurs(corpus: &str, key: &str) -> bool {
+    if key.is_empty() {
+        return false;
+    }
+    let mut from = 0;
+    while let Some(rel) = corpus[from..].find(key) {
+        let i = from + rel;
+        let before_ok = match corpus[..i].chars().next_back() {
+            Some(c) => !is_key_token_char(c),
+            None => true,
+        };
+        let after_ok = match corpus[i + key.len()..].chars().next() {
+            Some(c) => !is_key_token_char(c),
+            None => true,
+        };
+        if before_ok && after_ok {
+            return true;
+        }
+        from = i + 1;
+    }
+    false
+}
+
+/// 动态前缀集合：`T("…" + …)` 形态的字面量前缀（本仓今天**恰好一个**：`share.day.`）。
+///
+/// 派生自消费语料本身（`scan_t_literals` 取以 `.` 结尾的字面量），**不写名册** ——
+/// 手写名册正是本仓反复踩过的坑（C2072 键盘导航、C2127 Enter 登记）。
+///
+/// ⚠️ 这条规则在**今天的真语料上是冗余的**（A/B 实测，诚实记录）：`share.day.1..7`
+/// 同时被 `index.html:305-311` 的周几芯片以 `data-i18n` **静态绑定**，所以即便把
+/// `app.js:946-947` 那段拼接删掉，该家族仍然可达、门禁照绿。它的牙齿由
+/// `pack_reachability_checker_detects_injected_defects` 用**合成输入**证明
+/// （删掉前缀后 `pfx.*` 必须立刻变不可达）—— 这条规则是为**未来**的动态家族准备的：
+/// 没有它，`T("<prefix>" + n)` 拼出来的那一族键会被整族误报成孤儿。
+fn dynamic_key_prefixes() -> BTreeSet<String> {
+    let [head, tail] = i18n_non_pack_parts();
+    let mut out = BTreeSet::new();
+    for src in [APP_JS, API_JS, DATA_JS, head, tail] {
+        for lit in scan_t_literals(&strip_js_comments(src)) {
+            if lit.ends_with('.') {
+                out.insert(lit);
+            }
+        }
+    }
+    out
+}
+
+/// 从键集里筛出**不可达**的键（纯函数，便于合成输入自证）。
+fn unreachable_keys<'a>(
+    keys: impl IntoIterator<Item = &'a String>,
+    corpus: &str,
+    prefixes: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    keys.into_iter()
+        .filter(|k| {
+            !key_token_occurs(corpus, k) && !prefixes.iter().any(|p| k.starts_with(p.as_str()))
+        })
+        .cloned()
+        .collect()
+}
+
+/// 真语料上计算出的不可达键集合。
+fn computed_unreachable_keys() -> BTreeSet<String> {
+    let LanguagePacks { zh_keys, .. } = packs();
+    unreachable_keys(zh_keys.iter(), &consumer_code(), &dynamic_key_prefixes())
+}
+
+/// 声明的日落清单（去重后的键集）。
+fn declared_unreachable_keys() -> BTreeSet<String> {
+    UNREACHABLE_PACK_KEYS
+        .iter()
+        .map(|(k, _)| (*k).to_string())
+        .collect()
+}
+
 /// 语言包不变量测试。
 ///
 /// 整个模块只在测试期编译（`main.rs` 里是 `#[cfg(test)] mod i18n_pack`），
@@ -1089,6 +1318,111 @@ mod tests {
             missing.is_empty(),
             "以下 T() 字面量在语言包中不存在（界面会原样显示键名）：{missing:?}"
         );
+    }
+
+    /// 整包可达性门禁（C2155）：语言包里的每个键都必须有一个**可到达**的消费者。
+    ///
+    /// 为什么需要：语言包是**双份**的（zh/en），一个没人引用的键在两包里各占一行。
+    /// 它不会报错，也不会被上面两条门禁看见 —— `every_static_i18n_attribute_resolves`
+    /// 与 `every_t_literal_resolves` 只问「**引用了的**键在不在包里」，方向**相反**。
+    /// 而 C2153 证明这类「孤儿键」可以是**活缺陷的指纹**：`share.toggle.relisted`
+    /// 两包俱在、无人可达 ⇒ 共享切换的结局少了「重新上架」那一支（按钮写「重新上架」，
+    /// toast 写「已恢复」）。C2154 把这 59 个孤儿逐条裁定为残留/弱项/宿主裁定（零活缺陷），
+    /// 本门禁把「清单不再增长」变成契约。
+    ///
+    /// ⚠️ 断言是**精确相等**（不是子集）：清单是**日落清单**，接上线必须同时移出清单。
+    #[test]
+    fn every_pack_key_reaches_a_consumer() {
+        let corpus = consumer_code();
+        assert!(
+            corpus.len() > 10_000,
+            "消费语料仅 {} 字节 —— 语料装载失真（空语料会让**每个**键都判不可达）",
+            corpus.len()
+        );
+        // 正对照：一个**活**键必须被判为可达（扫描器一旦瞎了，它会掉进不可达集合）
+        let computed = computed_unreachable_keys();
+        assert!(
+            !computed.contains("common.points"),
+            "正对照失败：`common.points` 是活键却被判不可达 —— 扫描器已失真"
+        );
+        // 清单不得有重复（重复会让「精确相等」掩盖一条真正缺失的条目）
+        let declared = declared_unreachable_keys();
+        assert_eq!(
+            declared.len(),
+            UNREACHABLE_PACK_KEYS.len(),
+            "日落清单有重复键：声明 {} 条，去重后 {} 条",
+            UNREACHABLE_PACK_KEYS.len(),
+            declared.len()
+        );
+        let added: Vec<&String> = computed.difference(&declared).collect();
+        let wired: Vec<&String> = declared.difference(&computed).collect();
+        assert!(
+            added.is_empty() && wired.is_empty(),
+            "语言包可达性漂移：\n  \
+             - 新增的不可达键（没人引用的孤儿：给它接上消费者，或加入 `UNREACHABLE_PACK_KEYS` 并注明类别）：{added:?}\n  \
+             - 清单里已可达 / 已不存在的键（把日落键接上线后必须**同时**移出清单）：{wired:?}"
+        );
+    }
+
+    /// 阴性对照：可达性判别式必须真的会失败（恒真的检查等价于没有检查）。
+    #[test]
+    fn pack_reachability_checker_detects_injected_defects() {
+        let keys: Vec<String> = [
+            "a.b",
+            "a.bc",
+            "c.d",
+            "pfx.1",
+            "pfx.9",
+            "live.key",
+            "unused.key",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let corpus = r#"T("a.bc"); T("live.key"); T("pfx." + i); <p data-i18n="c.d">x</p>"#;
+        let prefixes: BTreeSet<String> = ["pfx.".to_string()].into_iter().collect();
+        let un = unreachable_keys(keys.iter(), corpus, &prefixes);
+
+        assert!(un.contains("unused.key"), "没人引用的键未被判不可达");
+        assert!(
+            un.contains("a.b"),
+            "边界规则失效：`a.b` 被 `a.bc` 里的子串命中（子串匹配把兄弟键当证据，坑 #333）"
+        );
+        assert!(!un.contains("a.bc"), "字面引用的键被判不可达");
+        assert!(!un.contains("live.key"), "字面引用的键被判不可达");
+        assert!(!un.contains("c.d"), "`data-i18n` 引用的键被判不可达");
+        assert!(
+            !un.contains("pfx.1") && !un.contains("pfx.9"),
+            "动态前缀规则失效：`pfx.*` 被判不可达"
+        );
+
+        // 前缀来自语料本身 ⇒ 去掉那段拼接，该家族立刻变不可达（这条是**合成**输入，
+        // 因为真树上的 share.day.* 同时被 index.html 静态绑定 ⇒ 该规则在真语料上冗余）
+        let no_prefix = unreachable_keys(keys.iter(), corpus, &BTreeSet::new());
+        assert!(
+            no_prefix.contains("pfx.1") && no_prefix.contains("pfx.9"),
+            "去掉前缀后 `pfx.*` 仍被判可达 —— 前缀规则不是从语料派生的"
+        );
+
+        // 注释不是消费者（#296）：注释里的键名不得让键假可达
+        assert!(
+            !key_token_occurs(
+                &strip_js_comments("// T(\"ghost.key\")\n/* x=\"ghost.key\" */\nT(\"live.key\")"),
+                "ghost.key"
+            ),
+            "JS 注释里的键名被当成了消费者"
+        );
+        assert!(
+            !key_token_occurs(
+                &strip_html_comments("<!-- <p data-i18n=\"ghost.key\">x</p> -->"),
+                "ghost.key"
+            ),
+            "HTML 注释里的键名被当成了消费者"
+        );
+
+        // 空语料 ⇒ 每个键都不可达（空集上的「全部可达」是最危险的那种假绿）
+        let all = unreachable_keys(keys.iter(), "", &BTreeSet::new());
+        assert_eq!(all.len(), keys.len(), "空语料下并非全部键都判不可达");
     }
 
     /// 插值变量门禁（C2007）：`T("key", { … })` 必须把该键文案里**所有** `{name}` 都补上。
