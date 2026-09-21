@@ -2151,6 +2151,127 @@ fn line_at(src: &str, at: usize) -> String {
     src[start..end].trim().to_string()
 }
 
+// ══ PART A ══（模块级；插在 `#[cfg(test)]` 之前）════════════════════════════════════════════
+/// C2167 的语料：**i18n 门禁同一语料**（规则②「唯一实现」要扫全站前端源码）。
+const DATA_JS: &str = include_str!("../ui/js/data.js");
+
+/// 见 `DATA_JS`。
+const API_JS: &str = include_str!("../ui/js/api.js");
+
+/// C2167：规则②的语料（文件名用于报错，源码用于计数）。
+const CSV_CORPUS: [(&str, &str); 5] = [
+    ("ui/js/app.js", APP_JS),
+    ("ui/js/i18n.js", I18N_JS),
+    ("ui/js/data.js", DATA_JS),
+    ("ui/js/api.js", API_JS),
+    ("ui/index.html", INDEX_HTML),
+];
+
+/// 从**一行**源码里取出 `/[<class>]/` 的**字面内容**与**尾部**。
+///
+/// `/[",\n]/.test(s) ? …` ⇒ 字符类 `",\n`、尾部空。
+/// `/[",\r\n]|/.test(s) ? …` ⇒ 同样的字符类、尾部 `|`（该正则**匹配空串** ⇒ `.test` 恒真）。
+///
+/// 尾部是这条门禁的关键：`/[",\r\n]|/` 在**词法上**四元素齐全，规则①抓不到它 ——
+/// 只有规则③（把它当正则语义求值、对 `abc` 断言**不**命中）才有牙。
+fn csv_class_in_line(line: &str) -> Option<(String, String)> {
+    let at = line.find("/[")?;
+    let rest = &line[at + 2..];
+    let end = rest.find(']')?;
+    let class = &rest[..end];
+    let after = &rest[end + 1..];
+    // 必须是正则字面量的收尾：`]` 之后到下一个 `/` 之间的东西就是「尾部」（正常为空）。
+    let slash = after.find('/')?;
+    Some((class.to_string(), after[..slash].to_string()))
+}
+
+/// 在 `exportTxCsv` 的整段源码里取那个 CSV 单元格转义器：
+/// 返回 `(该行源码, 字符类, 尾部)`。
+///
+/// 判别式：**唯一**一处「`const <ident> = (…) =>` 且同行有 `/[<class>]/`」的行。
+/// 返回 `Err` 的两种含义必须**可区分**（坑 #291；自证测试对两者各判一次）：
+/// - 「取不到」 = 写法里根本没有 `.test(` 的字符类（例如退化成「永远加引号」）；
+/// - 「取到多处」 = 该函数里出现了第二处字符类。
+///
+/// **取到了但元素不全**由调用方（规则①）判 —— 那是第三种错。
+fn csv_escaper_class(body: &str) -> Result<(String, String, String), String> {
+    let mut hits: Vec<(String, String, String)> = Vec::new();
+    for line in body.lines() {
+        if is_comment_line(line) {
+            continue;
+        }
+        if !line.contains("const ") || !line.contains("=>") {
+            continue;
+        }
+        if let Some((class, tail)) = csv_class_in_line(line) {
+            hits.push((line.trim().to_string(), class, tail));
+        }
+    }
+    match hits.len() {
+        0 => Err(
+            "取不到 `.test(` 的字符类：`const <ident> = (…) => … /[…]/.test(…) ? … : …` 这个形状不存在"
+                .to_string(),
+        ),
+        1 => Ok(hits.remove(0)),
+        n => Err(format!(
+            "`exportTxCsv` 里出现了 {n} 处字符类（单元格转义器只应有一处）：{hits:?}"
+        )),
+    }
+}
+
+/// 字符类的**元素分词器**：单个字符算一个元素，`\`+字符（转义）算一个元素。
+///
+/// ⛔ **不得做子串匹配**：`\r\n` 里含 `\n`，`contains("\\n")` 恒真 —— 那正是「漏了 CR 也判绿」
+/// 的形状（坑 #333 家族）。必须按**元素 token** 比。
+fn csv_class_elements(class: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut it = class.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next() {
+                Some(n) => out.push(format!("\\{n}")),
+                None => out.push("\\".to_string()),
+            }
+        } else {
+            out.push(c.to_string());
+        }
+    }
+    out
+}
+
+/// 某个元素是否匹配某个字符（本轴只用得到这几种；其余按字面单字符处理）。
+fn csv_element_matches(elem: &str, c: char) -> bool {
+    match elem {
+        "\\r" => c == '\r',
+        "\\n" => c == '\n',
+        "\\t" => c == '\t',
+        _ => elem.starts_with(c),
+    }
+}
+
+/// 那处 `.test(` 的结果是否**驱动分支**：`?` 必须出现在 `.test(` **之后**。
+///
+/// ⛔ 不能只看「这一行里有 `?`」—— 同一行里 `String(v == null ? "" : v)` 就有一个 `?`，
+/// 于是「留着字符类、把 `.test()` 的结果丢掉」这种半修会被判绿（本轮 A/B 首跑当场抓到）。
+fn csv_test_drives_the_condition(line: &str) -> bool {
+    match line.find(".test(") {
+        None => false,
+        Some(at) => line[at..].contains('?'),
+    }
+}
+
+/// 把 `/[<class>]<tail>/` **当正则语义**求值：`s` 会不会被它命中。
+///
+/// 尾部非空（如 `|` ⇒ 交替了一个空分支）意味着该正则**匹配空串** ⇒ `.test` 恒真 ⇒ 恒加引号。
+/// 这是「四元素齐全却仍然退化」的**唯一**判别式 —— 词法层面看不出来（规则①在这里必须绿）。
+fn csv_class_matches(elems: &[String], tail: &str, s: &str) -> bool {
+    if !tail.is_empty() {
+        return true;
+    }
+    s.chars()
+        .any(|c| elems.iter().any(|e| csv_element_matches(e, c)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4557,5 +4678,191 @@ mod tests {
             vec!["t".to_string()],
             "由状态推出的切换端点没被认出来（规则 3 的射程会静默变空）"
         );
+    }
+
+    // ══ PART B ══（`#[cfg(test)] mod tests` 内；插在文件收尾 `}` 之前）═══════════════════════════
+    /// C2167：CSV 单元格转义器必须把 **RFC 4180 §2.6** 的四个特殊字符**都**放进字符类，并真的拿
+    /// 那个 `.test()` 当条件。
+    ///
+    /// 记录分隔符是 `\r\n`（同一函数里 `…join("\r\n")`），漏掉 CR ⇒ 带**裸 CR** 的字段不加引号
+    /// ⇒ 一个字段把一行切成两行（数据完整性/互操作性缺陷；`user` 与 `key` 两列都有存活路径，
+    /// 见编辑表 §五 —— 只能由直接调 API 的客户端触发，与 C2043 同一性质）。
+    ///
+    /// 四条断言各有独立的牙（A/B 每条各有一只隔离臂）：
+    /// ①a 元素齐全且**恰**四个 —— 缺 CR 的现役写法在这里红；
+    /// ①b 那处 `.test(` 的结果确实被当**条件**用（`?` 在同一条语句里）—— 挡「留着字符类、
+    ///    却把 `.test()` 的结果丢掉」这种半修（编辑表 §一 明令保留三目式形状）；
+    /// ②  全站**唯一**一处引号字符类实现 —— 挡「第二份 CSV 口径」（同 #230 的「两份实现」族）；
+    /// ③  反向：不许退化成「恒加引号」（`/[",\r\n]|/` 这种词法上齐全的逃逸唯一的牙）。
+    #[test]
+    fn the_csv_cell_escaper_quotes_every_rfc4180_special() {
+        let body = function_source(APP_JS, "exportTxCsv").expect("找不到 `exportTxCsv`");
+        // 提取器自证：必须停在该函数**自己的**收尾处（吞进邻居会把邻居的字符类也算进来）
+        assert!(
+            !body.contains("function kbdRows("),
+            "提取器吞掉了紧随其后的函数（`function kbdRows(`）：\n{body}"
+        );
+        assert!(
+            body.contains(".join(\"\\r\\n\")"),
+            "提取过短：`exportTxCsv` 的记录分隔符那一行不在体内：\n{body}"
+        );
+
+        // ── 规则①a：四个元素齐全，且**恰**为四个 ─────────────────────────────────────
+        let (line, class, tail) = csv_escaper_class(&body).unwrap_or_else(|e| panic!("{e}"));
+        let elems = csv_class_elements(&class);
+        for want in ["\"", ",", "\\r", "\\n"] {
+            assert!(
+                elems.iter().any(|e| e == want),
+                "CSV 单元格转义器的字符类 `/{class}/` 少了元素 `{want}`（RFC 4180 §2.6 要求 , \" CR LF 四者）\n这一行是：{line}"
+            );
+        }
+        assert_eq!(
+            elems.len(),
+            4,
+            "字符类 `/{class}/` 应恰有 4 个元素，实际 {} 个：{elems:?}\n这一行是：{line}",
+            elems.len()
+        );
+
+        // ── 规则①b：`.test(` 的结果被当条件用（不许「留着字符类、丢掉判定」）───────────
+        assert!(
+            csv_test_drives_the_condition(&line),
+            "转义器那一行把 `.test(` 的结果丢了（`.test(` 之后没有 `?`）—— 字符类还在，但加不加引号已不由它决定：\n{line}"
+        );
+
+        // ── 规则②：全站唯一实现（`[",` 是引号字符类的开启形状）─────────────────────
+        let mut hits: Vec<String> = Vec::new();
+        for (name, src) in CSV_CORPUS {
+            for text in code_text_by_line(src) {
+                if text.contains("[\",") {
+                    hits.push(format!("{name}: {text}"));
+                }
+            }
+        }
+        assert_eq!(
+            hits.len(),
+            1,
+            "引号字符类的实现必须**恰有一处**，实际 {} 处（出现第二份 CSV 口径就会分叉）：{hits:#?}",
+            hits.len()
+        );
+
+        // ── 规则③：反向 —— 不许退化成「恒加引号」────────────────────────────────────
+        for plain in ["abc", "a b", "中文", ""] {
+            assert!(
+                !csv_class_matches(&elems, &tail, plain),
+                "字符类 `/{class}/{tail}/` 命中了**不需要引号**的 {plain:?} —— 退化成「永远加引号」了"
+            );
+        }
+        for special in ["a,b", "a\"b", "a\rb", "a\nb"] {
+            assert!(
+                csv_class_matches(&elems, &tail, special),
+                "字符类 `/{class}/{tail}/` 漏了特殊字符 {special:?} —— 该字段不会被加引号"
+            );
+        }
+    }
+
+    /// 判别式自证：五种合成形态各判一次，钉住「取不到 / 取到多处 / 元素不全 / 判定被丢 / 语义退化」
+    /// **报不同的错**（坑 #291），以及元素分词器不吃子串匹配的亏（坑 #333）。
+    ///
+    /// ⚠️ 这是**合成输入**，与活树无关 —— 它证明的是判别式有牙，不是缺陷存在。
+    #[test]
+    fn the_csv_escaper_scanners_have_teeth() {
+        // ① 现役写法（漏 CR）⇒ 取得字符类，但只有 3 个元素
+        let live = synthetic_escaper("[\",\\n]");
+        let (line, class, _) = csv_escaper_class(&live).expect("现役写法应当取得字符类");
+        assert!(
+            !csv_class_elements(&class).contains(&"\\r".to_string()),
+            "现役写法被判成含 CR"
+        );
+        assert_eq!(
+            csv_class_elements(&class).len(),
+            3,
+            "现役写法的元素个数读错了"
+        );
+        assert!(
+            csv_test_drives_the_condition(&line),
+            "现役写法应当过规则①b（它确实用了条件）"
+        );
+
+        // ② 候选写法（四元素齐全）⇒ 四条全绿
+        let fixed = synthetic_escaper("[\",\\r\\n]");
+        let (_, class, tail) = csv_escaper_class(&fixed).expect("候选写法应当取得字符类");
+        assert_eq!(tail, "", "候选写法的尾部应当为空");
+        assert_eq!(
+            csv_class_elements(&class),
+            vec![
+                "\"".to_string(),
+                ",".to_string(),
+                "\\r".to_string(),
+                "\\n".to_string()
+            ],
+            "元素分词器读错了候选写法"
+        );
+        let elems = csv_class_elements(&class);
+        assert!(
+            !csv_class_matches(&elems, "", "abc"),
+            "候选写法命中了普通文本"
+        );
+        assert!(csv_class_matches(&elems, "", "a\rb"), "候选写法漏了 CR");
+        assert!(csv_class_matches(&elems, "", "a\nb"), "候选写法漏了 LF");
+
+        // ③ 「永远加引号」（根本没有字符类）⇒ 报「取不到」，且**不**含「元素」字样
+        let always = "  const cell = (v) => { return '\"' + String(v) + '\"'; };\n";
+        let err = csv_escaper_class(always).expect_err("没有字符类的写法不该被当成合规");
+        assert!(
+            err.contains("取不到"),
+            "错误文本没区分「取不到」这一种：{err}"
+        );
+        assert!(
+            !err.contains("元素"),
+            "「取不到」与「元素不全」必须报**不同**的错（坑 #291）：{err}"
+        );
+
+        // ④ 一处以上 ⇒ 报「多处」（判别式不许「找到一个就收工」）
+        let two = format!(
+            "{}{}",
+            synthetic_escaper("[\",\\r\\n]"),
+            synthetic_escaper("[\",\\n]")
+        );
+        let err = csv_escaper_class(&two).expect_err("两处字符类应当被拒");
+        assert!(err.contains("2 处"), "「多处」没被点名：{err}");
+
+        // ⑤ 四元素齐全但判定被丢（`.test()` 结果不用）⇒ 规则①a 绿、规则①b 红
+        let discarded = "  const cell = (v) => { const s = String(v == null ? \"\" : v); /[\",\\r\\n]/.test(s); return '\"' + s + '\"'; };\n";
+        let (line, class, _) = csv_escaper_class(discarded).expect("丢判定的写法仍能取得字符类");
+        assert_eq!(
+            csv_class_elements(&class).len(),
+            4,
+            "丢判定的写法本应有四个元素"
+        );
+        assert!(
+            !csv_test_drives_the_condition(&line),
+            "`.test()` 结果被丢掉的写法躲过了规则①b"
+        );
+
+        // ⑥ 四元素齐全但恒真 ⇒ 规则①绿、规则③红（规则③的独立价值）
+        let escape = synthetic_escaper("[\",\\r\\n]|");
+        let (line, class, tail) =
+            csv_escaper_class(&escape).expect("逃逸写法在词法上仍能取得字符类");
+        assert_eq!(
+            csv_class_elements(&class).len(),
+            4,
+            "逃逸写法的四个元素应当被读出"
+        );
+        assert_eq!(tail, "|", "逃逸写法的尾部应当被读出");
+        assert!(
+            csv_test_drives_the_condition(&line),
+            "逃逸写法仍然是个三目式（所以只有规则③能拒它）"
+        );
+        assert!(
+            csv_class_matches(&csv_class_elements(&class), &tail, "abc"),
+            "`|` 尾部（匹配空串 ⇒ 恒加引号）没被规则③抓住"
+        );
+    }
+
+    /// 造一行「转义器」合成源码（`class` 是**已转义好的**字符类内容，如 `[\",\\n]`）。
+    fn synthetic_escaper(class: &str) -> String {
+        format!(
+            "  const cell = (v) => {{ const s = String(v == null ? \"\" : v); return /{class}/.test(s) ? '\"' + s.replace(/\"/g, '\"\"') + '\"' : s; }};\n"
+        )
     }
 }

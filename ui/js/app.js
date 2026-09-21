@@ -1827,7 +1827,9 @@
     // 故这里不需要也不得本地再筛一遍 —— 服务端返回的行就是表格显示的行（C2114）。
     list = filterRows(list, TX_COLUMNS, txTable.filters);
     if (!list.length) { toast(T("tx.export.none"), "info"); return; }
-    const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    // RFC 4180 §2.6：字段含 , " CR LF 四者之一就必须加引号。CR 必须在内 —— 本函数的记录分隔符是 "\r\n"（见下方 `csv`），
+    // 漏掉 CR 会让带裸 CR 的字段把一行切成两行（C2167）。
+    const cell = (v) => { const s = String(v == null ? "" : v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const headers = [T("tx.col.time"), T("tx.col.type"), T("tx.col.user"), T("tx.col.model"), T("tx.col.apiKeyName"), T("tx.col.input"), T("tx.col.cached"), T("tx.col.output"), T("tx.col.tokens"), T("tx.col.pts"), T("tx.col.status")];
     // C2054：导出的是「当前筛选可见行」，故各列与表格单元格**同口径** —— 点数写有符号值，
     // 否则屏幕上写着 -3.7、导出的文件里却是 3.7。
