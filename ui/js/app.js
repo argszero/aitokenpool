@@ -3320,6 +3320,26 @@
   // 槽名**派生自**上面那个对象字面量（新增槽自动纳入）—— 不维护第二份名册。
   function resetSessionCaches() {
     Object.keys(Live).forEach((k) => { Live[k] = null; });
+    resetTxView();
+  }
+
+  // C2170：身份边界要清的不只是 `Live` —— 交易视图的状态是**模块级**的。前四项是载荷的**输入**
+  // （`txQuerySig()` 的签名 + 页码 / 每页行数），后三项是载荷的**有效性证据**：证据属于载荷，
+  // 载荷被清空而证据留下，守卫就会认一份**不存在**的载荷为「已加载」，下一位用户的首帧因此是
+  // 空表（服务端按 `offset=(page-1)*page_size` 返回 `items: []`）且不自愈。复位取**声明处的默认
+  // 值**，不能一键清空 —— `loadTransactions()` 用 `Math.max(1, txTable.pageSize || 10)` 兜底，
+  // 清成 `undefined` 只会让每页退化到 1 行。
+  function resetTxView() {
+    txTable.sort = [];
+    txTable.filters = {};
+    txTable.page = 1;
+    txTable.pageSize = 10;
+    txTable.loadedPage = undefined;
+    txTable.loadedPageSize = undefined;
+    txTable.loadedQuerySig = undefined;
+    txRange = "24h";
+    txCustomStart = "";
+    txCustomEnd = "";
   }
 
   function loggedIn() { return !!api.getToken() && !isGuest; }

@@ -220,6 +220,27 @@
 //! 行尾的 `//` 注释不算注释（`app.js` 当前两者都没有，`is_comment_line` 的兄弟门禁同型）。
 //! 只认字面表名：`const T = D; T.MARKET` 这类别名逃得过。
 //!
+//! # C2170：身份边界要清的不只是 `Live` —— **模块级**的视图状态同样跨不过边界
+//!
+//! `resetSessionCaches()` 只清 `Live` 的那些槽，而交易视图的状态是**模块级**的：`txTable` 的
+//! `sort`/`filters`/`page`/`pageSize`（载荷的**输入**）、`txRange`/`txCustomStart`/`txCustomEnd`
+//! （时间窗），以及 `txTable.loadedPage`/`loadedPageSize`/`loadedQuerySig`（载荷的**有效性证据**）。
+//! 证据属于载荷 —— 载荷被清空而证据留下，守卫（`txQuerySig()` 的比对）就会认一份**不存在**的
+//! 载荷为「已加载」，下一位用户的首帧是空表（服务端按 `offset=(page-1)*page_size` 返回 `items: []`
+//! 而 `total` 照旧非零）且**不自愈**。
+//!
+//! 不变量两条：① 身份边界的**闭包**必须**赋值**每一个派生出来的名字 —— `txTable` 字面量的字段 ＋
+//! `txTable.loaded*` ＋ `txQuerySig()` 读到的模块级 `let`，**零手抄名册**；② 这些名字的**证据写者**
+//! 只允许装载器与边界闭包（否则在 `renderTransactions()` 里清会把守卫每次渲染都重新武装 ⇒
+//! 请求风暴，C2146 同形）。复位必须回到**声明处的字面量**（`txTable.page = 1` /
+//! `txTable.pageSize = 10` / `txRange = "24h"`）而不是一键清空：`loadTransactions()` 的
+//! `Math.max(1, txTable.pageSize || 10)` 兜底会把 `undefined` 退化成「每页 1 行」。
+//!
+//! 已知边界（如实的射程）：本门禁是**词法**的 —— 它证明闭包**赋值**了每个名字、且值回到声明处的
+//! 字面量，**不**证明这些赋值无条件执行，也不证明屏幕上真的换了数据（那半归 jsdom 探针
+//! `c2170-probe.js`，仓内 CI 无 JS 运行器）。闭包只收 `function NAME(` 形式声明的函数（`call_graph`
+//! 的键）：把复位写进箭头常量时它看不见那个体的**内容**，规则 1 因此会**红**（诚实失败，不是假绿）。
+//!
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 前端源码在**编译期**读入：测试不依赖工作目录与文件系统布局。
@@ -1236,6 +1257,126 @@ fn identifiers(text: &str) -> BTreeSet<String> {
     }
     out
 }
+
+/// `prefix` + 标识符 在 `src` 里出现过的**完整名字**（去重、字典序）。
+///
+/// 左边界也锚：`xtxTable.loaded` 不算（坑 #333 同族：兄弟标识符不是证据）。
+fn names_with_prefix(src: &str, prefix: &str) -> Vec<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    let bytes = src.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = src[from..].find(prefix) {
+        let at = from + rel;
+        from = at + prefix.len();
+        if at > 0 && is_ident_byte(bytes[at - 1]) {
+            continue;
+        }
+        let rest = &src[at + prefix.len()..];
+        let tail: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !tail.is_empty() {
+            out.insert(format!("{prefix}{tail}"));
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// `text` 里有没有对 `lhs` 的**赋值**（`lhs = …`）。
+///
+/// **两侧都锚**：右侧必须是分隔符 —— `txTable.page` 是 `txTable.pageSize` 的前缀、
+/// `txTable.loadedPage` 是 `txTable.loadedPageSize` 的前缀，只锚左侧就会把「复位了兄弟字段」
+/// 判成「复位了它」（坑 #333）。`==` / `===` / `=>` 都不是赋值。
+fn assigns_in(text: &str, lhs: &str) -> bool {
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(lhs) {
+        let at = from + rel;
+        from = at + lhs.len();
+        if at > 0 && is_ident_byte(text.as_bytes()[at - 1]) {
+            continue;
+        }
+        let after = &text[at + lhs.len()..];
+        if let Some(c) = after.chars().next() {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                continue;
+            }
+        }
+        let t = after.trim_start();
+        if let Some(rest) = t.strip_prefix('=') {
+            if !rest.starts_with('=') && !rest.starts_with('>') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 模块级 `let`（行首 2 空格缩进）的名字 —— 会话级视图状态就长这样（`app.js:15-22`）。
+fn module_level_lets(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        if let Some(rest) = line.strip_prefix("  let ") {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
+/// `const TABLE = { … }` 字面量里 `field` 声明处的字面量文本（到 `,` / `}` 为止）。
+fn declared_literal(src: &str, table: &str, field: &str) -> Option<String> {
+    let (open, close) = object_literal_span(src, table)?;
+    let body = &src[open + 1..close - 1];
+    let needle = format!("{field}:");
+    let at = body.find(&needle)? + needle.len();
+    let rest = &body[at..];
+    // `[',', '}']` (a char-array pattern) rather than a closure: CI runs
+    // `cargo clippy --all-targets -- -D warnings`, and the closure form trips
+    // `clippy::manual_pattern_char_comparison` (measured: rustc/clippy 1.98.0).
+    let end = rest.find([',', '}']).unwrap_or(rest.len());
+    Some(rest[..end].trim().to_string())
+}
+
+/// `let NAME = <字面量>;` 声明处的字面量文本。
+fn declared_let_literal(src: &str, name: &str) -> Option<String> {
+    let needle = format!("let {name} = ");
+    let at = src.find(&needle)? + needle.len();
+    let rest = &src[at..];
+    let end = rest.find(';')?;
+    Some(rest[..end].trim().to_string())
+}
+
+/// 身份边界复位函数的**闭包**：`resetSessionCaches` 可达的函数名集合 + 它们的代码文本。
+///
+/// 闭包是必需的 —— 把复位抽进 `resetTxView()` 正是推荐写法（「一张表一处真源」），只看
+/// `resetSessionCaches` 自己的函数体会把抽出去的复位判成「没复位」。
+fn boundary_reset(src: &str) -> (String, Vec<String>) {
+    let graph = call_graph(src);
+    // ⚠️ **只保留本文件声明过的函数**（第 94 轮实测修）。`call_graph()` 的值是「行里以 `(` 结尾的
+    //    标识符」（`callee_names`），所以**方法名**（`Object.keys(...)`、`.forEach(...)`、`.push(...)`）
+    //    也会进图；而 `reachable()` 不看对方在不在图里就往 `seen` 里插 ⇒ 闭包混进
+    //    `forEach`/`keys`。它们没有函数体 ⇒ 下面那条自证「函数声明数 == 闭包大小」在**每一棵树**上
+    //    都为假（实测 live `1≠3`、fix `2≠4`）⇒ 门禁不是「诚实地红」，是**坏的**。
+    //    图的键**恰好**是声明集合（`call_graph` 只插 `function_name()` 认出来的名字）。
+    let reach: Vec<String> = reachable(&graph, &["resetSessionCaches".to_string()])
+        .into_iter()
+        .filter(|f| graph.contains_key(f))
+        .collect();
+    let mut text = String::new();
+    for f in &reach {
+        text.push_str(&function_code(src, f));
+        text.push('\n');
+    }
+    (text, reach)
+}
+
+//
 
 /// `stat(<label>, <value>, <sub>…)` 调用里**第二段实参**（取值表达式）的文本。
 ///
@@ -2398,11 +2539,23 @@ mod tests {
         );
 
         // ── 不变量：写槽的人 == 记证据的人（守卫比的就是那三项）───────────────────────
-        assert_eq!(
-            writers,
-            holders,
-            "写 `Live.{TX_SLOT}` 的函数与写 `{TX_EVIDENCE}*` 的函数不是同一批 —— \
-             缓存内容与守卫手上的证据脱钩。实测证据写点：{:?}",
+        //
+        // C2170 起，身份边界（会话结束 / 建立）是**复位者**，不是第二个生产者：它清掉证据
+        // （`txTable.loaded*`）——证据是守卫信任的东西；槽本身由 `resetSessionCaches()` 的通用擦除负责
+        // （`Object.keys(Live).forEach(k => Live[k] = null)`，`transactions` 是 `Live` 字面量的字段）。
+        // 所以证据的写者合法地比槽的写者多一个；多出来的那个必须在**边界闭包里** ——
+        // 名册**派生**自边界闭包，不维护第二份手写名单。上面那条名册（槽的生产者）**逐字节不动**。
+        let boundary: BTreeSet<String> = boundary_reset(APP_JS).1.into_iter().collect();
+        assert!(
+            writers.is_subset(&holders),
+            "写了 `Live.{TX_SLOT}` 却不记 `{TX_EVIDENCE}*`：缓存内容与守卫手上的证据脱钩。             writers={writers:?} holders={holders:?}"
+        );
+        assert!(
+            holders
+                .difference(&writers)
+                .all(|h| boundary.contains(h)),
+            "`{TX_EVIDENCE}*` 的写者既不是装载器、也不在身份边界闭包里：             {:?} —— 在 `renderTransactions()` 里清会把守卫每次渲染都重新武装 ⇒ 请求风暴（C2146 同形）。             实测证据写点：{:?}",
+            holders.difference(&writers).collect::<Vec<_>>(),
             witnesses(APP_JS, writes_evidence)
         );
     }
@@ -5500,4 +5653,169 @@ mod tests {
         );
         }
     }
+}
+
+/// C2170：身份边界必须连**模块级**视图状态一起清 —— `Live` 之外的会话状态同样跨不过边界。
+///
+/// 反例（实测，`c2170-probe.js`）：`resetSessionCaches()` 只清 `Object.keys(Live)`，而交易视图的
+/// 分页/筛选/时间段是模块级的 —— 尤其 `txTable.loaded*` 是**载荷的有效性证据**。载荷
+/// （`Live.transactions`）被清空而证据留下 ⇒ 下一位用户进入交易视图时守卫按 `txTable.page`
+/// （上一位用户的第 5 页）发请求；服务端 `offset=(page-1)*page_size` + `LIMIT ? OFFSET ?`
+/// （`wallet.rs:389/396/410`）回 `items: []` 而 `total: 3` ⇒ 屏幕上「没有匹配的记录」旁边写着
+/// 「共 3 条」，且**不自愈**（`buildDataTable` 把 `state.page` 夹到 1 发生在渲染**内部**，守卫
+/// 不会因此重跑；实测 2.5s 内零次纠正请求）。同一跳里 `type=consume` + 7 天 `start=` 也从
+/// 上一位用户手里带过来，新用户的视图被静默收窄。
+#[test]
+fn the_identity_boundary_resets_the_transaction_view_state() {
+    let src = code_only(APP_JS);
+
+    // ── 派生：载荷守卫**真正依赖**的状态（不手抄名册，坑 #293 的两侧牙齿）────────────
+    let fields = object_literal_keys(&src, "txTable").expect("找不到 `txTable` 对象字面量");
+    let inputs: Vec<String> = fields.iter().map(|f| format!("txTable.{f}")).collect();
+    let evidence = names_with_prefix(&src, "txTable.loaded");
+    let sig = code_body(&src, "txQuerySig");
+    let lets = module_level_lets(&src);
+    let mut ranges: Vec<String> = identifiers(&sig)
+        .into_iter()
+        .filter(|n| lets.contains(n))
+        .collect();
+    ranges.sort();
+
+    // ── 前置：提取器必须真的看见东西（空集上的断言会假绿，坑 68）─────────────────────
+    assert!(inputs.len() >= 4, "`txTable` 只派生出 {inputs:?}");
+    assert!(
+        evidence.len() >= 3,
+        "只派生出 {evidence:?} 个 `txTable.loaded*`"
+    );
+    assert!(
+        !sig.is_empty(),
+        "找不到 `txQuerySig()` 的函数体 —— 提取器坏了"
+    );
+    assert!(
+        ranges.len() >= 3,
+        "`txQuerySig()` 读到的模块级状态只有 {ranges:?} —— 判别式太弱"
+    );
+    assert_eq!(
+        declared_literal(&src, "txTable", "page").as_deref(),
+        Some("1"),
+        "`txTable.page` 的声明默认值变了 —— 规则 3 的判别式要跟着改"
+    );
+
+    let (boundary, fns) = boundary_reset(&src);
+    assert!(!boundary.is_empty(), "找不到 `resetSessionCaches()` 的闭包");
+    // 反-吞并守卫（坑 #319/#332）：`js_function_body` 对**单行**函数会吞进下一个多行函数 ——
+    // 抽到的「证据」可能来自别的函数。多行函数下声明行数应恰等于闭包大小
+    // （若边界闭包里出现了嵌套 `function` 声明，请把这条守卫改成按名字逐个断言）。
+    assert_eq!(
+        boundary.matches("function ").count(),
+        fns.len(),
+        "边界闭包提取可疑（函数声明数 != 闭包大小）：{fns:?} —— 提取吞了别的函数，或边界里有嵌套声明"
+    );
+
+    // ── 规则 1：闭包必须复位每一个被守卫依赖的名字 ────────────────────────────────
+    for lhs in inputs.iter().chain(evidence.iter()).chain(ranges.iter()) {
+        assert!(
+            assigns_in(&boundary, lhs),
+            "身份边界没有复位 `{lhs}`（C2170）：`Live` 之外的模块级视图状态同样跨不过边界。\
+             载荷的有效性证据留下 ⇒ 守卫认一份「不存在的载荷」为已加载 ⇒ 下一位用户首帧即空表\
+             且不自愈。边界闭包 = {fns:?}"
+        );
+    }
+
+    // ── 规则 3：复位到**声明处的默认值**，不是一键清空 ────────────────────────────
+    let page = declared_literal(&src, "txTable", "page").expect("`txTable.page` 没有声明默认值");
+    let size =
+        declared_literal(&src, "txTable", "pageSize").expect("`txTable.pageSize` 没有默认值");
+    let range = declared_let_literal(&src, "txRange").expect("`txRange` 没有声明默认值");
+    for (lhs, lit) in [
+        ("txTable.page", page.as_str()),
+        ("txTable.pageSize", size.as_str()),
+        ("txRange", range.as_str()),
+    ] {
+        let want = format!("{lhs} = {lit}");
+        assert!(
+            boundary.contains(&want),
+            "复位没有回到声明处的默认值（期望 `{want}`）：清成 `undefined` 只会让 \
+             `loadTransactions()` 的 `Math.max(1, txTable.pageSize || 10)` 把每页退化到 1 行"
+        );
+    }
+
+    // ── 规则 2：有效性证据的写者只有装载器与身份边界 ──────────────────────────────
+    let graph = call_graph(&src);
+    let writers: Vec<String> = graph
+        .keys()
+        .filter(|f| {
+            let code = function_code(&src, f);
+            evidence.iter().any(|e| assigns_in(&code, e))
+        })
+        .cloned()
+        .collect();
+    let allowed: BTreeSet<String> = std::iter::once("loadTransactions".to_string())
+        .chain(fns.iter().cloned())
+        .collect();
+    let strays: Vec<&String> = writers.iter().filter(|w| !allowed.contains(*w)).collect();
+    assert!(
+        strays.is_empty(),
+        "`txTable.loaded*` 被 {strays:?} 写 —— 除装载器与身份边界外谁都不许写它：在 \
+         `renderTransactions()` 里清会把守卫每次渲染都重新武装 ⇒ 请求风暴（C2146 同形）"
+    );
+}
+
+/// C2170 提取器自证：两侧锚定、注释剥离、闭包跨函数，都要在**合成输入**上有牙齿。
+#[test]
+fn the_session_state_scanners_have_teeth() {
+    // (a) 右侧锚定：`txTable.page` 是 `txTable.pageSize` 的前缀 —— 复位了 pageSize 不算复位 page
+    assert!(
+        !assigns_in("    txTable.pageSize = 10;\n", "txTable.page"),
+        "兄弟字段被当成了证据（坑 #333）"
+    );
+    assert!(assigns_in("    txTable.page = 1;\n", "txTable.page"));
+    assert!(
+        !assigns_in("    if (txTable.page === 1) x();\n", "txTable.page"),
+        "比较被当成了赋值"
+    );
+    assert!(
+        !assigns_in("    const y = txTable.page;\n", "txTable.page"),
+        "读取被当成了赋值"
+    );
+    // (b) 左侧锚定
+    assert!(!assigns_in("    xtxTable.page = 1;\n", "txTable.page"));
+    // (c) 注释不是证据（坑 #296 的镜像：修法自己就在复位旁写了提到字段名的解释）
+    let commented = code_only(
+        "  function resetTxView() {\n    // txTable.page = 1;\n    txTable.pageSize = 10;\n  }\n",
+    );
+    assert!(!assigns_in(&commented, "txTable.page"), "注释被当成了赋值");
+    // (d) 前缀扫描不吞兄弟
+    let synth = "  a = txTable.loadedPage;\n  b = txTable.loadedPageSize;\n";
+    assert_eq!(
+        names_with_prefix(synth, "txTable.loaded"),
+        vec![
+            "txTable.loadedPage".to_string(),
+            "txTable.loadedPageSize".to_string()
+        ]
+    );
+    // (e) 闭包必须跨函数：复位写在被调用者里也算（抽 helper 是推荐写法）
+    let synth2 = concat!(
+        "  function resetSessionCaches() {\n",
+        "    Object.keys(Live).forEach((k) => { Live[k] = null; });\n",
+        "    resetTxView();\n",
+        "  }\n\n",
+        "  function resetTxView() {\n",
+        "    txTable.page = 1;\n",
+        "  }\n"
+    );
+    let (text, fns) = boundary_reset(synth2);
+    assert!(
+        fns.contains(&"resetTxView".to_string()),
+        "闭包没跨函数：{fns:?}"
+    );
+    assert!(
+        assigns_in(&text, "txTable.page"),
+        "闭包文本里读不到被调用者的赋值"
+    );
+    // (f) 模块级 `let` 只认 2 空格缩进的声明
+    assert_eq!(
+        module_level_lets("  let txRange = \"24h\";\n    let nested = 1;\n"),
+        vec!["txRange".to_string()]
+    );
 }
