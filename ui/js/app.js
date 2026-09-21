@@ -430,8 +430,7 @@
   function showPlanHint(planId) {
     const el = $("#sf-plan-hint");
     if (!el) return;
-    const plans = Live.plans || D.PLANS;
-    const pl = plans.find((x) => x.id === planId);
+    const pl = planById(planId);
     if (!pl) { el.textContent = ""; return; }
     el.textContent = pl.type === "paygo" ? T("share.plan.paygo") : T("share.plan.sub");
   }
@@ -439,6 +438,28 @@
   // Plan 显示名（C2133）：config 写了 name 就用它的原文，否则按 type 取语言包。
   // 后端只回传 config 原值（未配置 = 空串，语言中性）——显示文案归语言包，否则
   // `en` 界面会把响应数据字段里的后端自造中文原样印出来（mapErr 只认 `error` 字段）。
+  // 计划清单：登录后为 /api/plans（后端 config [[plans]] 单一真源），否则 data.js 兜底表。
+  // 全仓**唯一的**合读点；每次调用现读（不是捕获一份副本）—— 登录后首次渲染时 `Live.plans`
+  // 还没回来，随后会被真实清单替换，捕获副本会让下拉框永远指着那份兜底表。
+  function planList() {
+    return Live.plans || D.PLANS;
+  }
+
+  // 按 id 解析 plan —— 全仓唯一的 id→plan 入口（C2157：此前三处各自 inline 同一句）。
+  function planById(id) {
+    return planList().find((pl) => pl.id === id);
+  }
+
+  // 共享行/仪表盘卡只存 `keys.plan`（**配置 id**）⇒ 显示名必须先按 id 解析成 plan 对象。
+  // 未知 id（config 变更后的陈旧 id）原样返回 —— 语言中性，与旧行为一致。
+  // ⚠️ 兜底表 `D.PLANS[].name` 是中文硬编码（C2133 ⛔ 未修）⇒ 兜底时只取语言中性的 type，
+  //    否则 `en` 界面会印中文名（与 planLabel 的契约相悖）。
+  function planLabelById(id) {
+    const pl = planById(id);
+    if (!pl) return id;
+    return planLabel(Live.plans ? pl : { type: pl.type, id: pl.id });
+  }
+
   function planLabel(pl) {
     if (pl.name) return pl.name;
     if (pl.type === "paygo") return T("share.planName.paygo");
@@ -645,7 +666,7 @@
       const on = shares.filter((s) => s.status === "on");
       $("#dash-sharings").innerHTML = on.map((s) =>
         '<div class="mini-item"><div><div class="t">' + esc(s.model) + "</div>" +
-        '<div class="d">' + esc(s.plan || "API") + " · " + T("dash.used", { used: D.fmt(s.used), quota: D.fmt(s.quota), price: D.fmt(s.price) }) + "</div></div>" +
+        '<div class="d">' + esc(s.plan) + " · " + T("dash.used", { used: D.fmt(s.used), quota: D.fmt(s.quota), price: D.fmt(s.price) }) + "</div></div>" +
         '<div class="r"><span class="pts">+' + D.fmt(s.earned) + "</span><div class='d'>" + T("dash.earned") + "</div></div></div>"
       ).join("") + (on.length ? "" : '<div class="empty-state compact">' + EMPTY_ICON + "<p>" + T("dash.noSharing") + "</p><p class='muted'>" + T("dash.noSharing.sub") + "</p></div>");
       // 共享收益累计趋势 sparkline（rant 18:06:09 A；无上架 key 时保留空状态，不画图）
@@ -752,6 +773,10 @@
     try {
       Live.sharings = await api.get("/api/sharings");
     } catch (e) { Live.sharings = null; }
+    // C2157：这张卡渲染的 plan 标签由 `Live.plans` 派生（`sharingsToView` → `planLabelById`），
+    // 装它的写者 `refreshPlans()` 必须在这个分支里也调一次 —— 否则会话若在仪表盘上建立，
+    // 该槽只装着兜底表，卡片停在「类型级标签」且永不自愈（与 C2135 的钱包缺陷同形）。
+    await refreshPlans();
     renderDashboard();
   }
 
@@ -1017,12 +1042,10 @@
     const selP = $("#sf-provider");
     const selPlan = $("#sf-plan");
     const selM = $("#sf-model");
-    // 当前清单：优先 /api/plans（后端 config [[plans]] 单一真源），未登录/拉取失败降级 data.js。
-    // 每次读（不是捕获一份副本）：登录后首次渲染时 `Live.plans` 还没回来，随后会被真实清单替换，
-    // 而监听器只在第一次渲染时登记一次 —— 捕获副本的写法会让监听器永远指着那份兜底表。
-    const plansSrc = () => Live.plans || D.PLANS;
+    // 当前清单走模块级的 `planList()`（C2157：两张表的合读全仓只有那一处）。
+    // 每次调用都现读，理由见 `planList()` 的注释 —— 监听器只在第一次渲染时登记一次。
     const fillModels = () => {
-      const plan = plansSrc().find((pl) => pl.id === selPlan.value);
+      const plan = planById(selPlan.value);
       const p = plan ? plan.provider : selP.value;
       // 零 mock（rant 15:54:06）：模型下拉登录态用 /api/models（Live.models），游客/兜底 data.js
       const modelSrc = Live.models ? Live.models : D.MODELS;
@@ -1032,7 +1055,7 @@
     };
     const fillPlans = () => {
       const p = selP.value;
-      selPlan.innerHTML = '<option value="">' + T("share.select.plan") + "</option>" + plansSrc().filter((pl) => pl.provider === p)
+      selPlan.innerHTML = '<option value="">' + T("share.select.plan") + "</option>" + planList().filter((pl) => pl.provider === p)
         .map((pl) => '<option value="' + pl.id + '">' + esc(planLabel(pl)) + "</option>").join("");
       showPlanHint("");
       fillModels();
@@ -1050,7 +1073,7 @@
     const src = Live.plans ? "live" : "fallback";
     if (selP.dataset.plansSrc !== src) {
       selP.innerHTML = '<option value="">' + T("share.select.provider") + "</option>" +
-        [...new Set(plansSrc().map((pl) => pl.provider))]
+        [...new Set(planList().map((pl) => pl.provider))]
           .map((p) => '<option value="' + p + '">' + esc(provLabel(p)) + "</option>").join("");
       selP.dataset.plansSrc = src;
       fillPlans();
@@ -1059,7 +1082,7 @@
     $("#share-body").innerHTML = list.length ? list.map((s, i) => {
       // 已用 / 额度 进度条（rant 2026-09-11T16:23:43 第 5 节：进度条 + 数字）
       const pct = s.quota > 0 ? Math.min(100, Math.round((s.used / s.quota) * 100)) : 0;
-      return "<tr><td data-label='" + T('share.col.provider') + "'><strong>" + esc(provLabel(s.provider)) + " · " + esc(s.plan || "API") +
+      return "<tr><td data-label='" + T('share.col.provider') + "'><strong>" + esc(provLabel(s.provider)) + " · " + esc(s.plan) +
       "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + "</div></td>" +
       "<td data-label='" + T('share.col.key') + "' class='mono'>" + esc(maskKey(s.key)) + "</td>" +
       "<td data-label='" + T('share.col.used') + "' class='num'>" + D.fmt(s.used) + " / " + D.fmt(s.quota) +
@@ -1082,10 +1105,7 @@
     try {
       await liveLoad("sharings", "/api/sharings");
     } catch (e) { Live.sharings = null; /* 登录态降级空态 */ }
-    try {
-      // Bug 1 修复：上架表单 Plan 数据源改真实后端（config [[plans]] 单一真源）
-      await liveLoad("plans", "/api/plans");
-    } catch (e) { Live.plans = null; /* 表单兜底 data.js 对齐清单 */ }
+    await refreshPlans();
     try {
       // 零 mock（rant 15:54:06）：上架表单模型下拉 + 定价用真实模型表
       await liveLoad("models", "/api/models");
@@ -3380,7 +3400,7 @@
       return {
         id: s.id,
         provider: s.provider,
-        plan: s.plan || "API",
+        plan: s.plan ? planLabelById(s.plan) : "API",
         model: s.model,
         key: s.key,
         quota: s.quota,
@@ -3471,6 +3491,18 @@
   async function refreshDashboard() {
     try { Live.dashboard = await api.get("/api/dashboard"); }
     catch (e) { Live.dashboard = null; }
+  }
+
+  // 计划清单（`Live.plans`）的**唯一**写者（C2157）。两个视图渲染它派生出的标签：
+  // 共享页/上架表单（`loadSharing`）与仪表盘「我的共享」卡（`renderDashboard` 经
+  // `sharingsToView` → `planLabelById` → `planById` → `planList`）。渲染它的每个分支各调一次
+  // —— 与 C2135 的 `refreshDashboard()` 同形：此前写者只有共享页的 loader，会话若在仪表盘上
+  // 建立，那张卡就只拿得到兜底表，且不自愈。
+  async function refreshPlans() {
+    try {
+      // Bug 1 修复：上架表单 Plan 数据源改真实后端（config [[plans]] 单一真源）
+      await liveLoad("plans", "/api/plans");
+    } catch (e) { Live.plans = null; /* 表单兜底 data.js 对齐清单 */ }
   }
 
   // 刷新钱包缓存（登录后）；返回最新 available
@@ -3849,7 +3881,7 @@
       const done = () => {
         const model = $("#sf-model").value;
         const planId = $("#sf-plan").value;
-        const plan = (Live.plans || D.PLANS).find((pl) => pl.id === planId);
+        const plan = planById(planId);
         const quota = Number($("#sf-quota").value || 0);
         const key = $("#sf-key").value.trim();
         const note = $("#sf-note").value.trim();
@@ -3882,7 +3914,7 @@
           const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
           $("#sf-quota").value = 5000;
           hideShareForm();
-          const label = provLabel(plan.provider) + " · " + planLabel(plan);
+          const label = provLabel(plan.provider) + " · " + planLabelById(planId);
           toast(T("share.list.ok", { label: label, model: model, price: D.fmt(price) }), "success");
         };
         if (!loggedIn()) {

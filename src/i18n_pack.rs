@@ -3232,6 +3232,29 @@ mod tests { fn t() { json!({ "x": "测试中文" }) } }
         );
     }
 
+    /// 「标签来自**语言包感知**的解析器」的判别式（C2157）。
+    ///
+    /// 判别式必须覆盖**全部**解析器，不能锚在单个函数名上：`planLabelById(id)` 是同一个解析器
+    /// 的第二个入口（按 plan id 进来），单锚 `planLabel(` 会把它合法的调用判成红 —— 同族坑
+    /// #347「名字不是唯一载体」。⚠️ 射程：它证明派生**走了**解析器，不证明分支/算术全对。
+    fn resolver_renders_the_label(stmt: &str) -> bool {
+        stmt.contains("planLabel(") || stmt.contains("planLabelById(")
+    }
+
+    /// 判别式自证：两个合法入口各判一次、一个裸字段形态必须判负（否则放宽是无牙的）。
+    #[test]
+    fn the_plan_label_resolver_discriminant_covers_every_resolver() {
+        assert!(resolver_renders_the_label(
+            "const label = provLabel(plan.provider) + \" · \" + planLabel(plan);"
+        ));
+        assert!(resolver_renders_the_label(
+            "const label = provLabel(plan.provider) + \" · \" + planLabelById(planId);"
+        ));
+        assert!(!resolver_renders_the_label(
+            "const label = provLabel(plan.provider) + \" · \" + plan.name;"
+        ));
+    }
+
     /// 另一半（C2133）：后端只回传语言中性标记之后，标签必须由客户端补上。
     ///
     /// 只钉生产者（后端无中文）会漏掉「前端把空串直接渲染成空白标签」这条半修；
@@ -3256,7 +3279,7 @@ mod tests { fn t() { json!({ "x": "测试中文" }) } }
              后端已经不再自造它了，前端不兜底就只剩一个空标签：{arg:?}"
         );
 
-        // ② Plan 显示名：一个函数、两个渲染点
+        // ② Plan 显示名：一个解析器、四个渲染点（C2157 补上共享表单元格与仪表盘卡两处）
         let body = js_function_body(&app, "function planLabel(")
             .expect("应有 planLabel（config 没写 name 时按 type 取语言包）");
         assert!(
@@ -3270,8 +3293,56 @@ mod tests { fn t() { json!({ "x": "测试中文" }) } }
             let stmt = statement_containing(&app, needle)
                 .unwrap_or_else(|| panic!("找不到 {site} 的渲染语句（`{needle}`）"));
             assert!(
-                stmt.contains("planLabel("),
-                "{site} 必须经 planLabel 渲染 —— 直接读 `plan.name` 会让 config 未配置时显示空标签：{stmt:?}"
+                resolver_renders_the_label(stmt),
+                "{site} 必须经**语言包感知**的解析器渲染（`planLabel(` 或 `planLabelById(`）——\
+                 锚在单个函数名上会把合法的第二个入口判成红；直接读 `plan.name` 则会让 config \
+                 未配置时显示空标签：{stmt:?}"
+            );
+        }
+        // C2157：共享表单元格与仪表盘卡渲染的是 `sharingsToView` **派生出来的标签**，
+        // 不得再内联 `s.plan || "API"` —— 那是**配置 id**，与同屏的下拉/toast 是两个口径。
+        for (site, needle) in [
+            ("共享表 Plan 单元格", "esc(provLabel(s.provider))"),
+            ("仪表盘「我的共享」卡", "$(\"#dash-sharings\").innerHTML"),
+        ] {
+            let stmt = statement_containing(&app, needle)
+                .unwrap_or_else(|| panic!("找不到 {site} 的渲染语句（`{needle}`）"));
+            assert!(
+                stmt.contains("esc(s.plan)"),
+                "{site} 应渲染派生值 `esc(s.plan)`（由 sharingsToView 经 planLabelById 算出），\
+                 实得 {stmt:?}"
+            );
+        }
+        assert!(
+            !app.contains("esc(s.plan ||"),
+            "共享行又回到「裸配置 id 兜底」的渲染形态（`esc(s.plan || \"API\")`）——\
+             同屏上会出现 id 与标签两个口径"
+        );
+        let derived = js_function_body(&app, "function sharingsToView(")
+            .expect("应有 sharingsToView（共享行的视图层）");
+        assert!(
+            derived.contains("planLabelById("),
+            "共享行的 `plan:` 必须经 `planLabelById` 派生（标签的唯一产出点），实得 {derived:?}"
+        );
+        // `data.js` 兜底表 `D.PLANS[].name` 是**中文硬编码**（C2133 ⛔ 未修）⇒ 标签路径不得读它，
+        // 否则 `en` 界面会把中文名印出来。判据＝`planLabelById`（含它的兜底分支）不提 `name`。
+        let by_id = js_function_body(&app, "function planLabelById(")
+            .expect("应有 planLabelById（按 id 出标签）");
+        assert!(
+            !by_id.contains("name"),
+            "`planLabelById` 不得读 `name`（兜底表的名字是中文硬编码）：兜底行只取语言中性的 type，\
+             实得 {by_id:?}"
+        );
+        // 三个 type 的标签两包俱在 —— 它们是 `planLabel` 对 live plan（name 未配置）的出口。
+        let LanguagePacks { zh, en, .. } = packs();
+        for k in [
+            "share.planName.paygo",
+            "share.planName.token",
+            "share.planName.coding",
+        ] {
+            assert!(
+                zh.contains_key(k) && en.contains_key(k),
+                "`{k}` 应在两个包里都有（planLabel 的出口，缺一个就会在一种语言下印出键名）"
             );
         }
 
