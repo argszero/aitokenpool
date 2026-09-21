@@ -3892,9 +3892,16 @@
 
     // 共享上架表单（默认收起；点添加展开，提交成功或取消后收起）
     const shareFormCard = () => $("#share-form-card");
+    // 「每天」快捷勾选是用 property 式给单日 chip 打 disabled 的（`cb.disabled = allCb.checked`），
+    // 而 `form.reset()` 只还原「值 / 勾选态」、**不清 property** ⇒ 成功上架后表单被回收，
+    // 七个星期 chip 会保持「未勾选 + 禁用」直到重开 —— 必须在回收 / 重开路径上显式清一次。
+    const resetShareAvail = () => {
+      $$("#sf-days .chip input").forEach((cb) => { cb.disabled = false; });
+    };
     const showShareForm = () => {
       clearFieldError($("#sf-key"));
       clearFieldError($("#sf-quota"));
+      resetShareAvail();
       shareFormCard().hidden = false;
       $("#sf-key").focus();
     };
@@ -3948,6 +3955,7 @@
         };
         const afterOk = () => {
           e.target.reset();
+          resetShareAvail();
           const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
           $("#sf-quota").value = 5000;
           hideShareForm();

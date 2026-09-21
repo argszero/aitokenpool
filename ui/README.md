@@ -653,6 +653,23 @@ try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance;
 - ⚠️ **射程**：门禁是**词法**的 —— 它证明取值**读到**两个字段、名字落在可花族，**不证明算术是 `+`**；行为由仪器 `c2173_probe.js` 钉（19 腿；甲/乙两棵合法树全绿，三条「半个答案 / 化妆 / 自相矛盾」被拒）。
 
 
+## 表单控件的 property 式 `disabled`：必须有一个在**回收路径**上的清除点（R139）
+
+- **唯一真源**：`ui/js/app.js::resetShareAvail()` —— 它把「七个单日 chip 的 `disabled` 清回
+  `false`」收成一处；`showShareForm()`（每次重开表单）与 `afterOk()`（成功上架后回收）各调一次。
+- **为什么必须有**：`HTMLFormElement.reset()` 只还原**值 / 勾选态**到默认值，**不清 `disabled`
+  property**；而「每天」快捷勾选正是用 **property** 方式禁用单日 chip 的
+  （`cb.disabled = allCb.checked`，从没进过 HTML 属性）。于是勾着「每天」成功上架一次之后，
+  七枚 chip 是「未勾选 + 禁用」：点任何一天都无反应，表单卡片是静态 HTML ⇒ **整会话不自愈**。
+- **写法约定**：任何「用 property 把一个**表单控件**禁成非 `false`」的写点，都必须在
+  **回收闭包**里有一处同频道的 `.disabled = false`。回收闭包 = 调用 `form.reset()` 的那个函数的
+  调用闭包 ∪ 打开表单卡片那个函数的闭包（两个根都从 `index.html` 派生，不写名册）。
+- **门禁**：`src/state_gate.rs::a_form_control_disabled_by_the_property_is_cleared_on_the_recycle_path`
+  三规则各有独立的牙（控件写者集合非空且频道能派生出 `<form>` / 卡片 id ／闭包里有同频道清除 ／
+  回收宿主仍被调用），配 `the_form_recycle_path_scanners_have_teeth` 四条合成输入自证。
+  **形状归门禁，事实归探针**（jsdom 驱动真上架表单：未修树恰 `{B1,B2}` 红、修复树 9/9 绿、
+  竞争修法 `m_drop`（取消互斥）被 `{C3,C2,A3}` 拒绝）。
+
 ## 载荷签名覆盖所有输入，控件变更只有一个重拉触发器（C2146）
 
 交易列表/趋势的请求体由**两份**状态渲染：列筛选（`txTable.filters`）与时间段
