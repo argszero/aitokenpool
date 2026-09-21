@@ -850,3 +850,32 @@ toast(next === "paused" ? T("share.toggle.paused", …) : T("share.toggle.resume
 ⚠️ **射程**：门禁是**词法**的 —— 它证明四个渲染点渲染的是派生值、`sharingsToView` 的 `plan:` 走了
 `planLabelById`、`planLabelById` 不读 `name`（兜底表 `D.PLANS[].name` 是中文硬编码，C2133 ⛔ 未修）。
 它**不**证明运行期标签取到的是哪一支 —— 那是 jsdom 仪器的职责，而 `cargo test` 里没有 JS 运行器。
+
+## 运营卡「上游 key 状态」：判定语必须说数据说的那件事（C2158）
+
+`keys` 表只有 `status`（`on` / `paused` / `off`），`/api/ops/runtime` 只回 `total` / `on` / `off`
+（`off = total − on`，由后端 `SUM(CASE WHEN status='on' …)` 算出）—— **后端不产出任何「健康」信号**。
+而这张卡曾把「停用」渲染成「异常 / 全部失败」、并把「全部停用」涂成 `pill-danger`：用户**暂停自己的
+key**（正常操作）于是让运营者看到红色故障警报，而屏幕上的句子（「上游 key 健康」「{n} 个异常」）
+宣称的是一份**并不存在**的数据。
+
+**约定（三条，缺一不可）**：
+
+1. **键名即语义**：判定语键名**不得**出现 `healthy` / `abnormal` / `failed` / `fail` / `error` /
+   `down` / `unhealthy`（比对的是**键名**，不是文案 —— 改文案不改键名仍红）。键名会撒谎，
+   门禁就钉不住它：三态键是 `ops.keys.allOn` / `someOff` / `allOff`。
+2. **消费到的键必须已登记**：运营卡的 key 状态块只允许用 `{allOn, someOff, allOff, count, empty}`
+   —— 另起一个未登记的新判定语键＝偷偷换一套口径。
+3. **反向：三个状态臂必须都被渲染**：`allOn` / `someOff` / `allOff` 各至少出现一次。
+   删掉 pill 不是修法（判定语要说得更准，不是不说）。
+4. **配色是同一个主张**：`off >= total` 用 `pill-muted`（中性），**不是** `pill-danger` ——
+   红/警告是「故障」的词法，而数据支持不了故障。`off === 0` 保持 `pill-ok`、部分停用保持 `pill-warn`。
+   `pill` 类名另有**两处合法用户**（`PILL_CLS` 表、部门额度耗尽卡）⇒ 判据钉**渲染点**，不是裸类名。
+
+门禁：`i18n_pack::the_ops_key_health_pill_names_the_state_it_counts`（规则 1–3）
+＋ `i18n_pack::the_ops_key_state_scanners_have_teeth`（两条判别式的合成自证）。
+
+⚠️ **射程**：门禁是**词法**的 —— 它证明**键名与键集**，**不**证明渲染出来的**句子**与数据一致。
+那一半由 jsdom 仪器 `c2158_probe.js` 承接（`A1`–`A4` / `B1` / `C1` 机制腿：共享页真暂停一枚 key →
+真 `PATCH` → 回运营视图，该厂商行不得变成红色故障态）。两半**互补**且已实测：把**文案**改对而
+**键名**照旧的竞争修法，探针**接受**（屏幕上的句子是对的）、门禁**拒绝**（键名仍在宣称健康）。
