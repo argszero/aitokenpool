@@ -2887,9 +2887,506 @@ fn r139_reading(app: &str, html: &str) -> R139Reading {
     }
 }
 
+// ── R158：同一视图里的同一份 token 数量只许有一种拼写；导出的数字列写**精确值** ──────────────
+//
+// 汇总卡的 Token 合计/输入/缓存/输出四项跑在 `renderTxSummary` 自带的 `fmtM` 上
+// （K 档 `Math.round(n / 1000) + "K"`：1500 → "2K"），而它**正下方那些行**的同一个数由
+// `fmtTokens` 渲染（K 档 `(n / 1000).toFixed(1)` 去尾零：1500 → "1.5K"）—— 筛到只剩一行时
+// 两处印的是同一个数、两种拼写。CSV 导出再把单元格的**显示串**写进数据文件，而精确值的唯一
+// 出口（悬停）在文件里根本不存在（`fmtTokensExact` 只喂 `title`）。
+//
+// 本门禁钉的是**形状**：卡片不许自带拼写、必须委派；导出必须写数字；单元格必须仍是缩写。
+// 「屏幕与文件真的对不对得上」由 DOM 仪器 `r158_probe.js` 证（形状归门禁，事实归探针）。
+
+/// 交易表四个 token 列的**显示字段**（= 视图模型 `txsToView` 返回对象里的键名）。
+///
+/// 这不是凭空的名单：`the_r158_roster_is_real` 断言每个名字都在那个对象字面量里被声明、
+/// 且与它配对的数字字段也在。字段改名时门禁会**响亮地**失败 —— 而不是静默失去射程。
+const R158_TOKEN_FIELDS: [&str; 4] = ["inputTokens", "cachedTokens", "outputTokens", "tokens"];
+
+/// 「自带一份紧凑拼写」的指纹：`"K"` / `"M"` 字符串字面量。
+const R158_SPELLING_LITERALS: [&str; 2] = ["\"K\"", "\"M\""];
+
+/// 变体的两条锚点（缺陷形态与修好形态），`r158_fix` / `r158_unfix` 是互逆的改写。
+///
+/// A/B 用例从**修好之后的树**派生，而不是直接拿 `APP_JS` 当「缺陷」那一行：写死
+/// `("base", APP_JS, …)` 的话，修复一落地这条测试就**静默反转**（坑 #314）—— 它值得
+/// 恒真的地方在于「规则能认出缺陷」，不在于「此刻这棵树有缺陷」。
+const FMTM_DEFECTIVE: &str = "const fmtM = (n) => (n >= 1e6 ? (n / 1e6).toFixed(2) + \"M\" : (n >= 1000 ? Math.round(n / 1000) + \"K\" : String(Math.round(n))));";
+const FMTM_DELEGATING: &str = "const fmtM = fmtTokens;";
+const CSV_DISPLAY_GROUP: &str = "t.inputTokens, t.cachedTokens, t.outputTokens, t.tokens,";
+const CSV_RAW_GROUP: &str = "fmtTokensExact(t.inputRaw), fmtTokensExact(t.cachedRaw), fmtTokensExact(t.outputRaw), fmtTokensExact(t.tokensRaw),";
+/// 「只修了合计列」的半修形状（竞争修法 m1）。
+const CSV_PARTIAL_GROUP: &str =
+    "t.inputTokens, t.cachedTokens, t.outputTokens, fmtTokensExact(t.tokensRaw),";
+
+/// 把缺陷形态改写成修好形态（幂等：树已修好时逐字返回原样）。
+fn r158_fix(src: &str) -> String {
+    src.replace(FMTM_DEFECTIVE, FMTM_DELEGATING)
+        .replace(CSV_DISPLAY_GROUP, CSV_RAW_GROUP)
+}
+
+/// `r158_fix` 的逆（同样幂等）—— 用来在**任何一棵树**上把缺陷形态构造出来。
+fn r158_unfix(src: &str) -> String {
+    src.replace(FMTM_DELEGATING, FMTM_DEFECTIVE)
+        .replace(CSV_RAW_GROUP, CSV_DISPLAY_GROUP)
+}
+
+/// 显示字段 → 同一行的**精确值**字段（`inputTokens` → `inputRaw`、`tokens` → `tokensRaw`）。
+///
+/// 派生而不是并列第二份名单：`…Tokens` 去掉 `Tokens` 再加 `Raw`；本来就叫 `tokens` 的直接加
+/// `Raw`。两份名单一旦各写一遍就会漂移，而漂移的后果正是本轴要消灭的东西。
+fn r158_raw_field(display: &str) -> String {
+    match display.strip_suffix("Tokens") {
+        Some(stem) => format!("{stem}Raw"),
+        None => format!("{display}Raw"),
+    }
+}
+
+/// `const NAME = (…) => …` 的**函数体**，**任意缩进**（不像 `js_function_body` 只认
+/// `function NAME(`）。
+///
+/// 收尾判据：块状箭头停在**去空白后恰为 `};`** 的那一行；单行箭头只取它自己那一行
+/// （坑 #319：单行函数不许吞掉紧随其后的多行函数）。缩进不能写死 —— 本轴的
+/// tooltip 构造器在 `txsToView` 里缩进 6 格，而只认 2/4 格的提取器会**静默返回空体**，
+/// 空体看起来跟「这条规则没什么可抱怨的」一模一样。
+fn r158_arrow_body(src: &str, name: &str) -> String {
+    let head = format!("const {name} =");
+    let mut buf: Vec<String> = Vec::new();
+    let mut started = false;
+    for line in src.lines() {
+        if !started {
+            if line.trim_start().starts_with(&head) {
+                started = true;
+                buf.push(line.to_string());
+                if line.contains("=>") && !line.contains("=> {") {
+                    break; // 单行箭头
+                }
+            }
+            continue;
+        }
+        buf.push(line.to_string());
+        if line.trim() == "};" {
+            break;
+        }
+    }
+    buf.join("\n")
+}
+
+/// `function NAME(…)` 的函数体：停在**恰好是 `  }`** 的那一行。
+///
+/// 不能写成 `trim() == "}"`：函数体里的 `if/else` 等嵌套块收尾是 `    }`，停在第一个这样的行上
+/// 会**静默截断**，而截断不长得像错误 —— 它长得像「本该被抓住的那一行不存在」。
+/// （实测：用宽松判据时 `renderTxSummary` 在它自己的 `if/else` 处提前结束约 1 000 字符，
+/// 正好切掉规则 1 存在的理由 `const fmtM = …`，于是**改前树被判绿**。）
+fn r158_fn_body(src: &str, name: &str) -> String {
+    let head = format!("function {name}(");
+    let mut buf: Vec<String> = Vec::new();
+    let mut started = false;
+    for line in src.lines() {
+        if !started {
+            if line.trim_start().starts_with(&head) {
+                started = true;
+                buf.push(line.to_string());
+            }
+            continue;
+        }
+        buf.push(line.to_string());
+        if line == "  }" {
+            break;
+        }
+    }
+    buf.join("\n")
+}
+
+/// 一个声明（箭头 const 或 `function`）的**代码体**：注释已剥离、空行已去掉。
+fn r158_code_of(src: &str, name: &str) -> String {
+    let body = {
+        let a = r158_arrow_body(src, name);
+        if a.is_empty() {
+            r158_fn_body(src, name)
+        } else {
+            a
+        }
+    };
+    if body.is_empty() {
+        return String::new();
+    }
+    let text = code_text_by_line(&body);
+    text.into_iter()
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 汇总卡那一段（`renderTxSummary`）。
+fn r158_card_code(src: &str) -> String {
+    r158_code_of(src, "renderTxSummary")
+}
+
+/// CSV 的**那一行**：`exportTxCsv` 里逐行拼 11 列的那个 `list.map`。
+fn r158_csv_row_line(src: &str) -> String {
+    code_text_by_line(src)
+        .into_iter()
+        .find(|l| l.contains("const lines = list.map((t) => ["))
+        .unwrap_or_default()
+}
+
+/// 四个 token 单元格的 `render:` 行（在 `TX_COLUMNS` 里，缩进 6 格、带 `t.tokenBrk(`）。
+fn r158_token_cell_lines(src: &str) -> Vec<String> {
+    code_text_by_line(src)
+        .into_iter()
+        .filter(|l| l.contains("render:") && l.contains("t.tokenBrk("))
+        .collect()
+}
+
+/// 悬停那一层用的**精确值 helper** —— 从代码里**派生**，不写名字。
+///
+/// 语义：单元格的 tooltip 是「缩写」的精确值出口，导出必须写**同一层**的值。所以：取构造
+/// `title="` 的那个箭头（`brkTitle`）里、赋值给 `exact` 的那一行，其上被调用的标识符就是它。
+/// 派生而非硬编码，是为了不把「这一次编辑」做成快照（坑 #469）：换名/换层写法时门禁跟着变。
+fn r158_exact_helpers(src: &str) -> Vec<String> {
+    let body = r158_code_of(src, "brkTitle");
+    let mut out: Vec<String> = Vec::new();
+    for line in body.lines() {
+        if !line.starts_with("const exact") || !line.contains('=') {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' || bytes[i] == b'$') {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < bytes.len() && is_word(bytes[i]) {
+                i += 1;
+            }
+            let name = &line[start..i];
+            if bytes.get(i) == Some(&b'(') && !matches!(name, "typeof" | "String") {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// 四条规则的读数与它做判断所依据的证据（诊断要能自证，不能只说「红了」）。
+struct R158Reading {
+    r1: bool,
+    r2: bool,
+    r3: bool,
+    r4: bool,
+    card_len: usize,
+    csv_len: usize,
+    cells: usize,
+    exact_helpers: Vec<String>,
+    exact_calls: usize,
+    csv_display_used: Vec<&'static str>,
+    csv_raw_missing: Vec<String>,
+}
+
+fn r158_reading(src: &str) -> R158Reading {
+    let card = r158_card_code(src);
+    let csv = r158_csv_row_line(src);
+    let cells = r158_token_cell_lines(src);
+
+    // 规则 1：卡片**不自带拼写** —— 它的代码里不许出现 K/M 后缀字面量。
+    let r1 = !card.is_empty() && !R158_SPELLING_LITERALS.iter().any(|lit| card.contains(lit));
+
+    // 规则 2：卡片**委派**给单元格那条拼写。
+    let r2 = mentions_identifier(&card, "fmtTokens");
+
+    // 规则 3：导出的 token 四列写数字（四个 `<field>Raw`），且不读显示串；换算走悬停那一层的
+    // helper。判据用标识符边界：`t.tokens` 不得在 `t.tokensRaw` 里命中（坑 #333）。
+    let mut csv_display_used: Vec<&'static str> = Vec::new();
+    let mut csv_raw_missing: Vec<String> = Vec::new();
+    for f in R158_TOKEN_FIELDS {
+        if mentions_identifier(&csv, &format!("t.{f}")) {
+            csv_display_used.push(f);
+        }
+        let raw = r158_raw_field(f);
+        if !mentions_identifier(&csv, &format!("t.{raw}")) {
+            csv_raw_missing.push(raw);
+        }
+    }
+    let exact_helpers = r158_exact_helpers(src);
+    let exact_calls: usize = exact_helpers
+        .iter()
+        .map(|h| csv.matches(&format!("{h}(")).count())
+        .sum();
+    let r3 = !csv.is_empty()
+        && csv_display_used.is_empty()
+        && csv_raw_missing.is_empty()
+        && exact_calls >= R158_TOKEN_FIELDS.len();
+
+    // 规则 4（反向，防矫枉过正）：四个 token 单元格仍须印**缩写**字段。
+    // 「把屏幕改成精确值、让文件显得对」正是这条要挡的过度纠正（m2）。
+    let r4 = cells.len() == R158_TOKEN_FIELDS.len()
+        && R158_TOKEN_FIELDS.iter().all(|f| {
+            let needle = format!("+ t.{f} +");
+            cells.iter().any(|l| l.contains(&needle))
+        });
+
+    R158Reading {
+        r1,
+        r2,
+        r3,
+        r4,
+        card_len: card.len(),
+        csv_len: csv.len(),
+        cells: cells.len(),
+        exact_helpers,
+        exact_calls,
+        csv_display_used,
+        csv_raw_missing,
+    }
+}
+
+impl R158Reading {
+    fn verdicts(&self) -> String {
+        format!(
+            "R1={} R2={} R3={} R4={}",
+            self.r1 as u8, self.r2 as u8, self.r3 as u8, self.r4 as u8
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R158：交易视图里**同一份 token 数量只许有一种拼写**，且导出写精确值。
+    ///
+    /// 四条规则各有独立的牙（`the_r158_rules_separate_the_variants` 逐条证）：
+    /// - R1 卡片不自带拼写；R2 卡片委派给 `fmtTokens`（改前树两条都红）
+    /// - R3 导出四列写 `<…>Raw` 数字、走悬停那层的 helper（`m1`「只修合计列」红在这里）
+    /// - R4 四个单元格仍是缩写（`m2`「把屏幕降级成精确值」红在这里）
+    #[test]
+    fn the_transactions_view_states_one_token_quantity_one_way() {
+        let r = r158_reading(APP_JS);
+
+        // 规则 1/2：卡片那一半。诊断里带上卡片代码的长度，是为了让「提取器没找到卡片」
+        // 与「卡片真的合规」在输出上可区分（空体 = 提取失效，而不是通过）。
+        assert!(
+            r.card_len > 0,
+            "没提取到汇总卡 `renderTxSummary` 的代码体（长度 0）⇒ 下面两条断言会在空体上通过。\
+             提取器或函数改名了。{}",
+            r.verdicts()
+        );
+        assert!(
+            r.r1,
+            "汇总卡自带了一份紧凑拼写（代码里出现 \"K\"/\"M\" 后缀字面量，卡片代码 {} 字符）⇒\
+             卡片的 K 档与它正下方那些行不是同一条规则（1500 → 卡片 \"2K\"、行 \"1.5K\"）。\
+             卡片的 token 取值必须**委派**给单元格那条拼写（`fmtTokens`）。{}",
+            r.card_len,
+            r.verdicts()
+        );
+        assert!(
+            r.r2,
+            "汇总卡的代码里没有出现 `fmtTokens` ⇒ 它没有委派给单元格那条拼写。{}",
+            r.verdicts()
+        );
+
+        // 规则 3：导出那一半。
+        assert!(
+            r.csv_len > 0,
+            "没找到 `exportTxCsv` 里逐行拼列的那一行（长度 0）⇒ R3 会在空串上通过。{}",
+            r.verdicts()
+        );
+        assert!(
+            r.csv_display_used.is_empty(),
+            "CSV 的 token 列仍在写**显示串** {:?} —— 那是给人看的缩写（\"1.5K\"），\
+             写进数据列后 Excel 既不能求和也不能透视，而精确值在文件里没有任何出口。\
+             必须改读同一行的数字字段并走悬停那一层的 helper。{}",
+            r.csv_display_used,
+            r.verdicts()
+        );
+        assert!(
+            r.csv_raw_missing.is_empty(),
+            "CSV 的 token 列没有读这些数字字段 {:?}（字段名由 `…Tokens` → `…Raw` 派生）。{}",
+            r.csv_raw_missing,
+            r.verdicts()
+        );
+        assert!(
+            !r.exact_helpers.is_empty(),
+            "没能从悬停构造器（`title=\"` 那个箭头里赋值给 `exact` 的一行）派生出一致的精确值 helper ⇒\
+             规则 3 的第三半个判据没有尺子。{}",
+            r.verdicts()
+        );
+        assert!(
+            r.exact_calls >= R158_TOKEN_FIELDS.len(),
+            "CSV 只调用了精确值 helper {:?} {} 次，而 token 列有 {} 列 ⇒ 漏掉了某几列（这正是\
+             「只修合计列」那类半修的形状）。{}",
+            r.exact_helpers,
+            r.exact_calls,
+            R158_TOKEN_FIELDS.len(),
+            r.verdicts()
+        );
+
+        // 规则 4（反向）：别把屏幕降级成精确值来让文件显得对。rant 2026-08-22T08:58:54 要的
+        // 正是屏幕上的 K/M 缩写 + 悬停取精确值。
+        assert_eq!(
+            r.cells,
+            R158_TOKEN_FIELDS.len(),
+            "token 单元格的 `render:` 行数不是 {}（找到 {}）⇒ 表格形状变了或扫描器失效。{}",
+            R158_TOKEN_FIELDS.len(),
+            r.cells,
+            r.verdicts()
+        );
+        assert!(
+            r.r4,
+            "四个 token 单元格不再印缩写的显示字段 ⇒ 屏幕被降级成了精确值（「让导出显得对」的\
+             过度纠正）。屏幕口径是 rant 2026-08-22T08:58:54 明确要的 K/M 缩写。{}",
+            r.verdicts()
+        );
+    }
+
+    /// 阳性对照（坑 68 家族）：名册里的四个显示字段**真的**是视图模型的字段。
+    ///
+    /// 门禁的名册是最容易腐烂的载体：字段一改名，R3/R4 会在**空集**上通过。这条断言把
+    /// 名册钉在被测代码上 —— 每个显示字段及其派生的数字字段都必须作为**对象字面量的键**
+    /// 出现在 `txsToView` 的返回里。
+    #[test]
+    fn the_r158_roster_is_real() {
+        let body = r158_fn_body(APP_JS, "txsToView");
+        assert!(!body.is_empty(), "没提取到 `txsToView`（改名了？）");
+        for f in R158_TOKEN_FIELDS {
+            let raw = r158_raw_field(f);
+            let declares = |name: &str| {
+                body.lines().any(|l| {
+                    let t = l.trim();
+                    t.starts_with(&format!("{name}: ")) || t == format!("{name},")
+                })
+            };
+            assert!(
+                declares(f),
+                "名册里的显示字段 `{f}` 不在 `txsToView` 的返回对象里 ⇒ R3/R4 的射程已空"
+            );
+            assert!(
+                declares(&raw),
+                "显示字段 `{f}` 派生的数字字段 `{raw}` 不在 `txsToView` 的返回对象里 ⇒\
+                 「导出写数字」这条规则读不到东西"
+            );
+        }
+    }
+
+    /// 扫描器自证（合成语料，不依赖仓库当前内容）：每条判别式都得能**翻面**。
+    ///
+    /// 覆盖四类真实踩过的坑：①只剥 `//` 的注释剥离会被解释性文字绊倒；②单行箭头不许吞掉
+    /// 下一个函数；③函数体不许停在嵌套块的 `}` 上（会静默截断掉证据）；④`t.tokens` 不许在
+    /// `t.tokensRaw` 里命中。
+    #[test]
+    fn the_r158_scanners_have_teeth() {
+        // ① 注释里提到 fmtTokens 不算「委派」：注释剥离必须覆盖注释行。
+        let commented = "  function renderTxSummary(list) {\n    // 卡片这里本该用 fmtTokens\n    const fmtM = (n) => (n >= 1000 ? Math.round(n / 1000) + \"K\" : String(n));\n  }\n";
+        let r = r158_reading(commented);
+        assert!(
+            !r.r2,
+            "注释里的 `fmtTokens` 被当成了委派证据（注释剥离失效）"
+        );
+
+        // ③ 函数体必须在**恰好 `  }`** 处收尾：嵌套块先收尾时截断会切掉证据。
+        let nested = "  function renderTxSummary(list) {\n    if (list) {\n      x();\n    } else {\n      y();\n    }\n    const fmtM = (n) => (n >= 1000 ? Math.round(n / 1000) + \"K\" : String(n));\n  }\n";
+        assert!(
+            !r158_reading(nested).r1,
+            "函数体停在了嵌套块的收尾括号上、把自带的拼写切掉了（截断不长得像错误）"
+        );
+
+        // ② 单行箭头不许吞掉紧随其后的多行函数。
+        let single = "  const fmtCtx = (n) => String(n);\n  function renderTxSummary(list) {\n    const fmtM = (n) => (n >= 1000 ? Math.round(n / 1000) + \"K\" : String(n));\n  }\n";
+        assert_eq!(
+            r158_arrow_body(single, "fmtCtx").lines().count(),
+            1,
+            "单行箭头吞掉了下一个函数"
+        );
+        // 任意缩进都要能找到（tooltip 构造器在 `txsToView` 里缩进 6 格）。
+        let deep = "  function outer() {\n      const brkTitle = (l, v) => {\n        const exact = typeof v === \"number\" ? fmtTokensExact(v) : \"0\";\n        return \"x\";\n      };\n  }\n";
+        assert_eq!(
+            r158_exact_helpers(deep),
+            vec!["fmtTokensExact".to_string()],
+            "深缩进的 tooltip 构造器没被找到（提取器写死了缩进）"
+        );
+
+        // ④ 标识符边界：`t.tokens` 不得在 `t.tokensRaw` 里命中。
+        let boundary = "    const lines = list.map((t) => [fmtTokensExact(t.tokensRaw)].map(cell).join(\",\"));";
+        assert!(
+            !mentions_identifier(boundary, "t.tokens"),
+            "`t.tokens` 在 `t.tokensRaw` 里命中了（子串被当成了兄弟标识符，坑 #333）"
+        );
+    }
+
+    /// A/B：四条规则必须**各自**有独立的牙 —— 每个变异只许翻面**一条**规则。
+    ///
+    /// 变体从**修好之后的树**派生（`r158_fix` 幂等），所以在改前树与修复树上都成立：它证的是
+    /// 「规则能认出缺陷」，不是「此刻这棵树有缺陷」。
+    ///
+    /// 形状取自 DOM 仪器 `r158_probe.js` 的四条竞争修法（它那边已被 60 条腿拒绝）：
+    ///   defect           卡片自带拼写 + 导出写显示串（本轴）→ R1 R2 R3 红
+    ///   fixed            卡片委派 + 导出写 `<…>Raw`           → 全绿
+    ///   m1_partial_csv   只修合计列                           → 只 R3 红
+    ///   m2_degrade_screen 把屏幕降级成精确值                   → 只 R4 红
+    ///   m3_card_plain_int 卡片改成纯整数（不是同一条拼写）     → 只 R2 红
+    #[test]
+    fn the_r158_rules_separate_the_variants() {
+        let fixed = r158_fix(APP_JS);
+        let defect = r158_unfix(&fixed);
+        // 锚点自证：两条锚点在两棵树上至少要各命中一条，否则 `fix`/`unfix` 是空转，
+        // 下面的变体会**退化成同一个字符串**而这条测试仍然「通过」。
+        assert_ne!(
+            defect, fixed,
+            "`fix`/`unfix` 没有真正改写任何东西（锚点漂移了）"
+        );
+        assert!(
+            APP_JS.contains(FMTM_DEFECTIVE) || APP_JS.contains(FMTM_DELEGATING),
+            "卡片上的 `fmtM` 定义两条锚点都不命中"
+        );
+        assert!(
+            APP_JS.contains(CSV_DISPLAY_GROUP) || APP_JS.contains(CSV_RAW_GROUP),
+            "CSV 的 token 列组两条锚点都不命中"
+        );
+
+        // 每个变异只动一处，且只该翻它针对的那一条规则。
+        let m1 = fixed.replace(CSV_RAW_GROUP, CSV_PARTIAL_GROUP);
+        let m2 = R158_TOKEN_FIELDS.iter().fold(fixed.clone(), |acc, f| {
+            let raw = r158_raw_field(f);
+            acc.replace(
+                &format!("+ t.{f} +"),
+                &format!("+ fmtTokensExact(t.{raw}) +"),
+            )
+        });
+        let m3 = fixed.replace(
+            FMTM_DELEGATING,
+            "const fmtM = (n) => String(Math.round(n));",
+        );
+
+        let cases: [(&str, &str, [bool; 4]); 5] = [
+            ("defect", &defect, [false, false, false, true]),
+            ("fixed", &fixed, [true, true, true, true]),
+            ("m1_partial_csv", &m1, [true, true, false, true]),
+            ("m2_degrade_screen", &m2, [true, true, true, false]),
+            ("m3_card_plain_int", &m3, [true, false, true, true]),
+        ];
+        for (name, src, want) in cases {
+            let r = r158_reading(src);
+            let got = [r.r1, r.r2, r.r3, r.r4];
+            assert_eq!(
+                got,
+                want,
+                "变体 `{name}` 的读数与声明不符：{}（声明 R1={} R2={} R3={} R4={}）\
+                 —— 四条规则若不能各自翻面，它们就只是同一句话的四种说法",
+                r.verdicts(),
+                want[0] as u8,
+                want[1] as u8,
+                want[2] as u8,
+                want[3] as u8
+            );
+        }
+    }
 
     // ============================== PART B: tests (inside `mod tests`) ==========================
 
