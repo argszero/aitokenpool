@@ -1627,7 +1627,10 @@ mod tests {
 
     #[test]
     fn sse_helpers_split_across_chunks() {
-        // 事件被拆到两个 chunk，且 UTF-8 字符跨边界
+        // 事件被拆到两个 chunk。⚠️ 这里的边界落在 ASCII `"` 之后 ——
+        // 多字节字符**整块**落在第二个 chunk 里，所以它证明的是「拼接」而非「跨边界」。
+        // 天真实现（逐 chunk `from_utf8_lossy`）在这里与正确实现**输出逐字节相同** ⇒ 该用例不可能为它声称守护的 bug 变红（C2168）。
+        // 判别性用例见 `sse_helpers_split_inside_a_multibyte_char`。
         let mut buffer = String::new();
         let mut rem = Vec::new();
         append_utf8_safe(
@@ -1639,6 +1642,86 @@ mod tests {
         let block = take_sse_block(&mut buffer).expect("block");
         assert!(block.contains("你"), "utf8 across chunks: {block}");
         assert!(buffer.is_empty());
+    }
+
+    /// 判别性用例：把多字节字符**切在序列内部**。
+    ///
+    /// 天真实现（逐 chunk `String::from_utf8_lossy`）会当场吐出 U+FFFD 而与正确实现不同 ——
+    /// 这正是同文件 `sse_helpers_split_across_chunks` 做不到的（它的边界落在 ASCII `"` 之后）。C2168。
+    #[test]
+    fn sse_helpers_split_inside_a_multibyte_char() {
+        let head = b"event: x\ndata: {\"a\":\"".to_vec();
+        let tail = b"\"}\n\n".to_vec();
+        let you: [u8; 3] = [0xE4, 0xBD, 0xA0]; // 你
+        let emoji: [u8; 4] = [0xF0, 0x9F, 0x98, 0x80]; // 😀
+
+        let cases: Vec<(&str, &str, Vec<Vec<u8>>)> = vec![
+            ("3B 2+1", "你", vec![you[..2].to_vec(), you[2..].to_vec()]),
+            ("3B 1+2", "你", vec![you[..1].to_vec(), you[1..].to_vec()]),
+            (
+                "3B 1+1+1",
+                "你",
+                vec![you[..1].to_vec(), you[1..2].to_vec(), you[2..].to_vec()],
+            ),
+            (
+                "4B 1+3",
+                "😀",
+                vec![emoji[..1].to_vec(), emoji[1..].to_vec()],
+            ),
+            (
+                "4B 2+2",
+                "😀",
+                vec![emoji[..2].to_vec(), emoji[2..].to_vec()],
+            ),
+            (
+                "4B 3+1",
+                "😀",
+                vec![emoji[..3].to_vec(), emoji[3..].to_vec()],
+            ),
+        ];
+
+        for (label, want, mid) in cases {
+            let mut buffer = String::new();
+            let mut rem = Vec::new();
+            append_utf8_safe(&mut buffer, &mut rem, &head);
+            for part in &mid {
+                append_utf8_safe(&mut buffer, &mut rem, part);
+            }
+            append_utf8_safe(&mut buffer, &mut rem, &tail);
+            let block = take_sse_block(&mut buffer).expect("block");
+            assert!(
+                block.contains(want),
+                "{label}: {want:?} must survive a split inside its UTF-8 sequence, got {block:?}"
+            );
+            assert!(
+                !block.contains('\u{FFFD}'),
+                "{label}: a per-chunk from_utf8_lossy would emit U+FFFD here, got {block:?}"
+            );
+            assert!(buffer.is_empty(), "{label}: buffer fully drained");
+        }
+    }
+
+    /// 半截字符留在 remainder 里等后续字节；真无效字节则**恰好一个** U+FFFD 后继续解析。
+    #[test]
+    fn sse_helpers_keep_an_incomplete_char_in_the_remainder() {
+        let mut buffer = String::new();
+        let mut rem = Vec::new();
+        append_utf8_safe(&mut buffer, &mut rem, &[0xE4, 0xBD]);
+        assert!(buffer.is_empty(), "half a char must not be emitted");
+        assert_eq!(rem, vec![0xE4, 0xBD], "the half is retained in remainder");
+        append_utf8_safe(&mut buffer, &mut rem, &[0xA0]);
+        assert_eq!(buffer, "你", "completed once the tail arrives");
+        assert!(rem.is_empty(), "remainder consumed");
+
+        // 真无效字节：一个 U+FFFD，然后**继续**解析后面的合法文本
+        let mut buffer = String::new();
+        let mut rem = Vec::new();
+        append_utf8_safe(&mut buffer, &mut rem, &[0x41, 0xFF, 0x42]);
+        assert_eq!(
+            buffer, "A\u{FFFD}B",
+            "exactly one replacement char, then resume"
+        );
+        assert!(rem.is_empty(), "invalid byte is consumed, not retained");
     }
 
     #[test]
