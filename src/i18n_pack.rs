@@ -99,8 +99,8 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 811;
-const EN_KEY_COUNT: usize = 811;
+const ZH_KEY_COUNT: usize = 788;
+const EN_KEY_COUNT: usize = 788;
 const STATIC_ATTR_COUNT: usize = 332;
 const STATIC_ATTR_DISTINCT: usize = 307;
 const T_LITERAL_COUNT: usize = 537;
@@ -897,26 +897,6 @@ fn pack_values(region: &str) -> (BTreeMap<String, String>, usize) {
 /// - `weak-should-wire` 代码手工拼了更优文案，专键存在但没人用
 /// - `host-decision`   宿主裁定族，⛔ 勿自修
 const UNREACHABLE_PACK_KEYS: &[(&str, &str)] = &[
-    ("admin.emp.dept.unassigned", "dup-sibling"),
-    ("admin.emp.status.near", "dup-sibling"),
-    ("admin.emp.status.normal", "dup-sibling"),
-    ("common.calls", "dup-sibling"),
-    ("common.copy", "dup-sibling"),
-    ("common.month", "dup-sibling"),
-    ("common.people", "dup-sibling"),
-    ("common.rename", "dup-sibling"),
-    ("mk.count", "dup-sibling"),
-    ("share.stats.listings.sub", "dup-sibling"),
-    ("share.stats.used.sub", "dup-sibling"),
-    ("admin.emp.stats.members.sub.mock", "zero-mock"),
-    ("admin.emp.stats.members.sub.mock2", "zero-mock"),
-    ("admin.org.demo", "zero-mock"),
-    ("admin.raise.demo", "zero-mock"),
-    ("ops.demo", "zero-mock"),
-    ("ops.stats.in.sub.mock", "zero-mock"),
-    ("ops.stats.keys.sub.mock", "zero-mock"),
-    ("ops.stats.out.sub.mock", "zero-mock"),
-    ("ops.stats.users.sub.mock", "zero-mock"),
     ("admin.emp.col.empty", "old-design"),
     ("admin.emp.col.quota", "old-design"),
     ("admin.emp.col.remain", "old-design"),
@@ -951,9 +931,6 @@ const UNREACHABLE_PACK_KEYS: &[(&str, &str)] = &[
     ("login.email.ph", "neutral-literal"),
     ("settings.prefs.lang.en", "neutral-literal"),
     ("settings.prefs.lang.zh", "neutral-literal"),
-    ("login.forgot", "composite"),
-    ("wallet.withdraw.disabled", "composite"),
-    ("tx.col.key", "rename"),
     ("admin.emp.dept.ok.unassigned", "weak-should-wire"),
     ("admin.usage.unit.points", "host-decision"),
 ];
