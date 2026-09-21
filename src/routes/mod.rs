@@ -37,18 +37,30 @@ use crate::router::RouterState;
 /// 上游请求的时限（连接与读取共用同一个数字，沿用 P0-B 写下的 120 s）。
 pub(crate) const UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// 网关请求体的上限（rant 2026-09-18T09:14:18）：三条网关路由各自挂一层
-/// `DefaultBodyLimit::max(8 MiB)`。
+/// 网关请求体的上限（rant 2026-09-18T09:14:18；2026-09-21 由 8 MiB 抬到 277 MiB）。
 ///
-/// 为什么 `main.rs` 里那层 `RequestBodyLimitLayer(70MB)` 不算数：它由 tower-http 提供，
-/// 不写 axum 用来覆盖默认值的那条请求扩展（`DefaultBodyLimitKind`）；而 `String` / `Json`
-/// 等提取器的 2 MiB 上限来自 `axum-core` 的 `DEFAULT_LIMIT`，只认那条扩展。所以那层是
-/// **惰性的** —— 实测 2 MiB + 1 字节即 413，与它写的 70 MB 无关。抬上限只能用 axum
-/// 自己的 `DefaultBodyLimit`。
+/// 这个数是**两层**的唯一来源，两层必须相等：
 ///
-/// 为什么**不**全局挂：认证 / 注册 / 找回密码等未认证端点若也放宽到 8 MiB，等于给匿名
-/// 请求一个 8 MiB 的内存放大面；只有网关三条路由需要大请求体（1M token 上下文的对话）。
-pub(crate) const GATEWAY_BODY_LIMIT: usize = 8 * 1024 * 1024;
+/// 1. 三条网关路由各自的 `DefaultBodyLimit::max(GATEWAY_BODY_LIMIT)` —— axum 提取器
+///    真正读取的那一层。`String` / `Json` 等的 2 MiB 上限来自 `axum-core` 的
+///    `DEFAULT_LIMIT`，只认 `DefaultBodyLimitKind` 扩展，因此**只有 axum 自己的
+///    `DefaultBodyLimit` 抬得动它**（这就是原始缺陷：tower-http 那层不写该扩展）。
+/// 2. `router()` 末尾那层全局 `RequestBodyLimitLayer::new(GATEWAY_BODY_LIMIT)` ——
+///    外层粗闸，`Content-Length` 超限时**不读体直接 413**（body 是纯文本
+///    `length limit exceeded`，不带提取器那句前缀）。
+///
+/// ⚠️ **外层更小的话，实际生效的就是外层**：它抬不动提取器，但会**抢答**。2026-09-21
+/// 把本常量从 8 MiB 抬到 277 MiB 时，外层还停在 `70 * 1024 * 1024`，实测 71 MiB 的体
+/// 在外层就被 413 掉 ⇒ 抬了个寂寞。故外层也改成引用本常量，由 `body_limit_gate.rs`
+/// 钉住「全树只有一个请求体上限的数」。
+///
+/// 为什么**不**全局放宽提取器：认证 / 注册 / 找回密码等未认证端点若也放宽，等于给匿名
+/// 请求一个同等大小的内存放大面；只有网关三条路由需要大请求体（长上下文 / 多模态）。
+///
+/// ⚠️ **内存代价**：提取器把请求体整个缓冲进内存（`String` / `Json`），转发前还会
+/// `body.clone()` 一次 ⇒ 单请求峰值约为本值的 2~3 倍。**改这个数必须连同宿主的可用内存
+/// 一起看**（prod 主机 1.8 GiB、无 swap、应用容器未设 `mem_limit`）。
+pub(crate) const GATEWAY_BODY_LIMIT: usize = 277 * 1024 * 1024;
 
 /// 非流式出站客户端：`timeout` 是**总**时限（建连到读完响应体），适合一次性响应。
 pub(crate) fn upstream_client(timeout: std::time::Duration) -> reqwest::Client {
@@ -693,6 +705,13 @@ pub fn router() -> Router<AppState> {
         .route("/api/ops/users", get(ops::users))
         // P2-A：静态托管（ui/ 目录；API 路由优先，未命中回退到文件服务）
         .fallback_service(tower_http::services::ServeDir::new("ui"))
+        // 请求体的**外层粗闸**（全路由）：只对 `Content-Length` 做判断，超限则不读体
+        // 直接 413。它**不是**上限的权威 —— 权威是三条网关路由上的 `DefaultBodyLimit`
+        // （`String` / `Json` 的 2 MiB 默认值只认那条扩展，这层抬不动它）。但若这里写
+        // 得更小，就会抢先 413 ⇒ 两层共用 `GATEWAY_BODY_LIMIT` 这一个数。
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            GATEWAY_BODY_LIMIT,
+        ))
 }
 
 #[cfg(test)]

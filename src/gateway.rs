@@ -1104,6 +1104,38 @@ mod tests {
         (status, bytes)
     }
 
+    /// 同 `post_raw`，但**显式带上 `content-length`**。
+    ///
+    /// 真实客户端（curl / fetch / 各家 SDK）都会带这个头，而外层的
+    /// `RequestBodyLimitLayer` **只看这个头**就决定是否抢答 413 ⇒ 要测外层就必须带上它。
+    async fn post_raw_len(
+        st: AppState,
+        uri: &str,
+        body: String,
+        bearer: Option<&str>,
+    ) -> (StatusCode, Vec<u8>) {
+        let len = body.len();
+        let mut b = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("content-length", len);
+        if let Some(k) = bearer {
+            b = b.header("authorization", format!("Bearer {k}"));
+        }
+        let resp = router()
+            .with_state(st)
+            .oneshot(b.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 8 * 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, bytes)
+    }
+
     async fn login_key(st: AppState) -> String {
         let (_, body) = post_raw(
             st,
@@ -1116,13 +1148,22 @@ mod tests {
         v["api_key"].as_str().unwrap().to_string()
     }
 
-    /// 请求体上限（rant 2026-09-18T09:14:18）：三条网关路由必须收得下 > 2 MiB 的请求体。
+    /// 请求体上限（rant 2026-09-18T09:14:18）：三条网关路由必须收得下远超默认值的请求体。
     ///
-    /// 改前：`axum-core` 的 `DEFAULT_LIMIT = 2_097_152` 生效 —— `main.rs:239` 那层
-    /// `RequestBodyLimitLayer(70MB)` 抬不动它（它不写 `DefaultBodyLimitKind` 扩展），
-    /// 3 MiB 的体在提取器里就被拒成 413；改后：per-route `DefaultBodyLimit::max` 抬到 8 MiB。
+    /// 改前（v0.7.25 及以前）：`axum-core` 的 `DEFAULT_LIMIT = 2_097_152` 生效 ——
+    /// tower-http 那层 `RequestBodyLimitLayer` 抬不动它（它不写 `DefaultBodyLimitKind`
+    /// 扩展）⇒ 3 MiB 的体在提取器里就被拒成 413。
+    /// 改后：per-route `DefaultBodyLimit::max(GATEWAY_BODY_LIMIT)`；2026-09-21 由 8 MiB
+    /// 抬到 277 MiB ⇒ 探针取 **9 MiB**（跨过旧的那个 8 MiB，故它是这次抬升的回归腿）。
     #[tokio::test]
     async fn gateway_routes_accept_bodies_past_the_default_limit() {
+        const PROBE: usize = 9 * 1024 * 1024;
+        const {
+            assert!(
+                PROBE > 8 * 1024 * 1024,
+                "探针必须大于旧上限 8 MiB，否则这条腿退化成只钉 axum 的 2 MiB 默认值"
+            )
+        };
         for (tag, uri) in [
             ("bl_chat", "/v1/chat/completions"),
             ("bl_anth", "/anthropic/v1/messages"),
@@ -1130,14 +1171,15 @@ mod tests {
         ] {
             let st = test_state(tag, "test-plan", "http://127.0.0.1:9");
             let key = login_key(st.clone()).await;
-            let pad = "a".repeat(3 * 1024 * 1024);
+            let pad = "a".repeat(PROBE);
             let body = format!(r#"{{"model":"no-such-model","pad":"{pad}"}}"#);
+            drop(pad);
             let (status, bytes) = post_raw(st, uri, &body, Some(&key)).await;
             let msg = String::from_utf8_lossy(&bytes);
             assert_ne!(
                 status,
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "{uri}: 3 MiB 的体被提取器的默认上限拒了（改前即此断言失败）"
+                "{uri}: {PROBE} 字节的体被上限拒了"
             );
             // 体确实进了 handler：拿到的是网关自己的「无可用 key」而不是提取器的 413
             assert!(
@@ -1145,6 +1187,43 @@ mod tests {
                 "{uri}: 期望 handler 的错误响应，实际 {status} {msg}"
             );
         }
+    }
+
+    /// 外层 `RequestBodyLimitLayer` 不得成为**比提取器更低**的那个钳制（2026-09-21）。
+    ///
+    /// 为什么必须单独钉：两层是**两个数**。外层不写 `DefaultBodyLimitKind` 扩展，所以它
+    /// 抬不动提取器；但它会在 `Content-Length > 自己的 limit` 时**不读体直接 413**
+    /// （`tower-http-0.5.2/src/limit/service.rs::call`）⇒ 只要外层更小，实际生效的就是它。
+    /// 抬 `GATEWAY_BODY_LIMIT` 时外层正停在 `70 * 1024 * 1024`：**71 MiB 的体在旧外层上被
+    /// 抢答 413**，而上限写着 277 MiB —— 「配了一个值 ≠ 生效了」的第二次现身。
+    ///
+    /// 探针取 71 MiB（> 旧外层的 70 MB）。改前这条腿红在**外层**（413、纯文本
+    /// `length limit exceeded`），改后走到 handler 的 503。
+    #[tokio::test]
+    async fn the_outer_limit_does_not_clamp_below_the_gateway_limit() {
+        const PROBE: usize = 71 * 1024 * 1024;
+        const {
+            assert!(
+                PROBE > 70 * 1024 * 1024,
+                "探针必须大于旧外层的 70 MB，否则这条腿是空的"
+            )
+        };
+        let st = test_state("bl_outer", "test-plan", "http://127.0.0.1:9");
+        let key = login_key(st.clone()).await;
+        let pad = "a".repeat(PROBE);
+        let body = format!(r#"{{"model":"no-such-model","pad":"{pad}"}}"#);
+        drop(pad);
+        let (status, bytes) = post_raw_len(st, "/v1/chat/completions", body, Some(&key)).await;
+        let msg = String::from_utf8_lossy(&bytes);
+        assert_ne!(
+            status,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "外层把 {PROBE} 字节的体抢答成 413 了（外层 limit 与 GATEWAY_BODY_LIMIT 不同源）：{status} {msg}"
+        );
+        assert!(
+            msg.contains("暂无可用 key"),
+            "期望走到 handler，实际 {status} {msg}"
+        );
     }
 
     /// 负对照：同一次改动**不得**顺带放宽未认证端点。
@@ -1157,7 +1236,7 @@ mod tests {
         assert_eq!(
             status,
             StatusCode::PAYLOAD_TOO_LARGE,
-            "/api/auth/login 不该被放宽（未认证端点缓冲 8 MiB 是另一种风险）"
+            "/api/auth/login 不该被放宽（未认证端点缓冲大请求体是另一种风险）"
         );
     }
 

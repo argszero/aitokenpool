@@ -47,6 +47,10 @@ mod deploy_gate;
 // 加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod state_gate;
+// 请求体上限门禁（2026-09-21）：同样是仅测试期编译 —— src/*.rs 在测试期读一遍，
+// 加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod body_limit_gate;
 
 use std::sync::Arc;
 
@@ -234,11 +238,10 @@ async fn main() -> anyhow::Result<()> {
     let state = routes::AppState::new(conn, cfg, crypto);
     let app = routes::router()
         .with_state(state)
-        // 请求体上限：axum 默认 2MB，对超长 LLM 上下文/图片 base64 不够，放宽到 70MB
-        //（rant 2026-08-22T23:20:00；真实限制仍由上游模型 context 窗口裁决）
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(
-            70 * 1024 * 1024,
-        ))
+        // 请求体上限（连同外层粗闸）在 `routes::router()` 里与 `routes::GATEWAY_BODY_LIMIT`
+        // 绑在一起。这里**曾经**另写一层 `RequestBodyLimitLayer::new(70 * 1024 * 1024)`：
+        // 它是独立的一个数，抬上层就会被它悄悄钳住（rant 2026-09-18T09:14:18 的同族缺陷），
+        // 故移走 —— 上限只有一个数，见 `body_limit_gate.rs`。
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
