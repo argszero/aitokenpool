@@ -867,7 +867,7 @@
     // 登录态加载失败 → 空态 + 重试（loadErrorRow），绝不 fallback D.MARKET
     let list = marketRows();
     if (!list) {
-      $("#mk-count").textContent = T("cnt.on", { n: 0 });
+      $("#mk-count").textContent = T("cnt.models", { n: 0 });
       setLiveError($("#mk-body"), loadErrorRow(7, T("mk.loadFail"), T("err.loadFail")), () => loadMarketplace());
       pulseTbody($("#mk-body"));
       renderRecent();
@@ -890,7 +890,7 @@
         "<p>" + T("mk.guest.hint") + "</p><p class='muted'>" + T("mk.guest.hint.sub") + "</p></div>"
       : "";
 
-    $("#mk-count").textContent = T("cnt.on", { n: list.length });
+    $("#mk-count").textContent = T("cnt.models", { n: list.length });
     $("#mk-body").innerHTML = guestHint + (list.length ? list.map((m) =>
       "<tr><td data-label='" + T('mk.col.providerModel') + "'>" +
       '<div class="provider-cell">' +

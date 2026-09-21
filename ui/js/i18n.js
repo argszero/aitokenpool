@@ -739,7 +739,7 @@
     "cnt.members": "{n} 人",
     "cnt.hist": "{n} 个历史",
     "cnt.quota": "{n} 点总额度",
-    "cnt.on": "{n} 个在售 key",
+    "cnt.models": "{n} 个模型",
 
     /* ---- 相对时间 ---- */
     "time.justNow": "刚刚",
@@ -1549,7 +1549,7 @@
     "cnt.members": "{n}",
     "cnt.hist": "{n} historical",
     "cnt.quota": "{n} pts total",
-    "cnt.on": "{n} keys on sale",
+    "cnt.models": "{n} models",
 
     "time.justNow": "just now",
     "time.minAgo": "{n} min ago",
