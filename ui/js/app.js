@@ -1536,7 +1536,7 @@
     const net = income - expense;
     const signed = (n) => (n > 0 ? "+" : n < 0 ? "-" : "") + D.fmt(Math.abs(n));
     const colour = (n) => (n > 0 ? "var(--ok)" : n < 0 ? "var(--danger-text)" : "inherit");
-    const fmtM = (n) => (n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : (n >= 1000 ? Math.round(n / 1000) + "K" : String(Math.round(n))));
+    const fmtM = fmtTokens;
     // 复用 PR4 的 stat()（.stat-card）与原型卡片顺序：消费 / 收益 / 点数变化 / Token 合计 / 记录数；
     // Token 卡的 sub 承载输入·缓存·输出三档明细（原型「三档 token 之和」口径）
     el.innerHTML =
@@ -1837,7 +1837,7 @@
     // rant 2026-08-24T12:38:44），而导出一直直接写 `t.time`（库内 UTC 串，`txsToView` 未转换）
     // ⇒ 同一行在表里是 23:04、在文件里却是 15:04（东八区；西半球反向）。两处必须同源：
     // 导出直接用渲染该单元格的同一个 helper，而不是再抄一份「时间转字符串」的口径。
-    const lines = list.map((t) => [fmtPrecise(t.time), txType(t.type), t.user, t.model, t.key, t.inputTokens, t.cachedTokens, t.outputTokens, t.tokens, signedPts(t.type, t.pts), txStatus(t.status)].map(cell).join(","));
+    const lines = list.map((t) => [fmtPrecise(t.time), txType(t.type), t.user, t.model, t.key, fmtTokensExact(t.inputRaw), fmtTokensExact(t.cachedRaw), fmtTokensExact(t.outputRaw), fmtTokensExact(t.tokensRaw), signedPts(t.type, t.pts), txStatus(t.status)].map(cell).join(","));
     const csv = "\uFEFF" + [headers.join(","), ...lines].join("\r\n"); // UTF-8 BOM，Excel 中文不乱码
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
