@@ -3156,9 +3156,482 @@ impl R158Reading {
     }
 }
 
+// ── R165：趋势图的聚合粒度必须由**实际发出的请求窗口**决定，不由控件值决定 ────────────────────
+//
+// `txTrendBucket()` 按 `#tx-range` 的**控件值**分支（24h/7d/30d/custom/else），而窗口真源是
+// `txRangeParams()`（它同时拼出列表与趋势两份请求串）。两个产生**逐字相同的请求**的控件状态
+// ——「全部时间」与「自定义 + 两个输入框都空」（后者 `txRangeParams()` 返回 `""`，与 all 同）——
+// 在旧实现里得到**不同粒度**：`all` ⇒ week（按窗口：无界 ⇒ 最粗），`custom` ⇒ hour
+// （按输入框：空 ⇒ 跨度 0 天）。于是图按 `MM-DD HH:00` 自称，而 `TX_TREND_MAX_COLS = 40`
+// 又把 x 轴锚在右端 ⇒ 只画最近约 40 小时，永不与查询对账。
+//
+// 本门禁钉的是**形状**：粒度函数体内不许再出现控件选项值、必须委派给 `txRangeParams()`、
+// 返回的粒度字面量恰为 `{hour, day, week}`、且窗口真源与控件**都还在**。
+// 「屏幕上的轴与请求窗口真的对不对得上」由 jsdom 探针 `r165_probe.js` 证。
+
+/// `#tx-range` 这个 `<select>` 的开标签特征 —— 选项集**从 `ui/index.html` 派生**，不写名册。
+const R165_CONTROL_SELECT: &str = "id=\"tx-range\"";
+
+/// 派生结果的**阳性对照**（#451）：`ui/index.html` 的选项集一漂移就响亮地失败，
+/// 而不是让规则 1 静默失去射程（空集上的「不许出现」恒真 —— 坑 68 同族）。
+const R165_OPTIONS: [&str; 5] = ["24h", "7d", "30d", "all", "custom"];
+
+/// 粒度函数名与窗口真源名。
+const R165_GRAIN_FN: &str = "txTrendBucket";
+const R165_WINDOW_SOURCE: &str = "txRangeParams";
+
+/// 允许被返回的粒度字面量（上层与下层都给界 —— #325）。
+const R165_GRAINS: [&str; 3] = ["hour", "day", "week"];
+
+/// 修复后的函数**体**（逐字摘自编辑表 `r165_verify_edits.py` 的 E1 新文本）。
+///
+/// 它只出现在变体树里（牙齿测试与鉴别力测试的绿基线），**不**参与对真树的断言：真树今天还是
+/// 旧实现，轴测试必须因此为红。跨制品对账（这段文本确实是 E1 产物的子串）由
+/// `r165_compile_gate.py` 断言 —— 复制粘贴的常量最怕的就是悄悄漂移。
+const R165_FIXED_BODY: &str = concat!(
+    "    const p = new URLSearchParams(txRangeParams());\n",
+    "    const s = p.get(\"start\");\n",
+    "    if (!s) return \"week\"; // 全部时间 / 自定义但起点为空：跨度不可知\n",
+    "    const from = new Date(s);\n",
+    "    const e = p.get(\"end\");\n",
+    "    const to = e ? new Date(e) : new Date();\n",
+    "    const days = (to.getTime() - from.getTime()) / 86400000;\n",
+    "    if (days <= 3.5) return \"hour\";\n",
+    "    if (days <= 60) return \"day\";\n",
+    "    return \"week\";\n",
+);
+
+/// 一次扫描同时产出四条规则的判决**与它们的证据**（逐条可打印 —— #339/#341：判词与取值两列）。
+///
+/// ⚠️ 结构体里**不**留 `body`：它在 `r165_read` 内部被消费掉了（r2/r3 都读它），字段本身
+/// 无人读 ⇒ `cargo clippy --all-targets -- -D warnings` 报 `field is never read`。
+/// 这正是 R158 落地轮的坑（#603）：片段预检器用 `rustc --test`，**不读 lint**，
+/// 所以「片段绿」不等于「CI 绿」。
+struct R165Reading {
+    options: Vec<String>,
+    control_literals: Vec<String>,
+    grains: BTreeSet<String>,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+    r4: bool,
+}
+
+impl R165Reading {
+    fn verdicts(&self) -> (bool, bool, bool, bool) {
+        (self.r1, self.r2, self.r3, self.r4)
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} r4={} | control_literals={:?} grains={:?} options={:?}",
+            self.r1, self.r2, self.r3, self.r4, self.control_literals, self.grains, self.options
+        )
+    }
+}
+
+/// `ui/index.html` 里 `#tx-range` 的选项值（按出现顺序）。
+///
+/// 定位方式是「`id="tx-range"` 之前最近的那个 `<select`」—— 不假设同一行、也不数行号。
+/// 找不到元素时返回空集，**由规则 4 的「选项集非空」把它变成响亮失败**（而不是静默无射程）。
+fn r165_options(html: &str) -> Vec<String> {
+    let Some(at) = html.find(R165_CONTROL_SELECT) else {
+        return Vec::new();
+    };
+    let open = html[..at].rfind("<select").unwrap_or(at);
+    let end = html[open..]
+        .find("</select>")
+        .map(|i| open + i)
+        .unwrap_or(html.len());
+    let block = &html[open..end];
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = block[from..].find("value=\"") {
+        let v_at = from + rel + "value=\"".len();
+        let Some(close) = block[v_at..].find('"').map(|i| v_at + i) else {
+            break;
+        };
+        let v = block[v_at..close].to_string();
+        if !v.is_empty() {
+            out.push(v);
+        }
+        from = close + 1;
+        if from >= block.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// 函数体里 `return "…"` 的字面量集合。
+fn r165_grains(body: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut from = 0usize;
+    while let Some(rel) = body[from..].find("return \"") {
+        let v_at = from + rel + "return \"".len();
+        let Some(close) = body[v_at..].find('"').map(|i| v_at + i) else {
+            break;
+        };
+        out.insert(body[v_at..close].to_string());
+        from = close + 1;
+        if from >= body.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// 粒度函数的**已剥注释**的函数体；函数不在时返回 `None`（调用方负责响亮地报出来）。
+fn r165_body(app: &str) -> Option<String> {
+    // `?` 而不是 `if …is_none() { return None; }`：后者被 `clippy::question_mark` 判红，
+    // 而片段预检器只跑 `rustc --test`、**不读 lint** ⇒ 这类失败只能在落地轮抓到（#603）。
+    function_source(app, R165_GRAIN_FN)?;
+    let body = code_body(app, R165_GRAIN_FN);
+    if body.trim().is_empty() {
+        None
+    } else {
+        Some(body)
+    }
+}
+
+/// 把粒度函数的**体**替换成给定文本（造变体用）。锚点漂移即 panic —— 不静默失去射程。
+///
+/// 尾部锚点是「换行 + 恰好两空格 + `}` + 换行」：函数体内部的闭合括号缩进更深，
+/// 所以第一个命中的就是函数自己的收尾（与 `r165_probe.js` 的 `replaceFn` 同一判据）。
+fn r165_with_body(app: &str, body: &str) -> String {
+    let head = format!("function {R165_GRAIN_FN}() {{");
+    let at = app
+        .find(&head)
+        .unwrap_or_else(|| panic!("锚点 `{head}` 不在给定源码里 —— 变体无从构造"));
+    let open = at + head.len();
+    let close = app[open..]
+        .find("\n  }\n")
+        .map(|i| open + i)
+        .unwrap_or_else(|| panic!("`{R165_GRAIN_FN}` 的函数尾锚点不在给定源码里"));
+    format!("{}\n{}{}", &app[..open], body, &app[close..])
+}
+
+/// 登记表 → `Vec<String>`（比较用）。一处定义，三处共用 —— 否则三份写法各自漂移。
+fn r165_expected_options() -> Vec<String> {
+    R165_OPTIONS.iter().map(|o| o.to_string()).collect()
+}
+
+/// 一次读完四条规则（判词 + 证据）。
+fn r165_read(app: &str, html: &str) -> R165Reading {
+    let body = r165_body(app).unwrap_or_default();
+    let options = r165_options(html);
+    let control_literals: Vec<String> = options
+        .iter()
+        .filter(|o| body.contains(&format!("\"{o}\"")))
+        .cloned()
+        .collect();
+    let grains = r165_grains(&body);
+    let allowed: BTreeSet<String> = R165_GRAINS.iter().map(|g| g.to_string()).collect();
+    let sources = app
+        .matches(&format!("function {R165_WINDOW_SOURCE}("))
+        .count();
+    R165Reading {
+        r1: control_literals.is_empty(),
+        r2: mentions_identifier(&body, R165_WINDOW_SOURCE),
+        r3: grains == allowed,
+        r4: sources == 1 && !options.is_empty(),
+        options,
+        control_literals,
+        grains,
+    }
+}
+
+/// 变体构造器：每个变体**只此一处**定义，牙齿测试与鉴别力测试共用（#325 同族：
+/// 同一件事的两个定义迟早会漂移）。它们都从**调用方给的树**派生 —— 因此与「这棵树是
+/// 未修还是已修」无关，两腿跑同一套断言（这正是第一版错的地方：把「真树未修」写进了断言）。
+fn r165_variant_fix(app: &str) -> String {
+    r165_with_body(app, R165_FIXED_BODY)
+}
+
+/// 修复体 + 一句控件值分支 ⇒ 规则 1 单独翻红（「既委派又按控件重分支」正是本轴要挡的形状）。
+fn r165_variant_control(app: &str) -> String {
+    let body = format!("{R165_FIXED_BODY}    if (txRange === \"24h\") return \"hour\";\n");
+    r165_with_body(app, &body)
+}
+
+/// 修复体但**不委派**给窗口真源 ⇒ 规则 2 单独翻红。
+fn r165_variant_nocall(app: &str) -> String {
+    r165_with_body(
+        app,
+        &R165_FIXED_BODY.replace(R165_WINDOW_SOURCE, "someOtherWindow"),
+    )
+}
+
+/// 修复体 + 多一个粒度字面量 ⇒ 规则 3 单独翻红。
+fn r165_variant_grain(app: &str) -> String {
+    let body = format!("{R165_FIXED_BODY}    if (days <= 0.5) return \"minute\";\n");
+    r165_with_body(app, &body)
+}
+
+/// 竞争修法 `m_day`：形状与修复体逐字同类，只把「无下界」那一支的取值从 `week` 改成 `day`。
+fn r165_variant_day(app: &str) -> String {
+    r165_variant_fix(app).replace("if (!s) return \"week\";", "if (!s) return \"day\";")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 轴：趋势图的聚合粒度由**实际请求窗口**决定，不由控件值决定（R165）。
+    ///
+    /// 四条规则各自的含义见文件头。本测试只断言「四条同时成立」；每条规则的**牙**由
+    /// [`the_r165_rules_have_teeth`] 逐条测量，规则与竞争修法的**关系**由
+    /// [`the_r165_rules_separate_the_variants`] 声明。
+    #[test]
+    fn the_trend_grain_derives_from_the_query_not_from_the_control() {
+        let read = r165_read(APP_JS, INDEX_HTML);
+        assert!(
+            r165_body(APP_JS).is_some(),
+            "找不到 `{R165_GRAIN_FN}` —— 规则 1/2/3 的射程会静默变空"
+        );
+        assert!(
+            !read.options.is_empty(),
+            "从 `ui/index.html` 派生不出 `#tx-range` 的选项集 —— 规则 1 会退化成恒真（坑 68）"
+        );
+        assert!(
+            read.verdicts() == (true, true, true, true),
+            "趋势聚合粒度必须由请求窗口决定，不由控件值决定（R165）：{}",
+            read.report()
+        );
+    }
+
+    /// 阳性对照：选项集是**派生**的，且与登记表逐字相同。
+    ///
+    /// 这条测试是规则 1 的射程保险：`ui/index.html` 的选项集一变，它先红 —— 否则规则 1
+    /// 的命令集过期而「不许出现」照样通过（空集恒真）。
+    #[test]
+    fn the_r165_roster_is_real() {
+        let options = r165_options(INDEX_HTML);
+        assert_eq!(
+            options,
+            r165_expected_options(),
+            "`#tx-range` 的选项集与登记表不一致：派生的是 {options:?}"
+        );
+        for o in R165_OPTIONS {
+            assert!(
+                INDEX_HTML.contains(&format!("value=\"{o}\"")),
+                "登记表里的 {o:?} 在 `ui/index.html` 里找不到 —— 名册是快照，派生才是真源"
+            );
+        }
+        let body = r165_body(APP_JS).expect("找不到粒度函数");
+        assert!(
+            !body.trim().is_empty(),
+            "粒度函数体读出来是空的 —— 提取器的证据就没了（#332 同族）"
+        );
+        assert!(
+            !r165_grains(&body).is_empty(),
+            "这个函数体里一个 `return \"…\"` 都没有 ⇒ 规则 3 的集合断言会假绿"
+        );
+    }
+
+    /// 四条规则**各有独立的牙**：合成变异体逐个喂给规则自己的判别式，每个恰好打翻一条。
+    ///
+    /// 判据是「恰好一条翻转」而不是「至少一条红」—— 否则一条从别处借来红的规则也能自称有牙
+    /// （#454：牙齿必须长在该规则的判别式上）。基线是**已知为绿的**修复体（#458）。
+    #[test]
+    fn the_r165_rules_have_teeth() {
+        let fixed = r165_variant_fix(APP_JS);
+        let base_read = r165_read(&fixed, INDEX_HTML);
+        assert_eq!(
+            base_read.verdicts(),
+            (true, true, true, true),
+            "自证基线不绿，牙齿测试没有意义：{}",
+            base_read.report()
+        );
+
+        // 每个变异体只动一处，期望**恰好一条**翻转（#454：牙齿必须长在该规则的判别式上）。
+        let mutants = [
+            (
+                "control literal",
+                r165_variant_control(APP_JS),
+                (false, true, true, true),
+            ),
+            (
+                "no delegation",
+                r165_variant_nocall(APP_JS),
+                (true, false, true, true),
+            ),
+            (
+                "extra grain",
+                r165_variant_grain(APP_JS),
+                (true, true, false, true),
+            ),
+        ];
+        for (label, tree, expected) in mutants {
+            assert_ne!(tree, fixed, "变异体 `{label}` 没有改动树");
+            let read = r165_read(&tree, INDEX_HTML);
+            assert_eq!(
+                read.verdicts(),
+                expected,
+                "规则 `{label}` 的牙不成立（期望 {expected:?}）：{}",
+                read.report()
+            );
+        }
+
+        // 规则 4 的牙在**源码级**：窗口真源被改名 ⇒ 只有规则 4 翻红
+        // （规则 2 看的是体内**提到**这个名字，仍在）。
+        let renamed = APP_JS.replace(
+            &format!("function {R165_WINDOW_SOURCE}("),
+            &format!("function {R165_WINDOW_SOURCE}X("),
+        );
+        assert_ne!(renamed, APP_JS, "变异体 `renamed source` 没有改动源码");
+        let read = r165_read(&r165_variant_fix(&renamed), INDEX_HTML);
+        assert_eq!(
+            read.verdicts(),
+            (true, true, true, false),
+            "规则 4（窗口真源恰一处 + 控件仍在）的牙不成立：{}",
+            read.report()
+        );
+
+        // 规则 4 的第二半：控件没了 —— 规则 1 会退化成恒真，所以必须由规则 4 拦下。
+        let no_control = INDEX_HTML.replace("<select id=\"tx-range\"", "<select id=\"tx-rangeX\"");
+        assert_ne!(
+            no_control, INDEX_HTML,
+            "变异体 `control removed` 没有改动 HTML"
+        );
+        let read = r165_read(&fixed, &no_control);
+        assert!(
+            read.options.is_empty() && !read.r4,
+            "控件消失时规则 4 必须翻红（否则规则 1 在空集上恒真 —— 坑 68）：{}",
+            read.report()
+        );
+        assert!(
+            read.r2,
+            "控件消失不该影响规则 2（它只看函数体）：{}",
+            read.report()
+        );
+    }
+
+    /// 规则与**竞争修法**的关系，逐腿声明（#339/#341：声明的期望与实际各印一列）。
+    ///
+    /// 三条竞争修法都出自 jsdom 探针 `r165_probe.js`（它按值把它们全部拒掉）：
+    /// - `m_day`：把「无下界」那一支改回 `day` —— **形状与修复体逐字同类**（仍委派、仍无控件
+    ///   选项值、粒度集合不变）⇒ 本门禁**接受**它，探针的 `K3`（`all` 控制腿）拒掉它。
+    ///   这一格不是漏，是本门禁的射程边界：形状归门禁，取值归探针。
+    /// - `m_hour_start` / `m_hide`：改的是**别处**（窗口真源 / 趋势请求），粒度函数的形状没动
+    ///   ⇒ 与未修树同判，被规则 1、2 拒掉。
+    #[test]
+    fn the_r165_rules_separate_the_variants() {
+        // ⚠️ 本测试必须在**两腿**都绿（编译门禁分别把真树与 E1 修复树当作 `APP_JS` 来编译）
+        // ⇒ 绝对判词只能打在**它自己拼出来的树**上；对**真树**只能断言「它必须是门禁认识的
+        // 两种形状之一」这种与腿无关的关系。第一版把「真树未修」写成了断言，于是修复腿一编译
+        // 就红 —— 门禁在量「这棵树是谁」，而不是「形状对不对」。
+        let unfixed = (false, false, true, true);
+        let fixed = (true, true, true, true);
+
+        let tree_fix = r165_variant_fix(APP_JS);
+        let tree_day = r165_variant_day(APP_JS);
+        assert_ne!(
+            tree_day, tree_fix,
+            "`m_day` 没有落地（锚点 `if (!s) return \"week\";` 漂移了）"
+        );
+
+        // 两条「改别处」的竞争修法：粒度函数的形状没动 ⇒ 判词必须与**真树**逐条相同。
+        let tree_hour_start = APP_JS.replace(
+            "if (txCustomStart) start = new Date(txCustomStart);",
+            "if (txCustomStart) start = new Date(txCustomStart);\n      \
+             if (!start && !end) start = new Date(now - MS(24));",
+        );
+        assert_ne!(
+            tree_hour_start, APP_JS,
+            "`m_hour_start` 没有落地（锚点漂移了）"
+        );
+        let tree_hide = APP_JS.replace(
+            "api.get(tq).catch(() => null),",
+            "(txRange === \"custom\" ? Promise.resolve(null) \
+             : api.get(tq).catch(() => null)),",
+        );
+        assert_ne!(tree_hide, APP_JS, "`m_hide` 没有落地（锚点漂移了）");
+
+        // 先证明这些树互不相同，否则「判词不同」可能只是同一棵树的两张脸。
+        assert_ne!(tree_fix, tree_day);
+        assert_ne!(APP_JS, tree_fix);
+        assert_ne!(tree_hour_start, tree_hide);
+        assert_ne!(tree_hour_start, APP_JS);
+        assert_ne!(tree_hide, APP_JS);
+
+        // 绝对判词（全部打在自造树上，与腿无关）。
+        let tree_control = r165_variant_control(APP_JS);
+        let tree_nocall = r165_variant_nocall(APP_JS);
+        let tree_grain = r165_variant_grain(APP_JS);
+        assert_ne!(tree_control, tree_fix);
+        assert_ne!(tree_nocall, tree_fix);
+        assert_ne!(tree_grain, tree_fix);
+        let declared = [
+            ("fix (spliced)", tree_fix.as_str(), fixed),
+            // 形状同类、取值不同：门禁接受，探针 K3 拒掉 —— 本门禁的射程边界，不是漏。
+            ("m_day", tree_day.as_str(), fixed),
+            (
+                "m_control",
+                tree_control.as_str(),
+                (false, true, true, true),
+            ),
+            ("m_nocall", tree_nocall.as_str(), (true, false, true, true)),
+            ("m_grain", tree_grain.as_str(), (true, true, false, true)),
+        ];
+        let mut reports = Vec::new();
+        for (name, app, expected) in declared {
+            let read = r165_read(app, INDEX_HTML);
+            reports.push(format!("{name}: {}", read.report()));
+            assert_eq!(
+                read.verdicts(),
+                expected,
+                "变体 `{name}` 的判词与声明不符（声明 {expected:?}）—— 门禁的鉴别力变了"
+            );
+            assert_eq!(
+                read.options,
+                r165_expected_options(),
+                "变体 `{name}` 的选项集不该变：{:?}",
+                read.options
+            );
+        }
+
+        // 与腿无关的两条关系。
+        let real = r165_read(APP_JS, INDEX_HTML);
+        assert!(
+            real.verdicts() == unfixed || real.verdicts() == fixed,
+            "真树的形状既不是「未修」也不是「已修」—— 门禁不认识它了：{}",
+            real.report()
+        );
+        for (name, tree) in [("m_hour_start", &tree_hour_start), ("m_hide", &tree_hide)] {
+            let read = r165_read(tree, INDEX_HTML);
+            reports.push(format!("{name}: {}", read.report()));
+            assert_eq!(
+                read.verdicts(),
+                real.verdicts(),
+                "`{name}` 改的是别处，粒度函数的形状没动 ⇒ 必须与真树同判"
+            );
+        }
+        // ⚠️ 落地轮已做（#314：默认期望必须钉在**显式基线**上）：真树修好之后，「未修 ⇒ 轴测试红」
+        // 这条期望会**静默反转** —— 本文件不再在任何腿上观察它，而是由落地轮的编译器门禁在
+        // 一棵**显式基线树**（`git archive <落地前的 HEAD>` 物化，同 R158 / #588）上观察，
+        // 否则「基线腿」在已修的真树上会变成同义反复。表的声明与本节脚注一起改，否则各说一套。
+        // （仪器住在仓外，故此处不写文件名 —— #606。）
+        println!("real tree: {}\n{}", real.report(), reports.join("\n"));
+    }
+
+    /// 修复体文本**逐字**来自编辑表 E1；`r165_compile_gate.py` 另外断言它与 E1 的产物
+    /// 是子串关系（跨制品对账）。这里只钉「常量非空且不是占位符」。
+    #[test]
+    fn the_r165_fixed_body_is_the_edit_sheet_text() {
+        assert!(
+            R165_FIXED_BODY.contains(R165_WINDOW_SOURCE),
+            "修复体必须委派给窗口真源：{R165_FIXED_BODY:?}"
+        );
+        assert!(
+            R165_FIXED_BODY.contains("return \"week\";"),
+            "修复体的「无下界 ⇒ 最粗粒度」那一支不见了"
+        );
+        assert!(
+            !R165_FIXED_BODY.contains("txRange === "),
+            "修复体里还留着控件值比较 —— 那不是修复"
+        );
+    }
 
     /// R158：交易视图里**同一份 token 数量只许有一种拼写**，且导出写精确值。
     ///
