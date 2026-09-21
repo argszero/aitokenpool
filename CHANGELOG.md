@@ -2,6 +2,12 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## v0.7.27 (2026-09-21)
+
+自 v0.7.26 起 1 个 PR（#272）。本版修的是**同一族缺陷的第二次现身**：请求体上限分布在**两层**上、而两层是两个数。
+
+- **请求体上限只有一个数，并抬到 277 MiB（#272 87c8777）** — 上限同时存在于 axum 提取器那层（`DefaultBodyLimit::max`，`String` / `Json` 的 2 MiB 默认值只认它写的 `DefaultBodyLimitKind` 扩展）与 tower-http 的外层粗闸（`RequestBodyLimitLayer::new`，只看 `Content-Length`、超限时**不读体直接 413**）。外层抬不动内层，但**只要它更小就赢** —— 把常量从 8 MiB 抬到 277 MiB 时外层仍停在 `70 * 1024 * 1024`，实测 71 MiB 的体返回 `413 length limit exceeded`（tower-http 自己的正文，不是提取器那句前缀）⇒ 抬了个寂寞。修法：`GATEWAY_BODY_LIMIT` 8 MiB → **277 MiB**，外层改为引用同一常量（不再自带字面量），并把外层从 `main.rs` 移进 `routes::router()`（测试构造的正是这个 router ⇒ 被测的栈就是生产的栈）。新门禁 `src/body_limit_gate.rs`（仅测试期编译、零新依赖）：**每处层构造的实参必须是 `GATEWAY_BODY_LIMIT`**，且全树不得出现第二个以 `BODY_LIMIT` 结尾的常量。探针 3 MiB → 9 MiB（跨过旧的 8 MiB）＋新增 71 MiB 一条（在改前的外层上必红）；未认证端点的 2 MiB 默认**刻意保留**作负对照。`cargo test` 302 → 308。⚠️ **内存**：提取器整个缓冲请求体、转发前还 `clone()` 一次 ⇒ 单请求峰值约为该值的 2~3 倍；prod 主机 1.8 GiB / 无 swap / 容器未设 `mem_limit`，**在把公网入口放宽到同一量级之前应先处理这件事**（公网目前仍受 nginx 内置 1 MB 限制，且该主机只对外开 80/443）。**无 schema 变更、无 config 变更。**
+
 ## v0.7.26 (2026-09-21)
 
 自 v0.7.25 起累计 10 个 PR（#261–#270）。本版两条主线：**「一个事实只有一个真源 / 显示口径必须等于消费口径」的第 2 批**（前端 6 处），以及 **i18n 的可达性收口**（先上门禁、再删死键）。另含**网关请求体上限真正生效的那一层**（rant `2026-09-18T09:14:18` 的应用侧一半）。**无 schema 变更、无 config 变更**（`config.toml` 无需同步）。
