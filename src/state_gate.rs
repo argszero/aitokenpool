@@ -5181,4 +5181,323 @@ mod tests {
             "规则 1 被注释里的 `gift_balance` 满足了（假绿）"
         );
     }
+
+    // =============================================================================================
+    // C2171 — 身份边界只隐藏 `#app`，而浮层是它的**兄弟节点**
+    // =============================================================================================
+    //
+    // `exitGuest()` 是 UI 的身份边界。它隐藏 `#app`；但 `ui/index.html` 里还有若干「登录后才存在」
+    // 的浮层是 `#app` 的**兄弟节点** ⇒ 隐藏 `#app` **不会**连带隐藏它们。不清它们，上一个会话的
+    // 面板会浮在登录页上，并在**下一个人登录后被继承**：`renderHelp()` 只在打开时渲染 ⇒
+    // `#help-context` 还印着上一位用户的视图，且没有任何渲染路径会重画它（永不自愈）。
+    //
+    // 元素集合是**派生**的 —— `ui/index.html` 中 `#app` 起始行之后的**顶行**（列 0）元素，其
+    // `class` 属性含独立 token `hidden`。**零豁免清单**：往 index.html 加一个登录态浮层而不收它，
+    // 这里必红。`resetSessionOverlays()` 只负责把每个元素交给它自己的关闭器。
+    //
+    // ⚠️ 射程（词法）：本门禁证明「派生集合里每个元素，各有一个**宣称要隐藏它**的关闭器落在
+    // `resetSessionOverlays()` 的调用闭包内」，**不**证明运行期屏幕上真的隐藏了 —— 后者是
+    // `c2171-probe.js` 的射程（仓内 CI 无 JS 运行器）。已知盲区：① 只认顶行元素（缩进看不见）；
+    // ② 只认字面量 `"#<id>"`（动态选择器看不见）；③ `classList.toggle("hidden", false)` 这种
+    // 带第二布尔实参的隐藏不在判别式内。
+
+    /// `class` 属性里是否含**独立** token `hidden`（`hidden-x` / `unhidden` 不算）。
+    fn has_hidden_class_token(cls: &str) -> bool {
+        cls.split_whitespace().any(|t| t == "hidden")
+    }
+
+    /// 文本里所有 `"#<id>"` 字面量的 `<id>`（只收 `[A-Za-z0-9_-]`，动态选择器看不见）。
+    fn quoted_hash_ids(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let bytes = text.as_bytes();
+        let mut i = 0usize;
+        while i + 2 < bytes.len() {
+            if bytes[i] == b'"' && bytes[i + 1] == b'#' {
+                let start = i + 2;
+                let mut j = start;
+                while j < bytes.len() && bytes[j] != b'"' {
+                    j += 1;
+                }
+                if j < bytes.len() {
+                    let id = &text[start..j];
+                    if !id.is_empty()
+                        && id
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    {
+                        out.push(id.to_string());
+                    }
+                    i = j + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// `ui/index.html` 中 **`#app` 起始行之后**的顶行（列 0）元素，其 `class` 含独立 token
+    /// `hidden` ⇒ 这就是「登录后才存在、且不随 `#app` 一起被隐藏」的浮层集合。
+    fn overlays_outside_app(html: &str) -> Vec<String> {
+        let clean = strip_html_comments(html);
+        let mut lines = clean.lines();
+        let mut found_app = false;
+        for l in lines.by_ref() {
+            if l.starts_with("<div id=\"app\"") {
+                found_app = true;
+                break;
+            }
+        }
+        if !found_app {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for line in lines {
+            let Some(rest) = line.strip_prefix("<div id=\"") else {
+                continue;
+            };
+            let Some(q) = rest.find('"') else { continue };
+            let id = &rest[..q];
+            let attrs = &rest[q + 1..];
+            let Some(c) = attrs.find("class=\"") else {
+                continue;
+            };
+            let after = &attrs[c + "class=\"".len()..];
+            let Some(e) = after.find('"') else { continue };
+            if has_hidden_class_token(&after[..e]) {
+                out.push(id.to_string());
+            }
+        }
+        out
+    }
+
+    /// 该函数的**代码体**（调用方须已剥注释）是否**宣称**把 `#<id>` 隐藏：既出现字面量
+    /// `"#<id>"`，又出现把 `hidden` **加**上去的操作。
+    ///
+    /// 两个条件都必须按**字面量**判 —— 裸 `contains(id)` 会被兄弟标识符骗到（坑 #333 同族：
+    /// `renderTourStep` 也提到 `#tour-ring` 且含 `ring.classList.add("hidden")`，它是个**渲染器**）。
+    fn hides_element(body_code: &str, id: &str) -> bool {
+        if !body_code.contains(&format!("\"#{id}\"")) {
+            return false;
+        }
+        body_code.contains(".classList.add(\"hidden\")")
+            || body_code.contains(".classList.toggle(\"hidden\"")
+    }
+
+    /// 从 `resetSessionOverlays()` 出发的传递调用闭包（函数名集合）。
+    ///
+    /// ⚠️ **自建**闭包，**不复用** `call_graph` / `reachable`：那两个的每条边都由 `js_function_body`
+    /// 取体，而后者对**单行**函数会一路吞到下一个 `  }`。`ui/js/app.js` 里的 `markTourDone`
+    /// 正是单行 ⇒ 旧写法会把紧随其后的 `startTour` / `renderTourStep` / `switchView` 拉进闭包，
+    /// 于是 `C` 溢出成整份文件（22 个 view 元素 id）。这是「编译＋实跑」才逮到的真缺陷
+    /// （坑 #319/#332：`function_source` 就是为这个坑写的）。射程局限记在本节顶部。
+    fn overlay_closure(src: &str) -> BTreeSet<String> {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut queue: Vec<String> = vec!["resetSessionOverlays".to_string()];
+        while let Some(f) = queue.pop() {
+            if !seen.insert(f.clone()) {
+                continue;
+            }
+            // 箭头函数常量（如 `esc`）没有 `function` 声明头 ⇒ 返回 None，不参与（不是空串）
+            let Some(body) = function_source(src, &f) else {
+                continue;
+            };
+            let code = code_lines(&body);
+            for c in callee_names(&code) {
+                if !seen.contains(&c) {
+                    queue.push(c);
+                }
+            }
+        }
+        seen
+    }
+
+    /// 闭包里各函数的代码体宣称隐藏的 `#<id>` 集合。
+    fn closure_hidden_elements(src: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for f in overlay_closure(src) {
+            let Some(body) = function_source(src, &f) else {
+                continue;
+            };
+            let code = code_lines(&body);
+            for id in quoted_hash_ids(&code) {
+                if hides_element(&code, &id) {
+                    out.insert(id);
+                }
+            }
+        }
+        out
+    }
+
+    /// 身份边界必须把 `#app` **之外**的浮层也收起（集合派生自 index.html，零豁免清单）。
+    #[test]
+    fn the_identity_boundary_closes_the_panels_outside_the_app() {
+        // ── 规则 4：派生必须有阳性对照（非空、且不含登录视图 / 常驻容器）────────────────
+        let derived: BTreeSet<String> = overlays_outside_app(INDEX_HTML).into_iter().collect();
+        let expected: BTreeSet<String> = [
+            "help-panel",
+            "chat-modal",
+            "tour-overlay",
+            "tour-ring",
+            "tour-pop",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        assert!(
+            !derived.is_empty()
+                && !derived.contains("login-view")
+                && !derived.contains("toast-wrap"),
+            "派生集合的阳性对照失败（解析器变了，还是 index.html 结构变了？）：{derived:?}"
+        );
+        assert_eq!(
+            derived,
+            expected,
+            "`ui/index.html` 里 `#app` 之后的浮层集合变了 —— 若是有意新增，请一并让 resetSessionOverlays 收它"
+        );
+
+        // ── 规则 1（主牙）：闭包收起集合 == 派生集合 ────────────────────────────────────
+        let closed = closure_hidden_elements(APP_JS);
+        assert_eq!(
+            closed,
+            derived,
+            "resetSessionOverlays 的调用闭包没有恰好覆盖 `#app` 之外的每个浮层（少收 ⇒ 面板会留下来）"
+        );
+
+        // ── 规则 2：身份边界必须调用该复位 ──────────────────────────────────────────────
+        let boundary = code_body(APP_JS, "exitGuest");
+        assert!(
+            !boundary.is_empty(),
+            "提取器没取到 exitGuest 的代码体（后面的断言会在空串上「通过」）"
+        );
+        assert!(
+            boundary.contains("resetSessionOverlays()"),
+            "exitGuest（身份边界）没有收起 `#app` 之外的浮层"
+        );
+
+        // ── 规则 3（反向）：边界不许被掏空 ─────────────────────────────────────────────
+        assert!(
+            boundary.contains("resetSessionCaches()"),
+            "边界不再清空会话缓存"
+        );
+        assert!(
+            boundary.contains("(\"#app\").classList.add(\"hidden\")"),
+            "边界不再隐藏 `#app`"
+        );
+        assert!(
+            boundary.contains("(\"#login-view\").classList.remove(\"hidden\")"),
+            "边界不再显示登录视图"
+        );
+    }
+
+    /// 判别式的牙：两个条件都必须按**字面量**判；闭包限定必须排除「渲染器」形状的假阳性；
+    /// 提取器必须**单行安全**（本轴被这条咬过一次）。
+    #[test]
+    fn the_c2171_overlay_extractors_have_teeth() {
+        // 1) 有 add("hidden") 但不提该 id ⇒ 不算收起
+        assert!(!hides_element("x.classList.add(\"hidden\");", "help-panel"));
+        // 2) 提了 id 但只有 remove ⇒ **渲染器**形状，不算收起（`renderTourStep` 对 `#tour-ring` 正是如此）
+        assert!(!hides_element(
+            "$(\"#tour-ring\").classList.remove(\"hidden\");",
+            "tour-ring"
+        ));
+        // 3) 真形状 ⇒ 算（两种写法都要认）
+        assert!(hides_element(
+            "$(\"#chat-modal\").classList.add(\"hidden\");",
+            "chat-modal"
+        ));
+        assert!(hides_element(
+            "const panel = $(\"#help-panel\");\npanel.classList.toggle(\"hidden\", !open);",
+            "help-panel"
+        ));
+        // 4) 派生：`#toast-wrap` 无 class ⇒ 不入集合；`#app` 自己与它**之前**的元素也不算
+        let synth = "<div id=\"login-view\" class=\"login-view\"></div>\n\
+                 <div id=\"app\" class=\"app hidden\"></div>\n\
+                 <div id=\"toast-wrap\"></div>\n\
+                 <div id=\"help-panel\" class=\"help-panel hidden\"></div>\n";
+        assert_eq!(
+            overlays_outside_app(synth),
+            vec!["help-panel".to_string()],
+            "派生规则：只收 `#app` 之后的、带 hidden token 的顶行元素"
+        );
+        // 5) 字面量 id 提取器（token 边界：`#a-b` 与 `#c` 是两个 id；动态选择器看不见）
+        assert_eq!(
+            quoted_hash_ids("$(\"#a-b\")+\"#c\""),
+            vec!["a-b".to_string(), "c".to_string()]
+        );
+        assert!(quoted_hash_ids("`#${x}`").is_empty());
+        // 6) 实际文件里的**单行**函数：体必须只有一行，且不许吞到下一个函数
+        //    （`js_function_body` 在这里会一路吞到下一个 `  }` —— 闭包溢出成整份文件就是这个原因）
+        let single = function_source(APP_JS, "markTourDone").unwrap_or_default();
+        assert_eq!(
+            single.lines().count(),
+            1,
+            "单行函数被吞了（须用 function_source，不是 js_function_body）：{single}"
+        );
+        assert!(
+            !single.contains("startTour"),
+            "单行函数吞到了它后面的函数：{single}"
+        );
+        // 7) 箭头函数常量没有 `function` 声明头 ⇒ 提取器返回 None（不是空串），调用方要 `continue`。
+        //    ⚠️ **合成输入，不用真实文件** —— 真实文件里 `esc` **同时**还有一个**具名函数表达式**
+        //    （`app.js:323` `document.addEventListener("keydown", function esc(e) {`）⇒ 提取器**该**
+        //    返回 Some。踩过：本条断言原写作 `function_source(APP_JS, "esc").is_none()`，在**所有**树上
+        //    恒红（自检自红 ⇒ 自检不成立）。教训：**名字不是标识符的唯一载体** —— 同一名字可以有
+        //    箭头常量、具名函数声明、具名函数表达式三种载体，且可以同时存在。
+        let arrow_only = "  const foo = (x) => x;\n  function bar() {\n    foo(1);\n  }\n";
+        assert!(
+            function_source(arrow_only, "foo").is_none(),
+            "箭头常量不该被当成函数声明体"
+        );
+        assert!(
+            function_source(arrow_only, "bar").is_some(),
+            "普通函数声明必须被取到"
+        );
+        // 7b) 真实文件上的**同款碰撞**（记录性钉）：`esc` 的第二次出现是具名函数表达式 ⇒ 会命中。
+        //     这不是缺陷 —— 闭包走的四个名字（resetSessionOverlays/closeTour/closeChat/toggleHelp）
+        //     全部是唯一声明（见下一条），所以碰撞不影响本轴。若日后给闭包添一个与箭头常量同名的
+        //     具名函数表达式，那才是真问题，故把它钉住。
+        assert!(
+            function_source(APP_JS, "esc").is_some(),
+            "`esc` 的具名函数表达式消失了？闭包对名字碰撞的容忍度需要重估"
+        );
+        // 8) 闭包**不许**被单行函数带跑：真实文件上的闭包里不得出现 `startTour` 之后的东西。
+        //    合成输入里把 `closeTour` 写成**单行**，正是复现那条吞并路径。
+        let synth_src = "  function resetSessionOverlays() {\n    closeTour();\n  }\n\
+                     \x20 function closeTour() { $(\"#tour-ring\").classList.add(\"hidden\"); }\n\
+                     \x20 function renderTourStep() {\n    $(\"#tour-ring\").classList.remove(\"hidden\");\n    ring.classList.add(\"hidden\");\n  }\n";
+        let syn = overlay_closure(synth_src);
+        assert!(
+            syn.contains("closeTour") && !syn.contains("renderTourStep"),
+            "单行函数把后面的函数带进了闭包：{syn:?}"
+        );
+        let real = overlay_closure(APP_JS);
+        assert!(
+            !real.contains("switchView")
+                && !real.contains("renderTourStep")
+                && !real.contains("startTour"),
+            "闭包被单行函数带跑（`markTourDone` 那条吞并路径）：{real:?}"
+        );
+        // 9) **真实反例**：`renderTourStep` 确实会被裸判别式当成收起器 —— 排除它的是**闭包限定**。
+        //    （用 `function_source`：`function_code` 走的是会吞单行函数的 `js_function_body`。）
+        let body = function_source(APP_JS, "renderTourStep")
+            .map(|b| code_lines(&b))
+            .unwrap_or_default();
+        assert!(
+            hides_element(&body, "tour-ring"),
+            "假阳性必须先存在，本测试才有意义（renderTourStep 的形状变了？）"
+        );
+        // 10) 闭包走到的每个名字都必须是**唯一声明** —— 否则 `function_source` 可能取到**另一个**载体
+        //     （`esc` 那样：箭头常量 + 具名函数表达式），闭包就会凭一个名字窜到无关代码里。
+        for f in overlay_closure(APP_JS) {
+            if function_source(APP_JS, &f).is_none() {
+                continue; // 不存在的名字（如未修树上的 resetSessionOverlays）：无体可走
+            }
+            let decls = APP_JS.matches(&format!("function {f}(")).count();
+            assert_eq!(
+            decls, 1,
+            "闭包成员 `{f}` 有 {decls} 处 `function {f}(` 声明 —— 名字不是标识符的唯一载体，闭包可能窜到别处"
+        );
+        }
+    }
 }
