@@ -3174,10 +3174,24 @@
     toast(T("guest.enter"), "info");
   }
 
+  // 身份边界（C2171）：`#app` 之外还有三个浮层 —— 帮助面板 / 聊天弹窗 / 首启引导。它们是
+  // `#app` 的**兄弟节点** ⇒ 隐藏 `#app` **不会**连带隐藏它们（`#help-panel` 甚至不盖住侧栏，
+  // 用户可以带着它点登出）。不清它们，面板会浮在登录页上，并在**下一个人登录后被继承**：
+  // `renderHelp()` 只在打开时渲染 ⇒ `#help-context` 还印着上一位用户的视图，且永不自愈。
+  // 元素集合由 state_gate 与 `ui/index.html` **派生比对**（不是手写名册）；本函数只负责把
+  // 每个元素交给它自己的关闭器 —— 三个关闭器全是在用路径（Esc / 点外 / 跳过 / 关闭按钮）。
+  function resetSessionOverlays() {
+    toggleHelp(false);
+    closeChat();
+    closeTour();
+  }
+
   function exitGuest() {
     isGuest = false;
     // 身份边界（C2132）：会话结束即清空上一位用户的缓存 —— 否则下一位登录者会先看到他的数据
     resetSessionCaches();
+    // 身份边界（C2171）：`#app` 之外的浮层同样属于这个会话，随边界一起收起
+    resetSessionOverlays();
     $("#app").classList.add("hidden");
     setGuestSidebar(false);
     $("#login-view").classList.remove("hidden");
