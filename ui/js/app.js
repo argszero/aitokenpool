@@ -1639,23 +1639,20 @@
     return bucket === "hour" ? md + " " + p(d.getHours()) + ":00" : md;
   }
 
-  // 趋势聚合粒度：跟随外部时间段筛选（24h→小时；≤3.5 天→小时；≤60 天→天；其余→周）
+  // 趋势聚合粒度：**实际请求窗口**的函数，不是控件值的函数（R165）。
+  // 唯一窗口真源就是请求串本身（`txRangeParams()`）：无 `start` ⇒ 下界不可知 ⇒ 与「全部时间」
+  // 同口径（week）；有 `start` ⇒ 按 `end`（缺省 = now）算跨度，阈值沿用旧实现（≤3.5d / ≤60d）。
   function txTrendBucket() {
-    if (txRange === "24h") return "hour";
-    if (txRange === "7d") return "day";
-    if (txRange === "30d") return "day";
-    if (txRange === "custom") {
-      const s = txCustomStart ? new Date(txCustomStart) : null;
-      const e = txCustomEnd ? new Date(txCustomEnd) : null;
-      const now = new Date();
-      const from = (s && !isNaN(s.getTime())) ? s : ((e && !isNaN(e.getTime())) ? new Date(e.getTime() - 30 * 86400000) : now);
-      const to = (e && !isNaN(e.getTime())) ? e : now;
-      const days = (to.getTime() - from.getTime()) / 86400000;
-      if (days <= 3.5) return "hour";
-      if (days <= 60) return "day";
-      return "week";
-    }
-    return "week"; // all：跨度过大按周聚合
+    const p = new URLSearchParams(txRangeParams());
+    const s = p.get("start");
+    if (!s) return "week"; // 全部时间 / 自定义但起点为空：跨度不可知
+    const from = new Date(s);
+    const e = p.get("end");
+    const to = e ? new Date(e) : new Date();
+    const days = (to.getTime() - from.getTime()) / 86400000;
+    if (days <= 3.5) return "hour";
+    if (days <= 60) return "day";
+    return "week";
   }
 
   function renderTransactions() {

@@ -831,6 +831,25 @@ function txQuerySig() {                      // 只此一处定义「载荷是�
 （`app.js` 对某 id 做 `innerHTML =`）同样是死的。今日实测为 **0 处**，故未建门禁 ——
 该判定的词法近似（按 id 找 `innerHTML =`）比本条脆弱，留待需要时再收。
 
+## 趋势图的聚合粒度：由**实际请求窗口**决定，不由控件值决定（R165）
+
+**契约**：`txTrendBucket()` 的返回值必须是**真正发出去的请求窗口**的函数。窗口真源只有一个 ——
+`txRangeParams()`（`ui/js/app.js`），它同时也是请求串的构造者。因此 `txTrendBucket()` 读**它**，
+而不是再解释一遍 `#tx-range` 的选项值。
+
+**为什么**：`all`（全部时间）与「自定义 + 两个输入框都空」拼出的**列表请求逐字相同**（都无边界 ——
+`txRangeParams()` 在 `custom` 且两个输入框皆空时返回 `""`），而旧实现按控件值分别给出 `week` / `hour`：
+原来那张「控件值 → 粒度」的表里，`custom` 分支把跨度**从输入框**算（空 ⇒ 跨度 0 天 ⇒ `hour`），
+`all` 分支按窗口（无界 ⇒ `week`）。⇒ 同一份数据、同一个请求，两条粒度。
+另一副面孔：`TX_TREND_MAX_COLS = 40` 把 x 轴**锚在右端**，小时粒度下最多画**最近约 40 小时**，
+却按 `MM-DD HH:00` 标尺自称。
+
+**射程**（#341）：门禁 `state_gate::the_trend_grain_derives_from_the_query_not_from_the_control`
+是**词法**的 —— 它证明该函数体内**没有** `#tx-range` 的选项值字面量、**调用了** `txRangeParams`，
+并给返回的粒度字面量划界（`{hour, day, week}`）。它**不**证明阈值（3.5 / 60 天）取得对，
+也不证明 `URLSearchParams` 解出的跨度与请求里的 `now` 逐毫秒一致 —— 那些由 jsdom 探针
+在它所跑的那棵树上覆盖。
+
 ## 共享行的「动作」与「结局文案」必须由同一条目给出（C2153）
 
 共享 key 有**三个**状态，三个都可达：`PATCH /api/sharings/:id` 接受 `on` / `paused` / `off`
