@@ -273,9 +273,11 @@ ui/
 - 数据范围：**当前筛选可见行** = 服务端按 tab + 列筛选返回的行（**列筛选只有服务端一个实现**：`TX_COLUMNS` 每个带 `filter` 的列都声明 `serverFilter: true`，见 C2114）；导出与表格共用 `filterRows(list, TX_COLUMNS, txTable.filters)`，而该调用对已声明 `serverFilter` 的列**不生效** ⇒ 导出的行 = 表格显示的行；无数据 → toast info 不导出；
   ⚠️ 不要在客户端再筛一遍：请求侧 `txFilterParams` 会 `trim()`、服务端用 SQL `LIKE`，与本地子串比较的语义不同，重复筛选会把服务端认可的行删掉（表格空、计数与汇总卡却仍有数 —— 见 C2114）；
 - **各列与表格单元格同口径**（C2054 点数 / C2111 时间）：时间列走渲染单元格的同一个 `fmtPrecise(t.time)`（本地精确时间），**不**直接写视图行的 `t.time`（库内 UTC 串，`txsToView` 不转换）——否则同一行在表里是 `23:04`、在导出文件里却是 `15:04`（东八区；西半球反向）。`#139`（rant 2026-08-24T12:38:44）把单元格改成当地时间展示时，漏了导出这个消费者；
-- 格式：**UTF-8 BOM**（`"\uFEFF"` 前缀）+ `\r\n` 换行 + 表头 `时间,类型,模型 / Key,Token 用量,点数,状态`；类型用 `TX_TYPE` 中文映射；点数正负号原值；字段含 `,`/`"`/换行按 RFC4180 双引号转义（`cell()` 助手）；
+- 格式：**UTF-8 BOM**（`"\uFEFF"` 前缀）+ `\r\n` 换行 + 表头 `时间,类型,模型 / Key,Token 用量,点数,状态`；类型用 `TX_TYPE` 中文映射；点数正负号原值；字段含 `,`/`"`/CR/LF 按 **RFC 4180 §2.6** 双引号转义（`cell()` 助手）——**CR 必须在内**：记录分隔符是 `\r\n`，一个带裸 CR 的字段漏引号就会把一行切成两行（C2167）；
 - 下载：`Blob(type="text/csv;charset=utf-8")` → `URL.createObjectURL` → 临时 `<a download>` click → `remove()` → `setTimeout 1s` revoke；文件名 **`aitokenpool-transactions-YYYYMMDD.csv`**（`new Date()` 本地日期）；
 - 冒烟测试注意：stub 需给 `document.createElement("a")` 返回带 `click()`/`remove()` 的元素并捕获 `href`/`download`，`URL.createObjectURL` 捕获 Blob（`arrayBuffer()` 首 3 字节 EF BB BF 验证 BOM——`blob.text()` 会按规范剥掉 BOM）；列筛选联动可注入 `#tx-table` 的 `querySelectorAll(".th-filter")`/`querySelector('[data-filter-key=…]')` 假输入并 fire `input`。
+- **CI 覆盖**（`src/state_gate.rs::the_csv_cell_escaper_quotes_every_rfc4180_special`，四条规则各有独立的牙）：①a 转义器的字符类**恰**含 `"` `,` CR LF 四元素（漏 CR 的写法在这里红）；①b 那处 `.test(` 的结果确实被当**条件**用（挡「留着字符类、把判定丢掉」这种半修）；② 全站**唯一**一处引号字符类实现（挡第二份 CSV 口径）；③ 反向 —— 不许退化成「恒加引号」（`/[",\r\n]|/` 这种词法上元素齐全、语义上匹配空串的逃逸，只有这条规则有牙）。判别式由 `the_csv_escaper_scanners_have_teeth` 用**合成输入**自证：「取不到 / 取到多处 / 元素不全 / 判定被丢 / 语义退化」五种形态必须报**不同**的错（坑 #291），且元素分词器按元素 token 比、不吃子串匹配的亏（`\r\n` 里含 `\n` —— 坑 #333）。
+  ⚠️ **射程**：门禁是**词法**的 —— 它证明字符类的**元素**与三目式的**形状**，**不**求值 JS 正则的语义细节（`-` 的位置、`\r` 在 JS 里确为 CR），也**不**证明导出的文件真的能被解析器读回。后一半归运行期探针：jsdom 驱动真 `#tx-export-btn`、捕获交给 `URL.createObjectURL` 的 Blob、按 RFC 4180 读回 —— 带裸 CR 的字段必须仍落在**同一条**记录里、每条记录**恰 11 列**、单元格原样往返；`/[",\n]/` 的树上是 4 条记录、宽度 `[11,11,3,9]`。
 
 ## 数据表格键盘导航约定（v1.20，rant 2026-08-17T20:46:57 F；2026-09-13 改为 DOM 派生，去名册）
 
