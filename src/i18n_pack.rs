@@ -3548,4 +3548,400 @@ mod tests { fn t() { json!({ "x": "测试中文" }) } }
              实得 {commented:?}"
         );
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // C2172 —— 市场工具栏计数必须用**它所数的那些行**的单位说话
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// 本仓给**单个上游 key** 起的名所在的键（`share.col.key`，值 `Key`）。
+    ///
+    /// 这是本门禁里**唯一**写下的键名，而且它是**角色**不是名册：要的是「App 称呼单个 key 的
+    /// 那个词」，不是某条具体文案。为什么这把尺子取自**共享视图**的列头，而不是市场行的 pill：
+    /// 计数与 pill 在**同一屏**，尺子若取自被怀疑的那个元素，判别式就**循环**了
+    /// （#351 —— 探针第一版正是这么写，于是「把 pill 的 key 词删掉」这种化妆式修法会让轴腿
+    /// 静默变绿）。规则⑤再把它钉回市场行的 pill 家族，所以这把尺子不能被悄悄换掉。
+    const KEY_UNIT_LABEL_KEY: &str = "share.col.key";
+
+    /// 市场行「可用性」pill 的键前缀 —— 规则⑤用它代替写死某一条 pill 键名。
+    /// 问的是「市场行里有没有一条 pill 用『单个 key 的名』说话」，不是某条具体文案。
+    const AVAIL_PILL_PREFIX: &str = "mk.avail.";
+
+    /// `src` 里第一个 `attr="…"` 形态的**值**。
+    fn first_attr_value(src: &str, attr: &str) -> Option<String> {
+        let pat = format!("{attr}=\"");
+        let i = src.find(&pat)?;
+        let rest = &src[i + pat.len()..];
+        let end = rest.find('"')?;
+        Some(rest[..end].to_string())
+    }
+
+    /// 以 `<tbody id="body_id">` 为锚，取它所在表格 `<thead>` 里**第一个** `data-i18n` 键。
+    ///
+    /// **派生**而非名册：列头换键、加列、换表都跟着变；锚点用 `id`（表里唯一的稳定身份）。
+    /// 先剥 HTML 注释（#296：注释里的表不算表）。
+    fn table_head_key(html: &str, body_id: &str) -> Option<String> {
+        let html = strip_html_comments(html);
+        let anchor = format!("id=\"{body_id}\"");
+        let body = html.find(&anchor)?;
+        let table = html[..body].rfind("<table")?;
+        let head_start = html[table..body].find("<thead")? + table;
+        let head_end = html[head_start..body].find("</thead>")? + head_start;
+        first_attr_value(&html[head_start..head_end], "data-i18n")
+    }
+
+    /// 所有写 `#mk-count` 的位点：`(位点数, 每个位点里 `T("…")` 的键)`。
+    ///
+    /// 键为 `None` ⇒ 该位点没有经 `T("字面量")` 取值（提取器读不到 ⇒ 响亮变红，
+    /// 而不是静默少算一个位点）。⚠️ 调用方必须先剥 JS 注释（#296）。
+    ///
+    /// ⚠️ 三处收口，都是被 A/B 打出来的（#335 同族：判别式必须按**语句边界**收口；
+    /// #348：新写判别式的第一遍输出首先是关于**仪器**的 claim）：
+    /// ① 只看**同一条语句**（到 `;` 为止）里的 `T(` —— 否则「元素被赋值"4 个模型"」这种硬编码
+    ///    位点会去读**后面某句无关的** `T("mk.collapse")`，把「没有包键」读成一个**错键**
+    ///    （实测：m_hardcoded 腿报 `Some("mk.collapse")` 而不是 `None`）；
+    /// ② 该语句必须是在写这个元素的**内容**（`textContent` / `innerHTML`）；
+    /// ③ `T(` 与键字面量之间**允许换行/空白** —— `T(\n  "key"` 是合法写法，第一版用
+    ///    `find("T(\"")` 直接找 `T("`，跨行写法的位点被读成 `None`（实测：合成腿报 `(1, [None])`）。
+    fn mk_count_fill_keys(app: &str) -> (usize, Vec<Option<String>>) {
+        let needle = "\"#mk-count\"";
+        let mut sites = 0usize;
+        let mut keys: Vec<Option<String>> = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = app[from..].find(needle) {
+            sites += 1;
+            from += rel + needle.len();
+            let rest = &app[from..];
+            let stmt = match rest.find(';') {
+                Some(end) => &rest[..end],
+                None => rest,
+            };
+            let writes_content = stmt.contains("textContent") || stmt.contains("innerHTML");
+            let key = if writes_content {
+                stmt.find("T(").and_then(|i| {
+                    let after = stmt[i + 2..].trim_start();
+                    let after = after.strip_prefix('"')?;
+                    let end = after.find('"')?;
+                    Some(after[..end].to_string())
+                })
+            } else {
+                None
+            };
+            keys.push(key);
+        }
+        (sites, keys)
+    }
+
+    /// 行身份列头（`厂商 / 模型`）最后一段 ——「这一行是什么」的单位词（小写、去空白）。
+    ///
+    /// `None` ＝ 列头不是 `A / B` 形态：提取器分不出单位，规则③必须**响亮变红**，
+    /// 否则「含单位词」会退化成「含整串」（一个恒真的检查）。
+    fn row_unit_word(row_head: &str) -> Option<String> {
+        if !row_head.contains('/') {
+            return None;
+        }
+        let tail = row_head.rsplit('/').next()?.trim().to_lowercase();
+        if tail.is_empty() {
+            None
+        } else {
+            Some(tail)
+        }
+    }
+
+    /// 计数文案是否用**行**的单位说话（纯函数，便于合成输入自证）。
+    fn count_names_the_row_unit(count: &str, row_head: &str) -> bool {
+        match row_unit_word(row_head) {
+            Some(u) => count.to_lowercase().contains(&u),
+            None => false,
+        }
+    }
+
+    /// 计数文案是否**回避**了「单个 key」的名（纯函数；尺子为空 ⇒ 判违反，空尺子即空检查）。
+    fn count_avoids_the_key_word(count: &str, key_word: &str) -> bool {
+        let k = key_word.trim().to_lowercase();
+        !k.is_empty() && !count.to_lowercase().contains(&k)
+    }
+
+    /// 一个语言包里 `mk.avail.` 族的 pill 有多大、其中几条用 `word` 说话 —— `(族大小, 命中数)`。
+    fn avail_pills_naming(table: &BTreeMap<String, String>, word: &str) -> (usize, usize) {
+        let w = word.trim().to_lowercase();
+        let mut family = 0usize;
+        let mut hits = 0usize;
+        for (k, v) in table {
+            if k.starts_with(AVAIL_PILL_PREFIX) {
+                family += 1;
+                if !w.is_empty() && v.to_lowercase().contains(&w) {
+                    hits += 1;
+                }
+            }
+        }
+        (family, hits)
+    }
+
+    /// 市场工具栏计数（`#mk-count`）数的是**模型行**，文案就必须用「模型」这个单位说话。
+    ///
+    /// 缺陷形状（C2172 实测，两个包都错）：`#mk-count` 印 `T("cnt.on", { n: list.length })`，
+    /// 而 `cnt.on` 的值是 `"{n} 个在售 key"` / `"{n} keys on sale"` —— **同一屏**的表头写
+    /// `厂商 / 模型`、行内 pill 自己写「可用 · 3 key / 无 key」⇒ 数字是**行数**、单位是**key 数**，
+    /// 两重矛盾（夹具 Σkey = 6 ≠ 4 行）。设计基线（`docs/prototype/aitokenpool-console.html`）写的
+    /// 是「共 N 个模型」⇒ 漂移，非取舍。
+    ///
+    /// 五条规则，各有独立的牙：
+    /// ① 计数键**派生**自「谁在填这个元素」（`app.js` 里 `#mk-count` 之后的 `T(…)`）：
+    ///    每个位点都必须经 `T("字面量")` 取值、且所有位点**同名**（同一格必须同源）；
+    ///    位点用了不止一个键时，**每一个**键都要按 ①③④ 审（不能只挑一个来审）；
+    /// ② 行身份键**派生**自同屏表头（`index.html` 里 `#mk-body` 所在表格 `<thead>` 的第一个
+    ///    `data-i18n`），其值必须是 `A / B` 形态（否则单位分不出来 ⇒ 响亮变红）；
+    /// ③ 两包里计数文案都必须含行身份的单位词（`模型` / `model`）；
+    /// ④ 两包里计数文案都**不得**含「单个 key」的名（尺子＝`share.col.key` 的值）；
+    /// ⑤ 那把尺子必须与市场行的 `mk.avail.` pill 家族**同词** —— 尺子不能被悄悄换掉。
+    ///
+    /// ⚠️ 射程（诚实记录，同时写进 `ui/README.md`）：
+    /// - 只钉**单位**，不钉**数值**：数值由 DOM 探针 `c2172_probe.js` 的 `F1/F2` 腿钉
+    ///   （数字必须等于行数，且不等于 key 总数）；
+    /// - 删掉**一个**填充位点（如空态那句）本门禁看不见（位点数会一起降），由探针
+    ///   `P0b/F1/T1` 三条腿拒掉；
+    /// - 规则④/⑤ 的尺子取自**共享视图**的列头（不是市场行的 pill）⇒ 有人把「无 key」改成「无」
+    ///   时门禁照绿（探针 `K2` 腿拒掉）；反过来，有人把两处 key 词**一起**改名时 ④ 会退化成
+    ///   空检查 —— 此时仍由 ③ 守住轴（③ 才是本轴的主牙）。
+    #[test]
+    fn the_marketplace_count_is_expressed_in_the_unit_of_its_rows() {
+        let app = strip_js_comments(APP_JS);
+        let packs = packs();
+        let mut problems: Vec<String> = Vec::new();
+
+        // ① 计数键派生自填充位点
+        let (sites, keys) = mk_count_fill_keys(&app);
+        if sites == 0 {
+            problems.push(
+                "① 无位点: `#mk-count` 没有任何填充位点 —— 计数被删掉，或提取器失真".to_string(),
+            );
+        }
+        let mut distinct: BTreeSet<&str> = BTreeSet::new();
+        for (i, k) in keys.iter().enumerate() {
+            match k {
+                Some(k) => {
+                    distinct.insert(k.as_str());
+                }
+                None => problems.push(format!(
+                    "① 无键: `#mk-count` 第 {} 个填充位点没有经 `T(\"字面量\")` 取到键（硬编码，或提取器读不出）—— 勿静默少算一个位点",
+                    i + 1
+                )),
+            }
+        }
+        if distinct.len() > 1 {
+            problems.push(format!(
+                "① 不同源: `#mk-count` 的填充位点用了不止一个键 {distinct:?} —— 同一格必须同源"
+            ));
+        }
+        // 每个用来填这个元素的键都得合格 ⇒ 逐个审（①③④ 循环在下面按语言展开）
+        let count_keys: Vec<&str> = distinct.iter().copied().collect();
+
+        // ② 行身份键派生自同屏表头
+        let row_key = table_head_key(INDEX_HTML, "mk-body").unwrap_or_default();
+        if row_key.is_empty() {
+            problems.push(
+                "② 提取器失真: `#mk-body` 所在表格的 `<thead>` 里取不到 `data-i18n`".to_string(),
+            );
+        }
+
+        // ③④⑤ 逐包比对
+        for (lang, table) in [("zh", &packs.zh), ("en", &packs.en)] {
+            // ② 行身份列头（与计数键无关，先判一次）
+            let row_head = match table.get(&row_key) {
+                Some(v) => v.clone(),
+                None => {
+                    problems.push(format!(
+                        "② 非包键 {lang}: 行身份键 `{row_key}` 不在 {lang} 包里 —— 提取器读到的不是包键"
+                    ));
+                    String::new()
+                }
+            };
+            if !row_head.is_empty() && row_unit_word(&row_head).is_none() {
+                problems.push(format!(
+                    "② 列头形状 {lang}: 行身份列头 `{row_key}` 的值 `{row_head}` 不是 `A / B` 形态 —— 单位词分不出来"
+                ));
+            }
+
+            // 尺子：本仓给「单个 key」的名。空尺子会让规则④变成空检查 ⇒ 必须先自证可信。
+            let key_word = table.get(KEY_UNIT_LABEL_KEY).cloned().unwrap_or_default();
+            let ruler = key_word.trim().to_lowercase();
+            if key_word.is_empty() || ruler.is_empty() || key_word.contains("{n}") {
+                problems.push(format!(
+                    "⑤ 尺子失真 {lang}: `{KEY_UNIT_LABEL_KEY}` 的 {lang} 值是 `{key_word}` —— 它不是「单个 key 的名字」（空的尺子会让规则④变成空检查）"
+                ));
+            }
+            let (pill_family, pill_hits) = avail_pills_naming(table, &key_word);
+            if pill_family == 0 {
+                problems.push(format!(
+                    "⑤ 语料失真 {lang}: {lang} 包里没有 `{AVAIL_PILL_PREFIX}` 族的市场行 pill —— 规则⑤会变成空检查"
+                ));
+            } else if pill_hits == 0 {
+                problems.push(format!(
+                    "⑤ 跨视图用词 {lang}: 「单个 key」的名只在共享列头（`{KEY_UNIT_LABEL_KEY}` = `{key_word}`）出现，市场行 pill 家族（{pill_family} 条）一条都没用它"
+                ));
+            }
+
+            // ①③④ 逐个填充键判定：**每一个**用来填这个元素的键都必须合格
+            //（填充点越多、越不能只挑一个键来审）
+            for ck in &count_keys {
+                let count_text = match table.get(*ck) {
+                    Some(v) => v.clone(),
+                    None => {
+                        problems.push(format!(
+                            "① 非包键 {lang}: 计数键 `{ck}` 不在 {lang} 包里 —— 提取器读到的不是包键"
+                        ));
+                        continue;
+                    }
+                };
+                if !count_text.contains("{n}") {
+                    problems.push(format!(
+                        "① 非计数文案 {lang}: 计数键 `{ck}` 的值 `{count_text}` 没有 `{{n}}` 占位符"
+                    ));
+                }
+                if row_unit_word(&row_head).is_some()
+                    && !count_names_the_row_unit(&count_text, &row_head)
+                {
+                    problems.push(format!(
+                        "③ 行单位 {lang}: 市场工具栏计数没用行单位说话 —— 计数 `{ck}` = `{count_text}`；它数的那些行的身份列头 `{row_key}` = `{row_head}`"
+                    ));
+                }
+                if !ruler.is_empty() && !count_avoids_the_key_word(&count_text, &key_word) {
+                    problems.push(format!(
+                        "④ key 单位 {lang}: 市场工具栏计数拿「单个 key」的名 `{key_word}` 当总数的单位 —— `{ck}` = `{count_text}`（它数的是模型行）"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            problems.is_empty(),
+            "市场工具栏计数的单位漂移（C2172）：\n  - {}",
+            problems.join("\n  - ")
+        );
+    }
+
+    /// 阴极对照：单位一致性判别式必须真的会失败（恒真的检查等价于没有检查）。
+    #[test]
+    fn marketplace_count_unit_checker_detects_injected_defects() {
+        // ③ 行单位：含单位词才算数；列头不是 `A / B` 形态 ⇒ 判违反（不能退化成「含整串」）
+        assert!(count_names_the_row_unit("4 models", "Provider / model"));
+        assert!(count_names_the_row_unit("4 个模型", "厂商 / 模型"));
+        assert!(!count_names_the_row_unit(
+            "4 keys on sale",
+            "Provider / model"
+        ));
+        assert!(!count_names_the_row_unit("4 个在售 key", "厂商 / 模型"));
+        assert!(!count_names_the_row_unit(
+            "4 Provider model rows",
+            "Provider model"
+        ));
+        assert!(!count_names_the_row_unit("4 models", " / "));
+
+        // ④ key 单位：尺子为空 ⇒ 判违反（不空转）
+        assert!(count_avoids_the_key_word("4 models", "Key"));
+        assert!(!count_avoids_the_key_word("4 keys on sale", "Key"));
+        assert!(!count_avoids_the_key_word("4 个在售 key", "Key"));
+        assert!(!count_avoids_the_key_word("4 models", "   "));
+        assert!(!count_avoids_the_key_word("4 models", ""));
+
+        // ⑤ pill 家族（派生自 `mk.avail.` 前缀，不写死键名）
+        let mut pill_pack: BTreeMap<String, String> = BTreeMap::new();
+        pill_pack.insert("mk.avail.none".to_string(), "No key".to_string());
+        pill_pack.insert(
+            "mk.avail.multi".to_string(),
+            "Available · {n} keys".to_string(),
+        );
+        pill_pack.insert("share.col.key".to_string(), "Key".to_string());
+        assert_eq!(
+            avail_pills_naming(&pill_pack, "Key"),
+            (2, 2),
+            "pill 家族应只数 `mk.avail.` 前缀的键"
+        );
+        assert_eq!(
+            avail_pills_naming(&pill_pack, "  "),
+            (2, 0),
+            "空词不得命中任何 pill"
+        );
+        let no_family: BTreeMap<String, String> = BTreeMap::new();
+        assert_eq!(
+            avail_pills_naming(&no_family, "Key"),
+            (0, 0),
+            "没有 pill 家族时必须报族大小为 0（规则⑤才不会空转）"
+        );
+
+        // ② 表头提取：锚点是 `#<body_id>` 所在的那张表，且只看它的 `<thead>`
+        let html = r##"<table><thead><tr><th data-i18n="other.col">x</th></tr></thead><tbody id="other-body"></tbody></table>
+<table><thead><tr><th class="num" data-i18n="mk.col.in">单价</th><th data-i18n="mk.col.providerModel">厂商 / 模型</th></tr></thead><tbody id="mk-body"></tbody></table>"##;
+        assert_eq!(
+            table_head_key(html, "mk-body").as_deref(),
+            Some("mk.col.in"),
+            "必须取 `#mk-body` 那张表 `<thead>` 里的**第一个** `data-i18n`"
+        );
+        assert_eq!(
+            table_head_key(html, "other-body").as_deref(),
+            Some("other.col"),
+            "锚点认错表 ⇒ 单位词会被别处的列头污染"
+        );
+        assert!(
+            table_head_key(html, "nope-body").is_none(),
+            "不存在的锚点必须返回 None"
+        );
+        // 注释里的表不算表（#296）
+        let commented = r##"<!-- <table><thead><tr><th data-i18n="ghost.col">x</th></tr></thead><tbody id="mk-body"></tbody></table> -->
+<table><thead><tr><th data-i18n="real.col">y</th></tr></thead><tbody id="mk-body"></tbody></table>"##;
+        assert_eq!(
+            table_head_key(commented, "mk-body").as_deref(),
+            Some("real.col"),
+            "HTML 注释里的表被当成了表（#296：注释不是代码）"
+        );
+
+        // ① 填充位点提取：同名、异名、没有 `T("…")`、以及注释里的位点
+        let same = r##"$("#mk-count").textContent = T("cnt.models", { n: 0 });
+$("#mk-count").textContent = T("cnt.models", { n: list.length });"##;
+        let (n, ks) = mk_count_fill_keys(same);
+        assert_eq!(n, 2, "两个填充位点应被数到 2 处");
+        assert_eq!(
+            ks,
+            vec![
+                Some("cnt.models".to_string()),
+                Some("cnt.models".to_string())
+            ]
+        );
+        let divergent = r##"$("#mk-count").textContent = T("cnt.models", { n: 0 });
+$("#mk-count").textContent = T("cnt.on", { n: list.length });"##;
+        let (_, ks) = mk_count_fill_keys(divergent);
+        assert_ne!(
+            ks[0], ks[1],
+            "两处写成不同的键时必须分得出来（否则「同一格必须同源」恒真）"
+        );
+        let literal = r##"$("#mk-count").textContent = "4 个在售 key";"##;
+        let (n, ks) = mk_count_fill_keys(literal);
+        assert_eq!(
+            (n, ks),
+            (1, vec![None]),
+            "硬编码写入必须读成「没有包键」而不是静默跳过"
+        );
+        // ⚠️ 这条腿是**被 A/B 打出来的**（m_hardcoded 首跑：硬编码位点被读成 `Some("mk.collapse")`）：
+        //    同文件里**后面某句无关的** `T("…")` 不得被当成这个元素的键（#335：按语句边界收口）。
+        let unrelated = "$(\"#mk-count\").textContent = \"4 个模型\";\n        x.innerHTML = T(\"mk.collapse\", {});";
+        assert_eq!(
+            mk_count_fill_keys(unrelated),
+            (1, vec![None]),
+            "元素写完字面量之后，别处一句无关的 T(\"…\") 被当成了它的键"
+        );
+        // 跨行的 `T(` 调用仍须被认出（收口到语句，不是收口到行）
+        let multiline =
+            "$(\"#mk-count\").textContent = T(\n  \"cnt.models\",\n  { n: list.length }\n);\n";
+        assert_eq!(
+            mk_count_fill_keys(multiline),
+            (1, vec![Some("cnt.models".to_string())]),
+            "跨行的 T( 调用没被认出 —— 收口过紧"
+        );
+        let ghost = "// $(\"#mk-count\").textContent = T(\"ghost.key\", { n: 0 })";
+        assert_eq!(
+            mk_count_fill_keys(&strip_js_comments(ghost)).0,
+            0,
+            "JS 注释里的填充位点被当成了位点（#296：注释不是代码）"
+        );
+    }
 }

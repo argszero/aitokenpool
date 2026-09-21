@@ -828,6 +828,14 @@ toast(next === "paused" ? T("share.toggle.paused", …) : T("share.toggle.resume
 取的是同一字段（把 `outcome` 写成 `label` 的门禁看不出来，仪器能）。静态门禁挡的是**形状**
 （两侧各自解释状态），值是探针在它所跑的那棵树上覆盖的。
 
+## 市场工具栏的计数按**行（模型）**计数（C2172）
+
+- **单位由它汇总的那张表决定**：`#mk-count` 数的是**过滤后的模型行数**（`marketRows()` → `/api/models`，一行一个模型），所以文案必须与同一张表的**行身份列**同单位 —— `ui/index.html` 的 `<th data-i18n="mk.col.providerModel">厂商 / 模型</th>`。旧值 `cnt.on`「{n} 个在售 key」把**模型行数**印成「**key** 数」，而同屏既有「无 key」的行、又有「可用 · 3 key」的行 ⇒ 同一张表里数字与单位互相打脸（夹具 `Σkey = 6 ≠ 4 行`）。改名 `cnt.models`（zh「{n} 个模型」/ en「{n} models」）**净键数不变**（每包改 1 个键名），且不留一个「名字在撒谎」的键。
+- **CI 覆盖**：`src/i18n_pack.rs::the_marketplace_count_is_expressed_in_the_unit_of_its_rows`（五条规则：计数键从 `app.js` 派生 / 行身份键从 `index.html` 派生 / 两包都须含行单位词 / 两包都不得含 `share.col.key` 的 key 词 / `mk.avail.` pill 族仍用同一把尺子）。
+- ⚠️ **射程**：门禁钉**单位**不钉**数值**；删掉**一个**填充位点门禁看不见（位点数一起降）⇒ 数值与「不许把计数删掉」由仪器 `c2172_probe.js` 的 `F1/F2/P0b/T1` 腿钉。本轴**不新增也不删除**任何包键，也**不动** `UNREACHABLE_PACK_KEYS`。
+  （旧值那枚「同值的孤儿键」`mk.count` 已在队列更早的一跳 `pack-key-shrink`（PR #270）里被删掉 ⇒ 本轴落地时这段文案在包里只此一处。）
+
+
 ## 共享行的 plan 显示名：一个来源，四个渲染点（C2157）
 
 共享行（`/api/sharings` 的 `keys.plan`）只存**配置 id**；显示名必须由**语言包感知**的解析器从 id 派生，
