@@ -3725,7 +3725,7 @@
         else clearFieldError($("#forgot-email"));
         if (!code) { setFieldError($("#forgot-code"), T("verify.err.code")); firstErr = firstErr || $("#forgot-code"); }
         else clearFieldError($("#forgot-code"));
-        if (Array.from(pw).length < MIN_PW_CHARS) { setFieldError($("#forgot-pass"), T("register.err.pass")); firstErr = firstErr || $("#forgot-pass"); }
+        if (Array.from(pw).length < MIN_PW_CHARS) { setFieldError($("#forgot-pass"), T("err.weakPassword")); firstErr = firstErr || $("#forgot-pass"); }
         else clearFieldError($("#forgot-pass"));
         if (pw !== pw2) { setFieldError($("#forgot-pass2"), T("register.err.confirm")); firstErr = firstErr || $("#forgot-pass2"); }
         else clearFieldError($("#forgot-pass2"));
