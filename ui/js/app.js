@@ -1704,6 +1704,8 @@
       onState: renderTransactions,
       // 真后端分页（rant 2026-08-24T10:51:57）：总数显示后端 total；页码点击 → onState → renderTransactions 页码不一致自动重拉
       serverPaging: Live.transactions ? { total: Live.transactions.total || 0 } : null,
+      // R164：排序交给服务端执行（请求带 sort/dir）—— 理由见 buildDataTable 里的本地排序守卫。
+      serverSort: true,
     });
   }
 
@@ -1763,6 +1765,16 @@
     const sel = document.querySelector('#tx-table select[data-filter-key="type"]');
     if (sel) sel.value = txTable.filters.type;
   }
+  // 排序 → 请求参数（R164）：与 `txFilterParams` / `txRangeParams` 同款「一份状态投影成查询串」。
+  // 服务端只接受白名单键（`TX_SORT_KEYS`），未知键 400；这里只发状态里已有的键。
+  // 只接在**列表**请求上：趋势按时间桶聚合，行序对它的语义没有意义。
+  function txSortParams() {
+    if (!txTable.sort || !txTable.sort.length) return "";
+    const keys = txTable.sort.map((s) => s.key).join(",");
+    const dirs = txTable.sort.map((s) => s.dir).join(",");
+    return "&sort=" + encodeURIComponent(keys) + "&dir=" + encodeURIComponent(dirs);
+  }
+
   // 载荷签名（C2146）：**决定请求体的全部状态** —— 列筛选 + 时间段（范围值 + 自定义起止）。
   // 它必须覆盖每一个会改变载荷的输入，否则控件改完没人重拉，只能由调用方**补一次显式拉取**，
   // 而那个补丁会在「重拉触发条件也成立」时并发第二次请求（C2112 已为顶部 tab 记下这个坑）。
@@ -1771,7 +1783,10 @@
   function txQuerySig() {
     const f = txTable.filters || {};
     const cols = Object.keys(f).sort().map((k) => k + "=" + String(f[k] == null ? "" : f[k])).join("&");
-    return cols + "|" + txRange + "|" + txCustomStart + "|" + txCustomEnd;
+    // R164：排序是**载荷的一部分**（随请求发出、由服务端执行）。少了这一段，点列头只改状态、
+    // 签名不变 ⇒ 守卫认定载荷没变、不重拉 ⇒ 箭头变了而列表不动（比原缺陷更坏）。
+    const srt = (txTable.sort || []).map((s) => s.key + ":" + s.dir).join(",");
+    return cols + "|" + txRange + "|" + txCustomStart + "|" + txCustomEnd + "|" + srt;
   }
 
   // 交易载荷的**唯一重拉触发器**（C2146）：控件的状态一改就调它一次 —— 页码重置与重拉是同一个
@@ -1795,7 +1810,7 @@
     const cols = txFilterParams(); // rant 2026-08-25T10:33:26：列筛选随请求发出，后端全量过滤
     const page = Math.max(1, txTable.page || 1);
     const pageSize = Math.min(100, Math.max(1, txTable.pageSize || 10));
-    const q = "/api/transactions?type=" + type + "&page=" + page + "&page_size=" + pageSize + (range ? "&" + range : "") + (cols ? "&" + cols : "");
+    const q = "/api/transactions?type=" + type + "&page=" + page + "&page_size=" + pageSize + (range ? "&" + range : "") + (cols ? "&" + cols : "") + txSortParams();
     // 趋势图数据（rant 2026-08-23T16:01:07 需求 2）：同列筛选口径
     const bucket = txTrendBucket();
     const tq = "/api/transactions/trend?type=" + type + "&bucket=" + bucket + (range ? "&" + range : "") + (cols ? "&" + cols : "");
@@ -2026,13 +2041,15 @@
   }
 
   function buildDataTable(cfg) {
-    const { container, columns, rows, state, onState, serverPaging } = cfg;
+    const { container, columns, rows, state, onState, serverPaging, serverSort } = cfg;
 
     // 1) 筛选
     let data = filterRows(rows, columns, state.filters);
 
     // 2) 排序（多列：Shift 点击叠加）
-    if (state.sort.length) {
+    // R164：声明了 `serverSort` 的表由**服务端**排序（请求带 sort/dir，SQL 的 ORDER BY 由白名单
+    // 渲染）⇒ 跳过本地排序。本地只排传进来的那一页，而列头的 ▲/▼ 说的是整张表 —— 两者必须同源。
+    if (state.sort.length && !(serverPaging && serverSort)) {
       data = data.slice().sort((a, b) => {
         for (const sk of state.sort) {
           const col = columns.find((c) => c.key === sk.key);
