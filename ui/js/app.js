@@ -1808,6 +1808,11 @@
     const type = txTypeFilter();
     const range = txRangeParams();
     const cols = txFilterParams(); // rant 2026-08-25T10:33:26：列筛选随请求发出，后端全量过滤
+    // R155：收据（`txTable.loadedQuerySig`）必须取自**这次请求自己**的签名，在发请求前捕获。
+    // 响应落地后再调 `txQuerySig()`，读到的是**此刻**的控件；两次控件变更落在同一个 RTT 内时，
+    // 被取代的那份响应会拿它盖章，而守卫比较的正是**现在**（`!== txQuerySig()`）⇒ 比对恒成立、
+    // 表格永久停在用户已经离开的筛选条件的行上（同块的 `page`/`pageSize` 一直是对的写法）。
+    const reqSig = txQuerySig(); // R155：本请求自己的载荷签名（收据的右值不读活状态）
     const page = Math.max(1, txTable.page || 1);
     const pageSize = Math.min(100, Math.max(1, txTable.pageSize || 10));
     const q = "/api/transactions?type=" + type + "&page=" + page + "&page_size=" + pageSize + (range ? "&" + range : "") + (cols ? "&" + cols : "") + txSortParams();
@@ -1824,7 +1829,7 @@
       if (Live.transactions) Live.transactions.trend = trend;
       txTable.loadedPage = page;
       txTable.loadedPageSize = pageSize;
-      txTable.loadedQuerySig = txQuerySig(); // 记录已加载的载荷签名，变化时 renderTransactions 重拉
+      txTable.loadedQuerySig = reqSig; // 记录已加载的载荷签名（取自本请求），变化时 renderTransactions 重拉
     } catch (e) { Live.transactions = null; /* 登录态降级空态 */ }
     renderTransactions();
     // 翻页后滚动到列表顶部（rant 2026-08-24T10:51:57 需求 4）

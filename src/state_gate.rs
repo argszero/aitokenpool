@@ -11716,3 +11716,702 @@ fn the_session_state_scanners_have_teeth() {
         vec!["txRange".to_string()]
     );
 }
+
+// ===================================================================================================
+// R155：**载荷的收据必须由发起它的那次请求写**，不是由最后落地的响应「问一次现在」。
+// ===================================================================================================
+//
+// 题眼（`ui/js/app.js` `loadTransactions()`）：一连三行收据描述**同一份响应** ——
+// `loadedPage` / `loadedPageSize` 在 `await` **之前**取好（`const page = …` 自己的快照），
+// 第三条 `loadedQuerySig` 却在响应落地后读**活状态** `txQuerySig()`；而 `renderTransactions()`
+// 的守卫拿它跟**现在**的控件比对（`txTable.loadedQuerySig !== txQuerySig()`）⇒ 印章与投影同源，
+// 比对恒成立。两次控件变更落在同一个 RTT 内时两个请求同时在飞，被取代的那个不带身份；它若最后
+// 落地就会被**采纳并认证为当前**，守卫随即满足 ⇒ 表格永久显示用户已经离开的筛选条件的行。
+//
+// 错的不是**写错的值**，而是**问错了人**（所以它能自证清白）⇒ 修法＝把签名**在发请求时就捕获**。
+//
+// 四条规则（全部从代码**派生**，#469：门禁不许把这一次编辑的字面量写死作判据）：
+//
+//   R1  每一条收据赋值的右值**不得是一次调用**（`(`）—— 收据必须是「发请求那一刻」的值，
+//       不是「响应落地那一刻」才求值的东西。
+//   R2  右值是**裸标识符**时，该标识符必须在**同一个函数体内**、且在**第一个 `await` 之前**
+//       被绑定（挡「await 之后再捕获」这种同形假修）。
+//   R3  签名那条收据（由守卫行派生：与一次**调用**比较的那一项）捕获的标识符，其初始化式必须
+//       调用**守卫自己比较的那个函数**（由守卫派生）—— 挡「捕获一个常量」式假修（那会让守卫恒
+//       不相等 ⇒ 请求风暴，比原缺陷更坏）。
+//   R4  反向／非空：守卫仍然存在且仍与一次**调用**比较（派生出的函数名非空）、收据名册非空、
+//       至少两条收据写入 —— 否则 R1–R3 会在空集上「通过」（坑 68 家族）。
+//
+// 射程（如实，并已写进 `ui/README.md`）：本门禁是**词法**的。它证明「收据的右值是被捕获的、
+// 且在 `await` 之前、且是守卫比较的那个函数」，**不**证明屏幕上那一刻的行真的属于当前筛选
+// （那一半归 jsdom 探针的 A1/A2/A3 腿）。两个仪器在**纯代次版**（`fix_generation`：只丢弃被
+// 取代的响应、盖章那行照旧读活状态）上**不同判**：探针接受它（终态正确、还少发一次请求），
+// 本门禁**拒**它（R1）—— 因为「收据的作者」在这条轴上是**同一个主张**，一份收据要由两个机制
+// 分别保证才是真缺陷未修。这个不对称是**故意**的、可测量的（见 `the_r155_rules_separate_the_variants`）。
+
+// ⛔ 不在这里再 `include_str!` 一次 `ui/js/app.js` —— 本模块顶部（`APP_JS`）已经有了。
+
+/// 收据字段的前缀（`txTable.loaded*`）。
+const R155_PREFIX: &str = "txTable.loaded";
+
+/// 修复体的两半（逐字来自 `ui/js/app.js`；两处必须同时出现，缺一即未修）。
+///
+/// `R155_CAPTURE` 连它上方那段解释性注释一起收进来 —— 这样 `r155_variant_unfixed` 还原
+/// 出的树与修复前的文件**逐字相同**（留下一段解释「已被撤掉的修法」的散文是另一种谎）。
+const R155_CAPTURE: &str = concat!(
+    "    // R155：收据（`txTable.loadedQuerySig`）必须取自**这次请求自己**的签名，在发请求前捕获。\n",
+    "    // 响应落地后再调 `txQuerySig()`，读到的是**此刻**的控件；两次控件变更落在同一个 RTT 内时，\n",
+    "    // 被取代的那份响应会拿它盖章，而守卫比较的正是**现在**（`!== txQuerySig()`）⇒ 比对恒成立、\n",
+    "    // 表格永久停在用户已经离开的筛选条件的行上（同块的 `page`/`pageSize` 一直是对的写法）。\n",
+    "    const reqSig = txQuerySig(); // R155：本请求自己的载荷签名（收据的右值不读活状态）\n",
+);
+const R155_STAMP: &str = "      txTable.loadedQuerySig = reqSig; // 记录已加载的载荷签名（取自本请求），变化时 renderTransactions 重拉\n";
+
+/// 未修形状（原树那一行）。
+const R155_STAMP_BASE: &str = "      txTable.loadedQuerySig = txQuerySig(); // 记录已加载的载荷签名，变化时 renderTransactions 重拉\n";
+
+/// 未修形状里那一行**之后**紧邻的锚（插入捕获用的位置）—— 逐字来自 `ui/js/app.js`。
+const R155_ANCHOR_AFTER_COLS: &str =
+    "    const cols = txFilterParams(); // rant 2026-08-25T10:33:26：列筛选随请求发出，后端全量过滤\n";
+
+/// `await Promise.all([` 那一行（R2 的分界线也是**派生**的：取函数体里第一条含 `await` 的行，
+/// 这里只用于**构造**变异体，不用于判定）。
+const R155_AWAIT_LINE: &str = "      const [, trend] = await Promise.all([";
+
+// --------------------------------------------------------------------------------- helpers ---
+
+/// 每个函数的 `(名字, 起始行, 结束行)`（1 基；结束行＝首个恰为 `  }` 的行）。
+///
+/// 与 `state_gate.rs` 的 `js_function_body` 同一约定：本文件函数体一律 2 空格缩进、收尾行恰为
+/// `  }`。调用方须自证提取结果非空（见 `the_r155_extractor_lands_on_real_function_bodies`）。
+fn r155_function_ranges(src: &str) -> Vec<(String, usize, usize)> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < lines.len() {
+        if let Some(name) = function_name(lines[i]) {
+            let mut end = None;
+            for (j, l) in lines.iter().enumerate().skip(i + 1) {
+                if *l == "  }" {
+                    end = Some(j);
+                    break;
+                }
+            }
+            if let Some(e) = end {
+                out.push((name.to_string(), i, e));
+                i = e + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// 收据名册：全文件里出现过的 `txTable.loaded<Field>` 字段名（去重，**派生**）。
+fn r155_receipt_roster(src: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for line in code_text_by_line(src) {
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find(R155_PREFIX) {
+            let at = from + rel + R155_PREFIX.len();
+            let rest = &line[at..];
+            let field: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if !field.is_empty() {
+                out.insert(format!("{R155_PREFIX}{field}"));
+            }
+            from = at;
+            if from >= line.len() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// 一条收据写入：`(行号(1 基), 字段全名, 右值, 所属函数)`。
+///
+/// 「写」＝该行在字段名之后（跨过标识符剩余字符）紧跟一个赋值号（不是 `==`，同
+/// `state_gate.rs::assignment_after`）。右值取 `=` 之后、行尾注释之前，两端去空白。
+fn r155_receipt_writes(src: &str) -> Vec<(usize, String, String, String)> {
+    let text = code_text_by_line(src);
+    let ranges = r155_function_ranges(src);
+    let mut out = Vec::new();
+    for (i, line) in text.iter().enumerate() {
+        let lineno = i + 1;
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find(R155_PREFIX) {
+            let at = from + rel + R155_PREFIX.len();
+            let rest = &line[at..];
+            let fld: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if fld.is_empty() {
+                from = at;
+                continue;
+            }
+            let after = &rest[fld.len()..];
+            let trimmed = after.trim_start();
+            if !trimmed.starts_with('=') || trimmed.starts_with("==") {
+                from = at;
+                if from >= line.len() {
+                    break;
+                }
+                continue;
+            }
+            // 行尾 `//` 注释（本仓写法的形态是 `…; // 说明`）不属于右值；注释**行**与
+            // `/* … */` 已由 `code_text_by_line` 剥掉（与 `state_gate.rs` 同一约定）。
+            let rhs = trimmed[1..]
+                .split(" //")
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_end_matches(';')
+                .trim()
+                .to_string();
+            let owner = ranges
+                .iter()
+                .find(|(_, s, e)| lineno > *s && lineno <= *e)
+                .map(|(n, _, _)| n.clone())
+                .unwrap_or_default();
+            out.push((lineno, format!("{R155_PREFIX}{fld}"), rhs, owner));
+            from = at;
+            if from >= line.len() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// 守卫行：`txTable.loaded<Field> !== <RHS>`，且 `RHS` 到第一个 `(` 之间恰好是一个标识符
+/// ⇒ `(字段, 函数名)`。找不到（守卫被删掉，或改成与普通值比较）⇒ `None`。
+fn r155_guard_sig(src: &str) -> Option<(String, String)> {
+    for line in code_text_by_line(src) {
+        if !line.contains(R155_PREFIX) || !line.contains("!==") {
+            continue;
+        }
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find(R155_PREFIX) {
+            let at = from + rel + R155_PREFIX.len();
+            let rest = &line[at..];
+            let fld: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if fld.is_empty() {
+                from = at;
+                continue;
+            }
+            let after = rest[fld.len()..].trim_start();
+            if let Some(rhs) = after.strip_prefix("!==") {
+                let rhs = rhs.trim_start();
+                if let Some(paren) = rhs.find('(') {
+                    let name = rhs[..paren].trim();
+                    if !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+                    {
+                        return Some((format!("{R155_PREFIX}{fld}"), name.to_string()));
+                    }
+                }
+            }
+            from = at;
+            if from >= line.len() {
+                break;
+            }
+        }
+    }
+    None
+}
+
+/// JS 字面量右值（`undefined` / `null` / 布尔 / 数字 / 字符串）：**不需要**捕获来源，
+/// 因此 R2/R3 不适用（`resetTxView()` 的三行 `= undefined` 就是这种形状）。
+fn r155_is_literal_rhs(rhs: &str) -> bool {
+    let r = rhs.trim();
+    if r.is_empty() {
+        return false;
+    }
+    if matches!(
+        r,
+        "undefined" | "null" | "true" | "false" | "NaN" | "Infinity"
+    ) {
+        return true;
+    }
+    if r.starts_with('"') || r.starts_with('\'') || r.starts_with('`') {
+        return true;
+    }
+    r.chars()
+        .all(|c| c.is_ascii_digit() || c == '.' || c == '-')
+}
+
+/// 裸标识符右值。
+fn r155_is_bare_identifier(rhs: &str) -> bool {
+    let r = rhs.trim();
+    !r.is_empty()
+        && !r.starts_with(|c: char| c.is_ascii_digit())
+        && r.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// 在函数体内找 `const|let|var <id> =` 的声明行（1 基行号）。
+fn r155_declaration_line(src: &str, func: &str, id: &str) -> Option<usize> {
+    let text = code_text_by_line(src);
+    let (_, s, e) = r155_function_ranges(src)
+        .into_iter()
+        .find(|(n, _, _)| n == func)?;
+    for i in s..e {
+        let line = match text.get(i) {
+            Some(l) => l,
+            None => continue,
+        };
+        for kw in ["const ", "let ", "var "] {
+            if let Some(pos) = line.find(kw) {
+                let after = line[pos + kw.len()..].trim_start();
+                let name: String = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                    .collect();
+                if name == id {
+                    let rest = after[name.len()..].trim_start();
+                    if rest.starts_with('=') && !rest.starts_with("==") {
+                        return Some(i + 1);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 函数体内**第一条含 `await` 的行**（1 基行号）。
+fn r155_first_await_line(src: &str, func: &str) -> Option<usize> {
+    let text = code_text_by_line(src);
+    let (_, s, e) = r155_function_ranges(src)
+        .into_iter()
+        .find(|(n, _, _)| n == func)?;
+    (s..e)
+        .find(|i| text.get(*i).map(|l| l.contains("await")).unwrap_or(false))
+        .map(|i| i + 1)
+}
+
+/// 某个标识符的初始化右值（`const <id> = <RHS>`）。
+fn r155_initializer_rhs(src: &str, func: &str, id: &str) -> Option<String> {
+    let text = code_text_by_line(src);
+    let (_, s, e) = r155_function_ranges(src)
+        .into_iter()
+        .find(|(n, _, _)| n == func)?;
+    for i in s..e {
+        let line = match text.get(i) {
+            Some(l) => l,
+            None => continue,
+        };
+        for kw in ["const ", "let ", "var "] {
+            if let Some(pos) = line.find(kw) {
+                let after = line[pos + kw.len()..].trim_start();
+                let name: String = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                    .collect();
+                if name == id {
+                    let rest = after[name.len()..].trim_start();
+                    if let Some(eq) = rest.strip_prefix('=') {
+                        if !eq.starts_with('=') {
+                            return Some(eq.trim().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+// --------------------------------------------------------------------------------- reading ---
+
+/// 四条规则的判词（clippy::type_complexity 的别名）。
+type R155Verdicts = (bool, bool, bool, bool);
+
+#[derive(Default)]
+struct R155Reading {
+    roster: std::collections::BTreeSet<String>,
+    writes: Vec<(usize, String, String, String)>,
+    sig_field: Option<String>,
+    sig_fn: Option<String>,
+    /// R1：全部收据右值都不是调用。
+    r1: bool,
+    /// R2：裸标识符右值都在同函数、第一个 `await` 之前绑定。
+    r2: bool,
+    /// R3：签名收据捕获的标识符，其初始化式调用守卫比较的那个函数。
+    r3: bool,
+    /// R4：守卫仍在、名册/写入非空（非空集）。
+    r4: bool,
+    /// 触犯者的可读清单（判词用）。
+    r1_bad: Vec<String>,
+    r2_bad: Vec<String>,
+    r3_bad: Vec<String>,
+    r4_bad: Vec<String>,
+}
+
+/// 触犯清单的**内容**（抹掉行号）：跨树比较必须只看「触犯了什么」，不能看「在第几行」——
+/// 一个只多插了两行的变体就会让行号整体位移，那份比较会变成假红（#635）。
+fn r155_offenses(list: &[String]) -> Vec<String> {
+    list.iter()
+        .map(|s| match s.split_once(": ") {
+            Some((_, rest)) => rest.to_string(),
+            None => s.clone(),
+        })
+        .collect()
+}
+
+impl R155Reading {
+    fn verdicts(&self) -> R155Verdicts {
+        (self.r1, self.r2, self.r3, self.r4)
+    }
+    fn report(&self) -> String {
+        format!(
+            "roster={:?} sig=({:?},{:?}) writes={:?} r1bad={:?} r2bad={:?} r3bad={:?} r4bad={:?}",
+            self.roster.iter().collect::<Vec<_>>(),
+            self.sig_field,
+            self.sig_fn,
+            self.writes
+                .iter()
+                .map(|(l, f, r, o)| format!("{l}:{f}={r}@{o}"))
+                .collect::<Vec<_>>(),
+            self.r1_bad,
+            self.r2_bad,
+            self.r3_bad,
+            self.r4_bad,
+        )
+    }
+}
+
+fn r155_read(src: &str) -> R155Reading {
+    let mut rd = R155Reading {
+        roster: r155_receipt_roster(src),
+        writes: r155_receipt_writes(src),
+        ..Default::default()
+    };
+    let (sig_field, sig_fn) = r155_guard_sig(src)
+        .map(|(f, n)| (Some(f), Some(n)))
+        .unwrap_or((None, None));
+    rd.sig_field = sig_field;
+    rd.sig_fn = sig_fn;
+
+    // R1：右值不得是一次调用。
+    for (l, f, rhs, _) in &rd.writes {
+        if rhs.contains('(') {
+            rd.r1_bad.push(format!("line {l}: {f} = {rhs}"));
+        }
+    }
+    rd.r1 = rd.r1_bad.is_empty();
+
+    // R2：裸标识符右值必须在同函数、第一个 await 之前绑定。
+    for (l, f, rhs, owner) in &rd.writes {
+        if r155_is_literal_rhs(rhs) || !r155_is_bare_identifier(rhs) {
+            continue;
+        }
+        let decl = r155_declaration_line(src, owner, rhs.trim());
+        let aw = r155_first_await_line(src, owner);
+        match (decl, aw) {
+            (Some(d), Some(a)) if d < a && d < *l => {}
+            (Some(d), Some(a)) => rd.r2_bad.push(format!(
+                "line {l}: {f} = {rhs} -> declared line {d} but first await line {a}"
+            )),
+            (Some(_), None) => {}
+            (None, _) => rd.r2_bad.push(format!(
+                "line {l}: {f} = {rhs} -> no `const|let|var {rhs}` in `{owner}`"
+            )),
+        }
+    }
+    rd.r2 = rd.r2_bad.is_empty();
+
+    // R3：签名收据捕获的标识符，其初始化式必须调用守卫比较的那个函数。
+    match (&rd.sig_field, &rd.sig_fn) {
+        (Some(field), Some(fname)) => {
+            for (l, f, rhs, owner) in &rd.writes {
+                if f != field || r155_is_literal_rhs(rhs) || !r155_is_bare_identifier(rhs) {
+                    continue;
+                }
+                match r155_initializer_rhs(src, owner, rhs.trim()) {
+                    Some(init) if init.contains(&format!("{fname}(")) => {}
+                    other => rd.r3_bad.push(format!(
+                        "line {l}: {f} = {rhs} -> initializer {other:?} does not call {fname}()"
+                    )),
+                }
+            }
+        }
+        _ => rd
+            .r3_bad
+            .push("no signature receipt derived from a comparison with a call".into()),
+    }
+    rd.r3 = rd.r3_bad.is_empty();
+
+    // R4：非空集 + 守卫仍在。
+    if rd.sig_fn.is_none() {
+        rd.r4_bad
+            .push("the guard no longer compares the signature against a call".into());
+    }
+    if rd.roster.is_empty() {
+        rd.r4_bad.push("no receipt field left in the file".into());
+    }
+    if rd.writes.len() < 2 {
+        rd.r4_bad
+            .push(format!("only {} receipt write(s)", rd.writes.len()));
+    }
+    rd.r4 = rd.r4_bad.is_empty();
+    rd
+}
+
+// --------------------------------------------------------------------- variant constructors ---
+
+/// 未修形状（幂等）：把两半修复体换回原形。
+fn r155_variant_unfixed(src: &str) -> String {
+    let mut s = src.to_string();
+    if s.contains(R155_CAPTURE) {
+        s = s.replace(R155_CAPTURE, "");
+    }
+    if s.contains(R155_STAMP) {
+        s = s.replace(R155_STAMP, R155_STAMP_BASE);
+    }
+    s
+}
+
+/// 修复形状（幂等）：在 `await` 之前捕获签名，并把它原样盖章。
+fn r155_variant_fix(src: &str) -> String {
+    let mut s = r155_variant_unfixed(src);
+    if !s.contains(R155_CAPTURE) {
+        s = s.replace(
+            R155_ANCHOR_AFTER_COLS,
+            &format!("{R155_ANCHOR_AFTER_COLS}{R155_CAPTURE}"),
+        );
+    }
+    if !s.contains(R155_STAMP) {
+        s = s.replace(R155_STAMP_BASE, R155_STAMP);
+    }
+    s
+}
+
+/// 假修①：捕获仍在，但被搬到 `await` **之后**（同形，问的仍是「现在的房间」）。
+fn r155_variant_capture_after_await(fixed: &str) -> String {
+    let moved = format!("{R155_AWAIT_LINE}\n{R155_CAPTURE}");
+    let s = fixed.replace(R155_CAPTURE, "");
+    s.replace(R155_AWAIT_LINE, &moved)
+}
+
+/// 假修②：捕获一个常量（守卫恒不相等 ⇒ 请求风暴）。
+fn r155_variant_const_capture(fixed: &str) -> String {
+    fixed.replace(
+        R155_CAPTURE,
+        "    const reqSig = 42; // R155 mutation: capture a constant\n",
+    )
+}
+
+/// 竞争修法（探针侧 `fix_generation`）：只在落地时丢弃被取代的响应，盖章那行照旧读活状态。
+fn r155_variant_generation_only(fixed: &str) -> String {
+    let mut s = r155_variant_unfixed(fixed);
+    let head = "  async function loadTransactions() {\n    if (!loggedIn()) return;\n";
+    s = s.replace(head, "  let txReqSeq = 0;\n  async function loadTransactions() {\n    if (!loggedIn()) return;\n    const mySeq = ++txReqSeq;\n");
+    s.replace(
+        "        liveLoad(\"transactions\", q).catch(() => { Live.transactions = null; return null; }),\n",
+        "        api.get(q).then((d) => { if (mySeq !== txReqSeq) return null; Live.transactions = d; return d; }).catch(() => { Live.transactions = null; return null; }),\n",
+    )
+}
+
+/// 把盖章那行删掉（收据名册仍在、写入少一条 ⇒ R4）。
+fn r155_variant_drop_guard(fixed: &str) -> String {
+    fixed.replace(
+        "txTable.loadedQuerySig !== txQuerySig()",
+        "txTable.loadedQuerySig !== txTable.loadedPage",
+    )
+}
+
+// ------------------------------------------------------------------------------------ tests ---
+
+/// 提取器落在真函数体上（自证：范围非空、恰好覆盖到 `loadTransactions`/`renderTransactions`）。
+#[test]
+fn the_r155_extractor_lands_on_real_function_bodies() {
+    let ranges = r155_function_ranges(APP_JS);
+    let names: Vec<&str> = ranges.iter().map(|(n, _, _)| n.as_str()).collect();
+    for want in ["loadTransactions", "renderTransactions", "resetTxView"] {
+        assert!(
+            names.contains(&want),
+            "函数范围提取器没找到 `{want}`（找到了 {} 个函数）",
+            ranges.len()
+        );
+    }
+    let lines: Vec<&str> = APP_JS.lines().collect();
+    for (n, s, e) in &ranges {
+        assert!(e > s, "函数 `{n}` 的范围为空：{s}..{e}");
+        // 收尾行必须**恰是** `  }`（提取器的约定，不是「看起来像」）。
+        assert_eq!(
+            lines[*e], "  }",
+            "函数 `{n}` 的收尾行不是 `  }}`：{:?}",
+            lines[*e]
+        );
+    }
+    // 轴上的两个函数（+ 清空收据的那个）都必须是**多行**函数，且体量正常。
+    for want in ["loadTransactions", "renderTransactions", "resetTxView"] {
+        let (n, s, e) = ranges.iter().find(|(n, _, _)| n == want).unwrap();
+        assert!(
+            e - s < 200,
+            "函数 `{n}` 的范围跨了 {} 行 —— 提取器停错了地方",
+            e - s
+        );
+        assert!(*s > 0);
+    }
+    // 名册是派生的（不是手抄）：三枚收据字段都在。
+    let roster = r155_receipt_roster(APP_JS);
+    assert_eq!(roster.len(), 3, "收据名册不是 3 个字段：{roster:?}");
+    assert!(
+        roster.iter().any(|f| f.ends_with("loadedQuerySig")),
+        "名册里没有签名收据：{roster:?}"
+    );
+    // 写入点：两处函数各三条。
+    let writes = r155_receipt_writes(APP_JS);
+    assert!(writes.len() >= 2, "收据写入点少于两条：{writes:?}");
+}
+
+/// 轴：收据由发起它的那次请求写（本测试在**未修树**上红，#314 的「轴腿」）。
+#[test]
+fn the_receipt_is_written_by_the_request_that_issued_it() {
+    let rd = r155_read(APP_JS);
+    assert!(
+        rd.verdicts() == (true, true, true, true),
+        "R155 未修：收据在响应落地后读活状态 —— 守卫会与自己的投影比较、恒成立。\n  {}",
+        rd.report()
+    );
+}
+
+/// 四条规则**各有独立的牙**：合成变异体各只打翻一条（基线＝已知为绿的修复树，#458）。
+#[test]
+fn the_r155_rules_have_teeth() {
+    let fixed = r155_variant_fix(APP_JS);
+    let base = r155_read(&fixed);
+    assert_eq!(
+        base.verdicts(),
+        (true, true, true, true),
+        "自证基线不绿，牙齿测试没有意义：{}",
+        base.report()
+    );
+
+    let unfixed = r155_variant_unfixed(&fixed);
+    let after_await = r155_variant_capture_after_await(&fixed);
+    let const_capture = r155_variant_const_capture(&fixed);
+    let no_guard = r155_variant_drop_guard(&fixed);
+
+    let mutants: [(&str, &str, R155Verdicts); 4] = [
+        (
+            "未修形状（盖章读活状态）",
+            unfixed.as_str(),
+            (false, true, true, true),
+        ),
+        (
+            "捕获搬到 await 之后",
+            after_await.as_str(),
+            (true, false, true, true),
+        ),
+        (
+            "捕获一个常量",
+            const_capture.as_str(),
+            (true, true, false, true),
+        ),
+        (
+            "守卫不再与调用比较",
+            no_guard.as_str(),
+            (true, true, false, false),
+        ),
+    ];
+    for (label, tree, expected) in mutants {
+        let rd = r155_read(tree);
+        assert_eq!(
+            rd.verdicts(),
+            expected,
+            "规则 `{label}` 的牙不成立（期望 {expected:?}）：{}",
+            rd.report()
+        );
+    }
+
+    // 每条变异体都必须**真的改了树**（否则「判词相同」可能只是同一棵树的两张脸）。
+    for (label, tree) in [
+        ("unfixed", &unfixed),
+        ("after_await", &after_await),
+        ("const_capture", &const_capture),
+        ("no_guard", &no_guard),
+    ] {
+        assert_ne!(
+            tree, &fixed,
+            "变异体 `{label}` 与修复树逐字相同 —— 变异没落地"
+        );
+    }
+    // 修复构造器幂等（两腿拿到同一棵树，#612）。
+    assert_eq!(fixed, r155_variant_fix(&fixed), "修复构造器不幂等");
+    assert_eq!(
+        fixed.matches(R155_CAPTURE).count(),
+        1,
+        "修复树里捕获行不是恰好一条"
+    );
+    assert_eq!(
+        fixed.matches(R155_STAMP).count(),
+        1,
+        "修复树里盖章行不是恰好一条"
+    );
+}
+
+/// 规则与**竞争修法**的关系，逐腿声明（#339/#341：期望与实际各印一列）。
+#[test]
+fn the_r155_rules_separate_the_variants() {
+    // 判词只打在**自己拼出来的树**上（#314），每棵树都从同一个起点拼（#612）。
+    let all_green = (true, true, true, true);
+    let tree_fix = r155_variant_fix(APP_JS);
+    let tree_unfixed = r155_variant_unfixed(&tree_fix);
+    let tree_generation = r155_variant_generation_only(&tree_fix);
+
+    assert_ne!(tree_fix, tree_unfixed, "未修形状与修复树逐字相同");
+    assert_ne!(tree_fix, tree_generation, "竞争修法与修复树逐字相同");
+
+    let declared = [
+        (
+            "fix (capture before the await)",
+            tree_fix.as_str(),
+            all_green,
+        ),
+        (
+            "unfixed (the defect)",
+            tree_unfixed.as_str(),
+            (false, true, true, true),
+        ),
+        (
+            // ⚠️ 故意比探针严一档：探针接受它（终态正确、少发一次请求），本门禁拒它 —— 收据的作者
+            // 是同一个主张，一份收据要两个机制分别保证才算真修（不对称可测量，见测试名）。
+            "fix_generation only (probe accepts, gate rejects)",
+            tree_generation.as_str(),
+            (false, true, true, true),
+        ),
+    ];
+    for (name, app, expected) in declared {
+        let rd = r155_read(app);
+        assert_eq!(
+            rd.verdicts(),
+            expected,
+            "变体 `{name}` 的判词与声明不符（声明 {expected:?}）：{}",
+            rd.report()
+        );
+    }
+
+    // 竞争修法那条边界的「因」要可测量：它**不是**修复体，却与未修形状在 R1 上同样红。
+    assert_eq!(
+        r155_offenses(&r155_read(&tree_generation).r1_bad),
+        r155_offenses(&r155_read(&tree_unfixed).r1_bad),
+        "`fix_generation` 与未修形状的 R1 触犯**内容**不同 —— 那条判据变了"
+    );
+    assert_ne!(
+        tree_generation, tree_unfixed,
+        "`fix_generation` 与未修形状逐字相同 —— 竞争修法没落地"
+    );
+}
