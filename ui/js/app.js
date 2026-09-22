@@ -3745,7 +3745,12 @@
           catch (fe) { /* 429 说明已有码，忽略 */ }
           const r = await api.post("/api/auth/reset-password", { email, code, new_password: pw });
           if (r && r.status === "ok") {
-            toast(T("forgot.done"), "ok");
+            // ⚠️ 第二个实参是**分级**，不是判据：它必须来自 toast 的分级词表
+            // （`success` / `error` / `info`，见 `ui/README.md` §交互约定）。
+            // 这里原本写的是 `"ok"` —— 那是上面那个 `if` 的**判据字面量**（API 响应状态），
+            // 被复用成了分级；而 `.toast.ok` 在任何样式表里都不存在，于是这条成功消息
+            // 永远拿不到 `.toast.success` 的成功色（门禁 `every_toast_level_is_a_level_the_sheet_declares`）。
+            toast(T("forgot.done"), "success");
             showAuthForm("login");
             const le = $("#login-email");
             if (le) le.value = email;
