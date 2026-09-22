@@ -76,6 +76,95 @@ fn signed_pts_expr(prefix: &str) -> String {
     )
 }
 
+/// 交易列表可排序的列：**键 → SQL 表达式**白名单（键与前端 `TX_COLUMNS` 的 `key` 同名）。
+///
+/// ⛔ 用户串**永不**进入 `ORDER BY` —— 只能经本表取表达式（与 [`parse_tx_type`] 同款单真源）。
+/// 表达式必须与本列的**显示口径**一致（C2054/C2113 同族：排序是对「用户看到的数字/文字」的
+/// 主张）：`model` / `key` 两行与 [`tx_where`] 的筛选表达式**逐字相同**（同一个显示口径的两个
+/// 投影），`pts` 复用 [`signed_pts_expr`]（收入正、支出负），四列 Token 用与前端 `sortVal`
+/// 同源的原始值。少一列，那一列的表头箭头就只是在描述**它自己那一页**。
+pub const TX_SORT_KEYS: [&str; 11] = [
+    "time", "type", "user", "model", "key", "input", "cached", "output", "tokens", "pts", "status",
+];
+
+/// 排序方向白名单（前端只发这两个；其余 400，与键同一处置）。
+const TX_SORT_DIRS: [&str; 2] = ["asc", "desc"];
+
+/// 排序键 → SQL 表达式；未知键 `None`（由 [`tx_order_by`] 翻成 400）。
+fn tx_sort_expr(key: &str) -> Option<String> {
+    Some(match key {
+        "time" => "t.time".to_string(),
+        "type" => "t.type".to_string(),
+        "user" => "u.name".to_string(),
+        "model" => "COALESCE(NULLIF(t.model, ''), '—')".to_string(),
+        "key" => {
+            // 与 `tx_where` 的 Key 筛选表达式**逐字相同**（同一个显示口径的两个投影，C2113）。
+            "COALESCE(NULLIF(ak.name, ''), NULLIF(CASE WHEN k.note <> '' THEN k.note \
+             WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
+             ELSE k.provider END, ''), '—')"
+                .to_string()
+        }
+        "input" => "(t.tokens - t.cached_tokens - t.output_tokens)".to_string(),
+        "cached" => "t.cached_tokens".to_string(),
+        "output" => "t.output_tokens".to_string(),
+        "tokens" => "t.tokens".to_string(),
+        "pts" => signed_pts_expr("t"),
+        "status" => "t.status".to_string(),
+        _ => return None,
+    })
+}
+
+/// 解析 `sort` / `dir` 查询参数 → `ORDER BY` 片段（列表端点专用；用户串**永不**进入 SQL）。
+///
+/// - 缺省（或空串）⇒ `t.id DESC`：**今日行为不变**（最新在前）。
+/// - `sort` 是逗号分隔的键列表，`dir` 是**逐列对应**的方向列表（缺省全 `asc`）——仓内排序本
+///   就是多列的（Shift 点击叠加），服务端只认第一列会让两支箭头里只有一支被兑现，那正是本轴
+///   要修的病本身。
+/// - 未知键 / 长度不匹配 / 非法方向 ⇒ 400，文案由白名单**派生**；**不得**静默回退默认排序
+///   （回退会让「箭头 ⇔ 顺序」再次脱钩，也就是又回到缺陷本身）。
+/// - 尾部恒加 `, t.id DESC`：分页是 `LIMIT/OFFSET`，非唯一排序会让相邻页的边界不确定
+///   （同一行出现两次、另一行永不出现）。
+fn tx_order_by(sort: Option<&str>, dir: Option<&str>) -> Result<String, ApiErr> {
+    let bad = |msg: String| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": msg })),
+        )
+    };
+    let split = |s: &str| -> Vec<String> {
+        s.split(',')
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let keys = sort.map(split).unwrap_or_default();
+    if keys.is_empty() {
+        return Ok("t.id DESC".to_string());
+    }
+    let dirs = dir.map(split).unwrap_or_default();
+    if !dirs.is_empty() && dirs.len() != keys.len() {
+        return Err(bad(format!(
+            "sort 与 dir 必须逐列对应（sort 有 {} 个键、dir 有 {} 个方向）",
+            keys.len(),
+            dirs.len()
+        )));
+    }
+    let mut parts: Vec<String> = Vec::with_capacity(keys.len() + 1);
+    for (i, key) in keys.iter().enumerate() {
+        let expr = tx_sort_expr(key)
+            .ok_or_else(|| bad(format!("sort 必须为 {} 之一", TX_SORT_KEYS.join(" / "))))?;
+        let d = dirs.get(i).map(String::as_str).unwrap_or("asc");
+        if !TX_SORT_DIRS.contains(&d) {
+            return Err(bad(format!("dir 必须为 {} 之一", TX_SORT_DIRS.join(" / "))));
+        }
+        parts.push(format!("{expr} {}", d.to_uppercase()));
+    }
+    // 分页锚：唯一排序才能让 `LIMIT/OFFSET` 的页边界确定。
+    parts.push("t.id DESC".to_string());
+    Ok(parts.join(", "))
+}
+
 /// 解析 `type` 查询参数：`""` / `"all"` → `None`（不筛），[`TX_FILTER_TYPES`] 成员 → `Some(成员)`，
 /// 其余 → 400（文案由 [`TX_FILTER_TYPES`] **派生**，因此不可能再与集合分叉）。
 /// `/api/transactions` 与 `/api/transactions/trend` 共用此函数。
@@ -162,6 +251,10 @@ pub struct TxQuery {
     pub start: Option<String>,
     /// 结束时间（ISO 8601，UTC，SQLite 可解析），time < end；缺省不限
     pub end: Option<String>,
+    /// 排序键（逗号分隔，取 [`TX_SORT_KEYS`] 成员；缺省按 `t.id DESC`），未知键 400
+    pub sort: Option<String>,
+    /// 排序方向（逗号分隔，与 `sort` 逐列对应；缺省全 `asc`），非 asc/desc 400
+    pub dir: Option<String>,
     /// 列筛选（model/user_name/key_name/status/pts_min/pts_max）
     #[serde(flatten)]
     pub filters: TxColFilters,
@@ -320,6 +413,8 @@ pub async fn transactions(
     // 类型过滤：取值集合与 400 文案均来自 TX_FILTER_TYPES（列筛选 select 含 withdraw，
     // rant 2026-08-25T10:33.26：列筛选后端化后 UI 选项须全被 API 接受）。
     let type_filter = parse_tx_type(&q.r#type)?;
+    // 排序（R164）：与 `type` 同款「先校验、后取锁」—— 非法参数不该去动数据库。
+    let order = tx_order_by(q.sort.as_deref(), q.dir.as_deref())?;
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     // start/end（rant 2026-08-22T10:50:00）：RFC3339/ISO 8601 → 规范化为 UTC "YYYY-MM-DD HH:MM:SS"
     // （与库内 datetime('now') 一致，字符串比较即时间比较）；非法格式 400。
@@ -407,7 +502,7 @@ pub async fn transactions(
          LEFT JOIN users u ON u.id = t.user_id \
          LEFT JOIN api_keys ak ON ak.id = t.api_key_id \
          WHERE {list_where} \
-         ORDER BY t.id DESC LIMIT ?{} OFFSET ?{}",
+         ORDER BY {order} LIMIT ?{} OFFSET ?{}",
         n + 1,
         n + 2
     );
@@ -2269,6 +2364,183 @@ mod tests {
             for t in TX_FILTER_TYPES {
                 assert!(body.contains(t), "400 文案应列出 `{t}`（{uri}）: {body}");
             }
+        }
+    }
+
+    /// R164：列头 ▲/▼ 是**整个数据集**的主张 —— 服务端必须按白名单渲染 `ORDER BY`，而不是只排当前页。
+    ///
+    /// 夹具让 id 序与 pts 序**相反**（插入序 = id 升序，显示的 pts 值递减），并且**混入一条支出**：
+    /// 「点数」列显示的是**有符号值**（收入正 / 支出负，C2054/C2057 —— `signed_pts_expr` 与前端
+    /// `signedPts()` 同口径），所以按显示值升序应是 -2 → +1 → +3。若实现按库内原始 `pts` 排
+    /// （全为正数），顺序会变成 +1 → +2 → +3 ⇒ 首行是本用例里的第二条。两个口径、两个不同的首行：
+    /// 这条断言同时钉「服务端排整集」与「排的是用户看到的那个数」。
+    #[tokio::test]
+    async fn tx_sort_orders_the_whole_set_not_the_page() {
+        let st = test_state("txsort");
+        let key = login(st.clone()).await;
+        // 插入序 = id 升序。显示值：neg=-2（支出）→ one=+1 → three=+3
+        for (model, ty, pts) in [
+            ("neg", "consume", 2.0),
+            ("one", "topup", 1.0),
+            ("three", "topup", 3.0),
+        ] {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status)                  VALUES (1, 'x', NULL, ?1, 0, ?2, ?3, '成功')",
+                rusqlite::params![model, pts, ty],
+            )
+            .unwrap();
+        }
+        let first = |body: &str| -> String {
+            let v: serde_json::Value = serde_json::from_str(body).unwrap();
+            v["items"][0]["model"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        // 默认（无排序参数）：今日行为不变 —— id 降序
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=all&page=1&page_size=10",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        assert_eq!(
+            first(&body),
+            "three",
+            "无排序参数时必须仍是 id 降序: {body}"
+        );
+        // 升序：首行必须是**显示值最小**的那一行，且它在第 1 页就出现（客户端排序只会重排这一页）
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=all&page=1&page_size=2&sort=pts&dir=asc",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        assert_eq!(
+            first(&body),
+            "neg",
+            "pts 升序的首行应是显示值最小的 -2（不是库内原始 pts 最小的 +1）: {body}"
+        );
+        // 第二页接着同一顺序（跨页顺序一致 = 服务端排的是整个集合）
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=all&page=2&page_size=2&sort=pts&dir=asc",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        assert_eq!(
+            first(&body),
+            "three",
+            "第二页应是显示值最大的 +3（跨页顺序一致）: {body}"
+        );
+        // 降序
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=all&page=1&page_size=2&sort=pts&dir=desc",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        assert_eq!(
+            first(&body),
+            "three",
+            "pts 降序的首行应是显示值最大的 +3: {body}"
+        );
+    }
+
+    /// R164 D5：并列时必须由 `t.id DESC` 收尾 —— 分页是 `LIMIT/OFFSET`，非唯一排序会让相邻页的
+    /// 边界不确定（同一行出现两次、另一行永不出现）。
+    #[tokio::test]
+    async fn tx_sort_is_stable_across_pages_when_keys_tie() {
+        let st = test_state("txstable");
+        let key = login(st.clone()).await;
+        for model in ["a", "b", "c", "d"] {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, 'x', NULL, ?1, 0, 1.0, 'consume', '成功')",
+                rusqlite::params![model],
+            )
+            .unwrap();
+        }
+        let models = |body: &str| -> Vec<String> {
+            let v: serde_json::Value = serde_json::from_str(body).unwrap();
+            v["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["model"].as_str().unwrap_or_default().to_string())
+                .collect()
+        };
+        // 四行 pts 全等 ⇒ 顺序只能来自 `t.id DESC`（插入序的逆序）
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=all&page=1&page_size=2&sort=pts&dir=asc",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let p1 = models(&body);
+        let (s, body) = get(
+            st.clone(),
+            "/api/transactions?type=all&page=2&page_size=2&sort=pts&dir=asc",
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let p2 = models(&body);
+        assert_eq!(
+            p1,
+            vec!["d".to_string(), "c".to_string()],
+            "并列时应按 id 降序: {p1:?}"
+        );
+        assert_eq!(
+            p2,
+            vec!["b".to_string(), "a".to_string()],
+            "并列时应按 id 降序: {p2:?}"
+        );
+        // 两页无重叠、并集就是全集（分页锚的直接后果）
+        let mut all = p1.clone();
+        all.extend(p2.clone());
+        all.sort();
+        assert_eq!(
+            all,
+            vec!["a", "b", "c", "d"],
+            "两页必须无重叠地覆盖全集: {all:?}"
+        );
+    }
+
+    /// R164 D3/D6：未知排序键、非法方向、`sort`/`dir` 长度不匹配一律 400，且**不得**静默回退
+    /// 默认排序（回退会让「箭头 ⇔ 顺序」再次脱钩 —— 那正是本轴要修的缺陷本身）。
+    #[tokio::test]
+    async fn tx_sort_rejects_anything_outside_the_whitelist() {
+        let st = test_state("txsortbad");
+        let key = login(st.clone()).await;
+        for uri in [
+            "/api/transactions?type=all&sort=nope",
+            "/api/transactions?type=all&sort=pts&dir=sideways",
+            "/api/transactions?type=all&sort=pts&dir=asc,desc",
+            "/api/transactions?type=all&sort=pts,pts&dir=asc",
+        ] {
+            let (s, body) = get(st.clone(), uri, &key).await;
+            assert_eq!(
+                s,
+                axum::http::StatusCode::BAD_REQUEST,
+                "`{uri}` 应 400: {body}"
+            );
+        }
+        // 阳性对照：白名单内的键与方向都 200（否则上面的 400 可能只是「排序参数一律被拒」）
+        for uri in [
+            "/api/transactions?type=all&sort=pts&dir=asc",
+            "/api/transactions?type=all&sort=pts,status&dir=desc,asc",
+            "/api/transactions?type=all&sort=time",
+        ] {
+            let (s, body) = get(st.clone(), uri, &key).await;
+            assert_eq!(s, axum::http::StatusCode::OK, "`{uri}` 应 200: {body}");
         }
     }
 }

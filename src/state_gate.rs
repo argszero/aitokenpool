@@ -3692,9 +3692,843 @@ fn pass_min_read(mod_rs: &str, app_js: &str, i18n: &str, proto: &str) -> PassMin
     }
 }
 
+// ============================================================================================
+// R164 gate fragment -- splice into `src/state_gate.rs`
+//
+//   PART A (`r164_*` helpers)  -> insert BEFORE the line `mod tests {`
+//   PART B (the tests)         -> insert INSIDE `mod tests {`, right after `    use super::*;`
+//
+// Splice/split is done by `r164_compile_gate.py`, which also COMPILES and RUNS this fragment
+// against an explicitly materialized pre-fix tree (`git archive <HEAD>`) and against the landed
+// tree -- the discrimination proof travels with the fragment.
+//
+// WHAT IT PINS (axis: the transactions table's column-header ▲/▼ is a claim about the WHOLE
+// dataset; server paging means the ordering has to travel with the request):
+//
+//   The arrow is ONE claim with THREE carriers. `txTable.sort` is the only sort state, and it
+//   must project into all three; any carrier that lags behind makes the arrow describe a口径
+//   nobody executes:
+//     R1  the LIST request carries it  (a projector that emits `&sort=`/`&dir=`, called from the
+//         `/api/transactions?` line and NOT from the trend line -- row order means nothing for
+//         time buckets)
+//     R2  the payload signature covers it (`txQuerySig`, which the reload guard compares: without
+//         it a header click changes the state, the signature does not, nothing refetches, and the
+//         arrow moves over a list that does not -- worse than the defect being fixed)
+//     R3  the local sort steps aside for a table that declares server sorting (the declared flag
+//         travels with the call site; the condition is read WHOLE -- a paren character class
+//         cannot see `!(serverPaging && serverSort)`, pitfall #460)
+//     R4  the server renders `ORDER BY` from a whitelist that IS the column roster, and the user
+//         string never reaches SQL:
+//           a. whitelist == the column keys derived from `TX_COLUMNS` (both directions)
+//           b. the match arms of `tx_sort_expr` == the whitelist (both directions)
+//           c. the declared array length == the number of literals (self-consistency)
+//           d. `ORDER BY {ident}` is a placeholder whose `ident` is bound by the whitelist-guarded
+//              builder, and every `q.sort` / `q.dir` mention lives in that binding
+//     R5  CONTROL (green on the base tree too): the FILTER half of the same road is real --
+//         `serverFilter: true` on the filterable columns, the request calls `txFilterParams()`,
+//         `TxColFilters` is flattened into the query, and the reload guard compares the
+//         signature.  A scanner whose positive reach is empty proves nothing.
+//
+// SCOPE, the honest half (#341): the rules are LEXICAL. They prove the SHAPE (three carriers
+// agree, the whitelist IS the roster). They do NOT prove that the rows on screen really are
+// globally ordered -- that belongs to the jsdom probe (`r164_probe.js`, legs S1-S7, re-run on the
+// landed bytes), and the ORDER BY semantics themselves to `src/routes/wallet.rs`'s behaviour
+// tests. Shape belongs to the gate; facts belong to the instruments.
+// ============================================================================================
+
+// ============================= R164 PART A: module-level helpers ==============================
+
+/// 列表端点的查询参数构造器所在的文件（本门禁的另一半：白名单与 `ORDER BY` 的渲染者）。
+const R164_WALLET: &str = include_str!("routes/wallet.rs");
+
+/// 排序状态的**唯一真源**（三处载体都必须读它）。
+const R164_SORT_STATE: &str = "txTable.sort";
+
+/// 列名册的**阳性对照**（#451）：`TX_COLUMNS` 一漂移就响亮地失败，而不是让「白名单 == 名册」
+/// 这条规则在空集上静默恒真（坑 68 同族）。11 键与 `src/routes/wallet.rs::TX_SORT_KEYS` 同源。
+const R164_COLUMNS: [&str; 11] = [
+    "time", "type", "user", "model", "key", "input", "cached", "output", "tokens", "pts", "status",
+];
+
+/// 一次扫描同时产出五条规则的判决**与它们的证据**（判词与取值两列 —— #339/#341：一个
+/// 期望藏在脚注里的仪器会报出一个自洽的谎）。
+struct R164Reading {
+    columns: Vec<String>,
+    whitelist: Vec<String>,
+    declared_len: usize,
+    arms: Vec<String>,
+    projectors: Vec<String>,
+    guard_flag: Option<String>,
+    placeholder: Option<String>,
+    binder: Option<String>,
+    param_lines: Vec<String>,
+    server_filters: usize,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+    r4a: bool,
+    r4b: bool,
+    r4c: bool,
+    r4d: bool,
+    r5: bool,
+}
+
+impl R164Reading {
+    /// 三处载体（R1–R4）是否全都就位 —— 轴那一半。
+    fn carriers_agree(&self) -> bool {
+        self.r1 && self.r2 && self.r3 && self.r4a && self.r4b && self.r4c && self.r4d
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} r4a={} r4b={} r4c={} r4d={} r5={} | columns={:?} whitelist={:?} \
+             arms={:?} projectors={:?} guard_flag={:?} placeholder={:?} binder={:?} \
+             param_lines={:?} server_filters={}",
+            self.r1,
+            self.r2,
+            self.r3,
+            self.r4a,
+            self.r4b,
+            self.r4c,
+            self.r4d,
+            self.r5,
+            self.columns,
+            self.whitelist,
+            self.arms,
+            self.projectors,
+            self.guard_flag,
+            self.placeholder,
+            self.binder,
+            self.param_lines,
+            self.server_filters,
+        )
+    }
+}
+
+/// 逐行剥离注释后的整段代码（`code_text_by_line` 会 trim 每行；行数不变）。
+///
+/// 一切**标识符**判定都必须在这上面做：本轮的解释性注释里正写着 `serverSort` 与
+/// `txTable.sort`（坑 #296 的镜像 —— 注释是自己的修法最容易踩的假阳性）。
+fn r164_code(src: &str) -> String {
+    code_text_by_line(src).join("\n")
+}
+
+/// `needle` 之后**第一个** `{` 起、按花括号配平的整段（含两端花括号）。
+///
+/// 不用 [`decl_spans`]：它只认 JS 的 `function NAME(` / `const NAME = (`，而本轴的另外两半是
+/// Rust（`fn tx_sort_expr` / `fn tx_order_by`）；且它的收尾锚在**声明行**上，签名换行的 Rust
+/// 函数会被截断。花括号配平对两种语言同样成立（本文件不解析字符串里的括号）。
+fn r164_body_after(src: &str, needle: &str) -> Option<String> {
+    let at = src.find(needle)?;
+    let open = src[at..].find('{').map(|i| at + i)?;
+    let mut depth = 0i32;
+    for (i, c) in src[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(src[open..open + i + 1].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `const TX_COLUMNS = [` 起、按**方括号**配平的数组字面量（含两端方括号）。
+fn r164_columns_region(app: &str) -> Option<String> {
+    let at = app.find("const TX_COLUMNS = [")?;
+    let open = app[at..].find('[').map(|i| at + i)?;
+    let mut depth = 0i32;
+    for (i, c) in app[open..].char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(app[open..open + i + 1].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 标识符字符（`[A-Za-z0-9_$]`）—— 左界判定与 `mentions_identifier` 同一把尺子。
+fn r164_is_word(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '$'
+}
+
+/// `body` 里所有 `field: "…"` 的字符串值（**标识符左界**：`sortVal:` / `key_name` 不是它）。
+fn r164_keyed_literals(body: &str, field: &str) -> Vec<String> {
+    let needle = format!("{field}: \"");
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = body[from..].find(&needle) {
+        let at = from + rel;
+        let before_ok = at == 0 || !r164_is_word(body.as_bytes()[at - 1] as char);
+        let v_at = at + needle.len();
+        let Some(close) = body[v_at..].find('"').map(|i| v_at + i) else {
+            break;
+        };
+        if before_ok {
+            out.push(body[v_at..close].to_string());
+        }
+        from = close + 1;
+        if from >= body.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// `pub const TX_SORT_KEYS: [&str; N] = [ … ];` ⇒ `(N, 字面量)`。
+fn r164_whitelist(wallet: &str) -> Option<(usize, Vec<String>)> {
+    let head = "pub const TX_SORT_KEYS: [&str; ";
+    let at = wallet.find(head)? + head.len();
+    let len_end = at + wallet[at..].find(']')?;
+    let declared: usize = wallet[at..len_end].trim().parse().ok()?;
+    let arr = wallet[len_end..].find("= [").map(|i| len_end + i)?;
+    let body = r164_body_between(wallet, arr, '[', ']')?;
+    Some((declared, r164_string_literals(&body)))
+}
+
+/// 从 `at` 处的开括号起、按 `open`/`close` 配平的区间文本（含两端）。
+fn r164_body_between(src: &str, at: usize, open: char, close: char) -> Option<String> {
+    let mut depth = 0i32;
+    for (i, c) in src[at..].char_indices() {
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(src[at..at + i + 1].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 文本里所有 `"…"` 字面量（本轴的两个表达式串里没有转义引号）。
+fn r164_string_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find('"') {
+        let v_at = from + rel + 1;
+        let Some(close) = text[v_at..].find('"').map(|i| v_at + i) else {
+            break;
+        };
+        out.push(text[v_at..close].to_string());
+        from = close + 1;
+        if from >= text.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// `fn tx_sort_expr` 的**匹配臂左值**（`"time" => …` 里的 `time`）。
+///
+/// 判据是「字符串字面量**紧跟** `=>`」：臂体里的表达式串（`"COALESCE(NULLIF(…))"`）后面是
+/// `.to_string()`，不会被算进来。
+fn r164_arm_keys(wallet: &str) -> Vec<String> {
+    let Some(body) = r164_body_after(wallet, "fn tx_sort_expr(") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = body[from..].find('"') {
+        let v_at = from + rel + 1;
+        let Some(close) = body[v_at..].find('"').map(|i| v_at + i) else {
+            break;
+        };
+        let rest = body[close + 1..].trim_start();
+        if rest.starts_with("=>") {
+            out.push(body[v_at..close].to_string());
+        }
+        from = close + 1;
+        if from >= body.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// 「排序投影器」：体内**同时**发出 `&sort=` 与 `&dir=` 的函数名（调用方要求恰好一个）。
+fn r164_projectors(app: &str) -> Vec<String> {
+    let spans = decl_spans(app);
+    let mut out = Vec::new();
+    for (name, s, e) in &spans {
+        let body = &app[*s..*e];
+        if body.contains("\"&sort=\"") && body.contains("\"&dir=\"") {
+            out.push(name.clone());
+        }
+    }
+    out
+}
+
+/// 含 `needle` 的**代码行**（注释已剥离、逐行 trim）。
+fn r164_lines_with(src: &str, needle: &str) -> Vec<String> {
+    src.lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| l.contains(needle))
+        .collect()
+}
+
+/// `callee({ … })` 调用的实参对象字面量（花括号配平）。
+fn r164_call_region(app: &str, callee: &str) -> Option<String> {
+    let at = app.find(&format!("{callee}({{"))?;
+    let open = at + callee.len() + 1;
+    r164_body_between(app, open, '{', '}')
+}
+
+/// 对象字面量里所有 `field: true,` 的字段名（调用点**声明**了哪些开关）。
+fn r164_true_flags(region: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = region[from..].find(": true,") {
+        let colon = from + rel;
+        let name = r164_ident_before(region, colon);
+        if !name.is_empty() {
+            out.push(name);
+        }
+        from = colon + ": true,".len();
+        if from >= region.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// `at` 之前紧邻的标识符（左界只吃**一个**标识符的字符，遇非标识符字符即停）。
+fn r164_ident_before(text: &str, at: usize) -> String {
+    let mut start = at;
+    for (i, c) in text[..at].char_indices().rev() {
+        if r164_is_word(c) {
+            start = i;
+        } else {
+            break;
+        }
+    }
+    text[start..at].to_string()
+}
+
+/// 含 `needle` 的那个 `if (` 的**完整条件文本**（从 `if (` 扫到配平的 `)`）。
+///
+/// 判据必须是「整条条件」，不是括号字符类的切片：本轴的修复条件**自带括号**
+/// （`!(serverPaging && serverSort)`），用 `[^)]*` 取条件的规则会永远取不到它（坑 #460）。
+fn r164_condition_around(body: &str, needle: &str) -> Option<String> {
+    let hit = body.find(needle)?;
+    let start = body[..hit].rfind("if (")?;
+    let open = start + 3;
+    let mut depth = 0i32;
+    for (i, c) in body[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(body[open..open + i + 1].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `ORDER BY {ident}` 里的 `ident`（字面量 `ORDER BY t.id DESC` ⇒ `None`，那正是旧实现）。
+fn r164_order_placeholder(wallet: &str) -> Option<String> {
+    let at = wallet.find("ORDER BY {")? + "ORDER BY {".len();
+    let close = wallet[at..].find('}').map(|i| at + i)?;
+    Some(wallet[at..close].to_string())
+}
+
+/// `let IDENT = CALLEE(` 的 `(IDENT, CALLEE)` —— 只认**含 `q.sort`** 的那一行。
+fn r164_binder(wallet: &str) -> Option<(String, String)> {
+    for line in wallet.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("let ") else {
+            continue;
+        };
+        if !rest.contains("q.sort") {
+            continue;
+        }
+        let Some((lhs, rhs)) = rest.split_once('=') else {
+            continue;
+        };
+        let Some((callee, _)) = rhs.trim().split_once('(') else {
+            continue;
+        };
+        let ident = lhs.trim();
+        let callee = callee.trim();
+        if ident.is_empty() || callee.is_empty() {
+            continue;
+        }
+        return Some((ident.to_string(), callee.to_string()));
+    }
+    None
+}
+
+/// 排序后的副本（集合比较：`TX_COLUMNS` 的键序与白名单的声明序不承诺一致）。
+fn r164_sorted(v: &[String]) -> Vec<String> {
+    let mut out = v.to_vec();
+    out.sort();
+    out
+}
+
+/// 一次读完五条规则（判词 + 证据）。
+fn r164_read(app: &str, wallet: &str) -> R164Reading {
+    let code = r164_code(app);
+    let columns = r164_columns_region(&code)
+        .map(|r| r164_keyed_literals(&r, "key"))
+        .unwrap_or_default();
+    let (declared_len, whitelist) = r164_whitelist(wallet).unwrap_or((0, Vec::new()));
+    let arms = r164_arm_keys(wallet);
+    let projectors = r164_projectors(&code);
+    let projector = match projectors.len() {
+        1 => Some(projectors[0].clone()),
+        _ => None,
+    };
+    // ⚠️ 两行请求行必须**在 `loadTransactions` 体内**取：整文件里 `/api/transactions?` 还有
+    // 仪表盘的 `page_size=1` 那一处（更早、且不含排序参数）—— 取「第一处」会把列表请求认成仪表盘。
+    let load = r164_body_after(&code, "function loadTransactions(").unwrap_or_default();
+    let list_req = r164_lines_with(&load, "\"/api/transactions?")
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let trend_req = r164_lines_with(&load, "\"/api/transactions/trend")
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let sig = r164_body_after(&code, "function txQuerySig(").unwrap_or_default();
+    let guard = r164_body_after(&code, "function buildDataTable(").unwrap_or_default();
+    let cond = r164_condition_around(&guard, "state.sort.length").unwrap_or_default();
+    let flags = r164_call_region(&code, "buildDataTable")
+        .map(|r| r164_true_flags(&r))
+        .unwrap_or_default();
+    let guard_flag = flags
+        .iter()
+        .find(|f| mentions_identifier(&cond, f))
+        .cloned();
+    let placeholder = r164_order_placeholder(wallet);
+    let binder = r164_binder(wallet);
+    let param_lines = r164_lines_with(wallet, "q.sort");
+    let mut param_lines2 = param_lines.clone();
+    param_lines2.extend(r164_lines_with(wallet, "q.dir"));
+    param_lines2.sort();
+    param_lines2.dedup();
+    let server_filters = r164_columns_region(&code)
+        .map(|r| r164_lines_with(&r, "serverFilter: true").len())
+        .unwrap_or(0);
+    let reload = r164_body_after(&code, "function renderTransactions(").unwrap_or_default();
+
+    // R1：投影器存在且**唯一**、它读排序状态、列表请求调它、**趋势不调**它。
+    let projector_state = projector
+        .as_ref()
+        .and_then(|p| r164_body_after(&code, &format!("function {p}(")))
+        .map(|b| mentions_identifier(&b, R164_SORT_STATE))
+        .unwrap_or(false);
+    let call = projector.as_ref().map(|p| format!("{p}()"));
+    let r1 = projector_state
+        && call
+            .as_ref()
+            .map(|c| list_req.contains(c.as_str()))
+            .unwrap_or(false)
+        && call
+            .as_ref()
+            .map(|c| !trend_req.contains(c.as_str()))
+            .unwrap_or(false);
+
+    // R2：载荷签名覆盖排序状态（少了它，点列头只改状态、签名不变 ⇒ 守卫不重拉）。
+    let r2 = mentions_identifier(&sig, R164_SORT_STATE);
+
+    // R3：本地排序被**调用点声明的**开关豁免（条件读整条）。
+    let r3 = guard_flag.is_some() && cond.contains("state.sort.length");
+
+    // R4a/b/c/d。
+    let r4a = !columns.is_empty() && r164_sorted(&columns) == r164_sorted(&whitelist);
+    let r4b = !arms.is_empty() && r164_sorted(&arms) == r164_sorted(&whitelist);
+    let r4c = declared_len == whitelist.len() && !whitelist.is_empty();
+    let builder_guarded = binder
+        .as_ref()
+        .and_then(|(_, callee)| r164_body_after(wallet, &format!("fn {callee}(")))
+        .map(|b| b.contains("tx_sort_expr("))
+        .unwrap_or(false);
+    let r4d = placeholder.is_some()
+        && binder
+            .as_ref()
+            .map(|(id, _)| *id == placeholder.clone().unwrap_or_default())
+            .unwrap_or(false)
+        && builder_guarded
+        && param_lines2.len() == 1;
+
+    // R5（对照）：同一条路的前一半（列筛选后端化）必须**仍然**是真的。
+    // ⚠️「请求带列筛选」的证据是**构造器被调用**（`const cols = txFilterParams()` 在请求行上一行），
+    // 不是「请求行里出现这六个字」—— 判据必须落在调用上，不能落在某一行的排版上。
+    let r5 = server_filters >= 6
+        && load.contains("txFilterParams()")
+        && list_req.contains("cols")
+        && wallet.contains("#[serde(flatten)]")
+        && wallet.contains("TxColFilters")
+        && reload.contains("txQuerySig()");
+
+    R164Reading {
+        columns,
+        whitelist,
+        declared_len,
+        arms,
+        projectors,
+        guard_flag,
+        placeholder,
+        binder: binder.map(|(id, callee)| format!("{id} = {callee}")),
+        param_lines: param_lines2,
+        server_filters,
+        r1,
+        r2,
+        r3,
+        r4a,
+        r4b,
+        r4c,
+        r4d,
+        r5,
+    }
+}
+
+// ── 合成夹具：牙齿测试与鉴别力测试都跑在同一份**自足**的迷你源码上（#612：为树 A 写的
+// 声明表对树 B 无效 —— 所以变体树不从真树派生，而是自带一份）。真树由轴测试与
+// `r164_compile_gate.py` 的物化基线腿覆盖。
+//
+// 迷你源码的形态与真树**同构**（同样的锚点：`const TX_COLUMNS = [`、`function txSortParams(`、
+// `"/api/transactions?`、`let order = tx_order_by(q.sort…`、`ORDER BY {order}`），
+// 只是把 11 列压到 6 列；`r164_compile_gate.py` 另有一条腿断言修复体的关键片段确实是真树的子串。
+
+const R164_MINI_APP: &str = concat!(
+    "const TX_COLUMNS = [\n",
+    "  { key: \"a\", title: () => T(\"a\"), serverFilter: true },\n",
+    "  { key: \"b\", title: () => T(\"b\"), serverFilter: true },\n",
+    "  { key: \"c\", title: () => T(\"c\"), serverFilter: true },\n",
+    "  { key: \"d\", title: () => T(\"d\"), serverFilter: true },\n",
+    "  { key: \"e\", title: () => T(\"e\"), serverFilter: true },\n",
+    "  { key: \"f\", title: () => T(\"f\"), serverFilter: true }\n",
+    "];\n",
+    "const txTable = { sort: [], filters: {} };\n",
+    "function txFilterParams() {\n  return \"\";\n}\n",
+    "function txSortParams() {\n",
+    "  if (!txTable.sort || !txTable.sort.length) return \"\";\n",
+    "  return \"&sort=\" + txTable.sort.map((s) => s.key) + \"&dir=\" + txTable.sort.map((s) => s.dir);\n",
+    "}\n",
+    "function txQuerySig() {\n",
+    "  const srt = (txTable.sort || []).map((s) => s.key).join(\",\");\n",
+    "  return \"x|\" + srt;\n",
+    "}\n",
+    "function renderTransactions() {\n",
+    "  if (txTable.loadedQuerySig !== txQuerySig()) reloadTransactions();\n",
+    "}\n",
+    "function loadTransactions() {\n",
+    "  const cols = txFilterParams();\n",
+    "  const q = \"/api/transactions?type=\" + type + (cols ? \"&\" + cols : \"\") + txSortParams();\n",
+    "  const tq = \"/api/transactions/trend?type=\" + type + (cols ? \"&\" + cols : \"\");\n",
+    "  return [q, tq];\n",
+    "}\n",
+    "function buildDataTable(cfg) {\n",
+    "  const { container, columns, rows, state, onState, serverPaging, serverSort } = cfg;\n",
+    "  if (state.sort.length && !(serverPaging && serverSort)) {\n",
+    "    data = data.slice().sort(cmp);\n",
+    "  }\n",
+    "}\n",
+    "function viewTx() {\n",
+    "  buildDataTable({\n",
+    "    container: $(\"#tx-table\"),\n",
+    "    columns: TX_COLUMNS,\n",
+    "    rows: list,\n",
+    "    state: txTable,\n",
+    "    onState: renderTransactions,\n",
+    "    serverPaging: { total: 1 },\n",
+    "    serverSort: true,\n",
+    "  });\n",
+    "}\n",
+);
+
+const R164_MINI_WALLET: &str = concat!(
+    "pub const TX_SORT_KEYS: [&str; 6] = [\"a\", \"b\", \"c\", \"d\", \"e\", \"f\"];\n",
+    "\n",
+    "fn tx_sort_expr(key: &str) -> Option<String> {\n",
+    "    Some(match key {\n",
+    "        \"a\" => \"t.a\".to_string(),\n",
+    "        \"b\" => \"t.b\".to_string(),\n",
+    "        \"c\" => \"t.c\".to_string(),\n",
+    "        \"d\" => \"t.d\".to_string(),\n",
+    "        \"e\" => \"t.e\".to_string(),\n",
+    "        \"f\" => \"t.f\".to_string(),\n",
+    "        _ => return None,\n",
+    "    })\n",
+    "}\n",
+    "\n",
+    "fn tx_order_by(sort: Option<&str>, dir: Option<&str>) -> Result<String, ApiErr> {\n",
+    "    let keys = split_keys(sort);\n",
+    "    if keys.is_empty() {\n",
+    "        return Ok(\"t.id DESC\".to_string());\n",
+    "    }\n",
+    "    let mut parts: Vec<String> = Vec::new();\n",
+    "    for key in keys.iter() {\n",
+    "        let expr = tx_sort_expr(key).ok_or_else(bad)?;\n",
+    "        parts.push(format!(\"{expr} ASC\"));\n",
+    "    }\n",
+    "    parts.push(\"t.id DESC\".to_string());\n",
+    "    Ok(parts.join(\", \"))\n",
+    "}\n",
+    "\n",
+    "#[derive(Debug, Deserialize)]\n",
+    "pub struct TxQuery {\n",
+    "    pub sort: Option<String>,\n",
+    "    pub dir: Option<String>,\n",
+    "    #[serde(flatten)]\n",
+    "    pub filters: TxColFilters,\n",
+    "}\n",
+    "\n",
+    "pub async fn transactions(q: TxQuery) -> Result<String, ApiErr> {\n",
+    "    let order = tx_order_by(q.sort.as_deref(), q.dir.as_deref())?;\n",
+    "    let sql = format!(\"SELECT 1 WHERE {where_sql} ORDER BY {order} LIMIT ?{} OFFSET ?{}\", n + 1, n + 2);\n",
+    "    Ok(sql)\n",
+    "}\n",
+);
+
+/// 迷你**修复体**（阳性基线）：五条规则必须全绿 —— 否则牙齿测试无从谈起。
+fn r164_mini_fixed() -> String {
+    R164_MINI_APP.to_string()
+}
+
+fn r164_mini_fixed_wallet() -> String {
+    R164_MINI_WALLET.to_string()
+}
+
+/// 把 `needle` 的**第一次**出现换成 `repl`；锚点不在即 panic（变体无从构造时不许静默失去射程）。
+fn r164_swap(src: &str, needle: &str, repl: &str) -> String {
+    assert!(
+        src.contains(needle),
+        "变体锚点 {needle:?} 不在给定的迷你源码里"
+    );
+    src.replacen(needle, repl, 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R164 轴：三处载体（请求 / 载荷签名 / 本地排序守卫）＋ 服务端白名单必须**同源**，
+    /// 且同一条路的前一半（列筛选后端化）必须仍然是真的。
+    #[test]
+    fn the_sort_indicator_and_the_order_by_share_one_source() {
+        let r = r164_read(APP_JS, R164_WALLET);
+        println!("R164 real tree: {}", r.report());
+        assert!(
+            r.r1,
+            "列表请求没有携带排序状态（或趋势请求也带了）：projectors={:?}",
+            r.projectors
+        );
+        assert!(
+            r.r2,
+            "载荷签名没覆盖排序状态 —— 点列头只改状态、守卫不重拉，箭头动了而列表不动"
+        );
+        assert!(
+            r.r3,
+            "本地排序没有为「声明了服务端排序的表」让路：guard_flag={:?}",
+            r.guard_flag
+        );
+        assert!(
+            r.r4a,
+            "白名单与列名册不是同一份名单：columns={:?} whitelist={:?}",
+            r.columns, r.whitelist
+        );
+        assert!(
+            r.r4b,
+            "`tx_sort_expr` 的臂与白名单不同源：arms={:?} whitelist={:?}",
+            r.arms, r.whitelist
+        );
+        assert!(
+            r.r4c,
+            "`TX_SORT_KEYS` 声明的长度（{}）与字面量个数（{}）不一致",
+            r.declared_len,
+            r.whitelist.len()
+        );
+        assert!(
+            r.r4d,
+            "`ORDER BY` 不是由白名单守卫的构造器渲染：placeholder={:?} binder={:?} param_lines={:?}",
+            r.placeholder, r.binder, r.param_lines
+        );
+        assert!(
+            r.r5,
+            "阳性对照失效：列筛选那一半（serverFilter / txFilterParams / TxColFilters / 签名守卫）不见了 \
+             —— 扫描器的正射程为空时，四条规则都在说没有"
+        );
+    }
+
+    /// R164 阳性对照：列名册与白名单都必须是**真的**（声明的地面真值 —— 漂移时响亮失败，
+    /// 而不是让「白名单 == 名册」在空集上静默恒真）。
+    #[test]
+    fn the_r164_roster_is_real() {
+        let app = r164_code(APP_JS);
+        let cols = r164_columns_region(&app).expect("`TX_COLUMNS = [` 必须还在（名册无从派生）");
+        let keys = r164_keyed_literals(&cols, "key");
+        let want: Vec<String> = R164_COLUMNS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            keys, want,
+            "`TX_COLUMNS` 的可排序列漂移了 —— 白名单与名册必须一起改（不是只改一边）"
+        );
+        let (declared, list) = r164_whitelist(R164_WALLET).expect("`TX_SORT_KEYS` 必须还在");
+        assert_eq!(declared, list.len(), "声明的长度必须等于字面量个数");
+        assert_eq!(
+            r164_sorted(&list),
+            r164_sorted(&keys),
+            "白名单必须与列名册逐键相同"
+        );
+        let arms = r164_arm_keys(R164_WALLET);
+        assert_eq!(
+            r164_sorted(&arms),
+            r164_sorted(&keys),
+            "匹配臂必须覆盖同一份白名单"
+        );
+    }
+
+    /// R164 牙齿：每一条规则都有一副**只翻它自己**的牙（合成迷你源码，自足于真树）。
+    #[test]
+    fn the_r164_rules_have_teeth() {
+        // (0) 阳性基线：迷你修复体必须五条全绿，否则下面的「变红」什么也证明不了。
+        let base = r164_read(&r164_mini_fixed(), &r164_mini_fixed_wallet());
+        assert!(
+            base.carriers_agree() && base.r5,
+            "迷你修复体本身就不绿：{}",
+            base.report()
+        );
+
+        // (1) R1 —— 列表请求不再带排序参数。
+        let app = r164_swap(&r164_mini_fixed(), " + txSortParams();", ";");
+        let r = r164_read(&app, &r164_mini_fixed_wallet());
+        assert!(
+            !r.r1 && !r.carriers_agree() && r.r2 && r.r3 && r.r4d && r.r5,
+            "R1 的牙不独立：{}",
+            r.report()
+        );
+
+        // (2) R1 —— 反向：趋势请求也带上了排序参数（行序对时间桶没有语义）。
+        let app = r164_swap(
+            &r164_mini_fixed(),
+            "(cols ? \"&\" + cols : \"\");\n  return [q, tq];",
+            "(cols ? \"&\" + cols : \"\") + txSortParams();\n  return [q, tq];",
+        );
+        let r = r164_read(&app, &r164_mini_fixed_wallet());
+        assert!(
+            !r.r1 && r.r2 && r.r3 && r.r4a && r.r4d && r.r5,
+            "R1 没挡住「趋势也带排序」：{}",
+            r.report()
+        );
+
+        // (3) R2 —— 载荷签名丢掉排序状态。
+        let app = r164_swap(
+            &r164_mini_fixed(),
+            "  const srt = (txTable.sort || []).map((s) => s.key).join(\",\");\n  return \"x|\" + srt;\n",
+            "  return \"x\";\n",
+        );
+        let r = r164_read(&app, &r164_mini_fixed_wallet());
+        assert!(
+            !r.r2 && r.r1 && r.r3 && r.r4a && r.r4b && r.r4c && r.r4d && r.r5,
+            "R2 的牙不独立：{}",
+            r.report()
+        );
+
+        // (4) R3 —— 守卫回到「一律本地排序」。
+        let app = r164_swap(
+            &r164_mini_fixed(),
+            "if (state.sort.length && !(serverPaging && serverSort)) {",
+            "if (state.sort.length) {",
+        );
+        let r = r164_read(&app, &r164_mini_fixed_wallet());
+        assert!(
+            !r.r3 && r.r1 && r.r2 && r.r4a && r.r4b && r.r4c && r.r4d && r.r5,
+            "R3 没读到完整条件：{}",
+            r.report()
+        );
+
+        // (5) R4a —— 只把**列名册**改掉（白名单与臂仍彼此一致）。
+        let app = r164_swap(&r164_mini_fixed(), "{ key: \"f\"", "{ key: \"z\"");
+        let r = r164_read(&app, &r164_mini_fixed_wallet());
+        assert!(
+            !r.r4a && r.r4b && r.r4c && r.r4d && r.r1 && r.r2 && r.r3 && r.r5,
+            "R4a 的牙不独立：{}",
+            r.report()
+        );
+
+        // (6) R4b —— 只给 `tx_sort_expr` 加一个白名单外的臂。
+        let wallet = r164_swap(
+            &r164_mini_fixed_wallet(),
+            "        _ => return None,",
+            "        \"z\" => \"t.z\".to_string(),\n        _ => return None,",
+        );
+        let r = r164_read(&r164_mini_fixed(), &wallet);
+        assert!(
+            !r.r4b && r.r4a && r.r4c && r.r4d && r.r1 && r.r5,
+            "R4b 的牙不独立：{}",
+            r.report()
+        );
+
+        // (7) R4c —— 只把声明的长度改错。
+        let wallet = r164_swap(&r164_mini_fixed_wallet(), "[&str; 6]", "[&str; 7]");
+        let r = r164_read(&r164_mini_fixed(), &wallet);
+        assert!(
+            !r.r4c && r.r4a && r.r4b && r.r4d && r.r1 && r.r5,
+            "R4c 的牙不独立：{}",
+            r.report()
+        );
+
+        // (8) R4d —— `ORDER BY` 回到字面量（用户串不再经白名单守卫）。
+        let wallet = r164_swap(
+            &r164_mini_fixed_wallet(),
+            "ORDER BY {order} LIMIT",
+            "ORDER BY t.id DESC LIMIT",
+        );
+        let r = r164_read(&r164_mini_fixed(), &wallet);
+        assert!(
+            !r.r4d && r.r4a && r.r4b && r.r4c && r.r1 && r.r2 && r.r3 && r.r5,
+            "R4d 的牙不独立：{}",
+            r.report()
+        );
+
+        // (9) R4d —— 反向：查询参数在**绑定之外**又被采一次（白名单被绕过）。
+        let wallet = r164_swap(
+            &r164_mini_fixed_wallet(),
+            "    let sql = format!(\"SELECT 1 WHERE {where_sql} ORDER BY {order} LIMIT ?{} OFFSET ?{}\", n + 1, n + 2);",
+            "    let sql = format!(\"SELECT 1 WHERE {where_sql} ORDER BY {order} LIMIT ?{} OFFSET ?{}\", n + 1, n + 2);\n    let raw = format!(\"{}\", q.dir.as_deref().unwrap_or(\"\"));",
+        );
+        let r = r164_read(&r164_mini_fixed(), &wallet);
+        assert!(
+            !r.r4d && r.r4a && r.r4b && r.r4c && r.r5,
+            "R4d 没挡住「参数在绑定之外又被采一次」：{}",
+            r.report()
+        );
+
+        // (10) R5（对照）—— 丢掉 `#[serde(flatten)]`：只有对照翻红，四条规则不受影响
+        //      （证明对照是**独立**的一条腿，不是四条规则的同义反复）。
+        let wallet = r164_swap(&r164_mini_fixed_wallet(), "    #[serde(flatten)]\n", "");
+        let r = r164_read(&r164_mini_fixed(), &wallet);
+        assert!(!r.r5 && r.carriers_agree(), "R5 的牙不独立：{}", r.report());
+
+        // (11) 提取器的形态牙：`sortVal:`/`key_name` 不是 `key: "…"`，兄弟标识符不算证据。
+        assert_eq!(
+            r164_keyed_literals("  { sortVal: (t) => t.x, key: \"k\" }", "key"),
+            vec!["k".to_string()],
+            "标识符左界失效（`sortVal` 被当成了 `key`）"
+        );
+        assert!(
+            !mentions_identifier("  txTable.sortBy = [];", R164_SORT_STATE),
+            "兄弟标识符被当成了排序状态（#333）"
+        );
+    }
+
+    // =============================== END OF R164 GATE FRAGMENT ==================================
 
     /// 轴：口令下限**用「位」宣告、用「字节」执行**（R96）。
     ///
