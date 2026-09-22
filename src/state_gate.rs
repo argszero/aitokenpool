@@ -4644,9 +4644,725 @@ fn r167_variant_mark_only(app: &str) -> String {
     r167_with_body(app, &marked)
 }
 
+// ── R168：快捷键面板宣传的 Esc 契约（`help.k3` = zh「关闭 / 取消」/ en「Close / cancel」）必须
+// 真的覆盖 `ui/index.html` 里**每一个可关闭的浮层** ─────────────────────────────────────────────
+//
+// `ui/index.html` 的快捷键面板第 3 行把 Esc 写成**角色无关、视图无关**的「关闭 / 取消」契约。
+// 全局 keydown 处理器（`ui/js/app.js`）里的 Esc 分支按顺序处理：引导 → 帮助 → 行内新建 Key →
+// （表格高亮），而 `#chat-modal`（消费对话框，`class="modal-overlay hidden"`）**不在任何一支里**。
+//
+// 为什么这会真的坏掉：`openChat()` 把焦点放进 `#chat-input` ⇒ 事件目标是 `<input>` ⇒ 紧随其后的
+// `if (typing || e.metaKey || …) return;` 会**先把它吞掉**；任何排在那一行之后的浮层分支都不可达。
+// `grep -n "Escape" ui/js/app.js` 命中 10 处，`#chat-modal` 零命中。
+//
+// 三条规则都从代码里**派生**（#469：门禁不许把这一次编辑的字面量写死）。唯一写死的字面量是变体的
+// 绿基线 `R168_FIXED_GUARD` —— 与 R167 的 `R167_FIXED_BODY` 同型：它只出现在**自己拼出来的树**里，
+// 且由 `r168_compile_gate.py` 断言它确实是编辑表 E1 产物的子串（跨制品对账，#548：导入制品取值，
+// 绝不重新抄一遍）。
+//
+// ⚠️ 关于派生集合：C2171 的浮层集合里还包含 `tour-ring` / `tour-pop` —— 它们是**引导的零件**而不是
+// 独立浮层。本门禁的 R1 **不需要**它们各自有自己的 Esc 分支：`closeTour()` 一次把它们全关掉，而
+// R1 判的是「有没有某条 Esc 分支（含其传递闭包）会隐藏它」。这正是原样的 C2171 派生能在这里成立
+// 的原因（编辑表 §3 把这一点记为**风险**，本轮把它变成实测）。
+
+/// 全局 keydown 处理器的开头（`ui/js/app.js`）。只此一处。
+const R168_BLOCK_START: &str = "document.addEventListener(\"keydown\", (e) => {";
+/// 该处理器的收尾（模块缩进两格的回调结束 + `);`）。块内任何一行都不会包含它。
+const R168_BLOCK_END: &str = "\n    });\n";
+/// `typing` 守卫的判据锚 —— R3 的「封锁线」。
+const R168_TYPING: &str = "if (typing || e.metaKey";
+/// Esc 分支的判据锚。
+const R168_ESCAPE: &str = "e.key === \"Escape\"";
+/// **class** 机制的读法（`$("#x").classList.contains("hidden")`）—— 判别式用到的唯一机制词。
+const R168_CLASS_PROBE: &str = ".classList.contains(\"hidden\")";
+/// **property** 机制的读法（`$("#x").hidden`）。
+const R168_PROPERTY_PROBE: &str = "\").hidden";
+
+/// 行内新建 Key 的守卫行 —— 修复体的**插入锚点**（逐字来自 `ui/js/app.js`，由编译门禁对账）。
+const R168_FIXED_ANCHOR: &str = concat!(
+    "      if (e.key === \"Escape\" && !$(\"#ak-new-inline\").hidden) ",
+    "{ closeNewKeyInline(); return; }",
+);
+
+/// 修复后的守卫行 —— 变体树的**绿基线**（逐字来自编辑表 E1 的新文本，由编译门禁断言子串关系）。
+const R168_FIXED_GUARD: &str = concat!(
+    "      if (e.key === \"Escape\" && !$(\"#chat-modal\").classList.contains(\"hidden\")) ",
+    "{ closeChat(); return; }",
+);
+
+/// 一次扫描同时产出三条规则的判决**与它们的证据**（逐条可打印 —— #339/#341：判词与取值两列）。
+struct R168Reading {
+    block_lines: usize,
+    guards: usize,
+    derived: BTreeSet<String>,
+    hidden_anywhere: BTreeSet<String>,
+    hidden_before_bail: BTreeSet<String>,
+    missing: BTreeSet<String>,
+    probes: BTreeMap<String, BTreeSet<String>>,
+    expectations: BTreeMap<String, String>,
+    mismatches: Vec<String>,
+    typing_at: Option<usize>,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+}
+
+impl R168Reading {
+    fn verdicts(&self) -> (bool, bool, bool) {
+        (self.r1, self.r2, self.r3)
+    }
+
+    /// 把已经读到的证据折成三条判词（单独一步，好让 `r168_read` 的构造函数保持一行一句）。
+    ///
+    /// `R2` 的空集保护在**同一条**判词里：读法一个都没有（或链上无唯一写法）时它必须红，
+    /// 而不是在空集上恒真（坑 68 家族；牙齿测试有一条专门喂空期望值）。
+    fn finish(mut self) -> R168Reading {
+        self.r1 = self.missing.is_empty();
+        self.r2 =
+            self.mismatches.is_empty() && !self.probes.is_empty() && !self.expectations.is_empty();
+        self.r3 = self.hidden_anywhere == self.hidden_before_bail;
+        self
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} | lines={} guards={} typing_at={:?} derived={:?} hidden={:?} before_bail={:?} missing={:?} probes={:?} expects={:?} mismatches={:?}",
+            self.r1,
+            self.r2,
+            self.r3,
+            self.block_lines,
+            self.guards,
+            self.typing_at,
+            self.derived,
+            self.hidden_anywhere,
+            self.hidden_before_bail,
+            self.missing,
+            self.probes,
+            self.expectations,
+            self.mismatches,
+        )
+    }
+}
+
+/// 全局 keydown 块的**代码行**（已剥注释行）。
+///
+/// 块的**开头**必须全文件唯一（元素级的 `…addEventListener("keydown", …)` 都不带 `document.`）。
+/// 收尾定界（模块缩进两格的回调结束 + `);`）在整份文件里出现很多次（51 次），所以**不**要求它全局
+/// 唯一 —— 取开头之后的**第一处**即为本处理器的收尾：块内每一行都比它缩进更深，不可能提前命中。
+/// 开头不唯一（或找不到收尾）时返回 `None`（由规则把它变成响亮失败，而不是在空串上「通过」：坑 68）。
+fn r168_block(app: &str) -> Option<String> {
+    if app.matches(R168_BLOCK_START).count() != 1 {
+        return None;
+    }
+    let at = app.find(R168_BLOCK_START)? + R168_BLOCK_START.len();
+    let end = at + app[at..].find(R168_BLOCK_END)?;
+    Some(code_lines(&app[at..end]))
+}
+
+/// 一行守卫**读**的是哪个隐藏机制（`class` / `property`）；两者都没有 ⇒ `None`（这一行不是在读开合）。
+fn r168_guard_mechanism(line: &str) -> Option<&'static str> {
+    if line.contains(R168_CLASS_PROBE) {
+        return Some("class");
+    }
+    if line.contains(R168_PROPERTY_PROBE) {
+        return Some("property");
+    }
+    None
+}
+
+/// 一个**关闭器**的函数体**写**的是哪个隐藏机制（`class` / `property`）；都认不出 ⇒ `None`
+/// （响亮地不作为期望值，而不是猜一个）。
+fn r168_closer_mechanism(code: &str) -> Option<&'static str> {
+    let adds = code.contains(".classList.add(\"hidden\")");
+    let toggles = code.contains(".classList.toggle(\"hidden\"");
+    if adds || toggles {
+        return Some("class");
+    }
+    if code.contains("\").hidden = true") {
+        return Some("property");
+    }
+    None
+}
+
+/// 从给定函数名集合出发的传递调用闭包。
+///
+/// ⚠️ **自建**闭包、**不复用** `call_graph` / `reachable`：那两个的每条边都由 `js_function_body`
+/// 取体，而后者对**单行**函数会一路吞到下一个 `  }`（C2171 坑 #319/#332）。这里与 `overlay_closure`
+/// 同法：用 `function_source`（单行安全），箭头常量没有 `function` 声明头 ⇒ 返回 `None` ⇒ 不参与。
+fn r168_chain(app: &str, roots: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut queue: Vec<String> = roots.iter().cloned().collect();
+    while let Some(f) = queue.pop() {
+        if !seen.insert(f.clone()) {
+            continue;
+        }
+        let Some(body) = function_source(app, &f) else {
+            continue;
+        };
+        let code = code_lines(&body);
+        for c in callee_names(&code) {
+            if !seen.contains(&c) {
+                queue.push(c);
+            }
+        }
+    }
+    seen
+}
+
+// ── 变体构造器：每个变体**只此一处**定义，牙齿测试与鉴别力测试共用（#325 同族）────────────
+//
+// 全部从 `R168_FIXED_GUARD` / `R168_FIXED_ANCHOR` 派生 —— 与「这棵树是未修还是已修」无关，
+// 两腿跑同一套断言。
+
+/// 在**包含 `needle` 的那一行**之后插入一行 `text`（插入点由该行自己的换行决定 ⇒ 不钉整行字面量）。
+fn r168_insert_after_line(src: &str, needle: &str, text: &str) -> Option<String> {
+    if src.matches(needle).count() != 1 {
+        return None;
+    }
+    let at = src.find(needle)?;
+    let eol = at + src[at..].find('\n')?;
+    Some(format!("{}\n{}{}", &src[..eol], text, &src[eol..]))
+}
+
+/// 删掉**包含 `needle` 的那一整行**。
+fn r168_remove_line(src: &str, needle: &str) -> Option<String> {
+    if src.matches(needle).count() != 1 {
+        return None;
+    }
+    let at = src.find(needle)?;
+    let start = src[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let end = at + src[at..].find('\n')? + 1;
+    Some(format!("{}{}", &src[..start], &src[end..]))
+}
+
+/// 把给定守卫行装进树里（先回到**未修**形状再插，保证两腿得到同一棵树 —— 幂等）。
+fn r168_variant_with_guard(app: &str, guard: &str) -> String {
+    let unfixed = r168_variant_unfixed(app);
+    let out = r168_insert_after_line(&unfixed, R168_FIXED_ANCHOR, guard)
+        .unwrap_or_else(|| panic!("插入锚点 `{R168_FIXED_ANCHOR}` 不是恰好一行 —— 变体无从构造"));
+    assert_ne!(out, unfixed, "守卫没有插进去（锚点漂移了）");
+    out
+}
+
+/// 修复体：唯一那棵判词全绿的树。
+fn r168_variant_fix(app: &str) -> String {
+    r168_variant_with_guard(app, R168_FIXED_GUARD)
+}
+
+/// 未修形状：把守卫行整行摘掉（`R1` 该因此翻红）。
+fn r168_variant_unfixed(app: &str) -> String {
+    if app.matches(R168_FIXED_GUARD).count() == 1 {
+        if let Some(out) = r168_remove_line(app, R168_FIXED_GUARD) {
+            assert_ne!(out, app, "摘掉守卫没有改动树");
+            return out;
+        }
+    }
+    app.to_string()
+}
+
+/// 竞争修法一（探针 `m_after_typing`）：守卫挂到了 `typing` 守卫**之后** ⇒ 从对话框自己的输入框
+/// 按 Esc 会被吞掉（`R3` 该因此翻红）。
+fn r168_variant_after_bail(app: &str) -> String {
+    let detached = r168_remove_line(&r168_variant_fix(app), R168_FIXED_GUARD)
+        .unwrap_or_else(|| panic!("修好的树里找不到守卫行 —— 变体无从构造"));
+    let out = r168_insert_after_line(&detached, R168_TYPING, R168_FIXED_GUARD)
+        .unwrap_or_else(|| panic!("`typing` 守卫行不是恰好一行 —— 变体无从构造"));
+    assert_ne!(out, detached, "守卫没有搬到封锁线之后");
+    out
+}
+
+/// 竞争修法二（探针 `m_property_guard`）：把探针写成**属性**形式 ⇒ 与 `closeChat` 的 class 机制不同源、
+/// 守卫恒真（`R2` 该因此翻红）。改写由判别式自己的机制词完成，不写死那半个表达式。
+fn r168_property_guard() -> String {
+    assert!(
+        R168_FIXED_GUARD.matches(R168_CLASS_PROBE).count() == 1,
+        "修复体里的机制词不是恰好一个 —— 变体的改写会落错地方"
+    );
+    let out = R168_FIXED_GUARD.replace(R168_CLASS_PROBE, ".hidden");
+    assert_ne!(out, R168_FIXED_GUARD, "属性形式没有替换进去");
+    out
+}
+
+/// 竞争修法二装进树。
+fn r168_variant_property(app: &str) -> String {
+    r168_variant_with_guard(app, &r168_property_guard())
+}
+
+/// 只加一句**解释性注释**（说得对，但分支没加）⇒ **注释不参与**，判词必须与未修形状逐条相同。
+fn r168_variant_mark_only(app: &str) -> String {
+    let unfixed = r168_variant_unfixed(app);
+    let marked = r168_insert_after_line(
+        &unfixed,
+        R168_FIXED_ANCHOR,
+        "      // 消费对话框也应当在 Esc 上关闭（说得对 —— 但这一行是注释，不是分支）",
+    )
+    .unwrap_or_else(|| panic!("注释锚点 `{R168_FIXED_ANCHOR}` 漂移了"));
+    assert_ne!(marked, unfixed, "注释没有插进去");
+    marked
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 闭包里各函数**宣称隐藏**的 `#<id>` 集合（判别式与 C2171 同一把：字面量 `"#<id>"` **且**把
+    /// `hidden` 加上去的操作，两者在本元素的**同一个函数体**里）。
+    fn r168_ids_hidden_by(app: &str, fns: &BTreeSet<String>) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for f in fns {
+            let Some(body) = function_source(app, f) else {
+                continue;
+            };
+            let code = code_lines(&body);
+            for id in quoted_hash_ids(&code) {
+                if hides_element(&code, &id) {
+                    out.insert(id);
+                }
+            }
+        }
+        out
+    }
+
+    /// 某条 Esc 分支（它的调用闭包）能关掉的 `#<id>` 集合。
+    fn r168_line_hidden_ids(app: &str, line: &str) -> BTreeSet<String> {
+        let mut roots: BTreeSet<String> = BTreeSet::new();
+        roots.extend(callee_names(line));
+        r168_ids_hidden_by(app, &r168_chain(app, &roots))
+    }
+
+    /// 一次读完三条规则（判词 + 证据）。
+    ///
+    /// `derived` 由调用方传入（`overlays_outside_app(INDEX_HTML)` 的集合）—— 本函数不自己去派生它，
+    /// 这样阳性对照可以把**别的**集合喂进来，证明规则不是在常量上「通过」。
+    fn r168_read(app: &str, derived: &BTreeSet<String>) -> R168Reading {
+        let block = r168_block(app).unwrap_or_default();
+        let lines: Vec<&str> = block.lines().collect();
+        let typing_at = lines.iter().position(|l| l.contains(R168_TYPING));
+        let guard_idx: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.contains(R168_ESCAPE))
+            .map(|(i, _)| i)
+            .collect();
+
+        // Esc 链能关掉的元素：逐条 Esc 分支各自算一遍，再并起来（这样 R3 可以只取「封锁线之前」那一半）。
+        let mut hidden_anywhere: BTreeSet<String> = BTreeSet::new();
+        let mut hidden_before_bail: BTreeSet<String> = BTreeSet::new();
+        for i in &guard_idx {
+            let local = r168_line_hidden_ids(app, lines[*i]);
+            hidden_anywhere.extend(local.iter().cloned());
+            if typing_at.map(|t| *i < t).unwrap_or(true) {
+                hidden_before_bail.extend(local);
+            }
+        }
+
+        // R1 的期望值来自 index.html 的派生；缺的记下来（判词之外还要能印出「缺了谁」）。
+        let missing: BTreeSet<String> = derived.difference(&hidden_anywhere).cloned().collect();
+
+        // R2：块里对**派生元素**下的机制探针（读法）与它们各自关闭器的机制（写法）必须同源。
+        let mut probes: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for l in &lines {
+            for id in quoted_hash_ids(l) {
+                if !derived.contains(&id) {
+                    continue;
+                }
+                if let Some(m) = r168_guard_mechanism(l) {
+                    probes.entry(id).or_default().insert(m.to_string());
+                }
+            }
+        }
+        // 期望值 = Esc 链上那些「宣称隐藏该元素」的函数的机制；**必须唯一**（多个不同写法 ⇒ 无期望值，
+        // 由 R2 的空集保护把它变成红，而不是静默放行）。
+        let mut expectations: BTreeMap<String, String> = BTreeMap::new();
+        let mut chain_roots: BTreeSet<String> = BTreeSet::new();
+        for i in &guard_idx {
+            chain_roots.extend(callee_names(lines[*i]));
+        }
+        let chain = r168_chain(app, &chain_roots);
+        for id in derived {
+            let mut mechs: BTreeSet<String> = BTreeSet::new();
+            for f in &chain {
+                let Some(body) = function_source(app, f) else {
+                    continue;
+                };
+                let code = code_lines(&body);
+                if hides_element(&code, id) {
+                    if let Some(m) = r168_closer_mechanism(&code) {
+                        mechs.insert(m.to_string());
+                    }
+                }
+            }
+            if mechs.len() == 1 {
+                expectations.insert(id.clone(), mechs.into_iter().next().unwrap_or_default());
+            }
+        }
+        let mut mismatches: Vec<String> = Vec::new();
+        for (id, read) in &probes {
+            let Some(want) = expectations.get(id) else {
+                mismatches.push(format!("{id}: 读法存在但链上无唯一写法"));
+                continue;
+            };
+            for m in read {
+                if m != want {
+                    mismatches.push(format!("{id}: closer writes {want}, guard reads {m}"));
+                }
+            }
+        }
+
+        R168Reading {
+            block_lines: lines.len(),
+            guards: guard_idx.len(),
+            derived: derived.clone(),
+            hidden_anywhere,
+            hidden_before_bail,
+            missing,
+            probes,
+            expectations,
+            mismatches,
+            typing_at,
+            r1: false,
+            r2: false,
+            r3: false,
+        }
+        .finish()
+    }
+
+    /// 本轴的派生集合：`ui/index.html` 中 `#app` 之外、带独立 token `hidden` 的顶行元素。
+    ///
+    /// 与 C2171 同一个派生器（`overlays_outside_app`）—— R1 的对象就是它。
+    fn r168_derived() -> BTreeSet<String> {
+        overlays_outside_app(INDEX_HTML).into_iter().collect()
+    }
+
+    /// 轴：快捷键面板宣传的 Esc 契约必须真的覆盖每个可关闭浮层（R168）。
+    ///
+    /// 三条规则各自的含义见文件头。本测试只断言「三条同时成立」；每条规则的**牙**由
+    /// [`the_r168_rules_have_teeth`] 逐条测量，规则与竞争修法的**关系**由
+    /// [`the_r168_rules_separate_the_variants`] 声明。
+    #[test]
+    fn the_escape_contract_reaches_every_dismissible_overlay() {
+        let derived = r168_derived();
+        assert!(
+            r168_block(APP_JS).is_some(),
+            "取不到全局 keydown 块（开头/收尾定界不唯一）—— 三条规则的射程会静默变空"
+        );
+        let read = r168_read(APP_JS, &derived);
+        assert!(
+            read.typing_at.is_some(),
+            "块里读不到 `{R168_TYPING}` 那一行 —— R3 的封锁线不见了：{}",
+            read.report()
+        );
+        assert!(
+            read.guards >= 2,
+            "块里数不到 Esc 分支 —— R1 会退化成恒真：{}",
+            read.report()
+        );
+        assert!(
+            read.verdicts() == (true, true, true),
+            "Esc 契约必须覆盖每个可关闭浮层（R168）：{}",
+            read.report()
+        );
+    }
+
+    /// 阳性对照：三个读取器在**已知为绿**的树上读到东西，在「什么都没有」的树上读到空。
+    ///
+    /// 这是规则 1/2/3 的射程保险：读取器若只会返回常量，规则就成了恒真断言（空集上的关系式
+    /// 会静默通过）。⚠️ 断言只打在**自己拼出来的树**上 —— 真树在两条腿上形状不同（#314）。
+    #[test]
+    fn the_r168_roster_is_real() {
+        let derived = r168_derived();
+        // 派生器本身要有阳性对照（与 C2171 同源，这里再钉一次，避免「解析器坏了」被当成修好了）。
+        assert!(
+            !derived.is_empty()
+                && !derived.contains("login-view")
+                && !derived.contains("toast-wrap")
+                && derived.contains("chat-modal")
+                && derived.contains("help-panel"),
+            "派生集合的阳性对照失败（解析器变了，还是 index.html 结构变了？）：{derived:?}"
+        );
+
+        // 正向：修复树上三条规则全绿，且证据（分支数、探针、期望值、封锁线）全都读到。
+        let fixed_tree = r168_variant_fix(APP_JS);
+        let fix = r168_read(&fixed_tree, &derived);
+        assert!(
+            fix.verdicts() == (true, true, true),
+            "修复树上三条规则不是全绿 —— 变体构造器坏了：{}",
+            fix.report()
+        );
+        assert!(
+            fix.typing_at.is_some() && fix.guards >= 4,
+            "修复树上读不到封锁线/Esc 分支：{}",
+            fix.report()
+        );
+        assert!(
+            !fix.probes.is_empty() && !fix.expectations.is_empty(),
+            "修复树上 R2 的输入是空的 —— 那条规则会恒真：{}",
+            fix.report()
+        );
+        assert!(
+            fix.missing.is_empty(),
+            "修复树上居然还有关不掉的浮层：{}",
+            fix.report()
+        );
+
+        // 反向：未修形状上，缺的必须**恰好**是消费对话框（派生出来的，不是抄的）。
+        let gone = r168_read(&r168_variant_unfixed(APP_JS), &derived);
+        assert_eq!(
+            gone.missing,
+            [String::from("chat-modal")]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            "未修形状上「关不掉的浮层」不是恰好 `chat-modal` —— R1 的判别式变了：{}",
+            gone.report()
+        );
+        assert!(
+            !gone.r1 && gone.r2 && gone.r3,
+            "未修形状只该翻 R1 一条：{}",
+            gone.report()
+        );
+
+        // 机制判别式的正向/反向（合成输入：不碰真文件）。
+        assert_eq!(r168_guard_mechanism("!$(\"#x\").hidden"), Some("property"));
+        assert_eq!(
+            r168_guard_mechanism("!$(\"#x\").classList.contains(\"hidden\")"),
+            Some("class")
+        );
+        assert_eq!(r168_guard_mechanism("if (helpOpen) return;"), None);
+        assert_eq!(
+            r168_closer_mechanism("$(\"#x\").hidden = true;"),
+            Some("property")
+        );
+        assert_eq!(
+            r168_closer_mechanism("$(\"#x\").classList.add(\"hidden\");"),
+            Some("class")
+        );
+        assert_eq!(r168_closer_mechanism("x.textContent = \"hi\";"), None);
+
+        // 闭包不许被单行函数带跑（C2171 坑 #319/#332 的回归面）：Esc 链很短，走不到视图切换/引导渲染器。
+        // ⚠️ 基准必须是**自己拼出来的变体树**（`r168_variant_unfixed` 幂等 ⇒ 两条腿同形）。直接读
+        // `APP_JS` 会让「未修形状上链里没有 `closeChat`」这条在**修复腿**上测另一棵树 —— 真树在两条腿
+        // 上形状不同（#314），而那正是这条断言要说的事。
+        let unfixed_tree = r168_variant_unfixed(APP_JS);
+        // 每条腿从**自己那棵树**的分支取根（未修树上没有那一行 ⇒ 它的根集合里当然没有 `closeChat`；
+        // 拿未修树的根去走修复树，是让这条断言测另一件事）。
+        let chain_of = |app: &str| -> BTreeSet<String> {
+            let block = r168_block(app).unwrap_or_default();
+            let mut roots: BTreeSet<String> = BTreeSet::new();
+            for l in block.lines().filter(|l| l.contains(R168_ESCAPE)) {
+                roots.extend(callee_names(l));
+            }
+            r168_chain(app, &roots)
+        };
+        let chain = chain_of(&unfixed_tree);
+        assert!(
+            !chain.contains("switchView")
+                && !chain.contains("renderTourStep")
+                && !chain.contains("startTour"),
+            "Esc 链被单行函数带跑（`markTourDone` 那条吞并路径）：{chain:?}"
+        );
+        // 未修形状上链里没有 `closeChat`（正是缺陷）；修复树上有（闭包跨过那一行 —— 名字不是
+        // 标识符的唯一载体，所以这里既断言「有」也断言「不是靠常量碰巧命中」）。
+        assert!(
+            !chain.contains("closeChat"),
+            "未修形状的 Esc 链上居然已经有关闭器 —— 采集器在看别的地方：{chain:?}"
+        );
+        let fixed_chain = chain_of(&r168_variant_fix(&unfixed_tree));
+        assert!(
+            fixed_chain.contains("closeChat"),
+            "修复树的 Esc 链上没有 `closeChat` —— R1 的射程不成立：{fixed_chain:?}"
+        );
+    }
+
+    /// 三条规则**各有独立的牙**：合成变异体逐个喂给规则自己的判别式，每个恰好打翻一条。
+    ///
+    /// 判据是「恰好一条翻转」而不是「至少一条红」—— 否则一条从别处借来红的规则也能自称有牙
+    /// （#454：牙齿必须长在该规则的判别式上）。基线是**已知为绿的**修复树（#458）。
+    #[test]
+    fn the_r168_rules_have_teeth() {
+        let derived = r168_derived();
+        let fixed_tree = r168_variant_fix(APP_JS);
+        let base_read = r168_read(&fixed_tree, &derived);
+        assert_eq!(
+            base_read.verdicts(),
+            (true, true, true),
+            "自证基线不绿，牙齿测试没有意义：{}",
+            base_read.report()
+        );
+
+        // 每个变异体只动一处，期望**恰好一条**翻转（#454）。顺序 = (r1, r2, r3)。
+        let mutants = [
+            (
+                "guard gone",
+                r168_variant_unfixed(APP_JS),
+                (false, true, true),
+            ),
+            (
+                "guard after the typing bail",
+                r168_variant_after_bail(APP_JS),
+                (true, true, false),
+            ),
+            (
+                "property probe",
+                r168_variant_property(APP_JS),
+                (true, false, true),
+            ),
+        ];
+        for (label, tree, expected) in mutants {
+            assert_ne!(tree, fixed_tree, "变异体 `{label}` 没有改动树");
+            let read = r168_read(&tree, &derived);
+            assert_eq!(
+                read.verdicts(),
+                expected,
+                "规则 `{label}` 的牙不成立（期望 {expected:?}）：{}",
+                read.report()
+            );
+        }
+
+        // R1 的第二半：整条「关不掉的浮层」不是只有一个 —— 把**帮助**那一支也摘掉，R1 必须仍然红，
+        // 且缺的必须是被摘掉的那一个（证明规则不是只认 `chat-modal` 一个元素）。
+        let help_gone = r168_remove_line(&fixed_tree, "&& helpOpen")
+            .unwrap_or_else(|| panic!("摘掉帮助分支的锚点漂移了"));
+        let help_read = r168_read(&help_gone, &derived);
+        assert_eq!(
+            help_read.missing,
+            [String::from("help-panel")]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            "摘掉帮助分支后，缺的不是恰好 `help-panel` —— 覆盖率的判别式变了：{}",
+            help_read.report()
+        );
+        assert!(
+            !help_read.r1,
+            "摘掉帮助分支后 R1 仍绿 —— 覆盖率规则在空集上会「通过」：{}",
+            help_read.report()
+        );
+
+        // R2 的第二半：**读法存在但链上无唯一写法**也必须响亮失败（不许把「没有期望值」当成功）。
+        let ambiguous = R168Reading {
+            expectations: BTreeMap::new(),
+            ..r168_read(&fixed_tree, &derived)
+        };
+        assert!(
+            !ambiguous.finish().r2,
+            "期望值为空时 R2 仍绿 —— 那条规则可以静默失明"
+        );
+    }
+
+    /// 规则与**竞争修法**的关系，逐腿声明（#339/#341：声明的期望与实际各印一列）。
+    ///
+    /// 竞争修法出自 jsdom 探针 `r168_probe.js`（它按 DOM 实况把它们全部拒掉）：
+    /// - `m_after_typing`：守卫挂到 `typing` 守卫**之后** —— 本门禁的 `R3` 拒掉它（探针的 `B1` 也是）。
+    /// - `m_property_guard`：把探针写成属性形式（守卫恒真）—— 本门禁的 `R2` 拒掉它（探针的 `D2` 也是）。
+    /// - `m_mark_only`：只加一句解释性注释 —— **注释不参与**，判词必须与未修形状逐条相同。
+    #[test]
+    fn the_r168_rules_separate_the_variants() {
+        // ⚠️ 本测试必须在**两腿**都绿（编译门禁分别把真树与 E1 修复树当作 `APP_JS` 来编译）
+        // ⇒ 绝对判词只能打在**它自己拼出来的树**上（#314）。
+        let derived = r168_derived();
+        let all_green = (true, true, true);
+
+        let tree_fix = r168_variant_fix(APP_JS);
+        let tree_unfixed = r168_variant_unfixed(APP_JS);
+        let tree_after = r168_variant_after_bail(APP_JS);
+        let tree_property = r168_variant_property(APP_JS);
+        let tree_mark = r168_variant_mark_only(APP_JS);
+
+        // 先证明这些树互不相同，否则「判词不同」可能只是同一棵树的两张脸。
+        for (label, other) in [
+            ("unfixed", &tree_unfixed),
+            ("m_after_typing", &tree_after),
+            ("m_property_guard", &tree_property),
+            ("m_mark_only", &tree_mark),
+        ] {
+            assert_ne!(tree_fix, *other, "`{label}` 与修复树逐字相同 —— 变体没落地");
+        }
+        assert_ne!(
+            tree_unfixed, tree_property,
+            "两个「缺分支」的变体是同一棵树"
+        );
+
+        let declared = [
+            ("fix (spliced)", tree_fix.as_str(), all_green),
+            ("unfixed", tree_unfixed.as_str(), (false, true, true)),
+            ("m_after_typing", tree_after.as_str(), (true, true, false)),
+            (
+                "m_property_guard",
+                tree_property.as_str(),
+                (true, false, true),
+            ),
+        ];
+        let mut reports = Vec::new();
+        for (name, app, expected) in declared {
+            let read = r168_read(app, &derived);
+            reports.push(format!("{name}: {}", read.report()));
+            assert_eq!(
+                read.verdicts(),
+                expected,
+                "变体 `{name}` 的判词与声明不符（声明 {expected:?}）—— 门禁的鉴别力变了"
+            );
+        }
+
+        // 注释不参与：`m_mark_only` 的判词必须与未修形状**逐条相同**。
+        let marked = r168_read(&tree_mark, &derived);
+        let plain = r168_read(&tree_unfixed, &derived);
+        reports.push(format!("m_mark_only: {}", marked.report()));
+        assert_eq!(
+            marked.verdicts(),
+            plain.verdicts(),
+            "解释性注释改变了判词 —— 注释参与了断言（坑 #296/#309 同族）"
+        );
+
+        // 与腿无关的一条关系：真树必须是门禁认识的**两种形状之一**（未修 / 已修）。
+        // ⚠️ 不能写成 `== unfixed_v`：本测试在**两腿**都要绿，修好之后那句话会静默反转（#314）。
+        let real = r168_read(APP_JS, &derived);
+        reports.push(format!("real tree: {}", real.report()));
+        assert!(
+            real.verdicts() == all_green || real.verdicts() == (false, true, true),
+            "真树的形状既不是「未修」也不是「已修」—— 门禁不认识它了：{}",
+            real.report()
+        );
+        // ⚠️ 落地轮必做（#314：默认期望必须钉在**显式基线**上）：真树修好之后，
+        // `r168_compile_gate.py` 的 `DECLARED_RED` 表必须从 `base: [AXIS]` 改成 `base: []`，
+        // 否则轴测试会为红而仪器仍宣称「未修」。两处一起改。
+        println!("{}", reports.join("\n"));
+    }
+
+    /// 修复体文本**逐字**来自编辑表 E1；`r168_compile_gate.py` 另外断言它与 E1 的产物是子串关系
+    /// （跨制品对账）。这里钉「常量非空、形状齐全、且两个变体构造器是幂等的」。
+    #[test]
+    fn the_r168_fixed_guard_is_the_edit_sheet_text() {
+        assert!(
+            R168_FIXED_GUARD.contains(R168_CLASS_PROBE) && R168_FIXED_GUARD.contains("closeChat()"),
+            "修复体不是「查 class 机制 + 调 closeChat」那一行：{R168_FIXED_GUARD:?}"
+        );
+        assert!(
+            R168_FIXED_GUARD.contains(R168_ESCAPE),
+            "修复体不是一条 Esc 分支：{R168_FIXED_GUARD:?}"
+        );
+        assert!(
+            R168_FIXED_ANCHOR.contains(R168_ESCAPE) && !R168_FIXED_ANCHOR.contains("chat-modal"),
+            "插入锚点不是行内新建 Key 的守卫行：{R168_FIXED_ANCHOR:?}"
+        );
+        // 幂等：两腿拿到的必须是**同一棵**修复树（否则声明表在另一条腿上就不成立了，#612）。
+        let once = r168_variant_fix(APP_JS);
+        let twice = r168_variant_fix(&once);
+        assert_eq!(once, twice, "修复体构造器不幂等 —— 两腿会得到不同的树");
+        assert_eq!(
+            once.matches(R168_FIXED_GUARD).count(),
+            1,
+            "修复树里守卫行不是恰好一个"
+        );
+        assert_ne!(
+            r168_variant_unfixed(APP_JS),
+            once,
+            "未修形状与修复树逐字相同 —— 变体构造器失效了"
+        );
+        assert_ne!(
+            r168_property_guard(),
+            R168_FIXED_GUARD,
+            "属性形式与修复体逐字相同 —— 竞争修法没落地"
+        );
+    }
 
     // ============================ R167 PART B: tests (inside `mod tests`) ============================
 
