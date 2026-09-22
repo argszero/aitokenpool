@@ -104,7 +104,7 @@ const EN_KEY_COUNT: usize = 788;
 const STATIC_ATTR_COUNT: usize = 332;
 const STATIC_ATTR_DISTINCT: usize = 307;
 const T_LITERAL_COUNT: usize = 537;
-const T_LITERAL_DISTINCT: usize = 428;
+const T_LITERAL_DISTINCT: usize = 429;
 
 /// 切出语言包区段（起点标记 → 终点标记，含起点）。
 fn pack_region<'a>(src: &'a str, start_mark: &str, end_mark: &str) -> &'a str {

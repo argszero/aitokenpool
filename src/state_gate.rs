@@ -4901,9 +4901,860 @@ fn r168_variant_mark_only(app: &str) -> String {
     marked
 }
 
+//
+// R93 轴：行内字段错误的文案必须**描述触发它的条件**，且同一条规则在客户端与服务端必须用
+// **同一把嗓子**。
+//
+// 缺陷（`ui/js/app.js` 的找回密码流程）：守卫是「口令短于下限」，文案却是**空**那句话
+// （`register.err.pass` =「请输入密码」）—— 用户刚输了一串密码，红字让他「请输入密码」。
+// 姊妹表单（注册）用同一把嗓子说**同一个条件**（`if (!pw)`）是对的 ⇒ 错的是**条件与文案的
+// 对应**，不是这把嗓子本身；`err.weakPassword`（＝服务端 `密码至少 8 位` / `新密码至少 8 位`
+// 经 `ERR_MAP` 得到的那句）早就在包里，作者写下那一行时它就在**同一个 diff** 里 ⇒ 判为漂移。
+//
+// 三条规则（各有独立的牙）：
+//
+// 1. **A-lower（存在性）**：至少有一个守卫里比较 `.length` 的行内字段错误位点 —— 否则
+//    「每个这样的位点都用 K」是一句**空转**的全称命题（坑 #324）。
+// 2. **A-upper（全称）**：每一个这样的位点都用 **K**。
+// 3. **B（类不相交，全文件）**：把每个行内位点按**它自己的守卫**分类为 *空* 或 *非空*；
+//    同一个键不得同时服务两类。
+//
+// **K 是推导出来的，不是写死的**：从 `src/routes/mod.rs` 里**实现这条规则的那个 helper**
+// （其体把**字符数**比一个具名常量 ⇒ 由体认定，不按名字认定；R96 把 `(new_)password.len() < 8`
+// 换成 `password_too_short()` 时，一切转录了旧拼写的仪器都静默失效）出发，取 enforcing 分支里
+// 返回的中文原话，按 `I18n.mapErr` 的**最长子串**规则过 `ERR_MAP`，要求**恰好解析到一个键**。
+// 这样门禁抓的是「后端说了什么」，而不是「这次编辑写下了什么」（坑 #469 / #537）。
+//
+// **射程（诚实边界，已写进 `ui/README.md`）**：本门禁是**词法**的 —— 它证「那个位点用的**键**
+// 与规则同源」，**不证**运行期那一刻屏幕上真的出现了那句话、也**不证**两条消息的**值**（字符串）
+// 相等。值与运行期归 jsdom 探针（`r93_probe.js`：驱动真表单、逐语言取参照物）与
+// `src/routes/mod.rs` 的口令边界测试 —— **形状归门禁，事实归探针**。
+//
+// 语料：`ui/js/app.js` 复用 `APP_JS`，语言包复用 `I18N_JS`，服务端真源**复用** R78（口令下限）
+// 已经引入的 `PASS_MIN_MOD_RS` —— 本轴问的是**同一条规则**「另一个方向」的问题（不是「它怎么
+// 数」，而是「客户端的行内文案有没有说这句话」），所以真源只能是同一份文件、同一个 helper。
+// ⛔ 不要再 `include_str!` 一次同一个文件。
+//
+// ⚠️ 这里**不**留「后端今天回哪句原话」的副本：原话是**派生**出来的（见 `r93_branches`），
+// 抄一份在这里就会在一行之隔自相矛盾（C2024 的规矩）。
+
+/// 变异体用的**无关键**（A-upper / B 各自的牙）：刻意不是包里的任何一个键 ——
+/// 判词与「它在不在包里」无关（那是对**派生**键 K 的检查）。
+const R93_MUT_KEY: &str = "r93.mut.only";
+
+/// 位点的**未修**形状：`ui/js/app.js` 里 `#forgot-pass` 长度守卫那一段（逐字来自编辑表 E1 的
+/// `old` 文本，由编译门禁对账）。
+const R93_SITE_UNFIXED: &str =
+    "T(\"register.err.pass\")); firstErr = firstErr || $(\"#forgot-pass\");";
+
+/// 位点的**修复**形状（编辑表 E1 的 `new` 文本）。只差**键那一个 token** ——
+/// `the_r93_site_shapes_are_the_edit_sheet_text` 钉住这件事。
+const R93_SITE_FIXED: &str =
+    "T(\"err.weakPassword\")); firstErr = firstErr || $(\"#forgot-pass\");";
+
+/// 一个行内字段错误位点：`if (<cond>) setFieldError(<field>, T("<key>"))`。
+///
+/// `line` 是**磁盘上的行号**（剥注释时块注释换成等量换行，见 `r93_code_lines` —— 报告里的行号
+/// 是要被人 `sed -n` 复核的，坑 #532）。
+struct R93Site {
+    line: usize,
+    field: String,
+    key: String,
+    cond: String,
+    /// 守卫说的是「这个字段是**空**的」吗（形状判定，见 `r93_empty_guard`）。
+    empty_guard: bool,
+}
+
+/// R93 的剥注释扫描器：`//` 行、**行内** `//` 之后的文本、`/* … */`（含跨行块）。
+///
+/// 与 `code_text_by_line` 的分工：那个只管整行注释与成对块片段（它服务的判别式不看行内 `//`
+/// 之后的东西），而本轴的位点是**行内**写的 —— 一句 `x = 1; // setFieldError(...)` 在它那里
+/// 会造出一个幻影位点（`the_r93_readers_are_real` 的 C4 腿钉的就是这件事）。
+///
+/// ⚠️ 块注释**保住换行**（这里＝「这一行留空」）：行号由返回向量的下标 + 1 给出，必须与磁盘一致
+/// （坑 #532）。
+fn r93_code_lines(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for line in src.lines() {
+        let mut rest = line;
+        if in_block {
+            match rest.find("*/") {
+                Some(i) => {
+                    rest = &rest[i + 2..];
+                    in_block = false;
+                }
+                None => {
+                    out.push(String::new());
+                    continue;
+                }
+            }
+        }
+        let (code, opened) = strip_inline_blocks(rest);
+        if opened {
+            in_block = true;
+        }
+        let code = match code.find("//") {
+            Some(i) => code[..i].to_string(),
+            None => code,
+        };
+        out.push(code.trim().to_string());
+    }
+    out
+}
+
+/// 语料的前 `n` 个**字符**（按字节切 `&str` 会 panic —— 这是必须显式处理的切片规约）。
+fn r93_window(src: &str, chars: usize) -> &str {
+    match src.char_indices().nth(chars) {
+        Some((i, _)) => &src[..i],
+        None => src,
+    }
+}
+
+/// Rust 的 `\`+换行续行先合上（坑 #301：不合并的话，一个跨行写下的字面量会被静默漏掉）。
+fn r93_join_continuations(src: &str) -> String {
+    let chars: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() && (chars[i + 1] == '\n' || chars[i + 1] == '\r')
+        {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// 找一个**独立关键字** `kw` 的位置：前面不是标识符字符、后面（允许空白）跟 `(`。
+fn r93_kw_at(text: &str, kw: &str, from: usize) -> Option<usize> {
+    let mut at = from;
+    while let Some(i) = text[at..].find(kw) {
+        let p = at + i;
+        let before_ok = match text[..p].chars().next_back() {
+            None => true,
+            Some(c) => !(c.is_alphanumeric() || c == '_' || c == '$' || c == '.'),
+        };
+        let after_ok = text[p + kw.len()..].trim_start().starts_with('(');
+        if before_ok && after_ok {
+            return Some(p);
+        }
+        at = p + kw.len();
+    }
+    None
+}
+
+/// 从 `open`（`(` 的字节位置）取出**配对**的括号内容（不含两端括号）。
+fn r93_paren(text: &str, open: usize) -> Option<String> {
+    let mut depth = 0usize;
+    let mut out = String::new();
+    for c in text[open..].chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                if depth == 1 {
+                    continue;
+                }
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(out);
+                }
+            }
+            _ => {}
+        }
+        out.push(c);
+    }
+    None
+}
+
+/// 一个「标识符路径」（`a` / `a.b` / `a.b.c`），不含运算符与空白。
+fn r93_is_path(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$' || c == '.')
+}
+
+/// 守卫属于哪一类：`true` =「这个字段是**空**的」；`false` = 其他（长度/相等/业务…）。
+///
+/// 两类认法是**形状**的，不是内容的：`!<路径>`（`!pw` / `!$("#login-email")`）与
+/// `<路径> === ""`（含 `.trim()`）。认不出的一律算「其他」—— 这一侧保守是有意的：漏判只会让
+/// B 更**宽**（更难变红），不会凭空造出一类。
+fn r93_empty_guard(cond: &str) -> bool {
+    let c = cond.trim();
+    if let Some(rest) = c.strip_prefix('!') {
+        let r = rest.trim();
+        if r.starts_with("$(") || r93_is_path(r) {
+            return true;
+        }
+    }
+    let Some(head) = c.strip_suffix("\"\"") else {
+        return false;
+    };
+    let h = head.trim().trim_end_matches('=').trim();
+    let h = h.strip_suffix(".trim()").unwrap_or(h).trim();
+    r93_is_path(h)
+}
+
+/// 守卫是否把某个 `.length` 与一个界限比较（`<` / `>`）。
+fn r93_bounds_length(cond: &str) -> bool {
+    let mut rest = cond;
+    while let Some(i) = rest.find(".length") {
+        let after = rest[i + ".length".len()..].trim_start();
+        if after.starts_with('<') || after.starts_with('>') {
+            return true;
+        }
+        rest = &rest[i + 1..];
+    }
+    false
+}
+
+/// 实现这条规则的那个 helper：**从它的体里**认（`.chars().count() < <具名常量>`），不按名字认。
+/// 候选不是**恰好一个** ⇒ `None`（响亮失败，绝不猜一个）。
+fn r93_helper(rust: &str) -> Option<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(i) = rust[from..].find("-> bool {") {
+        let head_end = from + i;
+        let body_start = head_end + "-> bool {".len();
+        if let Some(f) = rust[..head_end].rfind("fn ") {
+            let name: String = rust[f + 3..head_end]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let rest = &rust[body_start..];
+            let body = match rest.find("\n}") {
+                Some(e) => &rest[..e],
+                None => rest,
+            };
+            if !name.is_empty() && body.contains(".chars().count() <") {
+                found.push((name, body.to_string()));
+            }
+        }
+        from = body_start;
+    }
+    if found.len() == 1 {
+        found.pop()
+    } else {
+        None
+    }
+}
+
+/// 分支里 `"error": "<原话>"` 的原话。同一个臂里**必须**有；没有 ⇒ `None`（由规则响亮失败，
+/// 而不是把这条分支静默跳过 —— 静默跳过会让「每条分支都被检查过」变成一句空话）。
+fn r93_error_literal(win: &str) -> Option<String> {
+    let at = win.find("\"error\"")?;
+    let rest = &win[at..];
+    let colon = rest.find(':')?;
+    let rest = rest[colon + 1..].trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// 强制这条规则的分支：`(被限定的参数, 那句原话)`，按出现顺序。任何一条分支读不出原话 ⇒ `None`。
+fn r93_branches(rust: &str, helper: &str) -> Option<Vec<(String, String)>> {
+    let needle = format!("if {helper}(");
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(i) = rust[from..].find(&needle) {
+        let at = from + i + needle.len();
+        from = at;
+        // 窗口在**字符**上取（按字节切会 panic），且刻意宽松：一个懒惰窗口会停在实参表之后、
+        // 把分支自己的原话留在窗外（两个仪器犯同一个错，就是它们互相漂开的路径）。
+        let win = r93_window(&rust[at..], 400);
+        let arg_end = win.find(')')?;
+        let arg: String = win[..arg_end]
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '&')
+            .collect();
+        let lit = r93_error_literal(win)?;
+        out.push((arg, lit));
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// 一段文本里的双引号字面量（本词表的字面量自身不含 `"`；否则这条解析必须先声明）。
+fn r93_string_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('"') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('"') else { break };
+        out.push(after[..close].to_string());
+        rest = &after[close + 1..];
+    }
+    out
+}
+
+/// `ERR_MAP` 的 `(原话, 键)` 条目 —— 从语言包本身解析，**不写死任何一条**。
+fn r93_err_map(i18n: &str) -> Vec<(String, String)> {
+    let Some(start) = i18n.find("var ERR_MAP = [") else {
+        return Vec::new();
+    };
+    let tail = &i18n[start..];
+    let end = tail.find("\n  ];").unwrap_or(tail.len());
+    let mut out = Vec::new();
+    for line in tail[..end].lines() {
+        let l = line.trim();
+        let Some(rest) = l.strip_prefix('[') else {
+            continue;
+        };
+        let body = rest.strip_suffix(',').unwrap_or(rest);
+        let Some(inner) = body.strip_suffix(']') else {
+            continue;
+        };
+        let toks = r93_string_literals(inner);
+        if toks.len() == 2 {
+            out.push((toks[0].clone(), toks[1].clone()));
+        }
+    }
+    out
+}
+
+/// `I18n.mapErr` 的规则：**最长**匹配的原话胜出（`msg.indexOf(lit) !== -1` 且最长）。
+/// 长度比较用**字符数** —— 与 JS 的 UTF-16 长度在这张全中文词表上逐条一致。
+fn r93_resolve(msg: &str, pairs: &[(String, String)]) -> Option<String> {
+    let mut best: Option<(&str, usize)> = None;
+    for (lit, key) in pairs {
+        if msg.contains(lit.as_str()) {
+            let n = lit.chars().count();
+            if best.map(|(_, b)| n > b).unwrap_or(true) {
+                best = Some((key.as_str(), n));
+            }
+        }
+    }
+    best.map(|(k, _)| k.to_string())
+}
+
+/// A-upper（全称那条规则）：每一个「守卫里比较 `.length`」的位点都必须用**推导出来的键** `key`。
+///
+/// ⚠️ 单独成函数、且**调用点写作一行**：编译门禁的阴性对照要能**一行**拆掉这条规则
+/// （`let a_upper = true || r93_all_upper(...)`），从而证明「轴测试在 base 腿上红**是因为**
+/// 这条规则」—— 那是这类门禁最容易搞错的方向（拆掉规则会让未修树**通过**轴测试）。
+fn r93_all_upper(sites: &[R93Site], key: Option<&str>) -> bool {
+    sites
+        .iter()
+        .filter(|s| r93_bounds_length(&s.cond))
+        .all(|s| key == Some(s.key.as_str()))
+}
+
+/// 一次扫出 `ui/js/app.js` 的**行内**字段错误位点，以及**没有**守卫的那些（射程之外，单独
+/// 计数：它们不属于「按守卫分类」，静默丢掉会让「全文件」成为一句空话）。
+fn r93_sites(app: &str) -> (Vec<R93Site>, usize) {
+    let mut sites = Vec::new();
+    let mut unguarded = 0usize;
+    for (i, raw) in r93_code_lines(app).iter().enumerate() {
+        if raw.starts_with("function setFieldError(") {
+            continue;
+        }
+        let Some(at) = raw.find("setFieldError(") else {
+            continue;
+        };
+        let head = &raw[..at];
+        let rest = &raw[at + "setFieldError(".len()..];
+        let Some(comma) = rest.find(',') else {
+            continue;
+        };
+        let field = rest[..comma].trim().to_string();
+        let after = rest[comma + 1..].trim_start();
+        let Some(after) = after.strip_prefix("T(\"") else {
+            continue;
+        };
+        let Some(q) = after.find('"') else { continue };
+        let key = after[..q].to_string();
+        let Some(if_at) = r93_kw_at(head, "if", 0) else {
+            unguarded += 1;
+            continue;
+        };
+        let Some(open) = head[if_at..].find('(').map(|o| if_at + o) else {
+            unguarded += 1;
+            continue;
+        };
+        let Some(cond) = r93_paren(head, open) else {
+            unguarded += 1;
+            continue;
+        };
+        let cond = cond.trim().to_string();
+        let empty_guard = r93_empty_guard(&cond);
+        sites.push(R93Site {
+            line: i + 1,
+            field,
+            key,
+            cond,
+            empty_guard,
+        });
+    }
+    (sites, unguarded)
+}
+
+/// 一次读出的三条规则**与它们的证据**（#339/#341：判词与取值两列，红的时候要能印出「为什么」）。
+struct R93Reading {
+    key: Option<String>,
+    branches: usize,
+    by_arg: BTreeMap<String, BTreeSet<String>>,
+    literals: BTreeSet<String>,
+    /// 后端 enforcing 分支里**在 `ERR_MAP` 里没有落点**的原话 —— 推不出来的那些必须被数出来
+    /// （静默丢掉它们会让「同一条规则一把嗓子」变成「能解析的那几条恰好同声」）。
+    unresolved: BTreeSet<String>,
+    sites: Vec<R93Site>,
+    unguarded: usize,
+    shared_keys: BTreeSet<String>,
+    a_lower: bool,
+    a_upper: bool,
+    b: bool,
+}
+
+impl R93Reading {
+    fn new(app: &str, rust: &str, i18n: &str) -> Self {
+        let rust = r93_join_continuations(pass_min_prod(rust));
+        let helper = r93_helper(&rust);
+        let branches = helper
+            .as_ref()
+            .and_then(|(name, _)| r93_branches(&rust, name));
+        let mut by_arg: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut literals: BTreeSet<String> = BTreeSet::new();
+        for (arg, lit) in branches.iter().flatten() {
+            by_arg.entry(arg.clone()).or_default().insert(lit.clone());
+            literals.insert(lit.clone());
+        }
+        let pairs = r93_err_map(i18n);
+        let resolved: BTreeMap<&String, String> = literals
+            .iter()
+            .filter_map(|l| r93_resolve(l, &pairs).map(|k| (l, k)))
+            .collect();
+        let unresolved: BTreeSet<String> = literals
+            .iter()
+            .filter(|l| !resolved.contains_key(l))
+            .cloned()
+            .collect();
+        let keys: BTreeSet<&String> = resolved.values().collect();
+        let key = if keys.len() == 1 {
+            keys.into_iter().next().cloned()
+        } else {
+            None
+        };
+
+        let (sites, unguarded) = r93_sites(app);
+        let mut empty_keys: BTreeSet<String> = BTreeSet::new();
+        let mut other_keys: BTreeSet<String> = BTreeSet::new();
+        for s in &sites {
+            if s.empty_guard {
+                empty_keys.insert(s.key.clone());
+            } else {
+                other_keys.insert(s.key.clone());
+            }
+        }
+        let a_lower = sites.iter().any(|s| r93_bounds_length(&s.cond));
+        let a_upper = r93_all_upper(&sites, key.as_deref());
+        let shared_keys: BTreeSet<String> = empty_keys.intersection(&other_keys).cloned().collect();
+
+        R93Reading {
+            key,
+            branches: branches.map(|b| b.len()).unwrap_or(0),
+            by_arg,
+            literals,
+            unresolved,
+            sites,
+            unguarded,
+            b: shared_keys.is_empty(),
+            shared_keys,
+            a_lower,
+            a_upper,
+        }
+    }
+
+    fn verdicts(&self) -> (bool, bool, bool) {
+        (self.a_lower, self.a_upper, self.b)
+    }
+
+    fn length_sites(&self) -> Vec<&R93Site> {
+        self.sites
+            .iter()
+            .filter(|s| r93_bounds_length(&s.cond))
+            .collect()
+    }
+
+    fn report(&self) -> String {
+        let sites: Vec<String> = self
+            .sites
+            .iter()
+            .map(|s| {
+                format!(
+                    "L{} {} {} {}",
+                    s.line,
+                    s.field,
+                    if s.empty_guard { "empty" } else { "other" },
+                    s.key
+                )
+            })
+            .collect();
+        format!(
+            "key={:?} branches={} literals={:?} unresolved={:?} by_arg={:?} length_sites={:?} shared={:?} sites={} unguarded={} verdicts={:?} {}",
+            self.key,
+            self.branches,
+            self.literals,
+            self.unresolved,
+            self.by_arg,
+            self.length_sites()
+                .iter()
+                .map(|s| (s.line, s.field.clone(), s.key.clone()))
+                .collect::<Vec<_>>(),
+            self.shared_keys,
+            sites.len(),
+            self.unguarded,
+            self.verdicts(),
+            sites.join(" | ")
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R93 的**基线树** = 位点的未修形状。
+    ///
+    /// 两条腿（编译门禁的**真树**与 **E1 修复树**）都先归一到它，变体测试才是在**同一棵树**上做的
+    /// （坑 #314：真树在两条腿上形状不同，直接读 `APP_JS` 会让「未修形状上 B 翻红」那条在修复腿上
+    /// 测了另一棵树）。幂等：已是未修形状时原样返回。
+    fn r93_base_tree(app: &str) -> String {
+        app.replace(R93_SITE_FIXED, R93_SITE_UNFIXED)
+    }
+
+    /// R93 的**修复树**。
+    fn r93_fix_tree(app: &str) -> String {
+        r93_base_tree(app).replace(R93_SITE_UNFIXED, R93_SITE_FIXED)
+    }
+
+    /// 把一棵树读一遍（三条规则 + 证据）。
+    fn r93_read(app: &str) -> R93Reading {
+        R93Reading::new(app, PASS_MIN_MOD_RS, I18N_JS)
+    }
+
+    /// 删掉**包含 `needle` 的那一整行**（行尾换行保持原样）。
+    fn r93_remove_line(src: &str, needle: &str) -> String {
+        let kept: Vec<&str> = src.lines().filter(|l| !l.contains(needle)).collect();
+        let mut out = kept.join("\n");
+        if src.ends_with('\n') {
+            out.push('\n');
+        }
+        out
+    }
+
+    /// 变异：**拿掉**长度守卫整行（竞争修法「不做行内长度校验，交给服务端」）⇒ A-lower 该翻红，
+    /// 另两条该保持绿。
+    fn r93_variant_drop(app: &str) -> String {
+        r93_remove_line(&r93_fix_tree(app), R93_SITE_FIXED)
+    }
+
+    /// 变异（A-upper 自己的牙）：长度守卫改说**另一把嗓子**（一个只在「其他」类出现的键）⇒
+    /// 只有 A-upper 该翻红。
+    fn r93_variant_wrong_key(app: &str) -> String {
+        let site = R93_SITE_FIXED.replace("err.weakPassword", R93_MUT_KEY);
+        r93_fix_tree(app).replace(R93_SITE_FIXED, &site)
+    }
+
+    /// 变异（B 自己的牙）：在修复树上再加**一个别的键**同时服务两类 ⇒ 只有 B 该翻红。
+    ///
+    /// 两条新守卫刻意**都不比较 `.length`**（否则 A-upper 会连坐，「恰好一条翻红」就废了）：
+    /// 一条是空类（`!$("#…")`），一条是其他类里的比较（`count < 2`）。
+    fn r93_variant_cross_class(app: &str) -> String {
+        let add = format!(
+        "\n        if (!$(\"#r93-cross\")) {{ setFieldError($(\"#r93-cross\"), T(\"{k}\")); }}\n        \
+         if (r93CrossCount < 2) {{ setFieldError($(\"#r93-cross\"), T(\"{k}\")); }}\n",
+        k = R93_MUT_KEY
+    );
+        r93_fix_tree(app) + &add
+    }
+
+    /// 变异（注释不是证据，坑 #345）：加一行**注释**，说的正是未修形状那句话 ⇒ 判词必须与修复树
+    /// **逐条相同**（并且位点数一个不差）。
+    fn r93_variant_mark_only(app: &str) -> String {
+        format!("{}\n        // {}\n", r93_fix_tree(app), R93_SITE_UNFIXED)
+    }
+
+    /// 轴：找回密码表单的长度守卫必须说**长度**那条规则 —— 与同一规则在服务端拿到的那句话同源。
+    ///
+    /// 三条规则各自的牙见 [`the_r93_rules_have_teeth`]，读取器的阳性对照见
+    /// [`the_r93_readers_are_real`]，两个位点形状与编辑表的关系见
+    /// [`the_r93_site_shapes_are_the_edit_sheet_text`]。
+    #[test]
+    fn the_forgot_password_length_speaks_the_message_the_same_rule_gets_from_the_server() {
+        let read = r93_read(APP_JS);
+        assert!(
+            read.branches > 0,
+            "后端没有分支强制这条规则 —— 推导链是空的，三条规则会一起空转：{}",
+            read.report()
+        );
+        assert!(
+            read.key.is_some(),
+            "推导链断了（helper 候选不唯一 / 原话过不了 ERR_MAP / 解析到不止一个键）：{}",
+            read.report()
+        );
+        assert!(
+            read.unresolved.is_empty(),
+            "后端某条分支的原话在 ERR_MAP 里没有落点 —— 客户端拿不到「同一把嗓子」的那句话：{}",
+            read.report()
+        );
+        assert!(
+            read.sites.len() >= 10,
+            "全文件的行内位点少得不正常（扫描器读空了？）—— B 会退化成恒真：{}",
+            read.report()
+        );
+        assert!(
+            !read.length_sites().is_empty(),
+            "一个长度守卫都没有 —— A-upper 是一句空转的全称命题（坑 #324）：{}",
+            read.report()
+        );
+        assert!(
+            read.verdicts() == (true, true, true),
+            "行内字段错误的文案必须描述**触发它的条件**（R93 三条规则）：{}",
+            read.report()
+        );
+    }
+
+    /// 两个位点形状就是编辑表那一段文本，且只差**键那一个 token**。
+    #[test]
+    fn the_r93_site_shapes_are_the_edit_sheet_text() {
+        let base = r93_base_tree(APP_JS);
+        let fixed = r93_fix_tree(APP_JS);
+        assert_eq!(
+            base.matches(R93_SITE_UNFIXED).count(),
+            1,
+            "未修形状在基线树上不是恰好一处"
+        );
+        assert_eq!(
+            base.matches(R93_SITE_FIXED).count(),
+            0,
+            "基线树上已经有修复体（变体构造器的方向反了？）"
+        );
+        assert_eq!(
+            fixed.matches(R93_SITE_FIXED).count(),
+            1,
+            "修复体在修复树上不是恰好一处"
+        );
+        assert_eq!(fixed.matches(R93_SITE_UNFIXED).count(), 0);
+        // 两棵树只差那一处：归一回未修形状后逐字节相同（变体构造器的幂等性）。
+        assert_eq!(r93_base_tree(&fixed), base, "两个形状互逆失败");
+        // 两个形状之间差的**只是键那一个 token**：把两种键拼法换成同一个记号后逐字相同。
+        let blank_keys = |s: &str| {
+            s.replace("register.err.pass", "@k@")
+                .replace("err.weakPassword", "@k@")
+        };
+        assert_eq!(
+            blank_keys(R93_SITE_UNFIXED),
+            blank_keys(R93_SITE_FIXED),
+            "两个形状差的不是那个键 —— 编辑表改了别的东西"
+        );
+        assert_ne!(R93_SITE_UNFIXED, R93_SITE_FIXED);
+    }
+
+    /// 阳性对照：读取器在**已知为绿**的树上读到东西、在未修形状上**恰好多翻两条**；派生链在合成
+    /// 输入上有牙齿；剥注释有牙齿。
+    ///
+    /// ⚠️ 断言只打在自己拼出来的树上（真树在两条腿上形状不同 —— 所以基线一律先走
+    /// [`r93_base_tree`]）。
+    #[test]
+    fn the_r93_readers_are_real() {
+        let base = r93_base_tree(APP_JS);
+        let fixed = r93_fix_tree(APP_JS);
+
+        // 正向：修复树上三条规则全绿，且证据（分支数、键、位点、长度位点）全都读到。
+        let fix = r93_read(&fixed);
+        assert_eq!(
+            fix.verdicts(),
+            (true, true, true),
+            "修复树上三条规则不是全绿 —— 变体构造器或派生链坏了：{}",
+            fix.report()
+        );
+        assert!(
+            fix.branches >= 1 && fix.key.is_some() && !fix.literals.is_empty(),
+            "修复树上的推导链是空的：{}",
+            fix.report()
+        );
+        assert!(
+            fix.sites.len() >= 10,
+            "修复树上的位点数少得不正常（扫描器读空了？）：{}",
+            fix.report()
+        );
+        assert!(
+            !fix.length_sites().is_empty() && fix.shared_keys.is_empty(),
+            "修复树上的证据不对：{}",
+            fix.report()
+        );
+
+        // 反向：未修形状上**恰好**两条翻红（A-upper 与 B），A-lower 仍绿；跨两类的键恰好是那把
+        // 「空」的嗓子。名字写在这里是**判词的投影**（本轴全仓只有这一个成员，侦察 §6），
+        // 它红了就是要人回来看——不是「通过」。
+        let bad = r93_read(&base);
+        assert_eq!(
+            bad.verdicts(),
+            (true, false, false),
+            "未修形状的投影不是 (T,F,F)：{}",
+            bad.report()
+        );
+        let want: BTreeSet<String> = [String::from("register.err.pass")].into_iter().collect();
+        assert_eq!(
+            bad.shared_keys,
+            want,
+            "跨两类的键不是恰好那把「空」的嗓子：{}",
+            bad.report()
+        );
+        // 这条轴**存在**的判据：未修形状上，长度位点说的话**不是**规则推导出来的那个键。
+        // 那把键从 `bad.key` 取（**推导**来的，不写死「今天那句错话」）—— 判词说的是「位点与规则
+        // 不同源」，不是「位点恰好写了某个字符串」；写死错话会让这条腿在别人改那句话时静默失效。
+        let k = bad.key.clone();
+        assert!(
+            bad.length_sites()
+                .iter()
+                .all(|s| Some(s.key.as_str()) != k.as_deref()),
+            "未修形状上长度位点已经用对了嗓子 —— 这条轴不存在了：{}",
+            bad.report()
+        );
+
+        // ---- 派生链的牙齿（合成输入：不碰真文件）----
+        let pairs = r93_err_map(I18N_JS);
+        assert!(
+            pairs.len() >= 40,
+            "ERR_MAP 解析器读空了（{} 条）—— 推导会静默退化",
+            pairs.len()
+        );
+        // 最长子串规则端到端：注册那句是重置那句的**子串** ⇒ 两条原话必须落到同一个键。
+        let ks: BTreeSet<String> = bad
+            .literals
+            .iter()
+            .filter_map(|l| r93_resolve(l, &pairs))
+            .collect();
+        assert_eq!(
+            ks.len(),
+            1,
+            "同一规则的两句原话解析到不止一个键（最长匹配没生效？）：{:?} / {:?}",
+            bad.literals,
+            ks
+        );
+        // 字节口径**不是**这条规则的形状：候选必须为空（响亮失败，而不是猜一个）。
+        let byte_shape = "fn f(x: &str) -> bool {\n    x.len() < MIN\n}\n";
+        assert!(
+            r93_helper(byte_shape).is_none(),
+            "字节形状被当成了字符形状的 helper —— 推导会在错的规则上「通过」"
+        );
+        // 两个候选也必须是响亮失败（不唯一 ⇒ 不猜）。
+        let two = "fn a(x: &str) -> bool {\n    x.chars().count() < MIN\n}\n\
+               fn b(y: &str) -> bool {\n    y.chars().count() < MIN\n}\n";
+        assert!(r93_helper(two).is_none(), "两个候选必须响亮失败");
+        // 正对照：字符形状的 helper 必须**读得到**（否则上面两条是空的）。
+        let one = "fn a(x: &str) -> bool {\n    x.chars().count() < MIN\n}\n";
+        assert_eq!(
+            r93_helper(one).map(|(n, _)| n),
+            Some(String::from("a")),
+            "字符形状的 helper 都读不到 —— 判别式坏了"
+        );
+
+        // ---- 剥注释的牙齿（合成输入：注释里的位点不算证据）----
+        let synth = "var x = 1; // setFieldError($(\"#zzz\"), T(\"zzz.key\"))\n\
+                 /* setFieldError($(\"#yyy\"), T(\"yyy.key\")) */\n\
+                 if (!a) { setFieldError($(\"#www\"), T(\"www.key\")); }\n";
+        let (s, u) = r93_sites(synth);
+        assert_eq!(
+            s.iter().map(|x| x.key.clone()).collect::<Vec<_>>(),
+            vec![String::from("www.key")],
+            "剥注释后仍有假位点（行内 `//` 或块注释漏了）"
+        );
+        assert_eq!(u, 0, "合成输入里没有无守卫的位点");
+        // 行号必须对得上磁盘（坑 #532）：真位点在第 3 行。
+        assert_eq!(s[0].line, 3, "报出的行号不是磁盘上的行号");
+
+        // ---- 两条分类器的正/反向（合成输入）----
+        assert!(
+            r93_empty_guard("!pw")
+                && r93_empty_guard("!$(\"#a\")")
+                && r93_empty_guard("x.trim() === \"\"")
+                && r93_empty_guard("pw === \"\""),
+            "空类判别式漏了合法形状"
+        );
+        assert!(
+            !r93_empty_guard("Array.from(pw).length < MIN_PW_CHARS")
+                && !r93_empty_guard("pw !== pw2")
+                && !r93_empty_guard("a <= 0"),
+            "非空类形状被误判成空类（B 会因此无意义地翻红）"
+        );
+        assert!(
+            r93_bounds_length("Array.from(pw).length < MIN_PW_CHARS")
+                && r93_bounds_length("a.length > 3"),
+            "长度判别式漏了合法形状"
+        );
+        assert!(
+            !r93_bounds_length("a.count < 2") && !r93_bounds_length("a.value"),
+            "长度判别式误吞了非长度比较（A-upper 会因此管辖过宽）"
+        );
+    }
+
+    /// 三条规则**各有独立的牙**：每个变异恰好打翻一条，且基线是**已知为绿**的修复树。
+    ///
+    /// 判据是「恰好一条翻转」而不是「至少一条红」—— 否则一条从别处借来红的规则也能自称有牙。
+    #[test]
+    fn the_r93_rules_have_teeth() {
+        let baseline = r93_read(&r93_fix_tree(APP_JS));
+        assert_eq!(
+            baseline.verdicts(),
+            (true, true, true),
+            "自证基线不绿，牙齿测试没有意义：{}",
+            baseline.report()
+        );
+
+        // 顺序 = (A-lower, A-upper, B)。
+        let mutants = [
+            (
+                "length guard removed",
+                r93_variant_drop(APP_JS),
+                (false, true, true),
+            ),
+            (
+                "length guard speaks another key",
+                r93_variant_wrong_key(APP_JS),
+                (true, false, true),
+            ),
+            (
+                "one key serves both classes",
+                r93_variant_cross_class(APP_JS),
+                (true, true, false),
+            ),
+        ];
+        for (name, tree, want) in mutants {
+            let got = r93_read(&tree).verdicts();
+            assert_eq!(
+                got, want,
+                "变异 `{name}` 的投影不是「恰好一条翻红」（want {want:?}）"
+            );
+        }
+
+        // 注释不算证据：加一句说着未修形状的注释，判词与位点数必须**逐条相同**（坑 #345）。
+        let marked = r93_read(&r93_variant_mark_only(APP_JS));
+        assert_eq!(
+            marked.verdicts(),
+            baseline.verdicts(),
+            "注释被当成了证据：{}",
+            marked.report()
+        );
+        assert_eq!(
+            marked.sites.len(),
+            baseline.sites.len(),
+            "注释造出了幻影位点：{}",
+            marked.report()
+        );
+    }
 
     /// 闭包里各函数**宣称隐藏**的 `#<id>` 集合（判别式与 C2171 同一把：字面量 `"#<id>"` **且**把
     /// `hidden` 加上去的操作，两者在本元素的**同一个函数体**里）。
@@ -6017,10 +6868,15 @@ mod tests {
         );
 
         // (d) 竞争修法 `m_drop_client`：删掉客户端守卫，让两边「不再矛盾」—— 只翻规则 4
-        let app_drop = APP_JS.replace(
-            "        if (Array.from(pw).length < MIN_PW_CHARS) { setFieldError($(\"#forgot-pass\"), T(\"register.err.pass\")); firstErr = firstErr || $(\"#forgot-pass\"); }\n",
-            "",
-        );
+        //
+        // ⚠️ 针**不得包含那一行说的话**（键）：R93 的 E1 把这一行的 `register.err.pass` 换成
+        // `err.weakPassword`，含键的针在修复树上就成了**不动的** replace —— 本腿当场假绿，而下一行
+        // 的 `assert_ne!` 正是为这种事准备的。所以按**守卫**整行删除：针里只有条件，没有那句话。
+        let app_drop = {
+            let guard = "if (Array.from(pw).length < MIN_PW_CHARS)";
+            let kept: Vec<&str> = APP_JS.lines().filter(|l| !l.contains(guard)).collect();
+            kept.join("\n")
+        };
         assert_ne!(app_drop, APP_JS, "客户端守卫那一行没被删掉 —— 这条腿会假绿");
         let r = pass_min_read(PASS_MIN_MOD_RS, &app_drop, I18N_JS, PASS_MIN_PROTO);
         assert_eq!(
