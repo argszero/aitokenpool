@@ -12415,3 +12415,854 @@ fn the_r155_rules_separate_the_variants() {
         "`fix_generation` 与未修形状逐字相同 —— 竞争修法没落地"
     );
 }
+
+// ═══════════════════════ R92：toast 的分级词表只有一个（PART A：helpers）═══════════════════════
+//
+// 轴：**调用点写下的那个分级词，必须是样式表为 `.toast` 声明过的词；而样式表声明的词又必须
+// 正是 `ui/README.md` 把它当契约写出来的那一组；反过来，样式表里也不许有待用的分级。**
+//
+// 一件事、三处载体：
+//   ① 机制（`ui/js/app.js` 的 `function toast(msg, type, opts)`）把 `type` **无校验**地拼进
+//      `className`（`el.className = "toast" + (type ? " " + type : "")`）⇒ 拼错的词**不会报错**，
+//      只是永远拿不到分级样式。词表因此只能靠「调用点」与「样式表」两处对齐来保证。
+//   ② 样式表（`ui/css/style.css`）声明 `.toast.success` / `.toast.error` / `.toast.info` 三条
+//      **分级**规则；`.toast.out` 是**状态类**（由 `toast()` 函数体自己 `classList.add("out")`），
+//      不是分级 ⇒ 分级集合**推导**为「规则集合 − 函数体自己加的状态类」，零手写豁免清单
+//      （#357 家族：豁免要能从制品里推出来）。
+//   ③ 文档（`ui/README.md` §交互约定）把 `toast(msg, "success" | "error" | "info")` 写成契约。
+//
+// 缺陷（R92）：`ui/js/app.js` 的忘记密码成功分支
+// `if (r && r.status === "ok") { toast(T("forgot.done"), "ok"); … }` —— 第二个实参**不是选词**，
+// 而是**同一个布尔分支的判据字面量**被复用了（`"ok"` 是 API 响应状态、也是 pill 颜色词表的词，
+// 不是 toast 分级）⇒ 全应用唯一一条拿不到成功色的成功消息，且整会话不自愈。
+//
+// 规则：
+//   R1  每个 `toast()` **调用点**写下的**字面量**分级，都必须 ∈ 由样式表推导出的分级集合；
+//       调用点的第二实参**不得**是非字面量（变量 / 拼接 / 模板串）—— 那会让静态对齐失效，
+//       要么写进词表、要么走派生映射（#322：先扫兄弟行 —— 27 条 success 本来就写对了）。
+//       非空前置（坑 68：空集上的集合断言会假绿）：调用点 ≥ 2、样式表分级集合非空。
+//   R2  推导出的分级集合必须**恰好等于** `ui/README.md` 契约行里**解析**出来的那组词
+//       —— 样式表与文档必须说同一件事（#469：期望值从被测量的制品里推导，不写死字面量）。
+//       这条同时挡住竞争修法「不动调用点、给 `.toast.ok` 补一条与 `.toast.success` 同体的规则」
+//       —— 那样样式表的词表就多了一个文档没写的同义词（探针把这种叫 `m_css` / `m_css2`）。
+//   R3  反向：样式表里每条**分级**规则都要被至少一个调用点用到（无死分级）。只加规则会触犯 R2、
+//       只改文档也会触犯 R2 ⇒ R3 单独负责「两边都改了、但那条规则没人用」这种死分级。
+//
+// 射程（如实，并已写进 `ui/README.md`）：本门禁是**词法**的 —— 它证「词表的三个载体说的是同一
+// 组词」，**不**证屏幕上那一刻这条消息真的染上了成功色（那一半归 jsdom 探针 `r92_probe.js`
+// 的 B1/B3/C3 腿）。扫描器跳过字符串／模板串／注释；**正则字面量不被识别**（当时的 75 个调用点
+// 里没有正则；自证测试把这一点钉在「每个调用点的括号都能配对、实参数都是 1..3」上）。
+
+/// `ui/README.md`：契约的第三个载体（把分级词表写成文档）。
+const UI_README: &str = include_str!("../ui/README.md");
+
+/// 修复前 / 修复后那一行的**唯一区别**（两个片段都逐字来自 `ui/js/app.js`）。
+/// 变异体靠这两个常量在**同一棵树**上来回走（#612：每个变异体都从同一个起点拼）。
+const R92_CALL_UNFIXED: &str = "toast(T(\"forgot.done\"), \"ok\")";
+const R92_CALL_FIXED: &str = "toast(T(\"forgot.done\"), \"success\")";
+
+// ------------------------------------------------------------------ 词法扫描（括号/串/注释感知）---
+
+/// 标识符字符（JS 的 `$` 与 `_` 也算）。
+fn r92_ident_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'$'
+}
+
+/// `i` 指向引号；返回该字符串字面量之后的偏移。
+fn r92_skip_string(b: &[u8], mut i: usize) -> usize {
+    let q = b[i];
+    i += 1;
+    while i < b.len() {
+        if b[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if b[i] == q {
+            return i + 1;
+        }
+        i += 1;
+    }
+    i
+}
+
+/// `i` 指向 `//`；返回到行尾之后（含换行）。
+fn r92_skip_line_comment(b: &[u8], i: usize) -> usize {
+    match b[i..].iter().position(|&c| c == b'\n') {
+        Some(p) => i + p + 1,
+        None => b.len(),
+    }
+}
+
+/// `i` 指向 `/*`；返回注释之后。
+fn r92_skip_block_comment(b: &[u8], i: usize) -> usize {
+    let mut j = i + 2;
+    while j + 1 < b.len() {
+        if b[j] == b'*' && b[j + 1] == b'/' {
+            return j + 2;
+        }
+        j += 1;
+    }
+    b.len()
+}
+
+/// 这个 `/` 是否**开始一个正则字面量**（而不是除号）。
+///
+/// 判据＝前一个有意义字符是不是运算符/开括号一类：`( , = : [ ! & | ? { } ; + - * % ~ ^ < >`。
+/// 除号前面的字符总是标识符字符 / `)` / `]` / 数字 / 引号，落不在这个集合里。
+/// 必须做这一步：`/[&<>"']/g`（`esc()`）与 `/[",\r\n]/`（CSV 单元格转义）里都带着**引号**，
+/// 把它们当字符串起始会吞掉大段代码（本轮就是这么被咬的 —— 76 个位点只扫到 16 个）。
+fn r92_regex_starts(b: &[u8], i: usize) -> bool {
+    let mut k = i;
+    while k > 0 {
+        let c = b[k - 1];
+        if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
+            k -= 1;
+            continue;
+        }
+        return matches!(
+            c,
+            b'(' | b','
+                | b'='
+                | b':'
+                | b'['
+                | b'!'
+                | b'&'
+                | b'|'
+                | b'?'
+                | b'{'
+                | b'}'
+                | b';'
+                | b'+'
+                | b'-'
+                | b'*'
+                | b'%'
+                | b'~'
+                | b'^'
+                | b'<'
+                | b'>'
+        );
+    }
+    true
+}
+
+/// `i` 指向正则字面量的起始 `/`；返回到它之后（含 flags）。字符类 `[...]` 里的 `/` 不算收尾；
+/// 换行即放弃（正则不能跨行 ⇒ 那说明这里其实是除号，别吞代码）。
+fn r92_skip_regex(b: &[u8], i: usize) -> usize {
+    let mut j = i + 1;
+    let mut in_class = false;
+    while j < b.len() {
+        let c = b[j];
+        if c == b'\\' {
+            j += 2;
+            continue;
+        }
+        if c == b'\n' {
+            return j;
+        }
+        if c == b'[' {
+            in_class = true;
+        } else if c == b']' {
+            in_class = false;
+        } else if c == b'/' && !in_class {
+            return j + 1;
+        }
+        j += 1;
+    }
+    j
+}
+
+/// `i` 指向 `(`；返回与之配对的 `)` 的偏移。字符串／模板串／注释里的括号不算结构。
+fn r92_matching_paren(b: &[u8], i: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut j = i;
+    while j < b.len() {
+        let c = b[j];
+        if c == b'"' || c == b'\'' || c == b'`' {
+            j = r92_skip_string(b, j);
+            continue;
+        }
+        if c == b'/' && j + 1 < b.len() && b[j + 1] == b'/' {
+            j = r92_skip_line_comment(b, j);
+            continue;
+        }
+        if c == b'/' && j + 1 < b.len() && b[j + 1] == b'*' {
+            j = r92_skip_block_comment(b, j);
+            continue;
+        }
+        if c == b'/' && r92_regex_starts(b, j) {
+            j = r92_skip_regex(b, j);
+            continue;
+        }
+        if c == b'(' {
+            depth += 1;
+        } else if c == b')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(j);
+            }
+        }
+        j += 1;
+    }
+    None
+}
+
+/// 括号／串／注释感知地把 `[open, close)` 之间的实参切成顶层若干段（不含定界逗号），去首尾空白。
+/// ⛔ 不用「按行切」：一行可以有好几处调用，实参里也常有 `T(...)` 这类嵌套调用。
+fn r92_split_args(b: &[u8], open: usize, close: usize) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let mut cur: Vec<u8> = Vec::new();
+    let mut depth = 0i32;
+    let mut j = open + 1;
+    while j < close {
+        let c = b[j];
+        if c == b'"' || c == b'\'' || c == b'`' {
+            let e = r92_skip_string(b, j).min(close);
+            cur.extend_from_slice(&b[j..e]);
+            j = e;
+            continue;
+        }
+        if c == b'/' && j + 1 < close && b[j + 1] == b'/' {
+            j = r92_skip_line_comment(b, j);
+            cur.push(b' ');
+            continue;
+        }
+        if c == b'/' && j + 1 < close && b[j + 1] == b'*' {
+            j = r92_skip_block_comment(b, j);
+            cur.push(b' ');
+            continue;
+        }
+        if c == b'/' && r92_regex_starts(b, j) {
+            let e = r92_skip_regex(b, j).min(close);
+            cur.extend_from_slice(&b[j..e]);
+            j = e;
+            continue;
+        }
+        if c == b'(' || c == b'[' || c == b'{' {
+            depth += 1;
+        } else if c == b')' || c == b']' || c == b'}' {
+            depth -= 1;
+        } else if c == b',' && depth == 0 {
+            args.push(String::from_utf8_lossy(&cur).trim().to_string());
+            cur.clear();
+            j += 1;
+            continue;
+        }
+        cur.push(c);
+        j += 1;
+    }
+    let tail = String::from_utf8_lossy(&cur).trim().to_string();
+    if !tail.is_empty() || !args.is_empty() {
+        args.push(tail);
+    }
+    args
+}
+
+/// `i` 之前（跳过空白）是否恰好是 `function` 这个词 —— 用来把函数**定义**处从调用点名册里剔除。
+/// 按**字节**取，不切 `&str`（游标可能落在多字节字符中间）。
+fn r92_preceded_by_function(b: &[u8], i: usize) -> bool {
+    let mut k = i;
+    while k > 0 && (b[k - 1] == b' ' || b[k - 1] == b'\t') {
+        k -= 1;
+    }
+    let word = b"function";
+    k >= word.len() && &b[k - word.len()..k] == word
+}
+
+/// 整个字面量（首尾同一种引号、且长度 ≥ 2）。
+fn r92_is_string_literal(a: &str) -> bool {
+    let bs = a.as_bytes();
+    bs.len() >= 2 && (bs[0] == b'"' || bs[0] == b'\'') && bs[bs.len() - 1] == bs[0]
+}
+
+/// 一个 `toast(` 位点。
+#[derive(Debug, Clone)]
+struct R92Site {
+    /// 行号（1 起）。
+    line: usize,
+    /// 顶层实参个数。
+    args: usize,
+    /// 第二实参是**纯字面量**时的值（去掉引号）。
+    level: Option<String>,
+    /// 第二实参**不是**字面量时的原文（诊断用；`None` 表示缺参）。
+    dynamic: Option<String>,
+    /// 是否是 `function toast(...)` 的定义处（定义处不进调用点名册）。
+    definition: bool,
+}
+
+/// 扫出文件里每个 `toast(` 位点（字符串／注释里的 `toast(` 不算 —— 它们不是代码）。
+fn r92_sites(src: &str) -> Vec<R92Site> {
+    let b = src.as_bytes();
+    let mut out: Vec<R92Site> = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'"' || c == b'\'' || c == b'`' {
+            i = r92_skip_string(b, i);
+            continue;
+        }
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            i = r92_skip_line_comment(b, i);
+            continue;
+        }
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            i = r92_skip_block_comment(b, i);
+            continue;
+        }
+        if c == b'/' && r92_regex_starts(b, i) {
+            i = r92_skip_regex(b, i);
+            continue;
+        }
+        if !b[i..].starts_with(b"toast") {
+            i += 1;
+            continue;
+        }
+        let after = i + "toast".len();
+        let prev_ok = i == 0 || !r92_ident_byte(b[i - 1]);
+        // 后面必须是可选空白 + `(`（`okToast(` / `toastAll(` 之类的名字不匹配）。
+        let tail_ok = b.get(after) == Some(&b'(')
+            || (matches!(b.get(after), Some(&x) if x == b' ' || x == b'\t')
+                && b.get(after + 1) == Some(&b'('));
+        if !prev_ok || !tail_ok {
+            i = after;
+            continue;
+        }
+        let mut open = after;
+        while open < b.len() && b[open] != b'(' {
+            open += 1;
+        }
+        let Some(close) = r92_matching_paren(b, open) else {
+            i = after;
+            continue;
+        };
+        let args = r92_split_args(b, open, close);
+        let line = b[..i].iter().filter(|&&x| x == b'\n').count() + 1;
+        let (level, dynamic) = match args.get(1) {
+            None => (None, None),
+            Some(a) if r92_is_string_literal(a) => (Some(a[1..a.len() - 1].to_string()), None),
+            Some(a) => (None, Some(a.replace('\n', " "))),
+        };
+        out.push(R92Site {
+            line,
+            args: args.len(),
+            level,
+            dynamic,
+            definition: r92_preceded_by_function(b, i),
+        });
+        i = close + 1;
+    }
+    out
+}
+
+/// 样式表里行首 `.toast.<level> {` 规则的分级名（去重排序）。
+/// ⚠️ `.toast-action {`（连字符）与 `.toast {`（基类）都不匹配。
+fn r92_rule_levels(css: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in css.lines() {
+        let Some(rest) = line.trim_end().strip_prefix(".toast.") else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .collect();
+        if !name.is_empty() && rest[name.len()..].trim_start().starts_with('{') {
+            out.push(name);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// `toast()` 函数体自己 `classList.add` 的字面量 —— 那些是**状态类**，不是分级。
+/// 从函数体**推导** ⇒ 将来它再加或换状态类，分级集合自动跟着走（零手写豁免清单）。
+fn r92_state_classes(src: &str) -> Vec<String> {
+    let Some(body) = js_function_body(src, "toast") else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for (idx, _) in body.match_indices("classList.add(") {
+        let rest = body[idx + "classList.add(".len()..].trim_start();
+        let Some(q) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+            continue;
+        };
+        if let Some(end) = rest[1..].find(q) {
+            let name = &rest[1..1 + end];
+            if !name.is_empty() {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// 从 `ui/README.md` 的契约行**解析**分级枚举（不写死字面量，#469）。
+/// 契约行形状：`` `toast(msg, "success" | "error" | "info")` ``。
+fn r92_readme_levels(readme: &str) -> Option<Vec<String>> {
+    for line in readme.lines() {
+        let Some(at) = line.find("`toast(msg,") else {
+            continue;
+        };
+        let rest = &line[at..];
+        let Some(close) = rest.find(')') else {
+            continue;
+        };
+        let mut out: Vec<String> = Vec::new();
+        for (idx, _) in rest[..close].match_indices('"') {
+            let seg = &rest[idx + 1..close];
+            let Some(end) = seg.find('"') else {
+                continue;
+            };
+            let name = &seg[..end];
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                out.push(name.to_string());
+            }
+        }
+        out.sort();
+        out.dedup();
+        if !out.is_empty() {
+            return Some(out);
+        }
+    }
+    None
+}
+
+// ----------------------------------------------------------------------------------- 判读 ---
+
+/// 本轴的判读结果（三条规则各带自己的触犯清单）。
+struct R92Reading {
+    sites: Vec<R92Site>,
+    rules: Vec<String>,
+    state: Vec<String>,
+    styled: Vec<String>,
+    readme: Option<Vec<String>>,
+    used: Vec<String>,
+    r1_bad: Vec<String>,
+    r2_bad: Vec<String>,
+    r3_bad: Vec<String>,
+}
+
+impl R92Reading {
+    fn verdicts(&self) -> (bool, bool, bool) {
+        (
+            self.r1_bad.is_empty(),
+            self.r2_bad.is_empty(),
+            self.r3_bad.is_empty(),
+        )
+    }
+
+    fn report(&self) -> String {
+        let calls: Vec<&R92Site> = self.sites.iter().filter(|s| !s.definition).collect();
+        format!(
+            "调用点 {} 条 · 用到的字面量分级 {:?} · 样式表规则 {:?} · 状态类(函数体推导) {:?} \
+             · 分级集合 {:?} · 文档契约 {:?}\n  R1: {:?}\n  R2: {:?}\n  R3: {:?}",
+            calls.len(),
+            self.used,
+            self.rules,
+            self.state,
+            self.styled,
+            self.readme,
+            self.r1_bad,
+            self.r2_bad,
+            self.r3_bad,
+        )
+    }
+}
+
+/// 三条规则的唯一读取入口。`app` 是被测的那棵树（两条腿喂不同的树）；
+/// 样式表与文档永远是 live 的 `ui/css/style.css` / `ui/README.md`。
+fn r92_read(app: &str, css: &str, readme: &str) -> R92Reading {
+    let sites = r92_sites(app);
+    let rules = r92_rule_levels(css);
+    let state = r92_state_classes(app);
+    let styled: Vec<String> = rules
+        .iter()
+        .filter(|r| !state.contains(r))
+        .cloned()
+        .collect();
+    let readme_levels = r92_readme_levels(readme);
+    let mut used: Vec<String> = sites
+        .iter()
+        .filter(|s| !s.definition)
+        .filter_map(|s| s.level.clone())
+        .collect();
+    used.sort();
+    used.dedup();
+
+    // R1：调用点的分级词必须在样式表声明过；调用点不得拿非字面量当分级；两个非空前置。
+    let mut r1_bad: Vec<String> = Vec::new();
+    let calls: Vec<&R92Site> = sites.iter().filter(|s| !s.definition).collect();
+    for s in &calls {
+        match (&s.level, &s.dynamic) {
+            (Some(lv), _) if !styled.contains(lv) => r1_bad.push(format!(
+                "第 {} 行：toast(…, \"{}\") —— `{}` 不在样式表声明的分级里",
+                s.line, lv, lv
+            )),
+            (None, Some(dyn_src)) => r1_bad.push(format!(
+                "第 {} 行：toast(…, {}) —— 调用点的分级不是字面量，静态对齐失效",
+                s.line, dyn_src
+            )),
+            _ => {}
+        }
+    }
+    if calls.len() < 2 {
+        r1_bad.push(format!(
+            "toast() 调用点只有 {} 条 —— 扫描器或树不对",
+            calls.len()
+        ));
+    }
+    if styled.is_empty() {
+        r1_bad.push("样式表里一条 `.toast.<level>` 分级规则都没有".into());
+    }
+
+    // R2：样式表的分级词表 == 文档契约里解析出来的词表（双向）。
+    let mut r2_bad: Vec<String> = Vec::new();
+    match &readme_levels {
+        None => r2_bad.push("`ui/README.md` 里找不到 `toast(msg, …)` 契约行".into()),
+        Some(rm) => {
+            for lv in &styled {
+                if !rm.contains(lv) {
+                    r2_bad.push(format!(
+                        "样式表声明了 `.toast.{}`，而文档契约里没有这个词",
+                        lv
+                    ));
+                }
+            }
+            for lv in rm {
+                if !styled.contains(lv) {
+                    r2_bad.push(format!(
+                        "文档契约写了 `{}`，而样式表没有 `.toast.{}` 规则",
+                        lv, lv
+                    ));
+                }
+            }
+        }
+    }
+
+    // R3：反向 —— 每条分级规则都要有人用（无死分级）。
+    let mut r3_bad: Vec<String> = Vec::new();
+    for lv in &styled {
+        if !used.contains(lv) {
+            r3_bad.push(format!("`.toast.{}` 没有任何调用点用到 —— 死分级", lv));
+        }
+    }
+
+    R92Reading {
+        sites,
+        rules,
+        state,
+        styled,
+        readme: readme_levels,
+        used,
+        r1_bad,
+        r2_bad,
+        r3_bad,
+    }
+}
+
+// ------------------------------------------------------------------------------ 变异体构造 ---
+
+/// 未修形状（幂等）：把那处分级换回它出生时写下的那个词（＝判据字面量的复用）。
+fn r92_variant_unfixed(app: &str) -> String {
+    app.replace(R92_CALL_FIXED, R92_CALL_UNFIXED)
+}
+
+/// 修复形状（幂等）：把那一处换成词表里的词。
+fn r92_variant_fix(app: &str) -> String {
+    app.replace(R92_CALL_UNFIXED, R92_CALL_FIXED)
+}
+
+/// 竞争修法 `m_css`（幂等）：不动调用点，给 `"ok"` 补一条与 `.toast.success` **同体**的规则。
+/// 这是本轴最像样的竞争修法 —— 屏幕上的颜色当场就对了，但词表多了一个文档没写的同义词。
+fn r92_variant_css_synonym(css: &str) -> String {
+    if css.contains(".toast.ok {") {
+        return css.to_string();
+    }
+    let add = ".toast.ok { border-color: var(--ok); color: var(--ok); }\n";
+    css.replacen(".toast.out {", &format!("{add}.toast.out {{"), 1)
+}
+
+/// 死分级（幂等，R3 的牙）：样式表里加一条 `.toast.warn` **并**把 `warn` 写进文档契约
+/// —— 于是 R2 两边一致，只剩 R3 能开口（那条规则没有任何调用点用到）。
+/// 返回 `(新样式表, 新文档)`。
+fn r92_variant_dead_level(css: &str, readme: &str) -> (String, String) {
+    let css2 = if css.contains(".toast.warn {") {
+        css.to_string()
+    } else {
+        css.replacen(
+            ".toast.out {",
+            ".toast.warn { border-color: var(--warn); color: var(--warn); }\n.toast.out {",
+            1,
+        )
+    };
+    let enum_src = "\"success\" | \"error\" | \"info\"";
+    let readme2 = if readme.contains("\"info\" | \"warn\"") {
+        readme.to_string()
+    } else {
+        readme.replacen(enum_src, "\"success\" | \"error\" | \"info\" | \"warn\"", 1)
+    };
+    (css2, readme2)
+}
+
+/// 文档漂移（幂等，R2 的牙之二）：把 `info` 从文档契约里删掉 —— 样式表没动。
+fn r92_variant_readme_desync(readme: &str) -> String {
+    readme.replacen(
+        "\"success\" | \"error\" | \"info\"",
+        "\"success\" | \"error\"",
+        1,
+    )
+}
+
+// ------------------------------------------------------------------------------------ tests ---
+
+/// 一条变异腿的声明：(标签, app 树, 样式表, 文档契约, 期望判词 `(R1, R2, R3)`)。
+/// 取别名是因为 CI 跑 `clippy --all-targets -- -D warnings`，裸元组会触发 `type_complexity`。
+type R92Leg<'a> = (&'a str, &'a str, &'a str, &'a str, (bool, bool, bool));
+
+/// 提取器落在真位点上（自证：定义处恰好一处、调用点 75 条、实参数都是 1..3、词表三者非空）。
+#[test]
+fn the_r92_scanner_lands_on_the_real_toast_sites() {
+    let sites = r92_sites(APP_JS);
+    let defs: Vec<&R92Site> = sites.iter().filter(|s| s.definition).collect();
+    let calls: Vec<&R92Site> = sites.iter().filter(|s| !s.definition).collect();
+
+    assert_eq!(
+        defs.len(),
+        1,
+        "`function toast(` 定义处不是恰好一处：{defs:?}"
+    );
+    assert_eq!(
+        defs[0].dynamic.as_deref(),
+        Some("type"),
+        "定义处的第二实参应当是这个形参 `type`：{defs:?}"
+    );
+    assert!(
+        calls.len() >= 70,
+        "调用点只有 {} 条 —— 扫描器停错了地方或树不对",
+        calls.len()
+    );
+    // 括号能配对、实参数在 1..3 之间（正则字面量若骗到了扫描器，这里会先炸）。
+    for s in &calls {
+        assert!(
+            (1..=3).contains(&s.args),
+            "第 {} 行的 toast() 实参数是 {} —— 扫描器被字符串/正则骗到了",
+            s.line,
+            s.args
+        );
+    }
+    // 第二实参的三种形状都必须在名册里出现过（缺参是**受支持的中性态**，见 ui/README.md）。
+    assert!(
+        calls.iter().any(|s| s.level.is_some()),
+        "没有任何调用点带字面量分级 —— 名册是空的"
+    );
+    assert!(
+        calls.iter().any(|s| s.args == 1),
+        "没有一条「缺参」调用点 —— 与本仓的实际形状不符（#322：先看兄弟行）"
+    );
+
+    // 状态类由函数体推导，不是手写豁免清单。
+    assert_eq!(
+        r92_state_classes(APP_JS),
+        vec!["out".to_string()],
+        "`toast()` 函数体里 `classList.add` 的字面量集合变了"
+    );
+    // 样式表：三条分级 + 一个状态类。
+    assert_eq!(
+        r92_rule_levels(STYLE_CSS),
+        vec![
+            "error".to_string(),
+            "info".to_string(),
+            "out".to_string(),
+            "success".to_string()
+        ],
+        "`ui/css/style.css` 的 `.toast.<x>` 规则集合变了"
+    );
+    // 文档契约能解析出三个词。
+    assert_eq!(
+        r92_readme_levels(UI_README),
+        Some(vec![
+            "error".to_string(),
+            "info".to_string(),
+            "success".to_string()
+        ]),
+        "`ui/README.md` 的 toast 契约行解析不出三个分级"
+    );
+}
+
+/// 轴：**调用点的分级词、样式表的规则、文档的契约，三者说同一组词**（本测试在**未修树**上红）。
+#[test]
+fn every_toast_level_is_a_level_the_sheet_declares() {
+    let rd = r92_read(APP_JS, STYLE_CSS, UI_README);
+    assert!(
+        rd.verdicts() == (true, true, true),
+        "R92 未修：有一个调用点写的分级词不在 `.toast` 的规则集里（或被文档漏写）。\n  {}",
+        rd.report()
+    );
+}
+
+/// 三条规则**各有独立的牙**：合成变异体各只打翻它针对的那一条（基线＝已知为绿的修复树，#458）。
+#[test]
+fn the_r92_rules_have_teeth() {
+    let fixed = r92_variant_fix(APP_JS);
+    let base = r92_read(&fixed, STYLE_CSS, UI_README);
+    assert_eq!(
+        base.verdicts(),
+        (true, true, true),
+        "自证基线不绿，牙齿测试没有意义：{}",
+        base.report()
+    );
+
+    // R1：把那一处换回 `"ok"`（判据字面量被当成分级）。
+    let unfixed = r92_variant_unfixed(&fixed);
+    // R1 的另一条牙：把分级改成非字面量（静态对齐失效）。
+    let dynamic = r92_variant_fix(APP_JS).replace(R92_CALL_FIXED, "toast(T(\"forgot.done\"), lv)");
+    // R2：竞争修法（给 `.toast.ok` 补规则，调用点不动）。
+    let css_synonym = r92_variant_css_synonym(STYLE_CSS);
+    let (css_dead, readme_dead) = r92_variant_dead_level(STYLE_CSS, UI_README);
+    let readme_desync = r92_variant_readme_desync(UI_README);
+
+    let mutants: [R92Leg; 5] = [
+        (
+            "未修形状（分级＝判据字面量）",
+            unfixed.as_str(),
+            STYLE_CSS,
+            UI_README,
+            (false, true, true),
+        ),
+        (
+            "调用点的分级不是字面量",
+            dynamic.as_str(),
+            STYLE_CSS,
+            UI_README,
+            (false, true, true),
+        ),
+        (
+            "竞争修法：给 `.toast.ok` 补同体规则",
+            unfixed.as_str(),
+            css_synonym.as_str(),
+            UI_README,
+            (true, false, true),
+        ),
+        (
+            "文档漂移：契约里删掉 `info`",
+            fixed.as_str(),
+            STYLE_CSS,
+            readme_desync.as_str(),
+            (true, false, true),
+        ),
+        (
+            "死分级：加 `.toast.warn` 并写进文档",
+            fixed.as_str(),
+            css_dead.as_str(),
+            readme_dead.as_str(),
+            (true, true, false),
+        ),
+    ];
+    for (label, app, css, readme, expected) in mutants {
+        let rd = r92_read(app, css, readme);
+        assert_eq!(
+            rd.verdicts(),
+            expected,
+            "规则 `{label}` 的牙不成立（期望 {expected:?}）：{}",
+            rd.report()
+        );
+    }
+
+    // 每条变异体都必须**真的改了它那一处**（否则「判词不同」可能只是同一棵树的两张脸）。
+    assert_ne!(unfixed, fixed, "变异体 `unfixed` 没落地");
+    assert_ne!(dynamic, fixed, "变异体 `dynamic` 没落地");
+    assert_ne!(css_synonym, STYLE_CSS, "变异体 `css_synonym` 没落地");
+    assert_ne!(readme_desync, UI_README, "变异体 `readme_desync` 没落地");
+    assert_ne!(css_dead, STYLE_CSS, "变异体 `css_dead` 没落地");
+    assert_ne!(readme_dead, UI_README, "变异体 `readme_dead` 没落地");
+    // 构造器幂等（两腿拿到同一棵树，#612）。
+    assert_eq!(fixed, r92_variant_fix(&fixed), "修复构造器不幂等");
+    assert_eq!(unfixed, r92_variant_unfixed(&unfixed), "未修构造器不幂等");
+    assert_eq!(
+        css_synonym,
+        r92_variant_css_synonym(&css_synonym),
+        "竞争修法构造器不幂等"
+    );
+    assert_eq!(
+        (css_dead.clone(), readme_dead.clone()),
+        r92_variant_dead_level(&css_dead, &readme_dead),
+        "死分级构造器不幂等"
+    );
+    assert_eq!(
+        readme_desync,
+        r92_variant_readme_desync(&readme_desync),
+        "文档漂移构造器不幂等"
+    );
+}
+
+/// 规则与各棵树的**逐腿声明**（#339/#341：期望与实际各印一列；判词只打在自己拼出来的树上）。
+#[test]
+fn the_r92_rules_separate_the_variants() {
+    let all_green = (true, true, true);
+    let tree_fix = r92_variant_fix(APP_JS);
+    let tree_unfixed = r92_variant_unfixed(&tree_fix);
+    let css_synonym = r92_variant_css_synonym(STYLE_CSS);
+
+    assert_ne!(tree_fix, tree_unfixed, "未修形状与修复树逐字相同");
+    assert_ne!(css_synonym, STYLE_CSS, "竞争修法与样式表逐字相同");
+
+    let declared = [
+        (
+            "fix (level from the vocabulary)",
+            tree_fix.as_str(),
+            STYLE_CSS,
+            all_green,
+        ),
+        (
+            "unfixed (the defect)",
+            tree_unfixed.as_str(),
+            STYLE_CSS,
+            (false, true, true),
+        ),
+        (
+            // 竞争修法（**调用点不动**、只给样式表补 `.toast.ok`）：屏幕上的颜色当场就对了，
+            // 探针的 B1/C3 也会变绿，但词表多了一个文档没写的同义词 ⇒ 本门禁拒它（R2）。
+            // 这条不对称是**故意**的、可测量的；⛔ 必须挂在**未修树**上（调用点仍写 `"ok"`）——
+            // 挂在修复树上时那条新规则没人用，R2 之外还会多触犯 R3，就不是这个竞争修法了。
+            "m_css (add a synonym rule)",
+            tree_unfixed.as_str(),
+            css_synonym.as_str(),
+            (true, false, true),
+        ),
+    ];
+    for (name, app, css, expected) in declared {
+        let rd = r92_read(app, css, UI_README);
+        assert_eq!(
+            rd.verdicts(),
+            expected,
+            "变体 `{name}` 的判词与声明不符（声明 {expected:?}）：{}",
+            rd.report()
+        );
+    }
+
+    // 竞争修法在 R1 上**没有**触犯（它确实让每个调用点的词都有规则），只在 R2 上被拒 ——
+    // 「为什么拒它」要可测量，否则这条边界会退化成「判词恰好不同」。
+    let rd_m = r92_read(&tree_unfixed, &css_synonym, UI_README);
+    assert!(
+        rd_m.r1_bad.is_empty(),
+        "竞争修法不该在 R1 上触犯：{}",
+        rd_m.report()
+    );
+    assert!(
+        rd_m.r2_bad.iter().any(|b| b.contains(".toast.ok")),
+        "竞争修法的 R2 触犯没有点名那条新规则：{}",
+        rd_m.report()
+    );
+    // 而它在 R3 上也**没有**触犯（那条新规则「有人用」—— 用它的正是那个写错词的调用点）。
+    assert!(
+        rd_m.r3_bad.is_empty(),
+        "竞争修法不该在 R3 上触犯：{}",
+        rd_m.report()
+    );
+}
