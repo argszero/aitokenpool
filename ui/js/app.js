@@ -1956,13 +1956,19 @@
   }
 
   // 紧凑分页码（页数 > 9 时省略号收拢：1 … p-1 p p+1 … N；页数少则全量渲染）
+  // 窗口形状由下面那行循环定义：左端 page - A、右端 page + B（本实现 A = B = 1，两端各留一个邻居）。
+  // 两个省略号判据必须**从窗口边界推导**，否则省略号会吞掉一个真实页码：
+  //   左侧：窗口左端 page - 1 与「1」之间只差数字 2 ⇒ 有间隙 ⟺ page - 1 > 2 ⟺ 判据 > A + 2；
+  //   右侧：窗口右端 page + 1 与「pages」之间只差 pages - 1 ⇒ 有间隙 ⟺ 判据 < pages - (B + 1)。
+  // （R167：旧值 4 / pages - 3 比窗口紧一格，page = 4 与 page = pages - 3 时印出相邻页码
+  //   却不放省略号 —— 而省略号是不可点的 <span>、全仓也没有 prev/next ⟹ 用户无从知道那一页还在不在。）
   function pagerButtons(page, pages) {
     const out = [];
     if (pages <= 9) { for (let i = 1; i <= pages; i++) out.push(i); return out; }
     out.push(1);
-    if (page > 4) out.push("…");
+    if (page > 3) out.push("…");
     for (let i = Math.max(2, page - 1); i <= Math.min(pages - 1, page + 1); i++) out.push(i);
-    if (page < pages - 3) out.push("…");
+    if (page < pages - 2) out.push("…");
     out.push(pages);
     return out;
   }

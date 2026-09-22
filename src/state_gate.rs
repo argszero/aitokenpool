@@ -4315,9 +4315,661 @@ fn r164_swap(src: &str, needle: &str, repl: &str) -> String {
     src.replacen(needle, repl, 1)
 }
 
+// ============================== R167 PART A: module-level helpers ================================
+
+// ── R167：分页器的**省略号判据**必须由窗口边界推导，不能各自拍常数 ───────────────────────────
+//
+// `pagerButtons(page, pages)`（`ui/js/app.js`）在页数 > 9 时打印紧凑窗口 `1 … p-1 p p+1 … N`：
+//
+//     out.push(1);
+//     if (page > L) out.push("…");
+//     for (let i = Math.max(2, page - A); i <= Math.min(pages - 1, page + B); i++) out.push(i);
+//     if (page < pages - R) out.push("…");
+//     out.push(pages);
+//
+// 窗口半宽 A / B 由那行循环**定义**；L / R 必须与它自洽：
+//   左侧：`1` 之后、窗口左端 `page - A` 之前只差数字 2 ⇒ 有间隙 ⟺ page - A > 2 ⟺ page > A + 2；
+//   右侧：窗口右端 `page + B` 之后、`pages` 之前只差 pages - 1 ⇒ 有间隙 ⟺ page < pages - (B + 1)。
+// 旧实现（#135 `052b60c`）的 `4` / `pages - 3` 比 `A + 2` / `B + 1` 紧一格 ⇒ 恰有两处
+// （page = A + 3 与 page = pages - (B + 2)）会**印出相邻页码却不放省略号**：`1 3 4 5 …`、
+// `1 … 8 9 10 12`。而省略号是不可点的 `<span>`（`user-select:none`）、全仓没有 prev/next
+// ⇒ 用户无从知道那一页还在不在，只能先点 `1` 绕回去。
+//
+// 本门禁钉的是**派生关系**（#469：门禁不许把这一次编辑的字面量写死）：它从函数体里读出 A / B，
+// 再要求 L == A + 2、R == B + 1 —— 于是它接受**任何自洽的窗口**（含比修复体更宽的那种）；
+// 「屏幕上真的没有缺口」「窗口真的够窄」由 jsdom 探针 `r167_pager_harness.js` 证。
+
+/// 分页器函数名。
+const R167_FN: &str = "pagerButtons";
+
+/// 窗口左半宽 A 的锚（`Math.max(2, page - A)`）。
+const R167_WINDOW_LEFT: &str = "Math.max(2, page - ";
+/// 窗口右半宽 B 的锚（`Math.min(pages - 1, page + B)`）。
+const R167_WINDOW_RIGHT: &str = "Math.min(pages - 1, page + ";
+/// 左侧省略号判据的锚（`if (page > L)`）。
+const R167_GUARD_LEFT: &str = "if (page > ";
+/// 右侧省略号判据的锚（`if (page < pages - R)`）。
+const R167_GUARD_RIGHT: &str = "if (page < pages - ";
+/// 「页数少就全量渲染」那一支 —— 紧凑形状的锚。
+const R167_SMALL_BRANCH: &str = "if (pages <= 9)";
+/// 省略号的压入点（计数用）。
+const R167_ELLIPSIS: &str = "out.push(\"…\")";
+/// `pagerButtons` 的唯一消费点（R4 的输入）。
+const R167_CONSUMER: &str = "pagerButtons(state.page, pages)";
+
+/// 修复后的函数**体**（逐字摘自编辑表 `r167_verify_edits.py` 的 E1 新文本，由生成器切片而非手抄）。
+///
+/// 它只出现在变体树里（牙齿测试与鉴别力测试的绿基线），**不**参与对真树的断言：真树今天还是
+/// 旧实现，轴测试必须因此为红。跨制品对账（这段文本确实是 E1 产物的子串）由
+/// `r167_compile_gate.py` 断言 —— 复制粘贴的常量最怕的就是悄悄漂移。
+const R167_FIXED_BODY: &str = concat!(
+    "    const out = [];\n",
+    "    if (pages <= 9) { for (let i = 1; i <= pages; i++) out.push(i); return out; }\n",
+    "    out.push(1);\n",
+    "    if (page > 3) out.push(\"…\");\n",
+    "    for (let i = Math.max(2, page - 1); i <= Math.min(pages - 1, page + 1); i++) out.push(i);\n",
+    "    if (page < pages - 2) out.push(\"…\");\n",
+    "    out.push(pages);\n",
+    "    return out;\n",
+);
+
+/// 一次扫描同时产出四条规则的判决**与它们的证据**（逐条可打印 —— #339/#341：判词与取值两列）。
+struct R167Reading {
+    body: String,
+    a: Option<i64>,
+    b: Option<i64>,
+    left_guard: Option<i64>,
+    right_guard: Option<i64>,
+    ellipses: usize,
+    small_branch: bool,
+    definitions: usize,
+    consumers: usize,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+    r4: bool,
+}
+
+impl R167Reading {
+    fn verdicts(&self) -> (bool, bool, bool, bool) {
+        (self.r1, self.r2, self.r3, self.r4)
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} r4={} | A={:?} B={:?} L={:?} R={:?} ellipses={} small={} defs={} consumers={} body_lines={}",
+            self.r1,
+            self.r2,
+            self.r3,
+            self.r4,
+            self.a,
+            self.b,
+            self.left_guard,
+            self.right_guard,
+            self.ellipses,
+            self.small_branch,
+            self.definitions,
+            self.consumers,
+            self.body.lines().count(),
+        )
+    }
+}
+
+/// `needle` **恰好出现一次**时，取它后面紧跟的十进制整数（否则 `None`）。
+///
+/// 「恰好一次」是判据的一部分：两个候选意味着两条各自独立的路径，读数就不再是那个数了。
+/// 找不到元素时返回 `None`，**由规则把它变成响亮失败**（而不是静默取一个默认值）。
+fn r167_int_after(text: &str, needle: &str) -> Option<i64> {
+    if text.matches(needle).count() != 1 {
+        return None;
+    }
+    let at = text.find(needle)? + needle.len();
+    let digits: String = text[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// 分页器函数的**已剥注释**的函数体；函数不在时返回 `None`（调用方负责响亮地报出来）。
+fn r167_body(app: &str) -> Option<String> {
+    function_source(app, R167_FN)?; // 函数不在时短路（clippy::question_mark，R167 落地轮的 lint 腿抓到）
+    let body = code_body(app, R167_FN);
+    if body.trim().is_empty() {
+        None
+    } else {
+        Some(body)
+    }
+}
+
+/// 把分页器函数的**体**替换成给定文本（造变体用）。锚点漂移即 panic —— 不静默失去射程。
+///
+/// 尾部锚点是「换行 + 恰好两空格 + `}` + 换行」：函数体内部的闭合括号缩进更深，
+/// 所以第一个命中的就是函数自己的收尾（与探针的 `replaceFn` 同一判据）。
+fn r167_with_body(app: &str, body: &str) -> String {
+    let head = format!("function {R167_FN}(page, pages) {{");
+    let at = app
+        .find(&head)
+        .unwrap_or_else(|| panic!("锚点 `{head}` 不在给定源码里 —— 变体无从构造"));
+    let open = at + head.len();
+    let close = app[open..]
+        .find("\n  }\n")
+        .map(|i| open + i)
+        .unwrap_or_else(|| panic!("`{R167_FN}` 的函数尾锚点不在给定源码里"));
+    format!(
+        "{}\n{}{}",
+        &app[..open],
+        body.trim_end_matches('\n'),
+        &app[close..]
+    )
+}
+
+/// 某个判据所在的**那一行**是否同时压入省略号（形状腿：判据必须真的守着省略号）。
+fn r167_guard_line_has_ellipsis(body: &str, guard: &str) -> bool {
+    body.lines()
+        .any(|l| l.contains(guard) && l.contains(R167_ELLIPSIS))
+}
+
+/// 一次读完四条规则（判词 + 证据）。
+fn r167_read(app: &str) -> R167Reading {
+    let body = r167_body(app).unwrap_or_default();
+    let a = r167_int_after(&body, R167_WINDOW_LEFT);
+    let b = r167_int_after(&body, R167_WINDOW_RIGHT);
+    let left_guard = r167_int_after(&body, R167_GUARD_LEFT);
+    let right_guard = r167_int_after(&body, R167_GUARD_RIGHT);
+    let ellipses = body.matches(R167_ELLIPSIS).count();
+    let small_branch = body.matches(R167_SMALL_BRANCH).count() == 1;
+    let definitions = app.matches(&format!("function {R167_FN}(")).count();
+    let calls = app.matches(&format!("{R167_FN}(")).count();
+    let consumers = calls.saturating_sub(definitions);
+    R167Reading {
+        r1: matches!((a, left_guard), (Some(a), Some(l)) if l == a + 2),
+        r2: matches!((b, right_guard), (Some(b), Some(r)) if r == b + 1),
+        r3: small_branch
+            && ellipses == 2
+            && r167_guard_line_has_ellipsis(&body, R167_GUARD_LEFT)
+            && r167_guard_line_has_ellipsis(&body, R167_GUARD_RIGHT),
+        r4: definitions == 1 && consumers >= 1,
+        a,
+        b,
+        left_guard,
+        right_guard,
+        ellipses,
+        small_branch,
+        definitions,
+        consumers,
+        body,
+    }
+}
+
+// ── 变体构造器：每个变体**只此一处**定义，牙齿测试与鉴别力测试共用（#325 同族）────────────
+//
+// 它们全部从 `R167_FIXED_BODY` 派生（判据的数字也从修复体自己读出的 A / B 推导，不写死 `3` / `2`）
+// —— 因此与「这棵树是未修还是已修」无关，两腿跑同一套断言。
+
+/// 修复体的窗口半宽 (A, B) —— 从修复体自己读出，不写死。
+fn r167_fixed_half_widths() -> (i64, i64) {
+    let a = r167_int_after(R167_FIXED_BODY, R167_WINDOW_LEFT)
+        .unwrap_or_else(|| panic!("修复体里读不出窗口左半宽 A"));
+    let b = r167_int_after(R167_FIXED_BODY, R167_WINDOW_RIGHT)
+        .unwrap_or_else(|| panic!("修复体里读不出窗口右半宽 B"));
+    (a, b)
+}
+
+/// 把窗口半宽改写成 `(a, b)`（省略号判据不动 —— 调用方负责让它们自洽）。
+fn r167_set_window(body: &str, a: i64, b: i64) -> String {
+    let cur_a = r167_int_after(body, R167_WINDOW_LEFT)
+        .unwrap_or_else(|| panic!("给定体里读不出窗口左半宽"));
+    let cur_b = r167_int_after(body, R167_WINDOW_RIGHT)
+        .unwrap_or_else(|| panic!("给定体里读不出窗口右半宽"));
+    let out = body
+        .replace(
+            &format!("{R167_WINDOW_LEFT}{cur_a})"),
+            &format!("{R167_WINDOW_LEFT}{a})"),
+        )
+        .replace(
+            &format!("{R167_WINDOW_RIGHT}{cur_b})"),
+            &format!("{R167_WINDOW_RIGHT}{b})"),
+        );
+    assert_ne!(out, body, "窗口改写没有落地（锚点漂移了）");
+    out
+}
+
+/// 把左侧省略号判据改写成给定值。
+fn r167_set_guard_left(body: &str, value: i64) -> String {
+    let cur =
+        r167_int_after(body, R167_GUARD_LEFT).unwrap_or_else(|| panic!("给定体里读不出左侧判据"));
+    let out = body.replace(
+        &format!("{R167_GUARD_LEFT}{cur})"),
+        &format!("{R167_GUARD_LEFT}{value})"),
+    );
+    assert_ne!(out, body, "左侧判据改写没有落地（锚点漂移了）");
+    out
+}
+
+/// 把右侧省略号判据改写成给定值。
+fn r167_set_guard_right(body: &str, value: i64) -> String {
+    let cur =
+        r167_int_after(body, R167_GUARD_RIGHT).unwrap_or_else(|| panic!("给定体里读不出右侧判据"));
+    let out = body.replace(
+        &format!("{R167_GUARD_RIGHT}{cur})"),
+        &format!("{R167_GUARD_RIGHT}{value})"),
+    );
+    assert_ne!(out, body, "右侧判据改写没有落地（锚点漂移了）");
+    out
+}
+
+/// 把 `app` 的分页器换成**修复体**。
+fn r167_variant_fix(app: &str) -> String {
+    r167_with_body(app, R167_FIXED_BODY)
+}
+
+/// 今日的缺陷形状：窗口不动，两个判据各**紧一格**（`A + 3` / `B + 2`）。
+///
+/// ⚠️ 这两个数字是**推导**出来的（`A` / `B` 从修复体读出），不是抄的 `4` / `3` —— 否则修复体
+/// 一漂移，变体就悄悄变成另一件事（#479 同族）。
+fn r167_variant_unfixed_body() -> String {
+    let (a, b) = r167_fixed_half_widths();
+    let body = r167_set_guard_left(R167_FIXED_BODY, a + 3);
+    r167_set_guard_right(&body, b + 2)
+}
+
+/// 缺陷形状的函数体装进给定的树。
+fn r167_variant_unfixed(app: &str) -> String {
+    r167_with_body(app, &r167_variant_unfixed_body())
+}
+
+/// 探针的 `m_left_only`：只修了左边半句（右判据仍紧一格）。
+fn r167_variant_left_only(app: &str) -> String {
+    let (_, b) = r167_fixed_half_widths();
+    r167_with_body(app, &r167_set_guard_right(R167_FIXED_BODY, b + 2))
+}
+
+/// 只修了右边半句（左判据仍紧一格）—— 左边那半个缺口的单向对照。
+fn r167_variant_right_only(app: &str) -> String {
+    let (a, _) = r167_fixed_half_widths();
+    r167_with_body(app, &r167_set_guard_left(R167_FIXED_BODY, a + 3))
+}
+
+/// 探针的 `m_showall`：干脆全画出来 —— 窗口与判据一起消失。
+fn r167_variant_show_all(app: &str) -> String {
+    r167_with_body(
+        app,
+        "    const out = [];\n    for (let i = 1; i <= pages; i++) out.push(i);\n    return out;",
+    )
+}
+
+/// 「紧凑形状」被拆掉（少了 `pages <= 9` 全量渲染那一支）。
+fn r167_variant_small_gone(app: &str) -> String {
+    let lines: Vec<&str> = R167_FIXED_BODY
+        .lines()
+        .filter(|l| !l.contains(R167_SMALL_BRANCH))
+        .collect();
+    let body = lines.join("\n");
+    assert!(
+        !body.contains(R167_SMALL_BRANCH),
+        "`{R167_SMALL_BRANCH}` 那一支没被摘掉（锚点漂移了）"
+    );
+    assert_ne!(
+        body,
+        R167_FIXED_BODY.trim_end_matches('\n'),
+        "摘掉那一支之后函数体没变 —— 变体与修复体是同一棵树"
+    );
+    r167_with_body(app, &body)
+}
+
+/// **自洽但更宽**的窗口：`A = B = a + 1`，判据按同一推导给出 ⇒ 本门禁**接受**。
+///
+/// 拒它的是 jsdom 探针的形状腿 C2（`pages > 9` 时 token 数必须 ≤ 7）—— 本门禁如实申报的射程边界。
+fn r167_variant_wide_window(app: &str) -> String {
+    let (a, b) = r167_fixed_half_widths();
+    let body = r167_set_window(R167_FIXED_BODY, a + 1, b + 1);
+    let body = r167_set_guard_left(&body, a + 3);
+    let body = r167_set_guard_right(&body, b + 2);
+    r167_with_body(app, &body)
+}
+
+/// 探针的 `m_mark_only`：序列不动，只补一句解释性注释 ⇒ **注释不参与**，
+/// 判词必须与缺陷形状逐条相同（否则「加句解释」就能把缺陷说成修好了）。
+fn r167_variant_mark_only(app: &str) -> String {
+    let body = r167_variant_unfixed_body();
+    let marked = body.replace(
+        "\n    out.push(1);",
+        "\n    out.push(1);\n    // 解释性注释：这里的省略号应当收拢窗口（说得对，但序列没变）",
+    );
+    assert_ne!(marked, body, "注释没有插进去（锚点漂移了）");
+    r167_with_body(app, &marked)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ============================ R167 PART B: tests (inside `mod tests`) ============================
+
+    /// 轴：分页器的两个省略号判据必须与它守护的窗口**自洽**（R167）。
+    ///
+    /// 四条规则各自的含义见文件头。本测试只断言「四条同时成立」；每条规则的**牙**由
+    /// [`the_r167_rules_have_teeth`] 逐条测量，规则与竞争修法的**关系**由
+    /// [`the_r167_rules_separate_the_variants`] 声明。
+    #[test]
+    fn the_pager_window_and_its_ellipsis_guards_agree() {
+        let read = r167_read(APP_JS);
+        assert!(
+            r167_body(APP_JS).is_some(),
+            "找不到 `{R167_FN}` —— 规则 1/2/3 的射程会静默变空"
+        );
+        assert!(
+            read.a.is_some() && read.b.is_some(),
+            "从函数体里读不出窗口半宽 A / B —— 规则 1/2 会退化成恒真（坑 68）：{}",
+            read.report()
+        );
+        assert!(
+            read.verdicts() == (true, true, true, true),
+            "分页器的省略号判据必须由窗口边界推导（R167）：{}",
+            read.report()
+        );
+    }
+
+    /// 阳性对照：四个读取器在**已知为绿**的树上读到东西，在「什么都没有」的树上读到 `None`。
+    ///
+    /// 这条测试是规则 1/2 的射程保险：读取器若只会返回常量，规则 1/2 就成了恒真断言
+    /// （空集/`None` 上的关系式会静默通过）。
+    #[test]
+    fn the_r167_roster_is_real() {
+        // 正向：修复体上，窗口、判据、省略号、形状、定义点、消费点全都必须读到。
+        let fixed_tree = r167_variant_fix(APP_JS);
+        let read = r167_read(&fixed_tree);
+        assert!(
+            r167_body(&fixed_tree).is_some(),
+            "修复树上读不出 `{R167_FN}` 的函数体"
+        );
+        assert!(
+            read.a.is_some() && read.b.is_some(),
+            "修复体上读不出窗口半宽：{}",
+            read.report()
+        );
+        assert!(
+            read.left_guard.is_some() && read.right_guard.is_some(),
+            "修复体上读不出省略号判据：{}",
+            read.report()
+        );
+        assert_eq!(
+            read.ellipses,
+            2,
+            "修复体上省略号的压入点不是两个：{}",
+            read.report()
+        );
+        assert!(
+            read.small_branch,
+            "修复体上少了全量渲染那一支：{}",
+            read.report()
+        );
+        assert_eq!(
+            read.definitions,
+            1,
+            "修复体上 `{R167_FN}` 的定义点不是一个：{}",
+            read.report()
+        );
+        assert!(
+            read.consumers >= 1,
+            "修复体上 `{R167_FN}` 没有消费点：{}",
+            read.report()
+        );
+
+        // 反向：窗口与判据一起拿掉，读取器必须**读不到**（否则它们只是常量，不是读数）。
+        let gone = r167_read(&r167_variant_show_all(APP_JS));
+        assert!(
+            gone.a.is_none() && gone.b.is_none(),
+            "全量渲染的树里居然读出了窗口半宽 —— 读取器在看别的地方：{}",
+            gone.report()
+        );
+        assert!(
+            gone.left_guard.is_none() && gone.right_guard.is_none(),
+            "全量渲染的树里居然读出了省略号判据 —— 读取器在看别的地方：{}",
+            gone.report()
+        );
+        assert_eq!(
+            gone.ellipses,
+            0,
+            "全量渲染的树里居然有省略号：{}",
+            gone.report()
+        );
+
+        // R4 的输入在**真树**上也必须存在，否则那条规则在空集上恒真。
+        assert!(
+            APP_JS.contains(R167_CONSUMER),
+            "唯一消费点 `{R167_CONSUMER}` 不在 `app.js` 里 —— 规则 4 会退化成恒真（坑 68）"
+        );
+    }
+
+    /// 四条规则**各有独立的牙**：合成变异体逐个喂给规则自己的判别式，每个恰好打翻一条。
+    ///
+    /// 判据是「恰好一条翻转」而不是「至少一条红」—— 否则一条从别处借来红的规则也能自称有牙
+    /// （#454：牙齿必须长在该规则的判别式上）。基线是**已知为绿的**修复体（#458）。
+    #[test]
+    fn the_r167_rules_have_teeth() {
+        let fixed_tree = r167_variant_fix(APP_JS);
+        let base_read = r167_read(&fixed_tree);
+        assert_eq!(
+            base_read.verdicts(),
+            (true, true, true, true),
+            "自证基线不绿，牙齿测试没有意义：{}",
+            base_read.report()
+        );
+
+        // 每个变异体只动一处，期望**恰好一条**翻转（#454）。
+        let consumer_gone = fixed_tree.replace(R167_CONSUMER, "[]");
+        assert_ne!(
+            consumer_gone, fixed_tree,
+            "变异体 `consumer gone` 没有改动树（锚点 `{R167_CONSUMER}` 漂移了）"
+        );
+        let mutants = [
+            (
+                "left guard too tight",
+                r167_variant_right_only(APP_JS),
+                (false, true, true, true),
+            ),
+            (
+                "right guard too tight",
+                r167_variant_left_only(APP_JS),
+                (true, false, true, true),
+            ),
+            (
+                "compact branch gone",
+                r167_variant_small_gone(APP_JS),
+                (true, true, false, true),
+            ),
+            ("consumer gone", consumer_gone, (true, true, true, false)),
+        ];
+        for (label, tree, expected) in mutants {
+            assert_ne!(tree, fixed_tree, "变异体 `{label}` 没有改动树");
+            let read = r167_read(&tree);
+            assert_eq!(
+                read.verdicts(),
+                expected,
+                "规则 `{label}` 的牙不成立（期望 {expected:?}）：{}",
+                read.report()
+            );
+        }
+
+        // 规则 3 的第二半：判据还在、窗口还在，但**判据那行不再压省略号**（形状被拆散）。
+        // 锚点与替换文本都由 A 推导（不写死 `3`）—— 变体是**推导**出来的，不是抄的。
+        let (a, _) = r167_fixed_half_widths();
+        let push_line = format!("{R167_GUARD_LEFT}{}) {R167_ELLIPSIS};", a + 2);
+        let bare_line = format!("{R167_GUARD_LEFT}{});", a + 2);
+        let no_push_body = R167_FIXED_BODY.replace(&push_line, &bare_line);
+        assert_ne!(
+            no_push_body, R167_FIXED_BODY,
+            "变异体 `guard without push` 没有改动函数体（锚点 `{push_line}` 漂移了）"
+        );
+        let no_push = r167_with_body(APP_JS, &no_push_body);
+        assert_ne!(
+            no_push, fixed_tree,
+            "变异体 `guard without push` 没有改动树"
+        );
+        let read = r167_read(&no_push);
+        assert!(
+            !read.r3 && read.r1 && read.r2 && read.r4,
+            "判据那行不再压省略号时，只有规则 3 该翻红：{}",
+            read.report()
+        );
+
+        // 规则 4 的第二半：定义点被改名 ⇒ 读取器连函数体都找不到，四条一起翻红。
+        // 本条不是「恰好一条」的牙齿，而是**响亮**的证明：改名不会被静默当成通过。
+        let renamed = APP_JS.replace(
+            &format!("function {R167_FN}("),
+            &format!("function {R167_FN}X("),
+        );
+        assert_ne!(renamed, APP_JS, "变异体 `renamed definition` 没有改动源码");
+        let read = r167_read(&renamed);
+        assert_eq!(
+            read.verdicts(),
+            (false, false, false, false),
+            "定义点改名后四条规则必须一起翻红：{}",
+            read.report()
+        );
+    }
+
+    /// 规则与**竞争修法**的关系，逐腿声明（#339/#341：声明的期望与实际各印一列）。
+    ///
+    /// 竞争修法出自 jsdom 探针 `r167_pager_harness.js`（它按值把它们全部拒掉）：
+    /// - `m_wide_window`：把窗口放宽到 `A = B = 2` 并按**同一推导**给出判据 —— **自洽**，故本门禁
+    ///   **接受**它，探针的形状腿 `C2`（token 数 ≤ 7）拒掉它。这一格不是漏，是本门禁的射程边界：
+    ///   推导关系归门禁，窗口大小归探针。
+    /// - `m_left_only` / `m_right_only`：只修一半 —— 各被它没修的那条规则拒掉。
+    /// - `m_showall`：窗口与判据一起消失 —— 被规则 1/2/3 拒掉。
+    /// - `m_mark_only`：序列不动、只加一句解释性注释 —— **注释不参与**，判词必须与缺陷形状逐条相同。
+    #[test]
+    fn the_r167_rules_separate_the_variants() {
+        // ⚠️ 本测试必须在**两腿**都绿（编译门禁分别把真树与 E1 修复树当作 `APP_JS` 来编译）
+        // ⇒ 绝对判词只能打在**它自己拼出来的树**上；对**真树**只能断言「它必须是门禁认识的
+        // 两种形状之一」这种与腿无关的关系。
+        let unfixed_v = (false, false, true, true);
+        let fixed_v = (true, true, true, true);
+
+        let tree_fix = r167_variant_fix(APP_JS);
+        let tree_unfixed = r167_variant_unfixed(APP_JS);
+        let tree_wide = r167_variant_wide_window(APP_JS);
+        let tree_left_only = r167_variant_left_only(APP_JS);
+        let tree_right_only = r167_variant_right_only(APP_JS);
+        let tree_show_all = r167_variant_show_all(APP_JS);
+        let tree_mark = r167_variant_mark_only(APP_JS);
+
+        // 先证明这些树互不相同，否则「判词不同」可能只是同一棵树的两张脸。
+        assert_ne!(
+            tree_fix, tree_unfixed,
+            "修复体与缺陷形状逐字相同 —— 变体没落地"
+        );
+        assert_ne!(
+            tree_fix, tree_wide,
+            "`m_wide_window` 没有落地（锚点漂移了）"
+        );
+        assert_ne!(tree_fix, tree_left_only, "`m_left_only` 没有落地");
+        assert_ne!(tree_fix, tree_right_only, "`m_right_only` 没有落地");
+        assert_ne!(tree_fix, tree_show_all, "`m_showall` 没有落地");
+        assert_ne!(
+            tree_left_only, tree_right_only,
+            "两个「只修一半」的变体是同一棵树"
+        );
+        assert_ne!(tree_mark, tree_unfixed, "注释变形体与缺陷形状是同一棵树");
+
+        let declared = [
+            ("fix (spliced)", tree_fix.as_str(), fixed_v),
+            // 自洽但更宽：门禁接受，探针 C2 拒掉 —— 本门禁的射程边界，不是漏。
+            ("m_wide_window", tree_wide.as_str(), fixed_v),
+            ("unfixed", tree_unfixed.as_str(), unfixed_v),
+            (
+                "m_left_only",
+                tree_left_only.as_str(),
+                (true, false, true, true),
+            ),
+            (
+                "m_right_only",
+                tree_right_only.as_str(),
+                (false, true, true, true),
+            ),
+            (
+                "m_showall",
+                tree_show_all.as_str(),
+                (false, false, false, true),
+            ),
+        ];
+        let mut reports = Vec::new();
+        for (name, app, expected) in declared {
+            let read = r167_read(app);
+            reports.push(format!("{name}: {}", read.report()));
+            assert_eq!(
+                read.verdicts(),
+                expected,
+                "变体 `{name}` 的判词与声明不符（声明 {expected:?}）—— 门禁的鉴别力变了"
+            );
+        }
+
+        // 注释不参与：`m_mark_only` 的判词必须与缺陷形状**逐条相同**。
+        let marked = r167_read(&tree_mark);
+        let plain = r167_read(&tree_unfixed);
+        reports.push(format!("m_mark_only: {}", marked.report()));
+        assert_eq!(
+            marked.verdicts(),
+            plain.verdicts(),
+            "解释性注释改变了判词 —— 注释参与了断言（坑 #296/#309 同族）"
+        );
+
+        // 与腿无关的一条关系：真树必须是门禁认识的**两种形状之一**（未修 / 已修）。
+        // ⚠️ 不能写成 `== unfixed_v`：本测试在**两腿**都要绿，修好之后那句话会静默反转（#314）。
+        let real = r167_read(APP_JS);
+        reports.push(format!("real tree: {}", real.report()));
+        assert!(
+            real.verdicts() == unfixed_v || real.verdicts() == fixed_v,
+            "真树的形状既不是「未修」也不是「已修」—— 门禁不认识它了：{}",
+            real.report()
+        );
+        // ⚠️ 落地轮必做（#314：默认期望必须钉在**显式基线**上）：真树修好之后，
+        // `r167_compile_gate.py` 的 `DECLARED_RED` 表必须从 `base: [AXIS]` 改成 `base: []`，
+        // 否则轴测试会为红而仪器仍宣称「未修」。两处一起改，否则门禁与仪器会各说一套。
+        println!("{}", reports.join("\n"));
+    }
+
+    /// 修复体文本**逐字**来自编辑表 E1；`r167_compile_gate.py` 另外断言它与 E1 的产物是子串
+    /// 关系（跨制品对账）。这里钉「常量非空、形状齐全、且判据确实由窗口推导」。
+    #[test]
+    fn the_r167_fixed_body_is_the_edit_sheet_text() {
+        assert!(
+            R167_FIXED_BODY.contains(R167_SMALL_BRANCH),
+            "修复体少了全量渲染那一支：{R167_FIXED_BODY:?}"
+        );
+        assert!(
+            R167_FIXED_BODY.contains(R167_WINDOW_LEFT)
+                && R167_FIXED_BODY.contains(R167_WINDOW_RIGHT),
+            "修复体里没有那行窗口循环 —— 规则 1/2 无从推导"
+        );
+        assert_eq!(
+            R167_FIXED_BODY.matches(R167_ELLIPSIS).count(),
+            2,
+            "修复体里省略号的压入点不是两个"
+        );
+        let (a, b) = r167_fixed_half_widths();
+        let lg = r167_int_after(R167_FIXED_BODY, R167_GUARD_LEFT)
+            .unwrap_or_else(|| panic!("修复体里读不出左侧判据"));
+        let rg = r167_int_after(R167_FIXED_BODY, R167_GUARD_RIGHT)
+            .unwrap_or_else(|| panic!("修复体里读不出右侧判据"));
+        assert_eq!(
+            (lg, rg),
+            (a + 2, b + 1),
+            "修复体的两个判据必须从窗口推导（A={a} B={b}）"
+        );
+        assert_ne!(
+            R167_FIXED_BODY.trim_end_matches('\n'),
+            r167_variant_unfixed_body(),
+            "缺陷形状与修复体逐字相同 —— 变体构造器失效了"
+        );
+    }
+
+    // =============================== END OF R167 GATE FRAGMENT ==================================
 
     /// R164 轴：三处载体（请求 / 载荷签名 / 本地排序守卫）＋ 服务端白名单必须**同源**，
     /// 且同一条路的前一半（列筛选后端化）必须仍然是真的。
