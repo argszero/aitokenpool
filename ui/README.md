@@ -105,6 +105,7 @@ ui/
   - `/` → 聚焦市场搜索 `#mk-search`；
   - 数字 **1-8** → 切换侧边栏视图（键位 = `NAV_ORDER` 下标 +1，范围由该数组长度决定：仪表盘/市场/共享/钱包/交易/管理/运营/设置；游客模式由 `switchView` 拦截提示登录）；
   - Esc → 关闭行内新建 Key（`#ak-new-inline`）；
+  - Esc → 关闭消费对话框（`#chat-modal`）；
 - **导航提示**：nav-item 补 `title`（"快捷键 N · 名称"）+ 右侧 `.nav-key` 键位角标（管理视图带「管理员」tag 时省略角标）。
 - **键位只有一个真源**：角标 = 项在 `NAV_ORDER`（`NAV.flatMap(g => g.items)`）里的下标 +1，数字键处理器按同一数组取项。因此**渲染的每一项都必须取自 `NAV_ORDER`** —— 含游客分支（`NAV_ORDER.filter(it => GUEST_VIEWS.includes(it.id))`）：手搓一个同形字面量会让 `indexOf` 恒 -1，角标印 `0`（死键）、`title` 也跟着印 `Shortcut 0`，而真正生效的键游客看不到（C2141）。静态门禁 `src/state_gate.rs::the_sidebar_advertises_only_digits_that_work` 钉这个形状。
 
@@ -296,7 +297,8 @@ ui/
 - **作用表 = 从 DOM 派生，不维护名册**：任何 `<tbody>` 里的数据行都可导航（`mk-body` / `share-body` / `api-keys` / `emp-body` / `dept-body` / `model-body` / `ops-body` / JS 建的 `raise-requests` 表，以及 `tx-table` 内动态建出的 tbody）。新增数据表无需登记，重绘也无需重新绑定——此前是一份手写 id 名册，`model-body` 漏登记即导致重试死键 + 无键盘导航；
 - **激活**：① 点击表格行（**document 级**一次性 click 委托，容器 `kbdTbodyOf(e.target)` = `closest("tbody")`，行取 `closest("tr")`，跳过 `.mk-detail`）；② 直接按 ↑/↓——`kbdContainerFrom(t)` 同样按 `closest("tbody")` 解析（键盘事件目标通常是 body ⇒ 沿用 `kbd.c`；`kbd.c` 若已被重建（`isConnected === false`）则视为未激活）；
 - **键位**：`ArrowDown/Up` → `kbdMove(dir, c)` 行高亮 `.row-active`（accent 左侧竖条 `inset 3px 0 0` + `--accent-soft` 底），未激活时 ↓ 首行 / ↑ 末行，`scrollIntoView({block:"nearest"})`；`Enter` → `kbdEnter()` 点击行内首个可用 `button.btn:not(.row-expand)`（disabled 不触发）；`Esc` → `kbdClear()`（无高亮时落到原逻辑：关帮助/行内表单/引导）；
-- **守卫**：typing（INPUT/TEXTAREA/SELECT/contentEditable）与 meta/ctrl/alt 组合键不拦截；`?`、数字键视图切换、Esc 原有优先级（引导 > 帮助 > 行内新建 Key > 表格高亮）均不受影响；
+- **守卫**：typing（INPUT/TEXTAREA/SELECT/contentEditable）与 meta/ctrl/alt 组合键不拦截；`?`、数字键视图切换、Esc 原有优先级（引导 > 帮助 > 行内新建 Key > 消费对话框 > 表格高亮）均不受影响；
+- **每个浮层守卫读该元素**自己**的隐藏机制**（R168，由各自的关闭函数推导）：`#help-panel` / `#chat-modal` 用 **class**（`classList.contains("hidden")`），`#ak-new-inline` / `#dept-form-card` / `#model-form-card` / 充值·加额卡用 **属性**（`.hidden`） ⇒ 判「开没开」必须读对那一个，写反会让守卫恒真、把 Esc 变成无条件捕获。 门禁 `state_gate::the_escape_contract_reaches_every_dismissible_overlay` 按此**推导**校验。
 - 冒烟测试注意：导航容器由真实 DOM 的 `closest("tbody")` 解析（不再比对 id）⇒ 旧 stub（`qs(sel)` 返回带 `#` 前缀的假 id）不影响它，但事件目标须是真实 DOM 节点；Esc 分支链依赖 `#ak-new-inline`、`#help-panel` hidden 预置 + `atp-tour-done=1`（防 tour 拦截）。
 
 ## 品牌与登录页氛围约定（v1.20，rant 2026-08-17T20:46:57 G）

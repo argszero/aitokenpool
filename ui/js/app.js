@@ -4313,6 +4313,11 @@
       const helpOpen = !$("#help-panel").classList.contains("hidden");
       if (e.key === "Escape" && helpOpen) { toggleHelp(false); return; }
       if (e.key === "Escape" && !$("#ak-new-inline").hidden) { closeNewKeyInline(); return; }
+      // 消费对话框（#chat-modal，面积最大/层级最高的浮层）：它用 **class** 隐藏（`closeChat` → `classList.add("hidden")`），
+      // 因此这里必须查 `classList`；写成 `$("#chat-modal").hidden`（属性机制）会让守卫**恒真**、
+      // Esc 退化成无条件捕获。必须挂在 `document` 上（对话框把自己的焦点放进 `#chat-input`，
+      // 事件目标是 input ⇒ 下面那行 `typing` 守卫会先把它吃掉）⇒ 必须排在那行**之前**（R168）。
+      if (e.key === "Escape" && !$("#chat-modal").classList.contains("hidden")) { closeChat(); return; }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       // 表格键盘导航（rant 20:46:57 F）：↑/↓ 行高亮，Enter 主操作，Esc 清除（无高亮时 Esc 落到后续逻辑）
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
