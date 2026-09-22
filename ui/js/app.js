@@ -4277,6 +4277,12 @@
       if (activeView) renderView(activeView);
       document.title = (VIEW_TITLE[activeView] ? T(VIEW_TITLE[activeView]) + " · AITokenPool" : "AITokenPool");
       if (tourStep >= 0) renderTourStep(); // 引导中的按钮/文案随语言更新
+      // 帮助面板（#help-panel）是**非模态**浮层（`position: fixed`，不盖住设置页的语言下拉）
+      // ⇒ 用户能在它**开着**时去切语言；它的标题/关闭按钮是 `[data-i18n]`（`applyStatic()` 会换掉），
+      // 而四行快捷键与 `#help-context` 是 `renderHelp()` 用 JS 建的、**没有钩子** —— 它全仓唯一调用点
+      // 是 `toggleHelp` 的**打开**分支 ⇒ 不在这里补一次，同一块面板就是两种语言，且整会话不自愈（R94）。
+      // 判「开没开」必须读 `classList`（`toggleHelp` 用 class 隐藏）；写成 `.hidden` 会让守卫恒真。
+      if (!$("#help-panel").classList.contains("hidden")) renderHelp();
     });
 
     // 主题切换（rant 18:06:09 B）：登录页右上角 + 侧边栏底部两处共用同一逻辑

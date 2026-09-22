@@ -5420,9 +5420,855 @@ impl R93Reading {
     }
 }
 
+// ── R94：`atp:langchange` 处理器的刷新名册必须覆盖「用户可能正开着的每个浮层」 ────────────────────
+//
+// 题眼：`ui/js/app.js` 的 `atp:langchange` 处理器（#86 装）刷新 `{nav, 数据表表头, 当前视图, 标题,
+// 引导}` —— 而 `ui/index.html` 里处境**完全相同**的浮层 `#help-panel` 无人刷新。面板标题与关闭按钮是
+// `[data-i18n]`（被 `applyStatic()` 换掉），四行 `HELP_KEYS → T(d)` 与底部 `#help-context` 却是
+// `renderHelp()` 用 JS 建的、**没有钩子**，且 `renderHelp()` 全仓唯一调用点是 `toggleHelp` 的**打开**
+// 分支 ⇒ 同一块面板两种语言，只有关掉再开才重画（且整会话不自愈）。它是**非模态**浮动面板：
+// `ui/css/style.css` 的 `.help-panel` 是 `position: fixed` 且没有 `inset: 0`（不盖住设置页的语言
+// 下拉）⇒ 用户真的能在它开着时去切语言。同一提交里作者既给 `renderHelp` 加了 `T(...)`、又给这个
+// 处理器加了引导刷新 ⇒ 看过这个渲染器、只漏了这一块（漂移，不是取舍）。
+//
+// 三条规则（都从代码**派生**，#469：门禁不许把这一次编辑的字面量写死）：
+//
+//   R1  每个「**非模态**（按 CSS 推导：该元素的类规则里都没有 `inset: 0`）＋ 内容由 **JS 写**
+//       （某函数体里同时出现该浮层的后代 id 与 `T(`）」的浮层，其**每一个**这样的写者都必须从
+//       处理器体内被调用。
+//   R2  处理器不得把刷新清空（挡「把名册删掉」式假修）：派生出来的 `render*` 刷新名 ≥ 3。
+//   R3  **分界为真**：派生集合里确实既有模态（类规则含 `inset: 0`）又有非模态 —— 否则 R1 的
+//       「非模态」这一半恒真/恒假，规则就退化成空集上的关系式（坑 68 家族）。
+//
+// 射程（如实）：本门禁是**词法**的。它证明「处理器的刷新名册覆盖了派生出来的每个非模态浮层的每个
+// 写者」，**不**证明屏幕上那一刻的文案真的是当前语言（那一半归 jsdom 探针 `r94_probe.js` 的
+// A1/A2/Z1 腿）。竞争修法「干脆把用户自己开的面板关掉」**两边都拒、但理由不同**：探针（A4）按
+// DOM 实况拒它（面板被夺走），本门禁因为**写者没被调用**而拒它 —— 两个仪器各自能看见对方看不见的
+// 东西（C2148 的分工：形状归门禁，事实归探针），这条边界实测于
+// `the_r94_rules_separate_the_variants` 的声明表。
+
+/// `ui/css/style.css`（编译期读入）：模态/非模态的判据是**类规则里有没有 `inset: 0`**，
+/// 所以样式表必须是本门禁的输入，而不是一条手抄的豁免清单。
+const STYLE_CSS: &str = include_str!("../ui/css/style.css");
+
+/// `atp:langchange` 处理器的开头。全仓只此一处（`document.addEventListener(...)` 的元素级兄弟
+/// 都不带这个事件名）。
+const R94_HANDLER_START: &str = "addEventListener(\"atp:langchange\"";
+
+/// 紧邻的、**已经被刷新**的兄弟行（引导）—— 修复体的插入锚点（逐字来自 `ui/js/app.js`）。
+const R94_TOUR_GUARD: &str = "if (tourStep >= 0) renderTourStep();";
+
+/// 修复体新增的调用（代码部分，不含行尾注释）—— 变体树的**绿基线**。
+///
+/// 与 R167 的 `R167_FIXED_BODY` / R168 的 `R168_FIXED_GUARD` 同型：它只出现在**自己拼出来的树**
+/// 里，且由 `r94_compile_gate.py` 断言它确实是编辑表 E1 产物的子串（#548：导入制品，绝不重抄）。
+const R94_FIXED_GUARD: &str = concat!(
+    "if (!$(\"#help-panel\").classList.contains(\"hidden\")) ",
+    "renderHelp();",
+);
+
+/// 竞争修法：切线时把用户自己开的面板**关掉**（屏幕上没有面板，就没有陈旧的行）。
+/// 本门禁**也**拒它 —— 但理由与探针不同：探针（`A4` 腿）按 DOM 实况拒它（用户的面板被夺走了），
+/// 本门禁拒它是因为**写者 `renderHelp` 没被调用**（R1 问的是「刷新了没」，不是「藏起来了没」）。
+/// 两个仪器在这一点上同判、不同因 —— 列在这里是为了让这条射程边界**可测量**（实测见
+/// `the_r94_rules_separate_the_variants` 的声明表），而不是只写在注释里。
+const R94_CLOSE_GUARD: &str =
+    "if (!$(\"#help-panel\").classList.contains(\"hidden\")) toggleHelp(false);";
+
+/// 「模态」的判据：类规则里的整屏覆盖（挡住设置页的语言下拉 ⇒ 用户不可能在它开着时切语言）。
+const R94_MODAL_RULE: &str = "inset: 0";
+
+/// 通用工具类（`display: none` 的开关）：它说的是「现在藏着」，不是「这个浮层长什么样」，
+/// 所以不参与模态/非模态的推导。
+const R94_GENERIC_CLASS: &str = "hidden";
+
+/// R2 的下界：处理器里派生出来的 `render*` 刷新名的个数。阈值只承担「不许清空」这一件事，
+/// 真正承重的是 R1 的逐浮层关系。
+const R94_MIN_REFRESHES: usize = 3;
+
+/// 一个浮层：`ui/index.html` 里 `<body>` 顶层的元素（`#app` 之后、带 `hidden` 类）。
+#[derive(Debug, Clone)]
+struct R94Overlay {
+    id: String,
+    classes: Vec<String>,
+    /// 浮层自己的 id ＋ 它内部出现的每个 `id="…"`（写者就是「往这些东西里写」的函数）。
+    descendants: Vec<String>,
+}
+
+/// 从一行标签里取属性值（`id="…"` / `class="…"`）。
+fn r94_attr(tag: &str, name: &str) -> Option<String> {
+    let pat = format!("{name}=\"");
+    let at = tag.find(&pat)? + pat.len();
+    let rest = &tag[at..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// 顶层元素（列 0 起的 `<div id="…">`）的身体：单行自闭合的取该行，多行的取到**列 0 的 `</div>`**。
+///
+/// 只适用于顶层元素 —— 这正是本门禁的射程（浮层都是 `<body>` 顶层的兄弟）。
+fn r94_overlay_span<'a>(html: &'a str, id: &str) -> Option<&'a str> {
+    let pat = format!("<div id=\"{id}\"");
+    let start = html.find(&pat)?;
+    let rest = &html[start..];
+    let line_end = rest.find('\n').unwrap_or(rest.len());
+    if rest[..line_end].contains("</div>") {
+        return Some(&rest[..line_end]);
+    }
+    let end = rest[line_end..].find("\n</div>")? + line_end;
+    Some(&rest[..end])
+}
+
+/// 一段标记里出现的每个 `id="…"` 的值。
+fn r94_ids_in(span: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = span[from..].find("id=\"") {
+        let at = from + rel + 4;
+        let Some(end) = span[at..].find('"') else {
+            break;
+        };
+        out.push(span[at..at + end].to_string());
+        from = at + end;
+    }
+    out
+}
+
+/// 浮层名册：`<body>` 里 `#app` **之后**、带 `hidden` **类**的顶层元素。
+///
+/// 零手写豁免清单 —— `#toast-wrap`（`<div id="toast-wrap"></div>`）自然落选，因为它的实例是**即时**
+/// 生成的、没有 `hidden` 类；`#app` 自己是射程的起点而不是浮层。
+fn r94_overlays(html: &str) -> Vec<R94Overlay> {
+    let mut out = Vec::new();
+    let mut seen_app = false;
+    for line in html.lines() {
+        if !line.starts_with("<div id=\"") {
+            continue;
+        }
+        let Some(id) = r94_attr(line, "id") else {
+            continue;
+        };
+        if id == "app" {
+            seen_app = true;
+            continue;
+        }
+        if !seen_app {
+            continue;
+        }
+        let classes: Vec<String> = r94_attr(line, "class")
+            .map(|c| c.split_whitespace().map(str::to_string).collect())
+            .unwrap_or_default();
+        if !classes.iter().any(|c| c == R94_GENERIC_CLASS) {
+            continue;
+        }
+        let mut descendants = r94_overlay_span(html, &id)
+            .map(r94_ids_in)
+            .unwrap_or_default();
+        descendants.push(id.clone());
+        out.push(R94Overlay {
+            id,
+            classes,
+            descendants,
+        });
+    }
+    out
+}
+
+/// 类 `class` 的**规则体**（`.<class> { … }` 里大括号之间的原文）。
+///
+/// 只认「选择器就是它」的写法：`.modal` 不会被 `.modal-overlay` 命中（右边界必须是分隔符），
+/// `.help-panel .foo` 也不算（`.help-panel` 之后得直接跟 `{`）。
+fn r94_class_rule(css: &str, class: &str) -> Option<String> {
+    let pat = format!(".{class}");
+    let mut from = 0usize;
+    while let Some(rel) = css[from..].find(&pat) {
+        let at = from + rel;
+        let after = &css[at + pat.len()..];
+        let boundary = after
+            .chars()
+            .next()
+            .map(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .unwrap_or(true);
+        if boundary {
+            if let Some(brace) = after.trim_start().strip_prefix('{') {
+                if let Some(end) = brace.find('}') {
+                    return Some(brace[..end].to_string());
+                }
+            }
+        }
+        from = at + pat.len();
+    }
+    None
+}
+
+/// 这个浮层是不是**模态**：它的某个非通用类规则里有 `inset: 0`。
+///
+/// 没有类规则的浮层（例如只有 `hidden` 的 `#tour-*` 零件）判为**非模态** —— 保守方向：留在射程内。
+fn r94_is_modal(css: &str, classes: &[String]) -> bool {
+    classes
+        .iter()
+        .filter(|c| c.as_str() != R94_GENERIC_CLASS)
+        .any(|c| {
+            r94_class_rule(css, c)
+                .map(|rule| rule.contains(R94_MODAL_RULE))
+                .unwrap_or(false)
+        })
+}
+
+/// 一行代码里是否**提到**这个 id（`$("#help-body")` 或 `"help-body"` 两种拼法）。
+fn r94_mentions(body: &str, id: &str) -> bool {
+    body.contains(&format!("#{id}\"")) || body.contains(&format!("\"{id}\""))
+}
+
+/// 「往浮层里写文案」的函数名册：函数体里同时有 `T(` 与该浮层的某个 id。
+fn r94_writers(app: &str, overlays: &[R94Overlay]) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for line in app.lines() {
+        let Some(name) = function_name(line) else {
+            continue;
+        };
+        let Some(body) = js_function_body(app, name) else {
+            continue;
+        };
+        let code = code_only(body);
+        if !code.contains("T(") {
+            continue;
+        }
+        for o in overlays {
+            if o.descendants.iter().any(|d| r94_mentions(&code, d)) {
+                out.entry(o.id.clone())
+                    .or_default()
+                    .insert(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// `atp:langchange` 处理器体（注释已剥；按代码的括号配对切，不用行号 —— 坑 #458）。
+fn r94_handler_body(app: &str) -> Option<String> {
+    let code = code_text_by_line(app).join("\n");
+    let head = code.find(R94_HANDLER_START)? + R94_HANDLER_START.len();
+    let open = head + code[head..].find('{')?;
+    let mut depth = 0i32;
+    for (i, ch) in code[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(code[open..=open + i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 一段代码里**以 `name(` 形式被调用**的标识符集合（标识符边界：`item.id(` 不算 `id(`）。
+fn r94_calls(text: &str) -> BTreeSet<String> {
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+    let bytes = text.as_bytes();
+    let mut out = BTreeSet::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !is_word(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_word(bytes[i]) {
+            i += 1;
+        }
+        let left_ok = start == 0 || !is_word(bytes[start - 1]);
+        let mut k = i;
+        while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') {
+            k += 1;
+        }
+        if left_ok && k < bytes.len() && bytes[k] == b'(' {
+            out.insert(text[start..i].to_string());
+        }
+    }
+    out
+}
+
+/// 一次扫描同时产出三条规则的判决**与它们的证据**（逐条可打印 —— #339/#341：判词与取值两列）。
+struct R94Reading {
+    /// 处理器体本身有没有被找到（找不到时三条规则会静默地在空集上「通过」）。
+    handler_found: bool,
+    overlays: BTreeSet<String>,
+    modal: BTreeSet<String>,
+    non_modal: BTreeSet<String>,
+    scope: BTreeSet<String>,
+    writers: BTreeMap<String, BTreeSet<String>>,
+    refreshes: BTreeSet<String>,
+    missing: BTreeSet<String>,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+}
+
+impl R94Reading {
+    fn verdicts(&self) -> (bool, bool, bool) {
+        (self.r1, self.r2, self.r3)
+    }
+
+    /// 把已经读到的证据折成三条判词。
+    ///
+    /// R1 的**空集保护**在同一条判词里：射程为空（没有非模态浮层，或没有 JS 写者）时必须红，
+    /// 而不是在空集上恒真（坑 68 家族；牙齿测试有一条专门喂空名册）。
+    fn finish(mut self) -> R94Reading {
+        let in_scope = !self.scope.is_empty();
+        self.r1 = self.missing.is_empty() && in_scope;
+        self.r2 = self.refreshes.len() >= R94_MIN_REFRESHES;
+        self.r3 = !self.modal.is_empty() && !self.non_modal.is_empty();
+        self
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} handler={} | overlays={:?} modal={:?} scope={:?} refreshes={:?} writers={:?} missing={:?}",
+            self.r1,
+            self.r2,
+            self.r3,
+            self.handler_found,
+            self.overlays,
+            self.modal,
+            self.scope,
+            self.refreshes,
+            self.writers,
+            self.missing,
+        )
+    }
+}
+
+/// 读一棵树（index.html / app.js / style.css）得出三条规则的判决。
+fn r94_read(html: &str, app: &str, css: &str) -> R94Reading {
+    let overlays = r94_overlays(html);
+    let mut modal = BTreeSet::new();
+    let mut non_modal = BTreeSet::new();
+    for o in &overlays {
+        if r94_is_modal(css, &o.classes) {
+            modal.insert(o.id.clone());
+        } else {
+            non_modal.insert(o.id.clone());
+        }
+    }
+    let writers = r94_writers(app, &overlays);
+    let scope: BTreeSet<String> = non_modal
+        .iter()
+        .filter(|id| writers.contains_key(*id))
+        .cloned()
+        .collect();
+    let handler = r94_handler_body(app).unwrap_or_default();
+    let calls = r94_calls(&handler);
+    let refreshes: BTreeSet<String> = calls
+        .iter()
+        .filter(|c| c.starts_with("render"))
+        .cloned()
+        .collect();
+    let mut missing = BTreeSet::new();
+    for id in &scope {
+        for w in writers.get(id).into_iter().flatten() {
+            if !calls.contains(w) {
+                missing.insert(format!("{id}/{w}"));
+            }
+        }
+    }
+    R94Reading {
+        handler_found: r94_handler_body(app).is_some(),
+        overlays: overlays.iter().map(|o| o.id.clone()).collect(),
+        modal,
+        non_modal,
+        scope,
+        writers,
+        refreshes,
+        missing,
+        r1: false,
+        r2: false,
+        r3: false,
+    }
+    .finish()
+}
+
+/// 在**兄弟守卫行**之后插一行（幂等：已经在了就不动）—— 变体树与修复体共用同一个构造器。
+fn r94_insert_after_tour_guard(app: &str, text: &str) -> String {
+    if app.contains(text) {
+        return app.to_string();
+    }
+    let mut out = Vec::new();
+    let mut done = false;
+    for line in app.lines() {
+        out.push(line.to_string());
+        if !done && line.contains(R94_TOUR_GUARD) {
+            let indent = &line[..line.len() - line.trim_start().len()];
+            out.push(format!("{indent}{text}"));
+            done = true;
+        }
+    }
+    assert!(done, "找不引导守卫行 `{R94_TOUR_GUARD}`（锚点漂移）");
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
+/// 修复体：处理器里补上「面板开着就重画」。
+fn r94_variant_fix(app: &str) -> String {
+    r94_insert_after_tour_guard(app, R94_FIXED_GUARD)
+}
+
+/// 竞争修法：切线时把面板**关掉**（本门禁与探针**同判不同因**：这里因为写者没被调用而红，
+/// 探针按 DOM 实况因为「面板被夺走」而红 —— 射程边界，实测）。
+fn r94_variant_close(app: &str) -> String {
+    r94_insert_after_tour_guard(app, R94_CLOSE_GUARD)
+}
+
+/// 未修形状：把修复体那一行摘掉（**只**摘这一行，别的刷新名册不动）。
+fn r94_variant_unfixed(app: &str) -> String {
+    let before = app.to_string();
+    let kept: Vec<&str> = app
+        .lines()
+        .filter(|l| !l.contains(R94_FIXED_GUARD))
+        .collect();
+    let out = kept.join("\n") + "\n";
+    assert!(
+        out != before || !before.contains(R94_FIXED_GUARD),
+        "修复体那一行没被摘掉（锚点漂移）"
+    );
+    out
+}
+
+/// 假修：把刷新名册**削到恰好满足 R1 的最小集** —— 只留浮层写者（`renderHelp` / `renderTourStep`），
+/// 把导航与当前视图那两次刷新删掉。R1 仍绿（浮层写者都在），而 R2 的下界必须红 —— 挡住
+/// 「名册越删越干净」这条路径。
+fn r94_variant_minimal_roster(app: &str) -> String {
+    let mut out = Vec::new();
+    let mut inside = false;
+    let mut dropped = 0usize;
+    for line in app.lines() {
+        if line.contains(R94_HANDLER_START) {
+            inside = true;
+        }
+        let trims = line.trim_start();
+        if inside && (trims.contains("renderNav()") || trims.contains("renderView(activeView)")) {
+            dropped += 1;
+            continue;
+        }
+        if inside && line.trim_end().ends_with("});") {
+            inside = false;
+        }
+        out.push(line.to_string());
+    }
+    assert_eq!(
+        dropped, 2,
+        "刷新名册的锚点漂了（摘掉 {dropped} 行，期望 2）"
+    );
+    out.join("\n") + "\n"
+}
+
+/// 合成的**新浮层**（`ui/index.html`）：验证「将来新加的浮层忘了登记时会被抓到」。
+fn r94_variant_new_overlay(html: &str) -> String {
+    let inject = concat!(
+        "<div id=\"new-panel\" class=\"panel hidden\">\n",
+        "  <div id=\"new-panel-body\"></div>\n",
+        "</div>\n",
+    );
+    let at = html
+        .find("<div id=\"help-panel\"")
+        .expect("找不到 `#help-panel`（名册的起点漂了）");
+    format!("{}{}{}", &html[..at], inject, &html[at..])
+}
+
+/// 合成的**新写者**（`ui/js/app.js`）：给上面那个新浮层的 JS 内容。
+fn r94_variant_new_writer(app: &str) -> String {
+    let writer = concat!(
+        "  function renderNewPanel() {\n",
+        "    $(\"#new-panel-body\").innerHTML = T(\"nav.dashboard\");\n",
+        "  }\n",
+    );
+    let at = app
+        .find("  function renderHelp() {")
+        .expect("找不到 `renderHelp`（写者名册的锚点漂了）");
+    format!("{}{}{}", &app[..at], writer, &app[at..])
+}
+
+/// 合成的**假修**：把 `#chat-modal` 的 `hidden` 类摘掉 ⇒ 它不再是名册里的浮层（R3 的「模态」那一半
+/// 变空，而 R1 仍然覆盖得了剩下的非模态浮层）—— 专门测量 R3 的牙。
+fn r94_variant_no_modal(html: &str) -> String {
+    let from = "<div id=\"chat-modal\" class=\"modal-overlay hidden\">";
+    let to = "<div id=\"chat-modal\" class=\"modal-overlay\">";
+    assert_eq!(
+        html.matches(from).count(),
+        1,
+        "找不到 `#chat-modal` 的类属性（名册的锚点漂了）"
+    );
+    html.replace(from, to)
+}
+
+/// 空名册的极端形状：把浮层全部删掉 —— R1 的射程变空，必须**响亮地红**（坑 68）。
+fn r94_variant_no_overlays(html: &str) -> String {
+    let kept: Vec<&str> = html
+        .lines()
+        .filter(|l| {
+            !l.starts_with("<div id=\"help-panel\"")
+                && !l.starts_with("<div id=\"chat-modal\"")
+                && !l.starts_with("<div id=\"tour-")
+        })
+        .collect();
+    let out = kept.join("\n") + "\n";
+    assert!(
+        r94_overlays(&out).is_empty(),
+        "浮层没删干净（构造器坏了）: {:?}",
+        r94_overlays(&out)
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 本轴的读取入口：浮层名册与模态判据永远取自 live 的 `ui/index.html` / `ui/css/style.css`，
+    /// 只有被测的 `app.js` 由调用方给（两条腿喂不同的树）。
+    fn r94_live(app: &str) -> R94Reading {
+        r94_read(INDEX_HTML, app, STYLE_CSS)
+    }
+
+    /// 本轴的派生名册（`ui/index.html` 中 `#app` 之后、带 `hidden` 类的顶行元素）。
+    fn r94_roster() -> BTreeSet<String> {
+        r94_overlays(INDEX_HTML).into_iter().map(|o| o.id).collect()
+    }
+
+    /// 轴：切语言时被刷新的名册必须覆盖**用户此刻可能正开着的每个非模态浮层**（R94）。
+    ///
+    /// 三条规则各自的含义见文件头。本测试只断言「三条同时成立」；每条规则的**牙**由
+    /// [`the_r94_rules_have_teeth`] 逐条测量，与竞争修法的**关系**由
+    /// [`the_r94_rules_separate_the_variants`] 逐腿声明。
+    #[test]
+    fn the_language_switch_refreshes_every_overlay_it_can_show() {
+        let read = r94_live(APP_JS);
+        assert!(
+        read.handler_found,
+        "取不到 `{R94_HANDLER_START}` 的处理器体（开头/收尾定界不唯一）—— 三条规则的射程会静默变空：{}",
+        read.report()
+    );
+        assert!(
+            read.scope.len() >= 2,
+            "射程里的非模态浮层少于两个 —— R1 退化成空集上的关系式：{}",
+            read.report()
+        );
+        assert!(
+            !read.modal.is_empty() && !read.non_modal.is_empty(),
+            "派生名册里模态/非模态有一边是空的 —— R3 的分界恒真，规则失去意义：{}",
+            read.report()
+        );
+        assert!(
+            read.refreshes.len() >= R94_MIN_REFRESHES,
+            "处理器派生出来的 `render*` 刷新名少于 {R94_MIN_REFRESHES} 个 —— R2 的下界不成立：{}",
+            read.report()
+        );
+        assert!(
+            read.verdicts() == (true, true, true),
+            "切语言必须刷新用户可能正开着的每个非模态浮层（R94）：{}",
+            read.report()
+        );
+    }
+
+    /// 阳性对照：派生器/写者名册/读取器在**已知为绿**的树上读到东西，在「什么都没有」的树上读到空。
+    ///
+    /// 这是三条规则的射程保险：读取器若只会返回常量，规则就成了恒真断言（空集上的关系式会静默
+    /// 通过）。⚠️ 绝对判词只打在自己拼出来的树上 —— 真树在两条腿上形状不同（#314）。
+    #[test]
+    fn the_r94_roster_is_real() {
+        // ① 名册的阳性对照（解析器变了 / index.html 结构变了都会在这里响）。
+        let roster = r94_roster();
+        assert!(
+            roster.contains("help-panel")
+                && roster.contains("chat-modal")
+                && roster.contains("tour-overlay"),
+            "派生名册少了浮层（解析器坏了，还是 index.html 结构变了？）：{roster:?}"
+        );
+        assert!(
+        !roster.contains("app") && !roster.contains("login-view") && !roster.contains("toast-wrap"),
+        "派生名册混进了射程外的元素（`#app` 是起点，实例由 JS 即时生成的 `#toast-wrap` 不是浮层）：{roster:?}"
+    );
+
+        // ② 模态判据的阳性对照（R3 的分界真的能分开两类，而不是恒真/恒假）。
+        let modal: BTreeSet<String> = roster
+            .iter()
+            .filter(|id| {
+                let classes = r94_overlays(INDEX_HTML)
+                    .into_iter()
+                    .find(|o| o.id == **id)
+                    .map(|o| o.classes)
+                    .unwrap_or_default();
+                r94_is_modal(STYLE_CSS, &classes)
+            })
+            .cloned()
+            .collect();
+        assert!(
+        modal.contains("chat-modal") && !modal.contains("help-panel"),
+        "模态判据没有把 `#chat-modal`（`.modal-overlay` 有 `inset: 0`）与 `#help-panel`（无）分开：{modal:?}"
+    );
+
+        // ③ 写者名册的阳性对照：`#help-panel` 的 JS 写者**恰好**是 `renderHelp`（派生出来的）。
+        let live = r94_live(APP_JS);
+        assert_eq!(
+            live.writers.get("help-panel"),
+            Some(
+                &[String::from("renderHelp")]
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
+            ),
+            "`#help-panel` 的写者名册不是恰好 `renderHelp` —— 写者判别式变了：{}",
+            live.report()
+        );
+
+        // ④ 修复树上三条规则全绿，且证据全都读到。
+        let fixed_tree = r94_variant_fix(APP_JS);
+        let fix = r94_live(&fixed_tree);
+        assert!(
+            fix.verdicts() == (true, true, true),
+            "修复树上三条规则不是全绿 —— 变体构造器坏了：{}",
+            fix.report()
+        );
+        assert!(
+            fix.missing.is_empty() && !fix.refreshes.is_empty(),
+            "修复树上 R1 的输入或证据是空的 —— 那条规则会恒真：{}",
+            fix.report()
+        );
+
+        // ⑤ 反向：未修形状上缺的必须**恰好**是帮助面板（派生出来的，不是抄的）。
+        let gone = r94_live(&r94_variant_unfixed(APP_JS));
+        assert_eq!(
+            gone.missing,
+            [String::from("help-panel/renderHelp")]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            "未修形状上「没被刷新的浮层」不是恰好帮助面板 —— R1 的判别式变了：{}",
+            gone.report()
+        );
+        assert!(
+            !gone.r1 && gone.r2 && gone.r3,
+            "未修形状只该翻 R1 一条：{}",
+            gone.report()
+        );
+
+        // ⑥ 空名册的极端形状：射程变空时必须**响亮地红**，不许在空集上通过（坑 68）。
+        let empty = r94_read(&r94_variant_no_overlays(INDEX_HTML), APP_JS, STYLE_CSS);
+        assert!(
+            empty.overlays.is_empty() && !empty.r1,
+            "浮层全删掉之后 R1 仍然绿 —— 覆盖率规则在空集上会「通过」：{}",
+            empty.report()
+        );
+    }
+
+    /// 三条规则**各有独立的牙**：合成变异体逐个喂给规则自己的判别式，每个恰好打翻一条。
+    ///
+    /// 判据是「恰好一条翻转」而不是「至少一条红」—— 否则一条从别处借来红的规则也能自称有牙
+    /// （#454：牙齿必须长在该规则的判别式上）。基线是**已知为绿的**修复树（#458）。
+    #[test]
+    fn the_r94_rules_have_teeth() {
+        let fixed_tree = r94_variant_fix(APP_JS);
+        let base = r94_live(&fixed_tree);
+        assert_eq!(
+            base.verdicts(),
+            (true, true, true),
+            "自证基线不绿，牙齿测试没有意义：{}",
+            base.report()
+        );
+
+        // 每个变异体只动一处，期望**恰好一条**翻转（#454）。顺序 = (r1, r2, r3)。
+        let unfixed = r94_variant_unfixed(&fixed_tree);
+        let trimmed = r94_variant_minimal_roster(&fixed_tree);
+        let new_overlay_tree = r94_variant_new_writer(&r94_variant_fix(APP_JS));
+        let mutants: [(&str, R94Reading, (bool, bool, bool)); 4] = [
+            ("guard gone", r94_live(&unfixed), (false, true, true)),
+            (
+                "the refresh roster is trimmed to the writers only",
+                r94_live(&trimmed),
+                (true, false, true),
+            ),
+            (
+                "a future overlay's writer is not registered",
+                r94_read(
+                    &r94_variant_new_overlay(INDEX_HTML),
+                    &new_overlay_tree,
+                    STYLE_CSS,
+                ),
+                (false, true, true),
+            ),
+            (
+                "no modal overlay left in the roster",
+                r94_read(&r94_variant_no_modal(INDEX_HTML), &fixed_tree, STYLE_CSS),
+                (true, true, false),
+            ),
+        ];
+        for (label, read, expected) in mutants {
+            assert_eq!(
+                read.verdicts(),
+                expected,
+                "规则 `{label}` 的牙不成立（期望 {expected:?}）：{}",
+                read.report()
+            );
+        }
+
+        // R1 的第二半：新浮层的缺项必须是**它自己**（证明规则不是只认 `help-panel` 一个元素）。
+        let new_overlay = r94_read(
+            &r94_variant_new_overlay(INDEX_HTML),
+            &new_overlay_tree,
+            STYLE_CSS,
+        );
+        assert_eq!(
+            new_overlay.missing,
+            [String::from("new-panel/renderNewPanel")]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            "新浮层的缺项不是它自己 —— 覆盖率的判别式变了：{}",
+            new_overlay.report()
+        );
+
+        // R2 的第二半：**刷新的名字少于下界**也必须响亮失败（不许把「名册越删越干净」当成功）。
+        let numpty = r94_live(&r94_variant_minimal_roster(&fixed_tree));
+        assert!(
+            !numpty.r2 && numpty.refreshes.len() < R94_MIN_REFRESHES,
+            "刷新名册被削到最小集后 R2 仍绿 —— 那条规则可以静默失明：{}",
+            numpty.report()
+        );
+        assert!(
+            numpty.r1 && numpty.r3,
+            "削名册只该翻 R2 一条：{}",
+            numpty.report()
+        );
+
+        // 读取器本身的牙（合成输入：不碰真文件）—— 「提不到 id」和「提到了但没写」必须都不算写者。
+        assert!(r94_mentions(
+            "$(\"#help-body\").innerHTML = T(\"a\");",
+            "help-body"
+        ));
+        assert!(!r94_mentions(
+            "$(\"#help-bodyx\").innerHTML = \"x\";",
+            "help-body"
+        ));
+        assert!(!r94_mentions(
+            "$(\"#help-body\").innerHTML = \"x\";",
+            "help-context"
+        ));
+        assert!(r94_calls("if (a) renderHelp();").contains("renderHelp"));
+        assert!(!r94_calls("const x = o.renderHelp;").contains("renderHelp"));
+    }
+
+    /// 规则与**竞争修法**的关系，逐腿声明（#339/#341：声明的期望与实际各印一列）。
+    ///
+    /// 竞争修法来自 jsdom 探针 `r94_probe.js`（它按 DOM 实况逐条裁定）：
+    /// - `m_close`：切线时把用户自己开的面板**关掉**（「屏幕上没有面板，就没有陈旧的行」）。
+    ///   本门禁**也**拒它 —— 但理由是「写者 `renderHelp` 没被调用」（R1 问的是刷新了没），而探针的
+    ///   `A4` 腿拒它的理由是「用户的面板被夺走」。**同判不同因**：这条边界实测在这里，不是只写在注释里
+    ///   （C2148 的分工：两个仪器各自能看见对方看不见的东西）。
+    /// - `m_minimal_roster`：把刷新名册削到只留浮层写者（R1 仍绿、R2 收口）。
+    ///
+    /// 探针另有一条 `m_datai18n`（把四行快捷键改写成静态 `data-i18n`），它要同时改写 `index.html` 与
+    /// `app.js` 两侧，本门禁的构造器不做它 —— 它的判官是探针的 `A2`/`Z1` 腿。
+    #[test]
+    fn the_r94_rules_separate_the_variants() {
+        // ⚠️ 本测试必须在**两腿**都绿（编译门禁分别把真树与 E1 修复树当作 `APP_JS` 来编译）
+        // ⇒ 绝对判词只能打在**它自己拼出来的树**上（#314），而每棵变体树都必须从**同一个**起点拼
+        // （`r94_variant_fix(APP_JS)` 幂等 ⇒ 两条腿上逐字相同，#612）；从 `APP_JS` 直接拼会在 base 腿上
+        // 拼出另一棵树（那条腿的 `APP_JS` 就是未修形状），声明的判词当场失真。
+        let all_green = (true, true, true);
+
+        let tree_fix = r94_variant_fix(APP_JS);
+        let tree_unfixed = r94_variant_unfixed(&tree_fix);
+        let tree_close = r94_variant_close(&tree_unfixed);
+        let tree_trimmed = r94_variant_minimal_roster(&tree_fix);
+
+        // 先证明这些树互不相同，否则「判词不同」可能只是同一棵树的两张脸。
+        for (label, other) in [
+            ("unfixed", &tree_unfixed),
+            ("m_close", &tree_close),
+            ("m_minimal_roster", &tree_trimmed),
+        ] {
+            assert_ne!(tree_fix, *other, "`{label}` 与修复树逐字相同 —— 变体没落地");
+        }
+
+        let declared = [
+            ("fix (spliced)", tree_fix.as_str(), all_green),
+            (
+                "unfixed (the defect)",
+                tree_unfixed.as_str(),
+                (false, true, true),
+            ),
+            (
+                "m_close (probe rejects on UX, gate rejects on the writer)",
+                tree_close.as_str(),
+                (false, true, true),
+            ),
+            (
+                "m_minimal_roster",
+                tree_trimmed.as_str(),
+                (true, false, true),
+            ),
+        ];
+        for (name, app, expected) in declared {
+            let read = r94_live(app);
+            assert_eq!(
+                read.verdicts(),
+                expected,
+                "变体 `{name}` 的判词与声明不符（声明 {expected:?}）：{}",
+                read.report()
+            );
+        }
+
+        // `m_close` 那条边界要可测量：它**不是**修复体（逐字不同），却与**未修形状**缺同一项
+        // （`help-panel/renderHelp`）—— 因为「把面板关掉」并没有让写者被调用。两个仪器在这一点上
+        // 同判（都拒）、不同因，这里钉的就是那个「因」。
+        assert_ne!(
+            tree_close, tree_fix,
+            "`m_close` 与修复体逐字相同 —— 竞争修法没落地"
+        );
+        assert_eq!(
+            r94_live(&tree_close).missing,
+            r94_live(&tree_unfixed).missing,
+            "`m_close` 的缺项与未修形状不同 —— 「关掉面板 ≠ 刷新面板」这条判据变了"
+        );
+    }
+
+    /// 修复体常量与插入锚点的自洽（跨制品那一腿在 `r94_compile_gate.py` 里，真值取自编辑表）。
+    #[test]
+    fn the_r94_fixed_guard_is_the_edit_sheet_text() {
+        assert!(
+            !R94_FIXED_GUARD.contains(R94_MODAL_RULE)
+                && R94_FIXED_GUARD.contains("classList.contains(\"hidden\")"),
+            "修复体不是「读 class 机制」那一行：{R94_FIXED_GUARD:?}"
+        );
+        assert!(
+            R94_FIXED_GUARD.contains("renderHelp();") && R94_FIXED_GUARD.contains("#help-panel"),
+            "修复体不是「帮助面板开着就重画」那一行：{R94_FIXED_GUARD:?}"
+        );
+        assert!(
+            R94_TOUR_GUARD.contains("renderTourStep();") && !R94_TOUR_GUARD.contains("help-panel"),
+            "插入锚点不是引导守卫行：{R94_TOUR_GUARD:?}"
+        );
+        // 幂等：两腿拿到的必须是**同一棵**修复树（否则声明表在另一条腿上就不成立了，#612）。
+        let once = r94_variant_fix(APP_JS);
+        let twice = r94_variant_fix(&once);
+        assert_eq!(once, twice, "修复体构造器不幂等 —— 两腿会得到不同的树");
+        assert_eq!(
+            once.matches(R94_FIXED_GUARD).count(),
+            1,
+            "修复树里那一行不是恰好一个"
+        );
+        assert_ne!(
+            r94_variant_unfixed(APP_JS),
+            once,
+            "未修形状与修复树逐字相同 —— 变体构造器失效了"
+        );
+        assert_ne!(
+            R94_CLOSE_GUARD, R94_FIXED_GUARD,
+            "关面板式竞争修法与修复体逐字相同 —— 竞争修法没落地"
+        );
+    }
 
     /// R93 的**基线树** = 位点的未修形状。
     ///
