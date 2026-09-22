@@ -32,6 +32,10 @@
   const TOAST_MS = 2600;      // 展示时长
   const TOAST_ACTION_MS = 6000; // 可交互 toast 展示时长（给用户留点击时间）
   const TOAST_OUT_MS = 200; // 淡出时长
+
+  // 口令下限（字符口径）：与后端 MIN_PASSWORD_CHARS、语言包 err.weakPassword、注册占位符同源。
+  // 不得用 `pw.length` —— 那是 UTF-16 code unit，星号面（emoji）一个字符算 2。
+  const MIN_PW_CHARS = 8;
   function toast(msg, type, opts) {
     const wrap = $("#toast-wrap");
     const el = document.createElement("div");
@@ -3698,7 +3702,7 @@
         else clearFieldError($("#forgot-email"));
         if (!code) { setFieldError($("#forgot-code"), T("verify.err.code")); firstErr = firstErr || $("#forgot-code"); }
         else clearFieldError($("#forgot-code"));
-        if (pw.length < 8) { setFieldError($("#forgot-pass"), T("register.err.pass")); firstErr = firstErr || $("#forgot-pass"); }
+        if (Array.from(pw).length < MIN_PW_CHARS) { setFieldError($("#forgot-pass"), T("register.err.pass")); firstErr = firstErr || $("#forgot-pass"); }
         else clearFieldError($("#forgot-pass"));
         if (pw !== pw2) { setFieldError($("#forgot-pass2"), T("register.err.confirm")); firstErr = firstErr || $("#forgot-pass2"); }
         else clearFieldError($("#forgot-pass2"));

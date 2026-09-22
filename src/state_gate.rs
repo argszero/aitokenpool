@@ -3373,9 +3373,461 @@ fn r165_variant_day(app: &str) -> String {
     r165_variant_fix(app).replace("if (!s) return \"week\";", "if (!s) return \"day\";")
 }
 
+/// 轴：产品四处宣告「密码至少 8 位」，服务端三处却用 `String::len()`（UTF-8 **字节**）执行
+/// 同一条规则 ⇒ 一条规则在同一棵树里活了两个单位：`密码abc`（5 字符 / 9 字节）被服务端放行，
+/// 而服务端返回的那句话就是「密码至少 8 位」，且应用自己的找回密码表单（按字符计数）拒同一个密码。
+///
+/// 四条规则，各有独立的牙：
+///
+/// 1. **服务端走唯一真源**：三处请求校验一律经 `password_too_short()`；生产区里不得再有口令形状
+///    的 `.len() <`；helper 自己的计数表达式必须是**宣告的那个单位**。
+/// 2. **客户端同单位**：`ui/js/app.js` 的口令守卫必须是 `Array.from(...).length`；不得再有裸
+///    `pw.length <`（UTF-16 code unit：一个星光面字符算 2，`😀😀😀😀` 会被当成 8 个）。
+/// 3. **宣告与常量同数同单位**：四张脸（设计基线原型占位符 / zh 包 / en 包 / ERR_MAP 字面量）
+///    必须**互相一致**、单位必须是**字符**，且后端常量与客户端常量的值都等于它们报出的 N。
+///    N 从源码读出，不写死。
+/// 4. **站点形状 == 3 + 1**：服务端三处 + 客户端一处；删掉任一处都不算修法（竞争修法
+///    `m_drop_client` 就是删客户端守卫，让两边「不再矛盾」）。
+///
+/// **射程（诚实边界，已写进 `ui/README.md`）**：本门禁是**词法**的 —— 它证「两处实现数的单位
+/// == 四张脸宣告的单位」，**不证**运行期某个样本真的被拒/被收（那半归 `src/routes/mod.rs` 的
+/// 两条口令边界测试 `password_minimum_is_counted_in_characters_not_bytes` /
+/// `register_rejects_a_password_short_in_characters_long_in_bytes`：**形状归门禁，事实归探针**）。
+/// 也不证
+/// 「那句字面量真会被服务端返回」（ERR_MAP 由它自己的门禁管）。单位取自**设计基线原型**
+/// （`docs/prototype/`）—— 本次修复不碰它（坑 #537：期望值锚在爆炸半径之外）。
+/// 「单位是字符」这个**方向**是产品自己的宣告（四处载体、含设计基线），把它改写成「字节」是
+/// **改声明**，由规则 3 与 README 约定一起拒。
+const PASS_MIN_MOD_RS: &str = include_str!("routes/mod.rs");
+/// 设计基线原型：注册密码框的占位符出自这里。
+const PASS_MIN_PROTO: &str = include_str!("../docs/prototype/aitokenpool-console.html");
+/// 后端唯一真源的常量名。
+const PASS_MIN_CONST: &str = "MIN_PASSWORD_CHARS";
+/// 客户端同名常量。
+const PASS_MIN_JS_CONST: &str = "MIN_PW_CHARS";
+/// 后端唯一真源的函数名（三处请求校验必须走它）。
+const PASS_MIN_FN: &str = "password_too_short";
+/// 后端不得再出现的字节形状（`String::len()` 是 UTF-8 字节数）。
+const PASS_MIN_BYTE_SHAPE: &str = "len() <";
+/// 客户端必须用的计数层（`Array.from(...)` = Unicode 标量值）。
+const PASS_MIN_JS_COUNT: &str = "Array.from(";
+/// 四张「宣告」的脸的登记名（规则 3 的集合）。
+const PASS_MIN_FACES: [&str; 4] = [
+    "prototype placeholder",
+    "zh pack",
+    "en pack",
+    "ERR_MAP literal",
+];
+
+/// 一张「宣告」的脸：登记名 / 原话 / 从原话读出的 `(N, 单位)`。
+///
+/// 用具名别名而不是就地写三元组：`clippy::type_complexity` 在 `-D warnings` 下会把内联的
+/// `Vec<(&str, String, Option<(usize, &str)>)>` 判成「非常复杂的类型」而**让整个 crate 红**
+/// （`cargo clippy --all-targets -D warnings` 是落地门禁的一部分）。
+type PassMinFace = (&'static str, String, Option<(usize, &'static str)>);
+
+/// `mod.rs` 的**生产区**（`#[cfg(test)]` 之前）。
+///
+/// 射程必须显式声明：本门禁落地时会在同一个文件里追加口令边界测试，那些测试**自己**会调用
+/// `password_too_short(...)` —— 把测试区也算进来的话，规则 4 的「三处」会被自己的夹具顶破。
+fn pass_min_prod(src: &str) -> &str {
+    match src.find("#[cfg(test)]") {
+        Some(i) => &src[..i],
+        None => src,
+    }
+}
+
+/// 从一句宣告里读出 `(N, 单位)`。单位只认「字符」与「字节」两种拼法，其余 ⇒ `None`。
+fn pass_min_rule(text: &str) -> Option<(usize, &'static str)> {
+    let n: usize = text
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|s| !s.is_empty())?
+        .parse()
+        .ok()?;
+    let unit = if text.contains('位') || text.contains("个字符") || text.contains("character") {
+        "chars"
+    } else if text.contains("字节") || text.contains("byte") {
+        "bytes"
+    } else {
+        return None;
+    };
+    Some((n, unit))
+}
+
+/// 一个计数表达式数的是哪个单位：`chars().count()` / `Array.from(...)` ⇒ 字符；
+/// `String::len()` ⇒ 字节；JS 的裸 `.length` ⇒ UTF-16 code unit（两者都不是）。
+fn pass_min_unit_of(expr: &str) -> Option<&'static str> {
+    if expr.contains("chars().count()") || expr.contains(PASS_MIN_JS_COUNT) {
+        Some("chars")
+    } else if expr.contains(".len() <") {
+        Some("bytes")
+    } else if expr.contains(".length <") {
+        Some("utf16")
+    } else {
+        None
+    }
+}
+
+/// 原型里注册密码框的 `placeholder`（设计基线的宣告原文）。
+fn pass_min_proto_placeholder(src: &str) -> Option<String> {
+    let at = src.find("id=\"reg-pass\"")?;
+    let rest = &src[at..];
+    let p = rest.find("placeholder=\"")? + "placeholder=\"".len();
+    let rest = &rest[p..];
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+/// `ERR_MAP` 里弱口令那条的**字面量**（服务端返回给客户端的就是这句话）。
+fn pass_min_err_map_literal(src: &str) -> Option<String> {
+    let rest = &src[src.find("var ERR_MAP = [")?..];
+    let key = rest.find("\"err.weakPassword\"")?;
+    let close = rest[..key].rfind('"')?;
+    let open = rest[..close].rfind('"')?;
+    Some(rest[open + 1..close].to_string())
+}
+
+/// 四张「宣告」的脸（原话，不做断言 —— 期望由它们**互相**推出来，坑 #537）。
+fn pass_min_carriers(i18n: &str, proto: &str) -> Vec<(&'static str, String)> {
+    let zh = pack_region_strict(i18n, ZH_PACK_START, EN_PACK_START);
+    let en = pack_region_strict(i18n, EN_PACK_START, PACK_END);
+    vec![
+        (
+            "prototype placeholder",
+            pass_min_proto_placeholder(proto).unwrap_or_default(),
+        ),
+        (
+            "zh pack",
+            pack_string(zh, "err.weakPassword").unwrap_or_default(),
+        ),
+        (
+            "en pack",
+            pack_string(en, "err.weakPassword").unwrap_or_default(),
+        ),
+        (
+            "ERR_MAP literal",
+            pass_min_err_map_literal(i18n).unwrap_or_default(),
+        ),
+    ]
+}
+
+/// 生产区里**提到口令**、又拿它比一个下限的行 —— 无论它是走 helper 还是非法的字节比较。
+///
+/// 这是规则 4 数的「站点」：半修（只把一处换回 `.len() <`）在这里**仍是三处**，所以它只翻规则 1，
+/// 不连坐规则 4（`m_byte_server` 那条腿钉的就是这件事）。
+fn pass_min_server_sites(src: &str) -> Vec<String> {
+    code_only(src)
+        .lines()
+        .filter(|l| l.to_ascii_lowercase().contains("password"))
+        .filter(|l| l.contains(PASS_MIN_FN) || l.contains(PASS_MIN_BYTE_SHAPE))
+        .filter(|l| !l.contains(&format!("fn {PASS_MIN_FN}")))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+/// 生产区里**走 helper** 的那些行（规则 1 的「唯一真源」半边）。
+fn pass_min_helper_calls(src: &str) -> Vec<String> {
+    code_only(src)
+        .lines()
+        .filter(|l| l.contains(&format!("{PASS_MIN_FN}(")))
+        .filter(|l| !l.contains(&format!("fn {PASS_MIN_FN}")))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+/// 生产区里残留的**字节口径**站点：提到口令、且是 `.len() <`。
+fn pass_min_byte_sites(src: &str) -> Vec<String> {
+    code_only(src)
+        .lines()
+        .filter(|l| l.to_ascii_lowercase().contains("password"))
+        .filter(|l| l.contains(PASS_MIN_BYTE_SHAPE))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+/// 唯一真源（helper）的函数体，以定义行为界。
+fn pass_min_helper_body(src: &str) -> Option<String> {
+    let head = format!("fn {PASS_MIN_FN}(pw: &str) -> bool {{");
+    let at = src.find(&head)?;
+    let rest = &src[at..];
+    Some(rest[..rest.find("\n}")?].to_string())
+}
+
+/// 后端常量的值（从源码读出，不写死 —— 规则 3 的右半边）。
+fn pass_min_const_n(src: &str) -> Option<usize> {
+    let head = format!("const {PASS_MIN_CONST}: usize = ");
+    let at = src.find(&head)?;
+    let rest = &src[at + head.len()..];
+    rest[..rest.find(';')?].trim().parse().ok()
+}
+
+/// 客户端常量的值。
+fn pass_min_js_const_n(src: &str) -> Option<usize> {
+    let head = format!("const {PASS_MIN_JS_CONST} = ");
+    let at = src.find(&head)?;
+    let rest = &src[at + head.len()..];
+    rest[..rest.find(';')?].trim().parse().ok()
+}
+
+/// `app.js` 里的口令长度守卫站点：既提到 `pw`，又拿它比一个下限（常量名或裸数字）。
+///
+/// 这个形状对**两种**写法都成立 ⇒ 规则 2（单位）与规则 4（站点数）彼此独立。
+fn pass_min_client_sites(src: &str) -> Vec<String> {
+    code_only(src)
+        .lines()
+        .filter(|l| l.contains("pw"))
+        .filter(|l| l.contains(PASS_MIN_JS_CONST) || l.contains(".length <"))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+/// `app.js` 里残留的裸 `pw.length <`（UTF-16 code unit 口径）。
+fn pass_min_client_bare(src: &str) -> Vec<String> {
+    code_only(src)
+        .lines()
+        .filter(|l| l.contains("pw.length <"))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+/// 门禁读到的一切（四条规则共用同一份读数，`report()` 把它印出来）。
+struct PassMinRead {
+    /// 四张脸的原话 + 各自读出的 `(N, 单位)`。
+    carriers: Vec<PassMinFace>,
+    const_n: Option<usize>,
+    js_const_n: Option<usize>,
+    helper_body: Option<String>,
+    helper_calls: Vec<String>,
+    server_sites: Vec<String>,
+    byte_sites: Vec<String>,
+    client_sites: Vec<String>,
+    client_bare: Vec<String>,
+}
+
+impl PassMinRead {
+    /// 四张脸一致时报出的 `(N, 单位)`；不一致 ⇒ `None`。
+    fn agreed(&self) -> Option<(usize, &'static str)> {
+        let first = self.carriers.first()?.2?;
+        if self.carriers.iter().all(|(_, _, r)| *r == Some(first)) {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
+    /// 单位取自**设计基线原型**那张脸 —— 唯一位于本次修复爆炸半径之外的锚点（坑 #537）。
+    fn declared(&self) -> Option<(usize, &'static str)> {
+        self.carriers.first().and_then(|(_, _, r)| *r)
+    }
+
+    fn verdicts(&self) -> (bool, bool, bool, bool) {
+        let declared = self.declared();
+        let unit = declared.map(|(_, u)| u);
+        // 1. 服务端：没有字节站点 + 每个站点都走 helper + helper 按宣告的单位计数
+        let server = self.byte_sites.is_empty()
+            && self.helper_calls.len() == self.server_sites.len()
+            && !self.server_sites.is_empty()
+            && self.helper_body.as_deref().and_then(pass_min_unit_of) == unit;
+        // 2. 客户端：没有裸 `.length <`，且每个守卫都按宣告的单位计数
+        //    （守卫一个都不剩时这里是恒真 —— 那由规则 4 单独接住，两条规则因此彼此独立）
+        let client = self.client_bare.is_empty()
+            && self
+                .client_sites
+                .iter()
+                .all(|l| pass_min_unit_of(l) == unit);
+        // 3. 宣告：四张脸互相一致、单位是字符、两个常量的值都等于 N
+        let n = declared.map(|(n, _)| n);
+        let decl = self.agreed().map(|(_, u)| u) == Some("chars")
+            && n.is_some()
+            && self.const_n == n
+            && self.js_const_n == n;
+        // 4. 形状：服务端 3 处 + 客户端 1 处
+        let shape = self.server_sites.len() == 3 && self.client_sites.len() == 1;
+        (server, client, decl, shape)
+    }
+
+    fn report(&self) -> String {
+        let mut s = String::new();
+        for (label, text, rule) in &self.carriers {
+            s.push_str(&format!("    {label}: {text:?} -> {rule:?}\n"));
+        }
+        s.push_str(&format!(
+            "    const N={:?} js const N={:?} | helper calls={} server sites={} byte sites={} \
+             client sites={} bare={} | helper body unit={:?}",
+            self.const_n,
+            self.js_const_n,
+            self.helper_calls.len(),
+            self.server_sites.len(),
+            self.byte_sites.len(),
+            self.client_sites.len(),
+            self.client_bare.len(),
+            self.helper_body.as_deref().and_then(pass_min_unit_of),
+        ));
+        for l in self.byte_sites.iter().chain(self.client_bare.iter()) {
+            s.push_str(&format!("\n      offending: {l}"));
+        }
+        s
+    }
+}
+
+fn pass_min_read(mod_rs: &str, app_js: &str, i18n: &str, proto: &str) -> PassMinRead {
+    let texts = pass_min_carriers(i18n, proto);
+    let carriers: Vec<PassMinFace> = texts
+        .into_iter()
+        .map(|(label, text)| {
+            let rule = pass_min_rule(&text);
+            (label, text, rule)
+        })
+        .collect();
+    let prod = pass_min_prod(mod_rs);
+    PassMinRead {
+        carriers,
+        const_n: pass_min_const_n(prod),
+        js_const_n: pass_min_js_const_n(app_js),
+        helper_body: pass_min_helper_body(prod),
+        helper_calls: pass_min_helper_calls(prod),
+        server_sites: pass_min_server_sites(prod),
+        byte_sites: pass_min_byte_sites(prod),
+        client_sites: pass_min_client_sites(app_js),
+        client_bare: pass_min_client_bare(app_js),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 轴：口令下限**用「位」宣告、用「字节」执行**（R96）。
+    ///
+    /// 四条规则的含义见 `PassMinRead` 的文档注释。本测试只断言「四条同时成立」；
+    /// 每条规则的**牙**由 [`the_pass_min_rules_have_teeth`] 逐条测量。
+    #[test]
+    fn the_password_minimum_is_counted_in_the_unit_its_message_names() {
+        let read = pass_min_read(PASS_MIN_MOD_RS, APP_JS, I18N_JS, PASS_MIN_PROTO);
+        assert_eq!(
+            read.carriers.len(),
+            4,
+            "「宣告」那族必须恰好四张脸（原型 / zh / en / ERR_MAP）—— 少一张会让规则 3 假绿：{}",
+            read.report()
+        );
+        assert!(
+            read.declared().is_some(),
+            "从设计基线原型里读不出注册占位符 ⇒ 「宣告」的锚点没了（坑 #537）：{}",
+            read.report()
+        );
+        assert_eq!(
+            read.verdicts(),
+            (true, true, true, true),
+            "口令下限必须按它自己宣告的单位来数（R96）：{}",
+            read.report()
+        );
+    }
+
+    /// 阳性对照：读数不是空的。
+    ///
+    /// 空集会把「不许出现」变成恒真（坑 68 家族）；一个从不返回绿的判据等于没有判据。
+    /// ⚠️ 本测试**刻意只断言在两棵树上都成立的事**（四张脸可读、站点集合非空、切片正确），
+    /// 不碰「修复体才有的形状」（常量 / helper）—— 那些是轴测试的题眼，写在这里只会让
+    /// 「未修树红在哪条腿上」不可判（R96 记录 §E 的 A/B 声明）。
+    #[test]
+    fn the_pass_min_roster_is_real() {
+        let read = pass_min_read(PASS_MIN_MOD_RS, APP_JS, I18N_JS, PASS_MIN_PROTO);
+        assert_eq!(
+            read.carriers.iter().map(|(l, _, _)| *l).collect::<Vec<_>>(),
+            PASS_MIN_FACES.to_vec(),
+            "四张脸的登记名与派生结果不一致（名册是快照，派生才是真源）"
+        );
+        for (label, text, rule) in &read.carriers {
+            assert!(!text.is_empty(), "「{label}」读出来是空的 —— 那条腿恒真");
+            assert!(rule.is_some(), "「{label}」读不出 N/单位：{text:?}");
+        }
+        assert!(
+            read.agreed().is_some(),
+            "四张脸读不出一个共同的 (N, 单位) —— 规则 3 会因另一个理由红：{}",
+            read.report()
+        );
+        assert!(!read.server_sites.is_empty(), "一个服务端站点都读不到");
+        assert!(!read.client_sites.is_empty(), "一个客户端守卫都读不到");
+        // 射程保险：`pass_min_prod` 真的截掉了测试区（否则本门禁的夹具自己会顶破规则 4）
+        assert!(
+            !pass_min_prod(PASS_MIN_MOD_RS).contains("#[cfg(test)]"),
+            "生产区切片没截到 `#[cfg(test)]` —— 规则 1/4 会把测试里的调用点也数进去"
+        );
+        assert!(
+            pass_min_prod("no test module here\n").contains("no test module"),
+            "没有测试区时切片必须原样返回全文（不是空串）"
+        );
+    }
+
+    /// 四条规则**各有独立的牙**：每个变异体只动一处，期望**恰好翻掉它那一条**。
+    ///
+    /// 基线是**已知为绿的**落地体（坑 #458：在已知为红的基线上测牙齿没有意义）。
+    #[test]
+    fn the_pass_min_rules_have_teeth() {
+        let base = pass_min_read(PASS_MIN_MOD_RS, APP_JS, I18N_JS, PASS_MIN_PROTO);
+        assert_eq!(
+            base.verdicts(),
+            (true, true, true, true),
+            "自证基线不绿，牙齿测试没有意义：{}",
+            base.report()
+        );
+
+        // (a) 服务端半修：把注册那一处换回字节口径 —— 只翻规则 1（站点仍是三处）
+        let mod_byte = PASS_MIN_MOD_RS.replace(
+            "    if password_too_short(&req.password) {",
+            "    if req.password.len() < 8 {",
+        );
+        let r = pass_min_read(&mod_byte, APP_JS, I18N_JS, PASS_MIN_PROTO);
+        assert_eq!(
+            r.verdicts(),
+            (false, true, true, true),
+            "字节站点必须只翻规则 1：{}",
+            r.report()
+        );
+
+        // (b) 客户端退回 UTF-16 口径（星号面 / emoji 一个字符算 2）—— 只翻规则 2
+        let app_bare = APP_JS.replace(
+            "if (Array.from(pw).length < MIN_PW_CHARS)",
+            "if (pw.length < 8)",
+        );
+        let r = pass_min_read(PASS_MIN_MOD_RS, &app_bare, I18N_JS, PASS_MIN_PROTO);
+        assert_eq!(
+            r.verdicts(),
+            (true, false, true, true),
+            "裸 `pw.length <` 必须只翻规则 2：{}",
+            r.report()
+        );
+
+        // (c) 竞争修法 `m_reword`：保住字节口径，把 zh 包改说「字节」—— 只翻规则 3
+        let i18n_reword = I18N_JS.replace(
+            "\"err.weakPassword\": \"密码至少 8 位\"",
+            "\"err.weakPassword\": \"密码至少 8 字节\"",
+        );
+        assert_ne!(
+            i18n_reword, I18N_JS,
+            "zh 包的弱口令条目没被改到 —— 这条腿会假绿"
+        );
+        let r = pass_min_read(PASS_MIN_MOD_RS, APP_JS, &i18n_reword, PASS_MIN_PROTO);
+        assert_eq!(
+            r.verdicts(),
+            (true, true, false, true),
+            "改宣告（保住字节口径）必须只翻规则 3：{}",
+            r.report()
+        );
+
+        // (d) 竞争修法 `m_drop_client`：删掉客户端守卫，让两边「不再矛盾」—— 只翻规则 4
+        let app_drop = APP_JS.replace(
+            "        if (Array.from(pw).length < MIN_PW_CHARS) { setFieldError($(\"#forgot-pass\"), T(\"register.err.pass\")); firstErr = firstErr || $(\"#forgot-pass\"); }\n",
+            "",
+        );
+        assert_ne!(app_drop, APP_JS, "客户端守卫那一行没被删掉 —— 这条腿会假绿");
+        let r = pass_min_read(PASS_MIN_MOD_RS, &app_drop, I18N_JS, PASS_MIN_PROTO);
+        assert_eq!(
+            r.verdicts(),
+            (true, true, true, false),
+            "删站点必须只翻规则 4：{}",
+            r.report()
+        );
+    }
 
     /// 轴：趋势图的聚合粒度由**实际请求窗口**决定，不由控件值决定（R165）。
     ///

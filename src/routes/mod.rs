@@ -37,6 +37,17 @@ use crate::router::RouterState;
 /// 上游请求的时限（连接与读取共用同一个数字，沿用 P0-B 写下的 120 s）。
 pub(crate) const UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// 口令下限：**按字符计**。`String::len()` 是 UTF-8 字节数，用它会把下限悄悄放宽到
+/// 2–3 个 CJK 字符（`密码abc` = 5 字符 / 9 字节），与产品宣告的「至少 8 位」不符。
+/// 唯一真源：`ui/index.html` 的注册占位符、`ui/js/i18n.js` 的 `err.weakPassword` 与 ERR_MAP
+/// 字面量都写「位」；客户端 `ui/js/app.js` 用 `Array.from(...).length` 同口径。
+pub(crate) const MIN_PASSWORD_CHARS: usize = 8;
+
+/// 口令是否短于下限（字符口径）。三处请求校验必须走它。
+pub(crate) fn password_too_short(pw: &str) -> bool {
+    pw.chars().count() < MIN_PASSWORD_CHARS
+}
+
 /// 网关请求体的上限（rant 2026-09-18T09:14:18；2026-09-21 由 8 MiB 抬到 277 MiB）。
 ///
 /// 这个数是**两层**的唯一来源，两层必须相等：
@@ -298,7 +309,7 @@ pub async fn register(
             Json(serde_json::json!({ "error": "邮箱格式不正确" })),
         ));
     }
-    if req.password.len() < 8 {
+    if password_too_short(&req.password) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "密码至少 8 位" })),
@@ -491,7 +502,7 @@ pub async fn reset_password(
     State(st): State<AppState>,
     Json(req): Json<ResetPasswordReq>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
-    if req.new_password.len() < 8 {
+    if password_too_short(&req.new_password) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "新密码至少 8 位" })),
@@ -597,7 +608,7 @@ pub async fn change_password(
     auth: AuthUser,
     Json(req): Json<ChangePasswordReq>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
-    if req.new_password.len() < 8 {
+    if password_too_short(&req.new_password) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "新密码至少 8 位" })),
@@ -1627,6 +1638,54 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "弱密码应 400");
+    }
+
+    /// 口令下限与它自己的宣告同单位：**字符**，不是 UTF-8 字节。
+    ///
+    /// `密码abc` 是 5 字符 / 9 字节 —— 下限只要按字节算，它就会被放行（9 ≥ 8），而四处宣告
+    /// （注册占位符 / 两包 `err.weakPassword` / ERR_MAP 字面量）都写「至少 8 位」。
+    #[test]
+    fn password_minimum_is_counted_in_characters_not_bytes() {
+        // 字符口径的边界。四条里三条在「字节口径」下会被放行 —— 它们才是这个测试的意义。
+        assert!(password_too_short("密码abc"), "5 字符 / 9 字节");
+        assert!(password_too_short("密码"), "2 字符 / 6 字节");
+        assert!(
+            password_too_short("😀😀😀😀"),
+            "4 字符 / 16 字节 / 8 个 UTF-16 单元"
+        );
+        assert!(!password_too_short("密码abcdef"), "8 字符 / 14 字节");
+        assert!(!password_too_short("abcdefgh"), "8 字符 ASCII");
+        // 下限的**数**也不写死在测试里：从两份语言包的服务端原话里读出来。
+        let i18n = include_str!("../../ui/js/i18n.js");
+        let en_at = i18n.find("var EN = {").expect("EN 包");
+        for pack in [&i18n[..en_at], &i18n[en_at..]] {
+            let at = pack
+                .find("err.weakPassword")
+                .expect("该包里应有 err.weakPassword");
+            let n: usize = pack[at..]
+                .chars()
+                .skip_while(|c| !c.is_ascii_digit())
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .expect("那句话里应有一个数");
+            assert_eq!(n, MIN_PASSWORD_CHARS, "语言包宣告的位数与常量不一致");
+        }
+    }
+
+    /// 端点级：被「字节口径」放行的那一个口令，现在必须被 register 拒掉（缺陷的生产表现）。
+    #[tokio::test]
+    async fn register_rejects_a_password_short_in_characters_long_in_bytes() {
+        let st = test_state("pw_chars");
+        let (s, body) = post(
+            st,
+            "/api/auth/register",
+            r#"{"name":"pw","email":"pw-chars@example.com","password":"密码abc"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "body={body}");
+        assert!(body.contains("密码至少 8 位"), "body={body}");
     }
 
     #[tokio::test]

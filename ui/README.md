@@ -786,6 +786,26 @@ function txQuerySig() {                      // 只此一处定义「载荷是�
 （原地变异 6/6 如声明：未修树红、过度纠正红、半修红、只标记不解释红、只写一包红、修复树绿）。
 
 
+## 口令下限以「字符」计（R96）
+
+- **唯一真源**：`src/routes/mod.rs::MIN_PASSWORD_CHARS`（字符数）。三处请求校验（register /
+  reset-password / change-password）一律经 `password_too_short()`，**不得**再写 `pw.len() < N`
+  —— Rust 的 `String::len()` 是 UTF-8 **字节**数，`密码abc`（5 字符 / 9 字节）会被它放行。
+- **四张脸必须同单位**：`ui/index.html` 注册占位符「至少 8 位」（设计基线，`docs/prototype/`
+  同款）· i18n 两包 `err.weakPassword` · `i18n.js` 的 ERR_MAP 字面量（服务端返回的原话）·
+  客户端守卫。任一处改成「字节」都不算修法：下限是**字符**，改宣告等于把缺陷写进文档。
+- **客户端**：`Array.from(pw).length`（Unicode 标量值），**不是** `pw.length`（UTF-16 code
+  unit）。emoji 一个字符在 `.length` 里是 2 ⇒ 与后端 `chars().count()` 逐标量对齐。
+- **门禁**：`src/state_gate.rs::the_password_minimum_is_counted_in_the_unit_its_message_names`
+  四规则（服务端必须走 helper／客户端必须 `Array.from`／四处载体 N 与单位一致且 N == Rust 常量／
+  站点形状 3+1）。**形状归门禁，事实归 `src/routes/mod.rs` 的两条边界测试**（都在 `mod tests`
+  里读语言包取 N，不写死）：
+
+  - `password_minimum_is_counted_in_characters_not_bytes` —— 钉单位（含 emoji 那一格）；
+  - `register_rejects_a_password_short_in_characters_long_in_bytes` —— 钉端点行为。
+
+  屏幕侧那一半由本地 jsdom 仪器钉（仓内 CI 无 JS 运行器）。
+
 ## 静态 `data-i18n` 属性归语言层所有，不属于它的子元素（C2150）
 
 `applyStatic()`（`ui/js/i18n.js`）对每个 `[data-i18n]` 元素执行 `innerHTML = t(key)`。
