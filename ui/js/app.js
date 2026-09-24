@@ -3524,7 +3524,8 @@
 
   // 后端 models → 视图行（点数按 points_per_unit=1、锚定 CNY 折算；USD 价 ×7.2；ctx 来自 models.context_window；
   // multi=available_keys>=2 真实计算；success 后端暂无字段 → null，视图不渲染假成功率；
-  // peak 高峰时段价（rant 2026-08-20T11:58:40）：peak_input_per_m>0 → 启用高峰计费，展示 ×N 标注）
+  // peak 高峰时段价（rant 2026-08-20T11:58:40）：peak_input_per_m / peak_output_per_m 各自 >0 即启用
+  // （逐字段规则以 src/billing.rs::effective_prices 为准；下面印的就是引擎高峰时段实际收的价），展示 ×N 标注）
   // 零 mock（rant 2026-08-19T15:54:06）：不读 data.js MARKET 兜底
   // 模型行的**稳定身份**（C2138）：`provider/model`。**位置不是身份** —— `modelsToView()` 曾用
   // `id: i`（数组下标）当模型的身份，而下标只在生成它的那一次渲染里有意义：`/api/models` 按
@@ -3539,16 +3540,18 @@
     return list.map((m) => {
       const cny = m.currency === "CNY";
       const mult = cny ? 1 : 7.2;
-      const peak = (m.peak_input_per_m || 0) > 0;
+      const peakInOn = (m.peak_input_per_m || 0) > 0;
+      const peakOutOn = (m.peak_output_per_m || 0) > 0;
+      const peak = peakInOn || peakOutOn;
       return {
         provider: m.provider,
         model: m.model,
         in: Math.round(m.input_per_m * mult * 1e5) / 1e5,
         out: Math.round(m.output_per_m * mult * 1e5) / 1e5,
         peak: peak,
-        peakIn: peak ? Math.round(m.peak_input_per_m * mult * 1e5) / 1e5 : 0,
-        peakOut: peak ? Math.round(m.peak_output_per_m * mult * 1e5) / 1e5 : 0,
-        peakMult: peak && (m.input_per_m || 0) > 0 ? Math.round((m.peak_input_per_m / m.input_per_m) * 10) / 10 : 0,
+        peakIn: peakInOn ? Math.round(m.peak_input_per_m * mult * 1e5) / 1e5 : Math.round(m.input_per_m * mult * 1e5) / 1e5,
+        peakOut: peakOutOn ? Math.round(m.peak_output_per_m * mult * 1e5) / 1e5 : Math.round(m.output_per_m * mult * 1e5) / 1e5,
+        peakMult: (peakInOn && (m.input_per_m || 0) > 0) ? Math.round((m.peak_input_per_m / m.input_per_m) * 10) / 10 : ((peakOutOn && (m.output_per_m || 0) > 0) ? Math.round((m.peak_output_per_m / m.output_per_m) * 10) / 10 : 0),
         ctx: m.context_window || 0,
         avail: m.available_keys > 0,
         multi: (m.available_keys || 0) >= 2,
