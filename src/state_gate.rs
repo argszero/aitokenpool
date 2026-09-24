@@ -15272,3 +15272,512 @@ fn r171_variant_drop_slots(app: &str) -> String {
     );
     out
 }
+
+// ---------------------------------------------------------------------------------------
+// R173 · 键盘的「当前行」以**行自己的高亮**为身份，不以记住的**下标**为身份
+//        （`kbdEnter` 的目标解析 ＋ `switchView` 的清除调用）
+// ---------------------------------------------------------------------------------------
+//
+// `ui/js/app.js` 把表格键盘导航放在**模块级**状态里：`let kbd = { c: null, i: -1 };`
+// —— 「当前激活的 `<tbody>`」＋「高亮行在**它当前那些行**里的下标」。点任意数据表行武装它
+// （document 级委托），↑/↓ 移动它（`kbdMove`），Enter 触发该行的主操作（`kbdEnter` →
+// `tr.querySelector("button.btn:not(.row-expand)").click()`），Esc 清除它。
+//
+// 而这份武装**什么也不使它失效**：
+//   * 表格重绘（`innerHTML = …`）把旧元素连同 `.row-active` 一起换掉 —— 屏幕上**没有**任何
+//     高亮，而 `kbd.i` 仍指着那个位置，那个位置现在坐着**另一行**；
+//   * `switchView()` 把整个视图 `display:none`、渲染目的地，却从不碰 `kbd` —— 方向键与
+//     Enter 继续作用于**不在屏幕上的**那张表。
+//
+// `kbdRows` 自己带一条失效守卫 —— `if (!c || c.isConnected === false) return [];`（#216 加的，
+// 注释写着「表格被整体重建 ⇒ 记住的容器已失效」）—— 所以「记住的容器失效后不得被作用」这条
+// **规则本来就是作者立的**；那条守卫只覆盖了三种失效形状里的「元素被换掉」一种
+// （`innerHTML` 替换保持 `<tbody>` 连接；切换视图什么都不重建）。
+//
+// 三个消费者全是**改状态**的动作，全由那一颗按钮到达：`#mk-body` 的首个
+// `button.btn:not(.row-expand)` 是 `data-use-model` → `POST /v1/chat/completions`（花钱）；
+// `#share-body` 是 `data-share-toggle` → `PATCH /api/sharings/<id>`（改上架）；`#raise-requests`
+// 是 `data-raise-approve` → `POST /api/admin/raise-requests/<id>/approve`（发点数）。
+//
+// 规则（**每条都从代码派生**，不写死函数名／标识符，#469）：
+//   R1  目标解析：`kbdEnter` 点击的那一行必须**自己**通过 `.row-active` 检验，且在点击**之前** ——
+//       目标行标识符从 `X.click()` → `const X = <row>.querySelector(…)` 这条链**推导**，
+//       不硬编码 `tr`；「裸 `rows[kbd.i]` 查表」就是原缺陷。
+//   R2  边界清除：`switchView` 必须调用**键盘清除器**，且位置在它**每一个** `return` 守卫
+//       **之后**（被拒绝的切换不得清除）。清除器从代码推导：唯一那个「把状态变量复位成空字面量、
+//       移除 `row-active`、且**不**添加 `row-active`」的函数。
+//   R3  反向：唯一的高亮**装填者**（`add("row-active")` 的归属函数）必须仍在、必须与清除器不同、
+//       必须仍被调用 —— 否则「干脆什么都不武装」的树也能过 R1/R2（控制腿 `C1` 的静态对应物）。
+//
+// 射程（如实）：本门禁是**静态词法**的 —— 它证「Enter 的目标必须由高亮决定」＋「切换视图会收起
+// 武装」这两件**形状**；**不证**屏幕上那一刻高亮是否真的消失了（`innerHTML` 替换会销毁
+// `.row-active` 是**浏览器事实**，只有 DOM 仪器能证）—— 那一半归 jsdom 探针 `r173_probe.js`
+// 的 A1/A2/A3/A5/A4 腿。两台仪器各自能看见对方看不见的东西（C2148／R168 前例）。
+
+// ── 扫描器 ──────────────────────────────────────────────────────────────────────────────
+
+/// 去掉 `//` 与 `/* */` 注释，**保留字符串内容** —— 本门禁要读 `.contains("row-active")`
+/// 的那个**实参**（坑 #296/#309：注释里正会写下被检验的表达式）。
+///
+/// 与 `r171_bare` 的差别是这里不吞字符串体。`app.js` 的这几个函数里没有正则字面量，
+/// 未做正则识别的代价因此在射程之外 —— 如实记录，不假装是词法分析器。
+fn r173_bare(src: &str) -> String {
+    let b: Vec<char> = src.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == '/' && i + 1 < b.len() && b[i + 1] == '/' {
+            while i < b.len() && b[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && i + 1 < b.len() && b[i + 1] == '*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        if c == '"' || c == '\'' || c == '`' {
+            out.push(c);
+            i += 1;
+            while i < b.len() {
+                if b[i] == '\\' {
+                    out.push(b[i]);
+                    i += 1;
+                    if i < b.len() {
+                        out.push(b[i]);
+                        i += 1;
+                    }
+                    continue;
+                }
+                if b[i] == c {
+                    break;
+                }
+                out.push(b[i]);
+                i += 1;
+            }
+            if i < b.len() {
+                out.push(b[i]);
+                i += 1;
+            }
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// `text` 里 `kw` 作为**标识符 token**出现的位置（前后不是标识符字符；`dump` 不该被绊到）。
+fn r173_keyword_positions(text: &str, kw: &str) -> Vec<usize> {
+    let b = text.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(kw) {
+        let at = from + rel;
+        let end = at + kw.len();
+        let before_ok = at == 0 || !is_word(b[at - 1]);
+        let after_ok = end >= b.len() || !is_word(b[end]);
+        if before_ok && after_ok {
+            out.push(at);
+        }
+        from = at + 1;
+        if from >= text.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// 从 `.` 的位置（`dot`）向后走完整条属性链，返回**链底标识符**。
+///
+/// `tr.classList.contains(` 传进 `.contains(` 前那个 `.` ⇒ 返回 `tr`（不是 `classList`）；
+/// `btn.click()` 传进 `.click()` 前那个 `.` ⇒ 返回 `btn`。
+fn r173_base_before_dot(text: &str, dot: usize) -> Option<String> {
+    let b = text.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+    if dot >= b.len() || b[dot] != b'.' {
+        return None;
+    }
+    let mut i = dot;
+    let mut last: Option<String> = None;
+    loop {
+        let mut k = i;
+        let mut name: Vec<u8> = Vec::new();
+        while k > 0 && is_word(b[k - 1]) {
+            name.push(b[k - 1]);
+            k -= 1;
+        }
+        if name.is_empty() {
+            break;
+        }
+        name.reverse();
+        last = Some(String::from_utf8(name).ok()?);
+        // 这个标识符是不是某个东西的属性（`<base>.seg`）？是则继续向左走。
+        let mut m = k;
+        while m > 0 && b[m - 1].is_ascii_whitespace() {
+            m -= 1;
+        }
+        if m > 0 && b[m - 1] == b'.' {
+            i = m - 1;
+        } else {
+            break;
+        }
+    }
+    last
+}
+
+/// `<name> = <rhs>;` 的 `rhs`（`const X = …` / `let X = …`）。
+fn r173_binding_rhs(body: &str, name: &str) -> Option<String> {
+    let eq = format!("{name} = ");
+    for line in body.lines() {
+        let t = line.trim();
+        let t = t
+            .strip_prefix("const ")
+            .or_else(|| t.strip_prefix("let "))
+            .unwrap_or(t);
+        if let Some(rest) = t.strip_prefix(&eq) {
+            return Some(rest.trim_end_matches(';').trim().to_string());
+        }
+    }
+    None
+}
+
+/// `kbdEnter` 点击的那一行的**标识符**：从 `X.click()` → `const X = <row>.querySelector(…)`
+/// 推导（不硬编码 `tr`）。
+fn r173_row_ident(body: &str) -> Option<String> {
+    let click_dot = body.find(".click()")?;
+    let clicked = r173_base_before_dot(body, click_dot)?;
+    let rhs = r173_binding_rhs(body, &clicked)?;
+    let qs_dot = rhs.find(".querySelector(")?;
+    r173_base_before_dot(&rhs, qs_dot)
+}
+
+/// `text` 里有没有 `method("row-active")` 形式的调用（`add` / `remove` 共用）。
+fn r173_active_arg(text: &str, method: &str) -> bool {
+    let needle = format!("{method}(");
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(&needle) {
+        let at = from + rel + needle.len();
+        let arg = text[at..].trim_start();
+        if arg.starts_with("\"row-active\"") || arg.starts_with("'row-active'") {
+            return true;
+        }
+        from = at;
+        if from >= text.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// 该函数体里是否**添加**行高亮（唯一装填点的判据）。
+fn r173_add_active(text: &str) -> bool {
+    r173_active_arg(text, "add")
+}
+
+/// 该函数体里是否**移除**行高亮。
+fn r173_remove_active(text: &str) -> bool {
+    r173_active_arg(text, "remove")
+}
+
+/// 逐行归属：命中行的**归属函数**（其之前最近声明的 `function NAME(`；顶层为 `<top-level>`）。
+fn r173_owner_sites(bare: &str, hit: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut owner = String::from("<top-level>");
+    for line in bare.lines() {
+        if let Some(n) = function_name(line) {
+            owner = n.to_string();
+        }
+        if hit(line) {
+            out.push(owner.clone());
+        }
+    }
+    out
+}
+
+/// 模块级的键盘状态变量名 —— 从它自己的**空字面量**推导（`let kbd = { c: null, i: -1 };`）。
+fn r173_state_var(bare: &str) -> Option<String> {
+    let at = bare.find("= { c: null, i: -1 }")?;
+    let b = bare.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+    let mut k = at;
+    while k > 0 && b[k - 1].is_ascii_whitespace() {
+        k -= 1;
+    }
+    let end = k;
+    while k > 0 && is_word(b[k - 1]) {
+        k -= 1;
+    }
+    if k == end {
+        return None;
+    }
+    String::from_utf8(b[k..end].to_vec()).ok()
+}
+
+/// 键盘**清除器**：唯一那个「把状态变量复位成空字面量 ＋ 移除 `row-active` ＋ **不**添加
+/// `row-active`」的函数（`kbdSet` 也复位、也移除，但它添加 ⇒ 被排除）。
+fn r173_clearer(bare: &str, state_var: Option<&str>) -> Option<String> {
+    let var = state_var?;
+    let reset = format!("{var} = {{ c: null, i: -1 }}");
+    for line in bare.lines() {
+        let Some(name) = function_name(line) else {
+            continue;
+        };
+        let Some(body) = js_function_body(bare, name) else {
+            continue;
+        };
+        if body.contains(&reset) && r173_remove_active(body) && !r173_add_active(body) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// `kbdEnter` 是否在点击**之前**用行自己的 `.row-active` 检验了目标行。
+fn r173_enter_guards_highlight(body: &str, row: &str, click_at: usize) -> bool {
+    let mut from = 0usize;
+    while let Some(rel) = body[from..].find(".contains(") {
+        let dot = from + rel;
+        let arg_at = dot + ".contains(".len();
+        let arg = body[arg_at..].trim_start();
+        let is_active = arg.starts_with("\"row-active\"") || arg.starts_with("'row-active'");
+        if is_active && dot < click_at && r173_base_before_dot(body, dot).as_deref() == Some(row) {
+            return true;
+        }
+        from = dot + 1;
+        if from >= body.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// `switchView` 里对清除器的调用数，以及「清除是否在**每一个** `return` 守卫之后」。
+fn r173_clear_after_guards(sv: &str, clearer: &str) -> (usize, bool) {
+    let calls = r173_keyword_positions(sv, clearer);
+    let returns = r173_keyword_positions(sv, "return");
+    let after_guards = calls.len() == 1 && returns.iter().all(|&r| r < calls[0]);
+    (calls.len(), after_guards)
+}
+
+// ── 判词 ────────────────────────────────────────────────────────────────────────────────
+
+/// 一次读取的全部证据与三条判词。
+struct R173Reading {
+    state_var: Option<String>,
+    armer: Option<String>,
+    clearer: Option<String>,
+    row_ident: Option<String>,
+    arm_sites: usize,
+    clear_calls: usize,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+}
+
+impl R173Reading {
+    fn verdicts(&self) -> (bool, bool, bool) {
+        (self.r1, self.r2, self.r3)
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} | armer={:?} clearer={:?} row_ident={:?} arm_sites={} clear_calls={} state_var={:?}",
+            self.r1,
+            self.r2,
+            self.r3,
+            self.armer,
+            self.clearer,
+            self.row_ident,
+            self.arm_sites,
+            self.clear_calls,
+            self.state_var
+        )
+    }
+}
+
+/// 读 `ui/js/app.js`，导出三条判词。所有期望值都从被测算的代码**派生**。
+fn r173_read(app: &str) -> R173Reading {
+    let bare = r173_bare(app);
+    let state_var = r173_state_var(&bare);
+
+    let sites = r173_owner_sites(&bare, r173_add_active);
+    let arm_sites = sites.len();
+    let armer = match (arm_sites, sites.first()) {
+        (1, Some(owner)) if owner != "<top-level>" => Some(owner.clone()),
+        _ => None,
+    };
+    let clearer = r173_clearer(&bare, state_var.as_deref());
+
+    let enter_body = function_source(&bare, "kbdEnter").unwrap_or_default();
+    let row_ident = r173_row_ident(&enter_body);
+    let r1 = match (&row_ident, enter_body.find(".click()")) {
+        (Some(row), Some(click_at)) => r173_enter_guards_highlight(&enter_body, row, click_at),
+        _ => false,
+    };
+
+    let (clear_calls, after_guards) = match (&clearer, function_source(&bare, "switchView")) {
+        (Some(c), Some(sv)) => r173_clear_after_guards(&sv, c),
+        _ => (0, false),
+    };
+    let r2 = clear_calls == 1 && after_guards;
+
+    let r3 = arm_sites == 1
+        && armer.is_some()
+        && armer != clearer
+        && matches!(&armer, Some(a) if r173_keyword_positions(&bare, a).len() >= 2);
+
+    R173Reading {
+        state_var,
+        armer,
+        clearer,
+        row_ident,
+        arm_sites,
+        clear_calls,
+        r1,
+        r2,
+        r3,
+    }
+}
+
+// ── 测试 ────────────────────────────────────────────────────────────────────────────────
+
+/// 轴：键盘的行操作跟随**高亮**，不跟随**记住的下标**。
+///
+/// 三条规则的含义见上方文件头。每条规则的**牙**由 [`the_r173_rules_have_teeth`] 用合成变异体
+/// 逐条测量（基线＝已知为绿的活树）。
+#[test]
+fn the_keyboard_row_action_follows_the_highlight_not_the_index() {
+    let rd = r173_read(APP_JS);
+    assert!(
+        rd.verdicts() == (true, true, true),
+        "R173 未修：键盘的行操作没有以行自己的高亮为身份\
+         （R1 目标解析／R2 视图边界清除／R3 仍有唯一装填者）：{}",
+        rd.report()
+    );
+}
+
+/// 提取器自证 ＋ 反面对照：把两半都退回缺陷形状 ⇒ R1/R2 同时红、R3 仍绿（装填者没动）。
+#[test]
+fn the_r173_roster_is_real() {
+    let live = r173_read(APP_JS);
+    assert!(
+        live.state_var.is_some(),
+        "键盘状态变量没被解析出来：{}",
+        live.report()
+    );
+    assert!(
+        live.armer.is_some(),
+        "高亮装填者没被解析出来：{}",
+        live.report()
+    );
+    assert!(
+        live.clearer.is_some(),
+        "键盘清除器没被解析出来：{}",
+        live.report()
+    );
+    assert!(
+        live.row_ident.is_some(),
+        "Enter 的目标行标识符没被推导出来：{}",
+        live.report()
+    );
+    assert_eq!(live.arm_sites, 1, "装填点不是唯一一个：{}", live.report());
+    assert_eq!(
+        live.clear_calls,
+        1,
+        "switchView 里对清除器的调用不是恰好一次：{}",
+        live.report()
+    );
+    assert_ne!(
+        live.armer,
+        live.clearer,
+        "装填者与清除器成了同一个函数：{}",
+        live.report()
+    );
+
+    let broken = r173_variant_defect(APP_JS);
+    let rd = r173_read(&broken);
+    assert_eq!(
+        rd.verdicts(),
+        (false, false, true),
+        "退回缺陷形状没有同时打翻 R1/R2：{}",
+        rd.report()
+    );
+}
+
+/// 三条规则**各有独立的牙**：每个合成变异体只打翻它针对的那一条（基线＝已知为绿的活树）。
+///
+/// ⚠️ 变异体一律从**活树**上构造，且每个锚点都断言唯一（#612 家族）：变体若没生效，
+/// 构造器里的断言先响，而不是让某条腿因错误的原因变绿（#605）。
+#[test]
+fn the_r173_rules_have_teeth() {
+    let live = r173_read(APP_JS);
+    assert_eq!(
+        live.verdicts(),
+        (true, true, true),
+        "基线不是绿的 —— 变异体的读数无从解释：{}",
+        live.report()
+    );
+
+    // ① 原缺陷的同一半：Enter 退回**纯下标**查表 ⇒ 只翻 R1。
+    let v = r173_variant_drop_highlight_test(APP_JS);
+    let rd = r173_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (false, true, true),
+        "删掉高亮检验只应翻掉 R1：{}",
+        rd.report()
+    );
+
+    // ② 另一半：`switchView` 不再清除武装 ⇒ 只翻 R2。
+    let v = r173_variant_drop_clear(APP_JS);
+    let rd = r173_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (true, false, true),
+        "删掉 switchView 的清除只应翻掉 R2：{}",
+        rd.report()
+    );
+
+    // ③ 反向：删掉唯一的装填点 ⇒ 只翻 R3（「干脆不武装」的树过不了）。
+    let v = r173_variant_drop_armer(APP_JS);
+    let rd = r173_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, false),
+        "删掉唯一装填点只应翻掉 R3：{}",
+        rd.report()
+    );
+}
+
+/// 变异体①：删掉 `kbdEnter` 里的高亮检验（原缺陷的那一半）。
+fn r173_variant_drop_highlight_test(app: &str) -> String {
+    let line = "    if (!(tr.classList && tr.classList.contains(\"row-active\"))) return; // R173: only the highlighted row\n";
+    assert_eq!(app.matches(line).count(), 1, "高亮检验锚点不唯一");
+    app.replace(line, "")
+}
+
+/// 变异体②：删掉 `switchView` 里对键盘清除器的调用。
+fn r173_variant_drop_clear(app: &str) -> String {
+    let line = "    kbdClear(); // R173: the armed row belongs to the view being left\n";
+    assert_eq!(app.matches(line).count(), 1, "清除调用锚点不唯一");
+    app.replace(line, "")
+}
+
+/// 变异体③：删掉唯一的高亮装填点（`kbdSet` 里的 `add("row-active")`）。
+fn r173_variant_drop_armer(app: &str) -> String {
+    let line = "    rows[idx].classList.add(\"row-active\");\n";
+    assert_eq!(app.matches(line).count(), 1, "装填点锚点不唯一");
+    app.replace(line, "")
+}
+
+/// 两半一起退回缺陷形状（基线对照用）。
+fn r173_variant_defect(app: &str) -> String {
+    r173_variant_drop_clear(&r173_variant_drop_highlight_test(app))
+}
