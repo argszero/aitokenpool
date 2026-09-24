@@ -612,6 +612,7 @@
     // 挂这里而不是 renderView()/renderTxTrend() —— 那两个还会被 atp:langchange 调用，
     // 切一次语言就会静默重置用户的档位（#660）。
     if (id === "transactions") txTrendMetric = "net";
+    kbdClear(); // R173: the armed row belongs to the view being left
     activeView = id;
     $$(".view").forEach((v) => v.classList.add("hidden"));
     $("#view-" + id).classList.remove("hidden");
@@ -2022,6 +2023,7 @@
     if (!rows.length || kbd.i < 0) return;
     const tr = rows[kbd.i];
     if (!tr) return;
+    if (!(tr.classList && tr.classList.contains("row-active"))) return; // R173: only the highlighted row
     // 主操作 = 行内第一个可用的操作按钮（排除行展开 +/-，含 .btn 但非 row-expand）
     const btn = tr.querySelector ? tr.querySelector("button.btn:not(.row-expand)") : null;
     if (btn && !btn.disabled) btn.click();
