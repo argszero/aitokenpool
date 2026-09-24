@@ -608,6 +608,10 @@
       toast(T("view.ops.lock"), "error");
       return;
     }
+    // 视图**入口**（不是渲染）：交易页每次进入回到默认档「总点数」（rant 范围句）。
+    // 挂这里而不是 renderView()/renderTxTrend() —— 那两个还会被 atp:langchange 调用，
+    // 切一次语言就会静默重置用户的档位（#660）。
+    if (id === "transactions") txTrendMetric = "net";
     activeView = id;
     $$(".view").forEach((v) => v.classList.add("hidden"));
     $("#view-" + id).classList.remove("hidden");
@@ -1558,6 +1562,72 @@
   // GROUP BY 只返回有交易的桶（无交易的日子缺行）→ 按请求窗口补 0，保持 x 轴左→右时间递增、
   // 柱距恒定（原型 x 轴递增 bug 的根因即「缺行导致柱子左移」，此处一并规避）。
   const TX_TREND_MAX_COLS = 40; // 桶数上限（hour 桶 24h 窗口 + 余量），超出则抽稀标签
+  // ---- 趋势卡档位（rant 2026-09-23T21:03:32）------------------------------------------
+  // 四档共用**同一份**载荷：后端每桶已同时返回 `income` / `expense` / `net`（wallet.rs 的
+  // SUM(signed_pts)）⇒ 切档**不发任何请求**，只重绘这一张卡。`txTrendMetric` 因此**刻意不参与**
+  // `txQuerySig()`：它一进签名，切一次档就会重拉一次，四档也不再同源。
+  //
+  // 本块是**纯函数**（不碰 DOM、不读 `Live`、不调 `T()`）⇒ 可独立执行/断言，见
+  // `r109_logic_probe.js`；DOM 那一半在 `renderTxTrend()`。
+  const TX_TREND_METRICS = ["net", "consume", "earn", "both"];
+  // 「总点数」档的折线颜色：**中性色**（`--fg`）—— 它既不是消费也不是收益，借用哪一支的色都会
+  // 让图例说另一件事（图例的 `<i class="net">` 必须与它是同一个色）。
+  const TX_TREND_NET_COLOR = "var(--fg)";
+  // 当前档位：模块级、**不做跨会话持久化**（rant 范围句）。「每次进入交易页回到默认档」的复位只能
+  // 挂在 `switchView()`（视图**入口**）—— `renderView()` 另有 `atp:langchange` 一个调用者，
+  // 复位挂在渲染链上会让「切一次语言」静默重置用户的档位（#660）。
+  let txTrendMetric = "net";
+
+  // 档位 → 画哪几列。未知档位一律回落到 `net`（默认档），不抛错也不画空图。
+  function txTrendShows(metric) {
+    const m = TX_TREND_METRICS.indexOf(metric) < 0 ? "net" : metric;
+    return { line: m === "net", consume: m === "consume" || m === "both", earn: m === "earn" || m === "both" };
+  }
+
+  // 「总点数」档的序列 = **窗口内累计净变化**（窗口起点为 0）。
+  // 两处必须按下面的写法，否则曲线会静默地错（都不是「画得难看」，是「读数不对」）：
+  // ① 起点偏移取自**全部返回桶**里落在轴左侧的那些 —— `txTrendDays()` 把轴锚在右端、桶数封顶
+  //    `TX_TREND_MAX_COLS`，被截掉的桶不在轴上，但它们的变化**真实发生过**：漏掉等于把整条曲线
+  //    整体下移。`hour` 档只在跨度 ≤3.5 天时被选中（`txTrendBucket()`）⇒ 84 小时 > 40 ⇒ 一个
+  //    3 天自定义窗口**必然**触发。rant 的验收句（全部时间 + 无筛选 ⇒ 末点 = 真实余额）只在
+  //    这个写法下成立。
+  // ② 补零桶**没有 `net` 字段**（`txTrendDays()` 补的是 `{t, income, expense, tokens, count}`，
+  //    只有后端真返回的桶才有 `net`）⇒ 必须 `(b.net || 0)`；`undefined + 0 = NaN` 会一路污染到
+  //    末点（症状是整条线不画，比错值更难归因）。
+  function txTrendNetSeries(raw, days) {
+    const axisStart = days.length ? new Date(days[0].t).getTime() : NaN;
+    let run = 0;
+    raw.forEach((b) => {
+      const t = new Date(b.t).getTime();
+      if (isNaN(t) || isNaN(axisStart) || !(t < axisStart)) return;
+      run += b.net || 0;
+    });
+    return days.map((b) => {
+      run = Math.round((run + (b.net || 0)) * 1e5) / 1e5;
+      return run;
+    });
+  }
+
+  // 折线输入：`sparkline()` 在**只有一个点**时画出的是退化线段（`M x y` 单点 + 零面积），
+  // 视觉上什么都没有 —— 而单桶窗口是可达的（`hour` 档 + 活动只落在当前这一小时 ⇒ cols = 1）。
+  // ⇒ 单桶时把该值重复一次（「窗口内没有变化」的平线），标签同步重复，保持 x 轴槽位对齐。
+  // （x 轴标签行用的是同一个 helper ⇒ 点与标签的单桶复制必然同步，不会各复制各的。）
+  function txTrendLineInput(vals, labels) {
+    if (vals.length !== 1) return { vals: vals, labels: labels };
+    return { vals: [vals[0], vals[0]], labels: [labels[0], labels[0]] };
+  }
+
+  // 档位 → 要画的数值列与归一化基准（唯一的派生点：渲染器只消费这里的输出）。
+  // ⚠️ 归一化的 `max` **只按当前显示的系列**取（rant 要求 4）：否则单看「收益」时柱子被
+  // 「消费」的峰值压扁到看不见 —— `Math.max(1, ...[])` = 1，故隐藏系列的贡献恒为 0。
+  function txTrendValues(days, raw, metric) {
+    const show = txTrendShows(metric);
+    if (show.line) return { show: show, net: txTrendNetSeries(raw, days) };
+    const consume = days.map((b) => b.expense || 0);
+    const earn = days.map((b) => b.income || 0);
+    const max = Math.max(1, ...(show.consume ? consume : []), ...(show.earn ? earn : []));
+    return { show: show, consume: consume, earn: earn, max: max };
+  }
   function txTrendDays(buckets, bucket) {
     const byKey = new Map();
     const keyOf = (d) => {
@@ -1611,6 +1681,25 @@
   function renderTxTrend() {
     const el = $("#tx-trend");
     if (!el) return;
+    // 档位（rant 2026-09-23T21:03:32）：未知值回落默认档，判别式与 txTrendShows() 同源
+    const metric = TX_TREND_METRICS.indexOf(txTrendMetric) < 0 ? "net" : txTrendMetric;
+    const show = txTrendShows(metric);
+    // 控件高亮 + 标题/副标题/图例：必须**先于**空态返回 —— 空窗口下档位依然可切，
+    // 「切了没反应」正是这一块没跟着走时的症状。
+    $$("#tx-trend-modes .tab").forEach((b) => b.classList.toggle("active", b.dataset.txTrendMode === metric));
+    const titleEl = $("#tx-trend-title");
+    if (titleEl) titleEl.textContent = show.line ? T("tx.trend.card.net") : T("tx.trend.card");
+    const subEl = $("#tx-trend-sub");
+    if (subEl) subEl.textContent = show.line ? T("tx.trend.net.sub") : T("tx.trend.card.sub");
+    const legendEl = $("#tx-trend-legend");
+    if (legendEl) {
+      // 图例**只陈述当前显示的系列**（rant 要求 4）：隐藏的系列不得留在图例里
+      const items = [];
+      if (show.line) items.push('<span><i class="net"></i><span>' + esc(T("tx.trend.mode.net")) + "</span></span>");
+      if (show.consume) items.push('<span><i class="consume"></i><span>' + esc(T("tx.trend.metric.expense")) + "</span></span>");
+      if (show.earn) items.push('<span><i class="earn"></i><span>' + esc(T("tx.trend.metric.income")) + "</span></span>");
+      legendEl.innerHTML = items.join("");
+    }
     const tr = (Live.transactions && Live.transactions.trend) ? Live.transactions.trend : null;
     const raw = (tr && Array.isArray(tr.buckets)) ? tr.buckets : [];
     if (!raw.length) {
@@ -1621,15 +1710,37 @@
     }
     const bucket = tr.bucket || "day";
     const days = txTrendDays(raw, bucket);
-    const max = Math.max(1, ...days.map((b) => Math.max(b.expense || 0, b.income || 0)));
+    const v = txTrendValues(days, raw, metric);
+    if (v.show.line) {
+      // 「总点数」档：**折线**（柱状会把水位相对化，视觉上像余额常常归零）。整条曲线一个
+      // `sparkline()` —— 它自带每点 `<title>`（hover 出该桶的累计值），且 y 轴含零基线、可为负。
+      // 横轴标签复用柱状档的槽宽（同样的 flex:1 列）⇒ 两档的 x 位置一致。单桶窗口由
+      // `txTrendLineInput()` 复制成两点、标签同步复制（轴与点走同一个 helper）。
+      const xs = days.map((b) => bucketLabel(b.t, bucket));
+      const pts = txTrendLineInput(v.net, xs.map((x) => x + " " + T("tx.trend.mode.net")));
+      const axis = txTrendLineInput(xs, xs).labels;
+      el.innerHTML = '<div class="trend-line">' +
+        sparkline(pts.vals, {
+          w: Math.max(120, pts.vals.length * 16), h: 118, stroke: TX_TREND_NET_COLOR,
+          labels: pts.labels, fmt: (n) => D.fmt(n),
+        }) +
+        '<div class="trend-axis">' +
+        axis.map((x) => '<span class="trend-x">' + esc(x) + "</span>").join("") +
+        "</div></div>";
+      return;
+    }
+    // 柱状三档：只渲染**当前显示的系列**的柱子，归一化基准取自 txTrendValues()（= 显示系列）
     el.innerHTML = days.map((b) => {
       const c = b.expense || 0, e = b.income || 0;
       const lbl = bucketLabel(b.t, bucket);
-      const h = (v) => Math.max(2, (v / max) * 100).toFixed(1);
-      const tip = lbl + " " + T("tx.trend.metric.expense") + " " + D.fmt(c) + " / " + T("tx.trend.metric.income") + " " + D.fmt(e);
+      const h = (n) => Math.max(2, (n / v.max) * 100).toFixed(1);
+      // tooltip 同样只陈述显示的系列（rant 要求 4）；`both` 档保留原有「消费 X / 收入 Y」写法
+      const tip = lbl +
+        (v.show.consume ? " " + T("tx.trend.metric.expense") + " " + D.fmt(c) : "") +
+        (v.show.earn ? (v.show.consume ? " / " : " ") + T("tx.trend.metric.income") + " " + D.fmt(e) : "");
       return '<div class="trend-col" title="' + esc(tip) + '"><div class="trend-pair">' +
-        '<div class="trend-bar consume" style="height:' + h(c) + '%"></div>' +
-        '<div class="trend-bar earn" style="height:' + h(e) + '%"></div>' +
+        (v.show.consume ? '<div class="trend-bar consume" style="height:' + h(c) + '%"></div>' : "") +
+        (v.show.earn ? '<div class="trend-bar earn" style="height:' + h(e) + '%"></div>' : "") +
         '</div><span class="trend-x">' + esc(lbl) + "</span></div>";
     }).join("");
   }
@@ -4058,6 +4169,12 @@
     $$("#tx-tabs .tab").forEach((b) => b.addEventListener("click", () => {
       setTxTypeFilter(b.dataset.txTab === "all" ? "" : b.dataset.txTab);
       reloadTransactions();
+    }));
+    // 趋势卡档位（rant 2026-09-23T21:03:32）：四档**共用同一份载荷** ⇒ 切档只重绘本卡，
+    // **不**调 reloadTransactions()（那不是新查询；接进触发器会让每次点档多发一次请求）。
+    $$("#tx-trend-modes .tab").forEach((b) => b.addEventListener("click", () => {
+      txTrendMetric = b.dataset.txTrendMode;
+      renderTxTrend();
     }));
     $("#tx-export-btn").addEventListener("click", exportTxCsv); // 导出 CSV（rant 20:46:57 E）
 

@@ -99,12 +99,12 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 788;
-const EN_KEY_COUNT: usize = 788;
-const STATIC_ATTR_COUNT: usize = 332;
-const STATIC_ATTR_DISTINCT: usize = 307;
-const T_LITERAL_COUNT: usize = 537;
-const T_LITERAL_DISTINCT: usize = 429;
+const ZH_KEY_COUNT: usize = 792;
+const EN_KEY_COUNT: usize = 792;
+const STATIC_ATTR_COUNT: usize = 335;
+const STATIC_ATTR_DISTINCT: usize = 309;
+const T_LITERAL_COUNT: usize = 545;
+const T_LITERAL_DISTINCT: usize = 434;
 
 /// 切出语言包区段（起点标记 → 终点标记，含起点）。
 fn pack_region<'a>(src: &'a str, start_mark: &str, end_mark: &str) -> &'a str {

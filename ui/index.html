@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AITokenPool</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234ecdc4'/%3E%3Cstop offset='1' stop-color='%232a9d8f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Ctext x='32' y='43' font-family='-apple-system,Segoe UI,Arial,sans-serif' font-size='30' font-weight='800' text-anchor='middle' fill='%23062021'%3EAT%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="css/style.css?v=20260914-11">
+<link rel="stylesheet" href="css/style.css?v=20260924-1">
 </head>
 <body>
 
@@ -448,14 +448,21 @@
       <div class="card">
         <div class="stat-grid" id="tx-summary"></div>
       </div>
-      <!-- 每日消费 / 收益（.trend 双色柱状，x 轴左→右时间递增） -->
+      <!-- 每日消费 / 收益 / 总点数（.trend：折线或双色柱状，x 轴左→右时间递增） -->
       <div class="card mt16">
-        <h3 data-i18n="tx.trend.card">每日消费 / 收益</h3>
-        <p class="card-sub" data-i18n="tx.trend.card.sub">单位：点数 · 随上方时间段与筛选联动</p>
+        <h3 id="tx-trend-title" data-i18n="tx.trend.card">每日消费 / 收益</h3>
+        <p class="card-sub" id="tx-trend-sub" data-i18n="tx.trend.card.sub">单位：点数 · 随上方时间段与筛选联动</p>
+        <!-- 档位（rant 2026-09-23T21:03:32 四档）：四档共用同一份载荷，切档只重绘本卡；
+             形状照 #tx-tabs（.tabs > .tab），全仓无门禁按 .tab 取样 -->
+        <div class="tabs" id="tx-trend-modes">
+          <button class="tab active" data-tx-trend-mode="net" data-i18n="tx.trend.mode.net">总点数</button>
+          <button class="tab" data-tx-trend-mode="consume" data-i18n="tx.trend.metric.expense">消费</button>
+          <button class="tab" data-tx-trend-mode="earn" data-i18n="tx.trend.metric.income">收益</button>
+          <button class="tab" data-tx-trend-mode="both" data-i18n="tx.trend.mode.both">消费＋收益</button>
+        </div>
         <div class="trend" id="tx-trend"></div>
-        <div class="legend">
-          <span><i class="consume"></i><span data-i18n="tx.trend.metric.expense">消费</span></span>
-          <span><i class="earn"></i><span data-i18n="tx.trend.metric.income">收入</span></span>
+        <div class="legend" id="tx-trend-legend">
+          <span><i class="net"></i><span data-i18n="tx.trend.mode.net">总点数</span></span>
         </div>
       </div>
       <!-- 明细：表头排序 + 列筛选行 + 后端真分页（#tx-table 由 buildDataTable 渲染，勿改为静态 table） -->
@@ -854,7 +861,7 @@
 
 <script src="js/api.js?v=20260914-13"></script>
 <script src="js/data.js?v=20260914-11"></script>
-<script src="js/i18n.js?v=20260922-1"></script>
-<script src="js/app.js?v=20260922-13"></script>
+<script src="js/i18n.js?v=20260924-1"></script>
+<script src="js/app.js?v=20260924-1"></script>
 </body>
 </html>
