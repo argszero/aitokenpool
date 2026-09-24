@@ -188,6 +188,10 @@ ui/
 - 工具栏右侧 `#tx-count` 同步显示 `tx.pager.count`（共 N 条），与汇总卡的记录数同源；
 - 图表：`#tx-trend` 改用原型 `.trend` 双色柱状（消费 / 收益两柱 + `.legend`），数据源仍是 `/api/transactions/trend`；**x 轴按请求窗口补零，保证左→右时间递增且柱距恒定**（后端 GROUP BY 只返回有交易的桶，缺行会导致柱子左移——原型同款 bug 的根因）；
 - 窄屏（≤560px）`.stat-grid` 两列、`.trend` 高度收紧。
+- **趋势卡四档**（rant 2026-09-23T21:03:32）：`#tx-trend-modes`（`.tabs > .tab`，形状复用 `#tx-tabs`）提供 **总点数（默认）/ 消费 / 收益 / 消费＋收益** 四档，四档**共用同一份载荷**（`/api/transactions/trend` 已同时返回 `net`/`income`/`expense`）⇒ 切档只重绘本卡，**档位不进 `txQuerySig()`、不接 `reloadTransactions()`**（否则每次点档多发一次请求、且四档不再同源）。
+  - `net` 档＝**窗口内累计净变化**（自最早桶起逐桶累加 `net`，窗口起点为 0，可为负），故卡片标题/副标题换 `tx.trend.card.net` / `tx.trend.net.sub` **如实写明口径**——加了列筛选后绝对余额不可定义，不得暗示为余额水位；形态用 `sparkline()` **折线**、y 轴按 `|值|` 定标且**包含零基线**；
+  - 其余三档保持柱状；归一化的 `max` **只按当前显示的系列**取（`txTrendValues()`），`title` tooltip 与 `#tx-trend-legend` **只陈述显示的系列**；
+  - 档位**每次进入交易页复位为默认**，复位点写在 `switchView()` 的**视图入口**（不是 `renderView()`/`renderTxTrend()`——那两个还会被 `atp:langchange` 调用，挂上去切一次语言就静默重置用户档位，#660）；**不做跨会话持久化**。
 
 ## select 美化约定（v1.19，rant 2026-08-17T20:39:30 C）
 
