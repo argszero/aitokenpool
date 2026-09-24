@@ -15306,6 +15306,9 @@ fn r171_variant_drop_slots(app: &str) -> String {
 //   R2  边界清除：`switchView` 必须调用**键盘清除器**，且位置在它**每一个** `return` 守卫
 //       **之后**（被拒绝的切换不得清除）。清除器从代码推导：唯一那个「把状态变量复位成空字面量、
 //       移除 `row-active`、且**不**添加 `row-active`」的函数。
+//       ⚠️ 「守卫」是字面意思：R163 之后成功路径也 `return true;`（函数的最后一条语句），
+//       它落在清除之后是**对的** —— 判据只豁免**最后一条语句上的那个** `return`
+//       （见 `r173_clear_after_guards` 的注释；末尾之后的任何 `return` 仍是守卫，仍要判红）。
 //   R3  反向：唯一的高亮**装填者**（`add("row-active")` 的归属函数）必须仍在、必须与清除器不同、
 //       必须仍被调用 —— 否则「干脆什么都不武装」的树也能过 R1/R2（控制腿 `C1` 的静态对应物）。
 //
@@ -15562,8 +15565,32 @@ fn r173_enter_guards_highlight(body: &str, row: &str, click_at: usize) -> bool {
 fn r173_clear_after_guards(sv: &str, clearer: &str) -> (usize, bool) {
     let calls = r173_keyword_positions(sv, clearer);
     let returns = r173_keyword_positions(sv, "return");
-    let after_guards = calls.len() == 1 && returns.iter().all(|&r| r < calls[0]);
+    // 「守卫」= 除**函数体最后一条语句**上的那个 `return` 之外的全部 `return`。
+    //
+    // ⚠️ 原实现要求**每一个** `return` 都在清除调用之前（`returns.iter().all(|&r| r < calls[0])`）。
+    // 那在「函数只在守卫上提前返回」的旧形状下与声明等价，但 R163 让成功路径也有了返回值
+    // （`return true;`，函数的最后一条语句）—— 它**天然落在**清除调用之后 ⇒ 一条被拒绝了清除
+    // 语义完全正确的树会被判红。实测（R163 落地轮）：本轴的轴测试读数 `r2=false`，
+    // `armer=Some("kbdSet") clearer=Some("kbdClear") clear_calls=1`，而 `kbdClear()` 一行未动。
+    // 判据因此按**声明原话**收紧（「每一个 `return` **守卫**」）：末尾的成功返回不是守卫。
+    let guards = match returns.last().copied() {
+        Some(last) if r173_is_last_statement(sv, last) => &returns[..returns.len() - 1],
+        _ => &returns[..],
+    };
+    let after_guards = calls.len() == 1 && guards.iter().all(|&r| r < calls[0]);
     (calls.len(), after_guards)
+}
+
+/// `at` 处的 `return` 是不是函数体**最后一条语句** —— 它自己那个 `;` 之后除空白再无 `;`。
+///
+/// 修前的形状（`switchView` 只在守卫上 `return;`）判 false（末尾那个 `return;` 之后还有
+/// `activeView = id; …` 等语句），于是全部 `return` 都算守卫，行为与旧实现逐字相同；
+/// R163 之后末尾是 `return true;` ⇒ 判 true ⇒ 只豁免那一个。两条形状都成立，互不耦合。
+fn r173_is_last_statement(sv: &str, at: usize) -> bool {
+    match sv[at..].find(';') {
+        Some(semi) => !sv[at + semi + 1..].contains(';'),
+        None => false,
+    }
 }
 
 // ── 判词 ────────────────────────────────────────────────────────────────────────────────
@@ -15754,6 +15781,17 @@ fn the_r173_rules_have_teeth() {
         "删掉唯一装填点只应翻掉 R3：{}",
         rd.report()
     );
+
+    // ④ R2 的牙（R163 起豁免「末尾那个成功返回」，须证明这不是把规则改空）：
+    //    在清除调用**之后**再放一个守卫 `return` ⇒ 只翻 R2。
+    let v = r173_variant_guard_after_clear(APP_JS);
+    let rd = r173_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (true, false, true),
+        "把守卫搬到清除之后只应翻掉 R2：{}",
+        rd.report()
+    );
 }
 
 /// 变异体①：删掉 `kbdEnter` 里的高亮检验（原缺陷的那一半）。
@@ -15780,4 +15818,496 @@ fn r173_variant_drop_armer(app: &str) -> String {
 /// 两半一起退回缺陷形状（基线对照用）。
 fn r173_variant_defect(app: &str) -> String {
     r173_variant_drop_clear(&r173_variant_drop_highlight_test(app))
+}
+
+/// 变异体④：把一个守卫的 `return` 搬到清除调用**之后** —— R2 的那条牙（R163 之后仍有牙）。
+fn r173_variant_guard_after_clear(app: &str) -> String {
+    let line = "    $(\"#main\").scrollTop = 0;\n";
+    assert_eq!(app.matches(line).count(), 1, "插入锚点不唯一");
+    app.replace(
+        line,
+        "    $(\"#main\").scrollTop = 0;\n    if (!opts) return false; // mutated: a guard after the clear\n",
+    )
+}
+
+// ---------------------------------------------------------------------------------------
+// R163 · 被拒绝的视图切换不得把用户留在「没人渲染过」的界面上
+//        （`switchView` 报告结果 ＋ `enterApp` 兜底 ＋ 兜底目标按身份取）
+// ---------------------------------------------------------------------------------------
+//
+// `switchView(id, opts)` 是「换视图」的唯一入口：先过身份守卫（游客只进市场；管理/运营视图
+// 只对相应角色开放），守卫拒绝时 toast 一句然后**直接返回**。屏幕上有东西时这是对的（用户
+// 点了一个进不去的入口，留在原地看着提示）；**会话建立那一刻**不一样 ——
+//
+//   * C2136 之后 boot 只装外壳（导航 / 事件 / 余额占位），**不渲染任何视图**；
+//   * C2137 删掉了 boot 里那句无条件 `renderView("dashboard")`；
+//   * `enterApp()` 的目的地取自 URL hash（刷新 / 换账号都带上一次的 hash）。
+//
+// ⇒ 一个指向「当前身份进不去」的 hash（非管理员的 `#/admin`、**所有人**的 `#/ops` —— 后者
+// 因为 `ops` 角色没有生产者而恒真）会让用户**用一个 toast 换来一块从没人渲染过的骨架屏**：
+// `#dash-stats`/`#dash-trend`/`#dash-month-changes`/`#dash-sharings` 全空、此后**零请求**、
+// 整会话不自愈（`enterApp` 只在会话建立那一刻跑一次）。
+//
+// 规则（每条都从代码**派生**，不写死函数名 —— 切换器与兜底函数的名字由「谁以 hash 解析器为
+// 实参被调用」这条链读出，#469）：
+//   R1  报告结果：切换器的**每一个拒绝**（`toast(...)` 之后紧跟的那个 `return`）必须返回
+//       `false`，且成功路径以 `return true;` 收尾 —— 否则调用方**无法**知道切换有没有发生。
+//       （只数 `return false;` 的个数不够：漏掉一个拒绝，其余仍在，读数照样绿 —— 必须逐对配对。）
+//   R2  调用方消费它：把 hash 解析结果交给切换器的那**唯一**一条语句必须带兜底分支
+//       （`if (!<sw>(<hash>…)) <sw>(<home>())`），且该语句里恰有两次切换器调用。
+//   R3  兜底目标按身份取：兜底函数的分支判据必须读**身份**（`isGuest`），不能是无条件的常量 ——
+//       游客的家不是仪表盘（它在 `GUEST_VIEWS` 之外）。
+//   R4  反向：切换器**不得**在自己的体内再调用自己 —— 「拒绝就重定向到仪表盘」会重入同一批
+//       守卫，游客下直接递归（探针 `E1`/`E3` 实测 `RangeError: Maximum call stack size exceeded`）。
+//
+// 射程（如实）：本门禁是**静态词法**的 —— 它证「拒绝被报告」「调用方兜底」「兜底按身份取」
+// 三件**形状**；**不证**屏幕上真的渲染出了内容（那需要真 DOM），也不证 `#/ops` 对所有人恒真的
+// 前提（`ops` 角色的可达性是另一条在册轴，方向待裁定）。浏览器事实与症状归 jsdom 探针
+// `r163_probe.js` —— 两台仪器各自能看见对方看不见的东西（C2148／R168／R173 同款分工）。
+
+// ── 扫描器 ──────────────────────────────────────────────────────────────────────────────
+
+/// 文件里所有 `function NAME(` 的名字（取自**代码文本** ⇒ 注释里的 `function` 不算边界）。
+fn r163_fn_names(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in code_text_by_line(src) {
+        if let Some(n) = function_name(&line) {
+            if !out.iter().any(|x| x == n) {
+                out.push(n.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// 一个函数的**代码文本**（注释已剥离）—— 同时支持**单行**与**多行**两种声明形状。
+///
+/// [`code_body`] 只支持多行（收尾行恰为 `  }`）：`homeView()` 是单行函数（修法把整条声明写在
+/// 一行里），用它会一路吞到文件末尾的某个 `  }` ⇒ 判据从「这个函数分支于身份」退化成
+/// 「文件里某处出现过 `isGuest`」，任何树都能过（#605 家族的假绿）。
+fn r163_fn_code(src: &str, name: &str) -> Option<String> {
+    let text = code_text_by_line(src);
+    let mut started = false;
+    let mut out: Vec<String> = Vec::new();
+    for (i, raw) in src.lines().enumerate() {
+        let code = text.get(i).cloned().unwrap_or_default();
+        if !started {
+            if function_name(&code) != Some(name) {
+                continue;
+            }
+            started = true;
+            let trimmed = code.trim_end();
+            if !code.is_empty() {
+                out.push(code.clone());
+            }
+            // 单行声明：整条语句都在这一行上（收尾的 `}` 也在）。
+            if trimmed.ends_with('}') {
+                return Some(out.join("\n"));
+            }
+            continue;
+        }
+        // 多行声明按本文件的缩进约定收尾（与 `code_body`/`js_function_body` 同款：
+        // 恰为两空格的 `  }`；体内 4 空格缩进的 `    }` 是块闭合，不是函数收尾）。
+        if raw == "  }" {
+            break;
+        }
+        if !code.is_empty() {
+            out.push(code);
+        }
+    }
+    if started && !out.is_empty() {
+        Some(out.join("\n"))
+    } else {
+        None
+    }
+}
+
+/// 把一段 JS 体按 `;` 切成语句（压平空白，便于「toast 与它的 return」逐对配对）。
+///
+/// **不做词法分析**：射程内那几个函数体里没有含 `;` 的字符串字面量，也没有
+/// `for (…;…;…)`（`app.js` 现状如此）。如实记录这个射程 —— 它是本门禁唯一的近似。
+fn r163_statements(code: &str) -> Vec<String> {
+    code.split(';')
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// 压平一段 JS（所有空白串成一个空格）。
+fn r163_flat(code: &str) -> String {
+    code.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 取一段文本**末尾**的标识符（`… if (!switchView(` → `switchView`）。
+fn r163_trailing_ident(s: &str) -> String {
+    let mut out: Vec<char> = s
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+        .collect();
+    out.reverse();
+    out.into_iter().collect()
+}
+
+/// 一条语句里**第 2 次**调用 `callee(` 时，实参的那个函数名
+/// （`… )) switchView(homeView());` → `homeView`）。
+fn r163_second_callee(stmt: &str, callee: &str) -> Option<String> {
+    let needle = format!("{callee}(");
+    let first = stmt.find(&needle)?;
+    let rest = &stmt[first + needle.len()..];
+    let second = rest.find(&needle)?;
+    let after = &rest[second + needle.len()..];
+    let name: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+        .collect();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// 声明之后的**函数体文本**（跳过 `function NAME(…)`，免得把函数名自己算成「自调用」）。
+fn r163_body_after_head(code: &str) -> &str {
+    match code.find('{') {
+        Some(a) => &code[a + 1..],
+        None => code,
+    }
+}
+
+/// 「会话建立时的目的地语句」：唯一一条**以 hash 解析器为实参**调用切换器的语句。
+///
+/// 返回 (所属函数名, 该语句, 切换器函数名)。**零或多于一条都返回 `None`** —— 后者与
+/// 探针的原实现同款（`len(dest) == 1`）：两条各自独立的目的地意味着兜底可能只挂在其中一条上。
+fn r163_destination_statement(src: &str) -> Option<(String, String, String)> {
+    let mut hits: Vec<(String, String, String)> = Vec::new();
+    for name in r163_fn_names(src) {
+        let body = match r163_fn_code(src, &name) {
+            Some(b) => b,
+            None => continue,
+        };
+        for st in r163_statements(&body) {
+            let at = match st.find("(viewFromHash(") {
+                Some(a) => a,
+                None => continue,
+            };
+            let callee = r163_trailing_ident(&st[..at]);
+            if !callee.is_empty() {
+                hits.push((name.clone(), st, callee));
+            }
+        }
+    }
+    if hits.len() == 1 {
+        hits.pop()
+    } else {
+        None
+    }
+}
+
+/// (拒绝 toast 数, 会「掉下去」的拒绝数, 成功路径是否以 `return true;` 收尾)。
+///
+/// 「掉下去」= 该 toast 之后紧跟的语句不是 `return false`（`return;` / `return <别的>` / 干脆
+/// 继续往下走）。逐对配对是本规则的关键：只数 `return false;` 的个数，漏掉一个拒绝时其余仍在
+/// ⇒ 读数照样绿（探针原实现的注释里记着这次实测）。
+fn r163_reports_entry(body: &str) -> (usize, usize, bool) {
+    let segs = r163_statements(body);
+    let toasts: Vec<usize> = segs
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.contains("toast("))
+        .map(|(i, _)| i)
+        .collect();
+    let falling = toasts
+        .iter()
+        .filter(|&&i| segs.get(i + 1).map(String::as_str) != Some("return false"))
+        .count();
+    let tail_ok = r163_flat(body).ends_with("return true;");
+    (toasts.len(), falling, tail_ok)
+}
+
+/// 兜底函数是否**按身份**取目标（`isGuest` ＋ 二选一的分支形状）。
+fn r163_identity_aware(body: &str) -> bool {
+    let flat = r163_flat(body);
+    mentions_identifier(&flat, "isGuest")
+        && (flat.contains("GUEST_VIEWS") || (flat.contains('?') && flat.contains(':')))
+}
+
+// ── 判词 ────────────────────────────────────────────────────────────────────────────────
+
+/// 一次读取的全部证据与四条判词。
+struct R163Reading {
+    sw: Option<String>,
+    ent: Option<String>,
+    home: Option<String>,
+    toasts: usize,
+    falling: usize,
+    tail_ok: bool,
+    dest: Option<String>,
+    self_calls: usize,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+    r4: bool,
+}
+
+impl R163Reading {
+    fn verdicts(&self) -> (bool, bool, bool, bool) {
+        (self.r1, self.r2, self.r3, self.r4)
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} r4={} | sw={:?} ent={:?} home={:?} toasts={} falling={} tail={} self_calls={} dest={:?}",
+            self.r1,
+            self.r2,
+            self.r3,
+            self.r4,
+            self.sw,
+            self.ent,
+            self.home,
+            self.toasts,
+            self.falling,
+            self.tail_ok,
+            self.self_calls,
+            self.dest
+        )
+    }
+}
+
+/// 读 `ui/js/app.js`，导出四条判词。函数名全部**派生**，期望值不写死。
+fn r163_read(app: &str) -> R163Reading {
+    // 剥注释、留字符串：本门禁要读 `toast(` 的实参与 `.contains(...)` 的那个实参
+    // （坑 #296/#309：注释里正会写下被检验的表达式）。
+    let bare = r173_bare(app);
+
+    let dest = r163_destination_statement(&bare);
+    let ent = dest.as_ref().map(|(e, _, _)| e.clone());
+    let stmt = dest.as_ref().map(|(_, s, _)| s.clone());
+    let sw = dest.as_ref().map(|(_, _, c)| c.clone());
+
+    let sw_body = sw.as_deref().and_then(|n| r163_fn_code(&bare, n));
+    let (toasts, falling, tail_ok) = match &sw_body {
+        Some(b) => r163_reports_entry(b),
+        None => (0, 0, false),
+    };
+
+    let home = match (&stmt, &sw) {
+        (Some(s), Some(c)) => r163_second_callee(s, c),
+        _ => None,
+    };
+    let home_body = home.as_deref().and_then(|n| r163_fn_code(&bare, n));
+
+    let r1 = toasts >= 1 && falling == 0 && tail_ok;
+    let r2 = match (&stmt, &sw) {
+        (Some(s), Some(c)) => {
+            s.contains(&format!("if (!{c}(")) && s.matches(&format!("{c}(")).count() == 2
+        }
+        _ => false,
+    };
+    let r3 = home.is_some() && home_body.as_deref().is_some_and(r163_identity_aware);
+    let self_calls = match (&sw_body, &sw) {
+        (Some(b), Some(c)) => r163_body_after_head(b).matches(&format!("{c}(")).count(),
+        _ => 0,
+    };
+    let r4 = sw.is_some() && self_calls == 0;
+
+    R163Reading {
+        sw,
+        ent,
+        home,
+        toasts,
+        falling,
+        tail_ok,
+        dest: stmt,
+        self_calls,
+        r1,
+        r2,
+        r3,
+        r4,
+    }
+}
+
+// ── 测试 ────────────────────────────────────────────────────────────────────────────────
+
+/// 轴：被拒绝的视图切换不得把用户留在「没人渲染过」的界面上。
+///
+/// 四条规则的含义见上方文件头。每条规则的**牙**由 [`the_r163_rules_have_teeth`] 用合成变异体
+/// 逐条测量（基线＝已知为绿的活树）。
+#[test]
+fn the_refused_view_switch_never_leaves_an_unrendered_view() {
+    let rd = r163_read(APP_JS);
+    assert!(
+        rd.verdicts() == (true, true, true, true),
+        "R163 未修：被拒绝的视图切换会把用户留在没人渲染过的界面上\
+         （R1 拒绝被报告／R2 调用方兜底／R3 兜底按身份取／R4 切换器不自调用）：{}",
+        rd.report()
+    );
+}
+
+/// 提取器自证 ＋ 反面对照：把两半都退回缺陷形状 ⇒ R1/R2/R3 同时红、R4 仍绿。
+#[test]
+fn the_r163_roster_is_real() {
+    let live = r163_read(APP_JS);
+    assert!(
+        live.sw.is_some(),
+        "视图切换器没被推导出来：{}",
+        live.report()
+    );
+    assert!(
+        live.ent.is_some(),
+        "会话建立的调用方没被推导出来：{}",
+        live.report()
+    );
+    assert!(
+        live.home.is_some(),
+        "兜底目标函数没被推导出来：{}",
+        live.report()
+    );
+    assert!(
+        live.toasts >= 3,
+        "拒绝守卫没被找齐（游客/管理/运营三处）：{}",
+        live.report()
+    );
+    assert_eq!(
+        live.falling,
+        0,
+        "活树上就有拒绝掉下去 —— 变异体的读数无从解释：{}",
+        live.report()
+    );
+    assert!(
+        live.tail_ok,
+        "成功路径没有回报「已进入」：{}",
+        live.report()
+    );
+    // 语句切分器停对了地方：目的地语句必须同时提到 hash 解析器与兜底分支。
+    let dest = live.dest.clone().unwrap_or_default();
+    assert!(
+        dest.contains("viewFromHash") && dest.contains("if (!"),
+        "目的地语句切错了（语句切分器是近似，必须先自证）：{:?}",
+        dest
+    );
+    assert_ne!(
+        live.sw,
+        live.home,
+        "切换器与兜底函数成了同一个：{}",
+        live.report()
+    );
+
+    let broken = r163_variant_defect(APP_JS);
+    let rd = r163_read(&broken);
+    assert_eq!(
+        rd.verdicts(),
+        (false, false, false, true),
+        "退回缺陷形状没有同时打翻 R1/R2/R3（R4 应仍绿——切换器本来就不自调用）：{}",
+        rd.report()
+    );
+}
+
+/// 四条规则**各有独立的牙**：每个合成变异体只打翻它针对的那一条（基线＝已知为绿的活树）。
+///
+/// ⚠️ 变异体一律从**活树**上构造，且每个锚点都断言唯一（#612 家族）：变体若没生效，
+/// 构造器里的断言先响，而不是让某条腿因错误的原因变绿（#605）。
+#[test]
+fn the_r163_rules_have_teeth() {
+    let live = r163_read(APP_JS);
+    assert_eq!(
+        live.verdicts(),
+        (true, true, true, true),
+        "基线不是绿的 —— 变异体的读数无从解释：{}",
+        live.report()
+    );
+
+    // ① 拒绝不再报告「没进去」⇒ 只翻 R1。
+    let v = r163_variant_refusal_falls_through(APP_JS);
+    let rd = r163_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (false, true, true, true),
+        "让一个拒绝掉下去只应翻掉 R1：{}",
+        rd.report()
+    );
+
+    // ② 调用方把判决**读反**（`if (…)` 而不是 `if (!…)`）⇒ 只翻 R2。
+    //
+    // ⚠️ 这里刻意**不**用「把兜底整个删掉」那个原缺陷形状（见 `r163_variant_drop_fallback`）：
+    // 兜底函数的**名字**是从兜底调用点读出来的（`r163_second_callee`）⇒ 把调用点删掉同时让
+    // R3 失去它的证据，一条变异体翻两条规则。规则耦合是**真的**（R2 与 R3 是同一处语句的两面），
+    // 但「每条规则各有独立的牙」要求每条腿只翻它自己那条 ⇒ 本腿保留兜底调用、只打掉判据。
+    // 两半一起退回缺陷形状的忠实变体另有其腿（[`the_r163_roster_is_real`] 的 `r163_variant_defect`）。
+    let v = r163_variant_fallback_ignores_the_verdict(APP_JS);
+    let rd = r163_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (true, false, true, true),
+        "让调用方读反判决只应翻掉 R2：{}",
+        rd.report()
+    );
+
+    // ③ 兜底目标忘了身份（游客也被送去仪表盘）⇒ 只翻 R3。
+    let v = r163_variant_home_forgets_guests(APP_JS);
+    let rd = r163_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, false, true),
+        "让兜底目标不看身份只应翻掉 R3：{}",
+        rd.report()
+    );
+
+    // ④ 反向：切换器体内再调用自己 ⇒ 只翻 R4。
+    let v = r163_variant_self_call(APP_JS);
+    let rd = r163_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, true, false),
+        "让切换器自调用只应翻掉 R4：{}",
+        rd.report()
+    );
+}
+
+/// 变异体①：把一个拒绝的 `return false;` 退回 `return;`（原缺陷的那一半）。
+fn r163_variant_refusal_falls_through(app: &str) -> String {
+    let line = "      toast(T(\"view.guest.lock\", { view: T(VIEW_TITLE[id] || id) }), \"error\");\n      return false;\n";
+    assert_eq!(app.matches(line).count(), 1, "拒绝锚点不唯一");
+    app.replace(
+        line,
+        "      toast(T(\"view.guest.lock\", { view: T(VIEW_TITLE[id] || id) }), \"error\");\n      return;\n",
+    )
+}
+
+/// 变异体②（原缺陷那一半的**忠实**形状）：`enterApp` 不再消费返回值 —— 目的地语句里连兜底
+/// 调用都没有了。（它同时让 R3 失去证据：兜底函数名从兜底调用点读出，见 `r163_second_callee`。）
+fn r163_variant_drop_fallback(app: &str) -> String {
+    let line = "if (!switchView(viewFromHash() || \"dashboard\")) switchView(homeView());";
+    assert_eq!(app.matches(line).count(), 1, "目的地语句锚点不唯一");
+    app.replace(line, "switchView(viewFromHash() || \"dashboard\");")
+}
+
+/// 变异体②b（R2 的**独立**牙）：兜底还在，但调用方把判决读反了（`if (…)` 而非 `if (!…)`）。
+fn r163_variant_fallback_ignores_the_verdict(app: &str) -> String {
+    let line = "if (!switchView(viewFromHash() || \"dashboard\"))";
+    assert_eq!(app.matches(line).count(), 1, "目的地守卫锚点不唯一");
+    app.replace(line, "if (switchView(viewFromHash() || \"dashboard\"))")
+}
+
+/// 变异体③：兜底函数不再看身份（游客也被送去仪表盘）。
+fn r163_variant_home_forgets_guests(app: &str) -> String {
+    let line = "function homeView() { return isGuest ? \"marketplace\" : \"dashboard\"; }";
+    assert_eq!(app.matches(line).count(), 1, "兜底函数锚点不唯一");
+    app.replace(line, "function homeView() { return \"dashboard\"; }")
+}
+
+/// 变异体④：在切换器体内再调用一次自己（「拒绝就重定向」的竞争修法形状）。
+fn r163_variant_self_call(app: &str) -> String {
+    let line = "    $(\"#main\").scrollTop = 0;\n";
+    assert_eq!(app.matches(line).count(), 1, "自调用插入锚点不唯一");
+    app.replace(
+        line,
+        "    $(\"#main\").scrollTop = 0;\n    switchView(\"dashboard\"); // mutated: a self-call\n",
+    )
+}
+
+/// 两半一起退回缺陷形状（基线对照用）：一个拒绝掉下去 ＋ 调用方不再兜底。
+fn r163_variant_defect(app: &str) -> String {
+    r163_variant_drop_fallback(&r163_variant_refusal_falls_through(app))
 }

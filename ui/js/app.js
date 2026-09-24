@@ -593,20 +593,22 @@
     $("#mode-label").textContent = isGuest ? T("nav.mode.guest") : T("nav.mode.normal");
   }
 
+  // 返回值即「有没有真的进去」：`false` = 被身份守卫拒绝（已 toast 说明原因），`true` = 已切到该视图。
+  // R163：`enterApp()` 靠它兜底 —— 会话建立那一刻 DOM 还是静态骨架，被拒绝的切换必须有人接手渲染。
   function switchView(id, opts) {
     // 游客限制（US-1）：非市场页面 → 提示需登录
     if (isGuest && !GUEST_VIEWS.includes(id)) {
       toast(T("view.guest.lock", { view: T(VIEW_TITLE[id] || id) }), "error");
-      return;
+      return false;
     }
     // 角色限制（P2-A/P2-C）：管理视图仅 admin；运营视图仅 ops（hash 直达 / 快捷键也兜底）
     if (id === "admin" && D.USER.role !== "admin") {
       toast(T("view.admin.lock"), "error");
-      return;
+      return false;
     }
     if (id === "ops" && D.USER.role !== "ops") {
       toast(T("view.ops.lock"), "error");
-      return;
+      return false;
     }
     // 视图**入口**（不是渲染）：交易页每次进入回到默认档「总点数」（rant 范围句）。
     // 挂这里而不是 renderView()/renderTxTrend() —— 那两个还会被 atp:langchange 调用，
@@ -623,6 +625,7 @@
     document.title = VIEW_TITLE[id] ? T(VIEW_TITLE[id]) + " · AITokenPool" : "AITokenPool";
     // URL hash 路由（rant 20:39:30 A：视图切换同步 #/视图；非法 hash 回退时不清 URL，避免污染历史）
     if (!opts || opts.sync !== false) syncHash(id);
+    return true;
   }
 
   /* ---------------- 视图渲染 ---------------- */
@@ -3373,6 +3376,15 @@
     $("#side-avatar").textContent = name ? Array.from(name)[0] : "?";
   }
 
+  // 身份对应的「家」：游客是市场（`GUEST_VIEWS` 里那一个），登录用户是仪表盘。
+  //
+  // R163：`enterApp()` 的目的地从 URL hash 取，而 hash 可能指向**当前身份进不去**的视图
+  // （非管理员的 `#/admin`、所有人的 `#/ops`）—— `switchView` 拒绝时不渲染任何东西，而
+  // C2137 之后 boot 也不再渲染兜底视图 ⇒ 用户会停在一块**从没人渲染过**的骨架屏上（空卡片、
+  // 此后零请求、不自愈）。兜底目标**必须按身份取**：把游客送进仪表盘会再撞一次访客守卫
+  // （探针 `E1`/`E3` 实测：无条件重定向会丢解释性 toast 并递归爆栈）。
+  function homeView() { return isGuest ? "marketplace" : "dashboard"; }
+
   // 进入主界面（登录成功 / 会话恢复共用）
   function enterApp() {
     isGuest = false;
@@ -3383,8 +3395,9 @@
     $("#side-balance").textContent = D.fmt(D.USER.balance);
     renderUserChip();
     renderNav();
-    // URL hash 路由：登录后恢复刷新前的视图（无 hash 则仪表盘）
-    switchView(viewFromHash() || "dashboard");
+    // URL hash 路由：登录后恢复刷新前的视图（无 hash 则仪表盘）。
+    // 目的地被角色/访客守卫拒绝时落到身份对应的「家」——否则会话建立那一刻什么都没渲染过（R163）。
+    if (!switchView(viewFromHash() || "dashboard")) switchView(homeView());
     maybeStartTour(); // 首次登录引导（rant 20:46:57 A：atp-tour-done 未标记才触发）
   }
 
