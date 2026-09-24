@@ -13266,3 +13266,885 @@ fn the_r92_rules_separate_the_variants() {
         rd_m.report()
     );
 }
+
+// ⚠️ FRAGMENT — 追加到 `src/state_gate.rs` 的**文件末尾**（模块级，与 R92 lane 同层：
+//    `fn r92_read` ≈:12836、`#[test] fn the_r92_rules_separate_the_variants` ≈:13206，
+//    文件最后一行 `}` 就是那个 test fn 的收尾 ⇒ 追加物与它们是兄弟，不缩进。）
+// ⚠️ `PathBuf` 在本文件里**没有** module-level import ⇒ 本 lane 一律写全路径
+//    `std::path::PathBuf`（别加 `use`，那样会动到 13268 行文件的中段）。
+// ⚠️ 状态：**已用等价的 Python 模拟在真语料上逐腿验证**（见 `r99-landing-kit.md` 的矩阵），
+//    并已由 `r99_probe.js`（jsdom，5 变体 × 12 腿）在**真 DOM** 上坐实另一半射程；
+//    另已做静态自检（本 lane 的 28 个顶层标识符在 `state_gate.rs` 里各 0 次；依赖的
+//    `pack_region_strict`/`I18N_JS`/`ZH_PACK_START`/`EN_PACK_START`/`PACK_END`/`R164_WALLET`
+//    全部已在；`use std::collections::{BTreeMap, BTreeSet};` 覆盖全部用法）。
+//    但**仍未编译**（R99/R100/R101 三轮的沙箱都是 read-only，`cargo` 写不了 `target/`）。
+//    落地时必须先跑 rustfmt / cargo test / clippy 三件套。
+
+// ------------------------------------------------------------------ R99 ---
+//
+// 轴（R99）：交易类型的**枚举散文**必须具名「生产者真的会写出来的每一种类型」。
+//
+// `src/routes/wallet.rs::TX_FILTER_TYPES` 声明 6 个**受理**值
+// （`consume earn topup gift expire withdraw`），其中 `withdraw` 至今**没有 writer**
+// （该数组自己的文档注释写着「`withdraw` 受理但尚无 writer」）。UI 另有**三处**手抄的
+// 类型枚举：钱包页脚注 `wallet.hint.suffix`、交易页副标题 `view.transactions.sub`、
+// 仪表盘「交易笔数」副标题 `dash.trades.sub`。`expire` 在 C2050/C2051 变成**一条真账本行**
+// （赠送过期真扣余额、真出现在交易表的类型列与导出 CSV）之后，三处**一处都没跟着走** ——
+// 屏幕上写「涵盖消费、收益、充值、提现、赠送」，而同屏的交易表里就有一行「过期」。
+// 一个事实、三处载体，抄漏的永远是同一项。
+//
+// 规则（期望值**全部**从制品推导，零手写类型名）：
+//   R1  前置（空集上的集合断言会假绿，坑 #68）：语料 ≥ 20 个源文件、生产写入点 ≥ 2、
+//       写入类型 ≥ 2、名册 ≥ 2、两个包的**键集合相等**、每个已知类型两个包都有非空标签。
+//   R2  具名：值里具名**过半**写入类型的包键构成「名册」（两个包取并集）；名册里
+//       **每个键 × 每个语言**都必须具名**全体**已具名的写入类型。尺子是该包**自己的**
+//       `tx.type.<t>` 值（大小写不敏感的字面子串）—— `Consumption` 不算具名 `consume`，
+//       `expiry` 也不该冒名顶替 `Expired`。
+//   R3  形状：两个包的键集合必须相等；`tx.type.<t>` 的标签必须**两个包都非空**
+//       （只有一边有标签 ⇒ 那一包的散文无从具名）。
+//   R4  三明治：`写入 ⊆ 受理 ⊆ 有标签`。写入集合 ← 每个 `INSERT INTO transactions` 的
+//       SQL 字面量在 **`type` 那一列**上写的字面量；受理集合 ← `wallet.rs::TX_FILTER_TYPES`
+//       （该数组自称「新增类型时只改这里」的唯一真源）。这条挡住两类「新类型落地时漏一处」：
+//       写了未受理的类型（线上筛不到）、受理了没标签的类型（表里印出 `tx.type.refund` 这种裸键）。
+//
+// 推导链（无一处手写类型名）：标签 ← 两包 `tx.type.*` 键的**后缀即类型值**、值是标签；
+// 写入 ← 每条生产 `INSERT INTO transactions` 的**列名清单里 `type` 的下标**对应的那个值字面量
+// （不是「字面量里任意一个 `'…'`」—— 那样会把 `'成功'`/`'m'` 也算进来）；
+// 受理 ← `TX_FILTER_TYPES` 数组字面量；名册 ← 两个包里具名过半写入类型的键。
+//
+// 射程（如实）：本门禁是**词法**的 —— 它证「名册里每处散文都写了那 5 个类型的名字」，
+// **不**证屏幕上那一刻真的显示这句话（那一半归 jsdom 探针 `r99_probe.js` 的 A/B 腿：
+// 5 变体 × 12 腿，`landed` 12/12 绿；`A1_*`/`A3_*` 读**真 DOM**、`A2_*` 经 `t()` ＋
+// 派生腿 `B3` 读〔该键没有 `[data-i18n]` 钩子，需活会话才渲染〕）。
+// 三个**故意**的盲区（已写进 `ui/README.md`）：
+//   ① 「过半」是一条**声明**：具名 ≤ 半数写入类型的键永不进名册（`tx.summary.net.sub`
+//      「收益 − 消费」正是这种 —— 它说的是**差**，不是枚举）；
+//   ② 名册是**推导**出来的 ⇒ 把某处文案删空、或把键连同 `index.html` 的绑定一起删掉，
+//      本门禁不会变红 —— 那是「让承诺消失」而非「让承诺成真」，挡它的是探针与
+//      `i18n_pack::every_pack_key_reaches_a_consumer`；
+//   ③ 写入点必须是**字面量**：若将来某个 writer 把类型做成绑定参数（`?1`），本门禁**当场红**
+//      （报「读不出字面量」而不是静默漏掉）—— 宁可要一次显式的施工，也不要一条静默的盲肠。
+
+/// 生产写入点的锚（一条 SQL 字面量以它开头）。
+const R99_ANCHOR: &str = "INSERT INTO transactions";
+
+/// 类型名册的**键前缀** —— 后缀就是类型值本身，因此本轴不需要任何手写类型名。
+const R99_TYPE_PREFIX: &str = "tx.type.";
+
+/// 受理集合的锚（`wallet.rs::TX_FILTER_TYPES` 的声明处）。
+const R99_ACCEPTED_ANCHOR: &str = "TX_FILTER_TYPES: [";
+
+/// `INSERT INTO transactions` 的列名清单里，承载类型值的列名。
+const R99_TYPE_COLUMN: &str = "type";
+
+/// 「过半」：具名数 × 2 > 写入类型数。写成乘法而不是除以 2 —— 5 种与 6 种（`withdraw`
+/// 有了 writer 之后）共用同一条判据，无浮点、无取整。
+fn r99_over_half(named: usize, total: usize) -> bool {
+    named * 2 > total
+}
+
+/// 生产区：第一个 `#[cfg(test)]` 之前。
+fn r99_prod(src: &str) -> &str {
+    match src.find("#[cfg(test)]") {
+        Some(i) => &src[..i],
+        None => src,
+    }
+}
+
+/// 逐字节扫 `"key": "value"` 形态 —— 口径同 `i18n_pack::scan_object_keys`：**不能用行首锚定的
+/// 正则**（`share.day.1`…`.6` 挤在同一行 ⇒ 会漏键，坑 #69）。本轴的语料里没有转义引号。
+fn r99_pairs(region: &str) -> Vec<(String, String)> {
+    let b = region.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        let Some(k0) = region[i..].find('"').map(|r| i + r) else {
+            break;
+        };
+        let Some(k1) = region[k0 + 1..].find('"').map(|r| k0 + 1 + r) else {
+            break;
+        };
+        let mut j = k1 + 1;
+        while j < b.len() && matches!(b[j], b' ' | b'\t' | b'\n' | b'\r') {
+            j += 1;
+        }
+        if !region[j..].starts_with(": \"") {
+            i = k1 + 1;
+            continue;
+        }
+        let v0 = j + 3;
+        let Some(v1) = region[v0..].find('"').map(|r| v0 + r) else {
+            break;
+        };
+        out.push((region[k0 + 1..k1].to_string(), region[v0..v1].to_string()));
+        i = v1 + 1;
+    }
+    out
+}
+
+/// 从 `open` 处的 `(` 找到配对的 `)`；找不到 ⇒ `None`。
+fn r99_match_paren(text: &str, open: usize) -> Option<usize> {
+    let b = text.as_bytes();
+    let mut depth = 0i32;
+    let mut i = open;
+    while i < b.len() {
+        match b[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 按**顶层**逗号切分（跳过括号内与引号内的逗号）。SQL 的值清单里会出现
+/// `datetime('now')` 这种带括号项，所以不能裸 `split(',')`。
+fn r99_split_top(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    for ch in text.chars() {
+        if let Some(q) = quote {
+            cur.push(ch);
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => {
+                quote = Some(ch);
+                cur.push(ch);
+            }
+            '(' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ',' if depth == 0 => {
+                out.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+/// 一条 `INSERT INTO transactions …` 在 **`type` 列**上写的字面量 ⇒ `Some("consume")`。
+///
+/// 读不出（没有列名清单 / 列名里没有 `type` / `type` 那一位不是字面量）⇒ `None`，
+/// 由调用方**报错**（静默漏掉一个写入点比没有门禁更危险 —— 那正是「少数比没有更坏」）。
+fn r99_type_of_insert(text: &str, at: usize) -> Option<String> {
+    let open = at + text[at..].find('(')?;
+    let close = r99_match_paren(text, open)?;
+    let cols: Vec<String> = r99_split_top(&text[open + 1..close])
+        .iter()
+        .map(|c| {
+            c.rsplit('.')
+                .next()
+                .unwrap_or(c)
+                .trim()
+                .trim_matches('"')
+                .to_string()
+        })
+        .collect();
+    let idx = cols.iter().position(|c| c == R99_TYPE_COLUMN)?;
+    let vfrom = text[close..]
+        .to_uppercase()
+        .find("VALUES")
+        .map(|r| close + r)?;
+    let vopen = vfrom + text[vfrom..].find('(')?;
+    let vclose = r99_match_paren(text, vopen)?;
+    let vals = r99_split_top(&text[vopen + 1..vclose]);
+    let tok = vals.get(idx)?.trim();
+    if tok.len() > 2 && tok.starts_with('\'') && tok.ends_with('\'') {
+        Some(tok[1..tok.len() - 1].to_string())
+    } else {
+        None
+    }
+}
+
+/// 语料边界：门禁模块把别的源码当语料内嵌（`include_str!`），扫它们会把**夹具**里的写入点
+/// 当成生产写入点；`i18n_pack.rs` 本身就是语言包语料。这条谓词是**语料边界**的唯一载体 ——
+/// 它活在**走盘**那一层（`r99_source_files`），`r99_written` 不做排除，所以对它的断言必须
+/// 打在这里，不能把「兄弟门禁文件」塞进 `r99_written` 的合成语料里（那样断言的是错的那一层，
+/// 见 `the_r99_extractors_have_teeth`）。
+fn r99_is_corpus_file(name: &str) -> bool {
+    !(name.ends_with("_gate.rs") || name == "i18n_pack.rs")
+}
+
+/// `src/**/*.rs` 的生产区语料。运行时走盘（`CARGO_MANIFEST_DIR`）：生产写入点散在
+/// `billing.rs` / `gift.rs` / `routes/*.rs`，只 `include_str!` 某几个文件会漏掉一种类型。
+/// 形状与 `body_limit_gate.rs::source_files` 一致（同一套排除规则）。
+fn r99_source_files() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::PathBuf, root: &std::path::PathBuf, out: &mut Vec<(String, String)>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, root, out);
+            } else if p.extension().map(|x| x == "rs").unwrap_or(false) {
+                let name = p.file_name().unwrap().to_string_lossy().to_string();
+                if !r99_is_corpus_file(&name) {
+                    continue;
+                }
+                let rel = p
+                    .strip_prefix(root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if let Ok(text) = std::fs::read_to_string(&p) {
+                    out.push((rel, text));
+                }
+            }
+        }
+    }
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut out = Vec::new();
+    walk(&root, &root, &mut out);
+    out.sort();
+    out
+}
+
+/// 生产区每个 `INSERT INTO transactions` 在 `type` 列写的值 ⇒ `(类型 → 出处, 锚点数)`。
+///
+/// 整行注释里的锚点不算写入点（`routes/sharing.rs` 有一段讲这句 SQL 的说明）；行号取自
+/// **原始**生产区文本（不是在剥过注释的副本上数），所以报出来的位置就是文件里那一行。
+fn r99_written(files: &[(String, String)]) -> (BTreeMap<String, BTreeSet<String>>, usize) {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut anchors = 0usize;
+    for (rel, src) in files {
+        let text = r99_prod(src);
+        let mut from = 0usize;
+        while let Some(at) = text[from..].find(R99_ANCHOR).map(|r| from + r) {
+            from = at + R99_ANCHOR.len();
+            let ls = text[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            if text[ls..at].trim_start().starts_with("//") {
+                continue;
+            }
+            anchors += 1;
+            let line = text[..at].matches('\n').count() + 1;
+            let ty = r99_type_of_insert(text, at).unwrap_or_else(|| {
+                panic!(
+                    "{rel}:{line} 的 `{R99_ANCHOR}` 没能在 `{R99_TYPE_COLUMN}` 列上读出字面量 —— \
+                     若类型改成了绑定参数，请扩展本门禁（不要静默跳过这个写入点）"
+                )
+            });
+            out.entry(ty).or_default().insert(format!("{rel}:{line}"));
+        }
+    }
+    (out, anchors)
+}
+
+/// `wallet.rs::TX_FILTER_TYPES` 声明的受理集合（该数组自称「新增类型时只改这里」）。
+fn r99_accepted(wallet: &str) -> BTreeSet<String> {
+    let at = wallet
+        .find(R99_ACCEPTED_ANCHOR)
+        .unwrap_or_else(|| panic!("`{R99_ACCEPTED_ANCHOR}` 未找到 —— 受理集合搬走了？"));
+    // ⚠️ `R99_ACCEPTED_ANCHOR` **自己以 `[` 结尾**，而声明里紧随其后的是长度标注
+    // （`[&str; 6]`）⇒ 从 `at` 直接找下一个 `[` 会命中**长度标注**那个，切出 `[&str; 6`
+    // ——  零个字面量、受理集合**静默变空**，于是 R4 在**修好的**树上必红（R102 实测，见
+    // `r102-landing-preflight-readonly.md` §7）。取值清单在 `=` 之后。
+    let eq = at + wallet[at..].find('=').expect("常量声明缺 `=`");
+    let open = eq + wallet[eq..].find('[').expect("数组字面量");
+    let close = wallet[open..]
+        .find(']')
+        .map(|r| open + r)
+        .expect("数组字面量收尾");
+    r99_pairs_over_quotes(&wallet[open..close])
+}
+
+/// 只取一串 `"x"` 字面量（数组字面量里没有 `: `，所以不能直接用 `r99_pairs`）。
+fn r99_pairs_over_quotes(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut rest = text;
+    while let Some(i) = rest.find('"') {
+        let Some(j) = rest[i + 1..].find('"').map(|r| i + 1 + r) else {
+            break;
+        };
+        out.insert(rest[i + 1..j].to_string());
+        rest = &rest[j + 1..];
+    }
+    out
+}
+
+/// 某类型在某个包里的标签「在且非空」。R3 与 `labeled` 共用这一条判据（空串不算标签）。
+fn r99_label(v: &[Option<String>; 2], lang: usize) -> Option<&str> {
+    v[lang].as_deref().filter(|s| !s.is_empty())
+}
+
+/// 一个文案**具名**的类型（尺子是该包自己的标签值，大小写不敏感的字面子串）。
+fn r99_named(
+    value: &str,
+    labels: &BTreeMap<String, [Option<String>; 2]>,
+    lang: usize,
+) -> BTreeSet<String> {
+    let low = value.to_lowercase();
+    labels
+        .iter()
+        .filter(|(_, v)| match r99_label(v, lang) {
+            Some(l) => low.contains(&l.to_lowercase()),
+            None => false,
+        })
+        .map(|(t, _)| t.clone())
+        .collect()
+}
+
+/// 名册里某条键**未具名**的类型。
+struct R99Miss {
+    lang: &'static str,
+    key: String,
+    types: Vec<String>,
+}
+
+/// 本轴的读数。
+struct R99Reading {
+    files: usize,
+    anchors: usize,
+    written: BTreeMap<String, BTreeSet<String>>,
+    labeled: BTreeSet<String>,
+    accepted: BTreeSet<String>,
+    roster: BTreeSet<String>,
+    missing: Vec<R99Miss>,
+    shape: Vec<String>,
+    r4_bad: Vec<String>,
+    keys_zh: usize,
+    keys_en: usize,
+}
+
+impl R99Reading {
+    /// 判红清单（结构化）：`"<lang>`<key>`"` ＋ 形状类判词 ＋ 三明治判词。
+    fn red(&self) -> BTreeSet<String> {
+        let mut out: BTreeSet<String> = self
+            .missing
+            .iter()
+            .map(|m| format!("{}`{}`", m.lang, m.key))
+            .collect();
+        for s in self.shape.iter().chain(self.r4_bad.iter()) {
+            out.insert(s.clone());
+        }
+        out
+    }
+
+    fn report(&self) -> String {
+        let written: Vec<&String> = self.written.keys().collect();
+        let mut s = format!(
+            "语料 {} 文件 / {} 个 `{R99_ANCHOR}` 锚点；写入={written:?}；受理={:?}；有标签={:?}；\
+             名册={:?}；包键 zh={} en={}",
+            self.files,
+            self.anchors,
+            self.accepted,
+            self.labeled,
+            self.roster,
+            self.keys_zh,
+            self.keys_en
+        );
+        for x in self.shape.iter().chain(self.r4_bad.iter()) {
+            s.push_str(&format!("\n  - {x}"));
+        }
+        for m in &self.missing {
+            s.push_str(&format!("\n  - {}`{}` 未具名 {:?}", m.lang, m.key, m.types));
+        }
+        s
+    }
+}
+
+/// 读一棵树：`files` = 生产语料，`i18n` = 语言包源码，`wallet` = `routes/wallet.rs`。
+/// 两条腿（修前 / 修后）喂不同的语言包源码。
+fn r99_read(files: &[(String, String)], i18n: &str, wallet: &str) -> R99Reading {
+    let zh = pack_region_strict(i18n, ZH_PACK_START, PACK_END);
+    let en = pack_region_strict(i18n, EN_PACK_START, PACK_END);
+    let zp = r99_pairs(zh);
+    let ep = r99_pairs(en);
+
+    // 类型名册 = `tx.type.*` 键的后缀；标签 = 同名键的值（两个包各一把尺子）。
+    let mut labels: BTreeMap<String, [Option<String>; 2]> = BTreeMap::new();
+    for (lang, pack) in [(0usize, &zp), (1usize, &ep)] {
+        for (k, v) in pack.iter() {
+            if let Some(t) = k.strip_prefix(R99_TYPE_PREFIX) {
+                labels.entry(t.to_string()).or_insert_with(|| [None, None])[lang] = Some(v.clone());
+            }
+        }
+    }
+
+    let keys_zh: BTreeSet<String> = zp.iter().map(|(k, _)| k.clone()).collect();
+    let keys_en: BTreeSet<String> = ep.iter().map(|(k, _)| k.clone()).collect();
+    let mut shape: Vec<String> = Vec::new();
+    if keys_zh != keys_en {
+        shape.push(format!(
+            "两个包的键集合不等：zh 独有 {:?}，en 独有 {:?}",
+            keys_zh.difference(&keys_en).collect::<Vec<_>>(),
+            keys_en.difference(&keys_zh).collect::<Vec<_>>()
+        ));
+    }
+    for (t, v) in labels.iter() {
+        if r99_label(v, 0).is_none() || r99_label(v, 1).is_none() {
+            shape.push(format!(
+                "`{R99_TYPE_PREFIX}{t}` 的标签不是两个包都非空：zh={:?} en={:?}",
+                v[0], v[1]
+            ));
+        }
+    }
+
+    let labeled: BTreeSet<String> = labels
+        .iter()
+        .filter(|(_, v)| r99_label(v, 0).is_some() && r99_label(v, 1).is_some())
+        .map(|(t, _)| t.clone())
+        .collect();
+
+    let (written, anchors) = r99_written(files);
+    let accepted = r99_accepted(wallet);
+
+    // R4 三明治：写入 ⊆ 受理 ⊆ 有标签。
+    let mut r4_bad: Vec<String> = Vec::new();
+    let unaccepted: Vec<&String> = written.keys().filter(|t| !accepted.contains(*t)).collect();
+    if !unaccepted.is_empty() {
+        r4_bad.push(format!(
+            "有写入点写了未受理的类型：{unaccepted:?}（受理集合来自 `{R99_ACCEPTED_ANCHOR}`）"
+        ));
+    }
+    let unlabeled: Vec<&String> = accepted.iter().filter(|t| !labeled.contains(*t)).collect();
+    if !unlabeled.is_empty() {
+        r4_bad.push(format!("受理集合里有类型没有标签：{unlabeled:?}"));
+    }
+
+    // R2 的判据只落在「有名字的写入类型」上；R4 保证正常情况下两者相等
+    // （写入点写了没有标签的类型时，R4 报错，而 R2 不会连带报一堆无从具名的键）。
+    let named_targets: BTreeSet<String> = written
+        .keys()
+        .filter(|t| labeled.contains(*t))
+        .cloned()
+        .collect();
+
+    // 名册：值里具名过半写入类型的包键（两个包取并集）。
+    let mut roster: BTreeSet<String> = BTreeSet::new();
+    for (lang, pack) in [(0usize, &zp), (1usize, &ep)] {
+        for (k, v) in pack.iter() {
+            if r99_over_half(r99_named(v, &labels, lang).len(), named_targets.len()) {
+                roster.insert(k.clone());
+            }
+        }
+    }
+
+    // R2：名册里每个键 × 每个语言都必须具名**全体**写入类型。
+    let mut missing: Vec<R99Miss> = Vec::new();
+    for key in &roster {
+        for (lang, name, pack) in [(0usize, "zh", &zp), (1usize, "en", &ep)] {
+            let Some((_, value)) = pack.iter().find(|(k, _)| k == key) else {
+                continue;
+            };
+            let named = r99_named(value, &labels, lang);
+            let types: Vec<String> = named_targets
+                .iter()
+                .filter(|t| !named.contains(*t))
+                .cloned()
+                .collect();
+            if !types.is_empty() {
+                missing.push(R99Miss {
+                    lang: name,
+                    key: key.clone(),
+                    types,
+                });
+            }
+        }
+    }
+
+    R99Reading {
+        files: files.len(),
+        anchors,
+        written,
+        labeled,
+        accepted,
+        roster,
+        missing,
+        shape,
+        r4_bad,
+        keys_zh: keys_zh.len(),
+        keys_en: keys_en.len(),
+    }
+}
+
+/// 把 `key` 在**一个包**里的值换成 `new`。找不到要改的键 ⇒ panic（变体必须是真变异 ——
+/// 空操作换来的绿是假的，R96 的教训）。
+fn r99_set_value_in(src: &str, key: &str, zh: bool, new: &str) -> String {
+    let cut = src
+        .find(EN_PACK_START)
+        .expect("语言包起点标记 `var EN = {` 未找到 —— 语言包结构变了？");
+    let (head, tail) = src.split_at(cut);
+    let region = if zh { head } else { tail };
+    let needle = format!("\"{key}\": \"");
+    let at = region
+        .find(&needle)
+        .unwrap_or_else(|| panic!("变体要改的键 `{key}` 不在这个包里 —— 变体是空操作"));
+    let v0 = at + needle.len();
+    let v1 = v0 + region[v0..].find('"').expect("值没有收尾引号");
+    let mut replaced = String::new();
+    replaced.push_str(&region[..v0]);
+    replaced.push_str(new);
+    replaced.push_str(&region[v1..]);
+    if zh {
+        format!("{replaced}{tail}")
+    } else {
+        format!("{head}{replaced}")
+    }
+}
+
+/// 把某个键**整行**从**一个包**里删掉（键集合/标签两用）。
+fn r99_drop_key_in(src: &str, key: &str, zh: bool) -> String {
+    let cut = src
+        .find(EN_PACK_START)
+        .expect("语言包起点标记 `var EN = {` 未找到 —— 语言包结构变了？");
+    let (head, tail) = src.split_at(cut);
+    let region = if zh { head } else { tail };
+    let needle = format!("\"{key}\": ");
+    let mut out = String::new();
+    let mut hits = 0usize;
+    for line in region.split_inclusive('\n') {
+        if line.contains(&needle) {
+            hits += 1;
+            continue;
+        }
+        out.push_str(line);
+    }
+    assert_eq!(
+        hits, 1,
+        "变体要删的键 `{key}` 在这个包里出现 {hits} 次 —— 变体不是「删掉一条」"
+    );
+    if zh {
+        format!("{out}{tail}")
+    } else {
+        format!("{head}{out}")
+    }
+}
+
+/// 多出的写入点（合成文件）：`withdraw` 受理但没 writer。
+fn r99_probe_withdraw() -> (String, String) {
+    (
+        "src/withdraw_probe.rs".to_string(),
+        "fn w() { tx.execute(\"INSERT INTO transactions (user_id, type) \
+         VALUES (?1, 'withdraw')\", []); }\n"
+            .to_string(),
+    )
+}
+
+/// 多出的写入点（合成文件）：`refund` 既未受理也无标签。
+fn r99_probe_refund() -> (String, String) {
+    (
+        "src/refund_probe.rs".to_string(),
+        "fn r() { tx.execute(\"INSERT INTO transactions (user_id, type) \
+         VALUES (?1, 'refund')\", []); }\n"
+            .to_string(),
+    )
+}
+
+/// 修复前那三句的**逐字原文**（两个包各三处）—— 用来在真语料上构造 pre-fix 变体。
+const R99_PREFIX: [(&str, bool, &str); 6] = [
+    (
+        "view.transactions.sub",
+        true,
+        "涵盖消费、收益、充值、提现、赠送",
+    ),
+    ("dash.trades.sub", true, "含充值 / 消费 / 收益 / 赠送"),
+    (
+        "wallet.hint.suffix",
+        true,
+        "——涵盖消费、收益、充值、提现、赠送",
+    ),
+    (
+        "view.transactions.sub",
+        false,
+        "Consumption, earnings, top-ups, withdrawals, gifts",
+    ),
+    ("dash.trades.sub", false, "top-up / consume / earn / gift"),
+    (
+        "wallet.hint.suffix",
+        false,
+        "— consumption, earnings, top-ups, withdrawals, gifts",
+    ),
+];
+
+/// 轴：名册里每处类型枚举都必须具名生产者真会写出来的每一种类型。
+#[test]
+fn the_transaction_type_prose_names_every_type_the_writers_write() {
+    let files = r99_source_files();
+    assert!(
+        files.len() >= 20,
+        "只走到 {} 个源文件 —— 扫描器本身坏了（空集上通过是假绿）",
+        files.len()
+    );
+    let rd = r99_read(&files, I18N_JS, R164_WALLET);
+    // R1 阳性对照：空集上的集合断言会假绿（坑 #68）。
+    assert!(rd.anchors >= 2, "生产写入点太少：{}", rd.report());
+    assert!(rd.written.len() >= 2, "写入类型太少：{}", rd.report());
+    assert!(
+        rd.keys_zh >= 100 && rd.keys_zh == rd.keys_en,
+        "语言包语料失真或两包键数不等：{}",
+        rd.report()
+    );
+    assert!(rd.roster.len() >= 2, "名册派生失真：{}", rd.report());
+    assert!(rd.shape.is_empty(), "形状类判词：{}", rd.report());
+    assert!(rd.r4_bad.is_empty(), "三明治判词：{}", rd.report());
+    assert!(rd.missing.is_empty(), "{}", rd.report());
+}
+
+/// 提取器自证（合成输入）：整行注释里的锚点、`#[cfg(test)]` 之后的锚点、**非 `type` 列**的
+/// 字面量（`'成功'`/`'m'`）都不得被算成写入点；`type` 列传绑定参数时必须**报错**而不是静默跳过。
+/// ⚠️ 语料边界（兄弟门禁文件 / `i18n_pack.rs`）**不在**这里验 —— 它活在走盘那一层，
+/// `r99_written` 不做排除（本测试的合成语料绕过了走盘）⇒ 断言打在本测试的
+/// `r99_is_corpus_file` 那几条上，而不是把夹具塞进 `r99_written`（R115 实测：那样断言的是
+/// **错的那一层**，兄弟门禁文件里的写入点照样被算成生产写入点）。
+#[test]
+fn the_r99_extractors_have_teeth() {
+    // `type` 在列名清单里的下标是第 3 个 ⇒ 值清单里第 3 个才是类型；其余字面量是干扰项。
+    // ⚠️ 生产语句必须在 `#[cfg(test)]` **之前**（真实 Rust 文件的形状）—— 否则被
+    // `r99_prod` 一起截掉，看起来像「提取器漏读」，其实是夹具不真实。
+    let files = vec![(
+        "src/probe.rs".to_string(),
+        concat!(
+            "// INSERT INTO transactions (user_id, type) VALUES (?1, 'earn')\n",
+            "fn a() { tx.execute(\"INSERT INTO transactions (user_id, counterpart, type, status) ",
+            "VALUES (?1, '2', 'consume', '成功')\", []); }\n",
+            "fn c() { tx.execute(\"INSERT INTO transactions (user_id, type) ",
+            "VALUES (?1, 'withdraw')\", []); }\n",
+            "#[cfg(test)]\n",
+            "mod tests { fn b() { tx.execute(\"INSERT INTO transactions ",
+            "(user_id, type) VALUES (?1, 'earn')\", []); } }\n",
+        )
+        .to_string(),
+    )];
+    let (written, anchors) = r99_written(&files);
+    let got: BTreeSet<String> = written.keys().cloned().collect();
+    assert_eq!(
+        got,
+        BTreeSet::from(["consume".to_string(), "withdraw".to_string()]),
+        "提取器失真（整行注释 / 测试区 / 非 type 列的字面量都不该被算）：{written:?}"
+    );
+    assert_eq!(anchors, 2, "锚点计数失真：{written:?}");
+
+    // 语料边界（`_gate.rs` / `i18n_pack.rs`）：谓词本体 + 两个方向的牙。缺了它，门禁模块
+    // 自己内嵌的夹具（`'consume'`/`'withdraw'`/`'refund'`）就会被当成生产写入点。
+    assert!(r99_is_corpus_file("wallet.rs"), "真源文件被误排除");
+    assert!(r99_is_corpus_file("gift.rs"), "真源文件被误排除");
+    assert!(
+        r99_is_corpus_file("admin_models.rs"),
+        "不带 `_gate` 后缀的文件不得被误排除"
+    );
+    assert!(
+        !r99_is_corpus_file("state_gate.rs"),
+        "本门禁模块必须被排除（它的夹具里有写入点）"
+    );
+    assert!(
+        !r99_is_corpus_file("body_limit_gate.rs"),
+        "兄弟门禁模块必须被排除"
+    );
+    assert!(!r99_is_corpus_file("i18n_pack.rs"), "语言包语料必须被排除");
+
+    // 受理集合的提取器同样要有牙 —— 而且夹具必须是**真实声明形状**（带长度标注 `[&str; N]`）。
+    // 这条自证原先只覆盖 `r99_written`，于是不受测的 `r99_accepted` 在真形状上静默读空（R102）：
+    // 锚点 `TX_FILTER_TYPES: [` **自己以 `[` 结尾** ⇒ 它找到的第一个 `[` 是长度标注那个。
+    let wallet_shape = concat!(
+        "/// 新增类型时只改这里。\n",
+        "pub const TX_FILTER_TYPES: [&str; 3] = [\"consume\", \"earn\", \"topup\"];\n",
+        "pub const TX_INCOME_TYPES: [&str; 2] = [\"topup\", \"gift\"];\n",
+    );
+    let want_accepted = BTreeSet::from([
+        "consume".to_string(),
+        "earn".to_string(),
+        "topup".to_string(),
+    ]);
+    assert_eq!(
+        r99_accepted(wallet_shape),
+        want_accepted,
+        "受理集合提取器失真（必须读 `=` 之后的取值清单，而不是长度标注 `[&str; N]`）"
+    );
+}
+
+/// `type` 列写成**绑定参数**（`?1`）时，提取器必须**当场报错** —— 静默漏掉一个写入点
+/// 比没有门禁更危险（「少数比没有更坏」）。这条腿就是那条断言的载体。
+#[test]
+#[should_panic(expected = "没能在 `type` 列上读出字面量")]
+fn the_r99_bound_parameter_producer_is_loud() {
+    let bound = vec![(
+        "src/bound.rs".to_string(),
+        "fn e() { tx.execute(\"INSERT INTO transactions (user_id, type) VALUES (?1, ?2)\", []); }\n"
+            .to_string(),
+    )];
+    let _ = r99_written(&bound);
+}
+
+/// 每条规则的**牙**：变体各只翻它针对的那条判词，且都声明在**它真正描述的那棵树**上。
+#[test]
+fn the_r99_rules_have_teeth() {
+    let files = r99_source_files();
+
+    // 落地树必须先绿 —— 否则「变体的红」可能只是这棵树的红（R96 的教训）。
+    let landed = r99_read(&files, I18N_JS, R164_WALLET);
+    assert!(
+        landed.missing.is_empty() && landed.shape.is_empty() && landed.r4_bad.is_empty(),
+        "landed 树必须先绿：{}",
+        landed.report()
+    );
+
+    // ① 修复前那三句（六个位点）：六个 (语言, 键) 全红 —— 这就是本轮实测的 pre-fix 红集。
+    let mut pre = I18N_JS.to_string();
+    for (key, zh, old) in R99_PREFIX {
+        pre = r99_set_value_in(&pre, key, zh, old);
+    }
+    let rd_pre = r99_read(&files, &pre, R164_WALLET);
+    let expect: BTreeSet<String> = R99_PREFIX
+        .iter()
+        .map(|(k, zh, _)| format!("{}`{k}`", if *zh { "zh" } else { "en" }))
+        .collect();
+    assert_eq!(
+        rd_pre.red(),
+        expect,
+        "pre-fix 变体的红集与声明不符：{}",
+        rd_pre.report()
+    );
+
+    // ② 只修了一半（中文那三句还是旧的）：zh 三处红、en 绿 —— 半修不能过闸。
+    let mut half = I18N_JS.to_string();
+    for (key, zh, old) in R99_PREFIX {
+        if zh {
+            half = r99_set_value_in(&half, key, zh, old);
+        }
+    }
+    let rd_half = r99_read(&files, &half, R164_WALLET);
+    let expect_half: BTreeSet<String> = R99_PREFIX
+        .iter()
+        .filter(|(_, zh, _)| *zh)
+        .map(|(k, _, _)| format!("zh`{k}`"))
+        .collect();
+    assert_eq!(
+        rd_half.red(),
+        expect_half,
+        "半修变体的红集与声明不符：{}",
+        rd_half.report()
+    );
+
+    // ③ 新增一个 writer（`withdraw` 有 writer 的那一天）：散文必须跟着走 ——
+    //    名册里没具名 `提现`/`withdraw` 的那条键当场变红（两个包各一处）。
+    let mut with_writer = files.clone();
+    with_writer.push(r99_probe_withdraw());
+    let rd_new = r99_read(&with_writer, I18N_JS, R164_WALLET);
+    assert!(
+        rd_new.written.contains_key("withdraw"),
+        "变体没把 `withdraw` 变成「生产者真会写」：{}",
+        rd_new.report()
+    );
+    assert_eq!(
+        rd_new.red(),
+        BTreeSet::from([
+            "zh`dash.trades.sub`".to_string(),
+            "en`dash.trades.sub`".to_string()
+        ]),
+        "新 writer 变体的红集与声明不符：{}",
+        rd_new.report()
+    );
+
+    // ④ R4 前半（写入 ⊆ 受理）：写了未受理的类型 ⇒ 只有这一条判词（R2 不连带报）。
+    let mut refund = files.clone();
+    refund.push(r99_probe_refund());
+    let rd_refund = r99_read(&refund, I18N_JS, R164_WALLET);
+    assert_eq!(
+        rd_refund.r4_bad.len(),
+        1,
+        "未受理写入点没被点名：{}",
+        rd_refund.report()
+    );
+    assert!(
+        rd_refund.r4_bad[0].contains("refund"),
+        "R4 判词没有点名那个类型：{}",
+        rd_refund.report()
+    );
+    assert!(
+        rd_refund.missing.is_empty() && rd_refund.shape.is_empty(),
+        "R4 的牙不该连带翻别的规则：{}",
+        rd_refund.report()
+    );
+
+    // ⑤ R4 后半（受理 ⊆ 有标签）：把 `expire` 的标签从**两个包**都删掉 ⇒ 键集合仍相等、
+    //    也没有单边标签 ⇒ 只有 R4 报「受理了没标签的类型」。
+    let dropped = r99_drop_key_in(
+        &r99_drop_key_in(I18N_JS, "tx.type.expire", true),
+        "tx.type.expire",
+        false,
+    );
+    let rd_drop = r99_read(&files, &dropped, R164_WALLET);
+    assert_eq!(
+        rd_drop.r4_bad.len(),
+        1,
+        "两个包都缺标签时该只有 R4 一条：{}",
+        rd_drop.report()
+    );
+    assert!(
+        rd_drop.r4_bad[0].contains("expire") && rd_drop.shape.is_empty(),
+        "R4 后半的牙没打中 / 连带翻了形状规则：{}",
+        rd_drop.report()
+    );
+
+    // ⑥ R3 的牙：标签只在一个包里**非空**（另一边留空串）⇒ 形状判词点名该类型，
+    //    并且 R4 也报「受理了没标签的类型」（空串不算标签）。
+    let emptied = r99_set_value_in(I18N_JS, "tx.type.expire", false, "");
+    let rd_empty = r99_read(&files, &emptied, R164_WALLET);
+    assert!(
+        rd_empty.shape.iter().any(|s| s.contains("expire")),
+        "单边空标签没被形状规则点名：{}",
+        rd_empty.report()
+    );
+    assert!(
+        rd_empty.r4_bad.iter().any(|s| s.contains("expire")),
+        "单边空标签没被 R4 点名：{}",
+        rd_empty.report()
+    );
+
+    // ⑦ 盲区①（**刻意**放行，写进 `ui/README.md`）：「过半」是一条声明 —— 把某条枚举
+    //    在两个包里都削弱到「具名 2 种」（< 半数）就离开了名册，本门禁不再管它。
+    //    这不是漏判：它已经不再是**枚举**，而挡「让承诺消失」的是探针与 i18n_pack 的可达性门禁。
+    let weakened = r99_set_value_in(
+        &r99_set_value_in(I18N_JS, "dash.trades.sub", true, "含充值 / 消费"),
+        "dash.trades.sub",
+        false,
+        "top-up / consume",
+    );
+    let rd_weak = r99_read(&files, &weakened, R164_WALLET);
+    assert!(
+        !rd_weak.roster.contains("dash.trades.sub"),
+        "削弱到半数以下应离开名册：{}",
+        rd_weak.report()
+    );
+    assert!(
+        rd_weak.red().is_empty(),
+        "这条盲区是**声明**：本门禁对它必须沉默（挡它的是探针）：{}",
+        rd_weak.report()
+    );
+
+    // ⑧ 盲区②（同上，刻意放行）：把某条枚举的键从两个包都删掉 ⇒ 名册少一员、全绿。
+    let gone = r99_drop_key_in(
+        &r99_drop_key_in(I18N_JS, "dash.trades.sub", true),
+        "dash.trades.sub",
+        false,
+    );
+    let rd_gone = r99_read(&files, &gone, R164_WALLET);
+    assert!(
+        !rd_gone.roster.contains("dash.trades.sub") && rd_gone.red().is_empty(),
+        "键被整体删掉时本门禁必须沉默（挡它的是 `every_pack_key_reaches_a_consumer`）：{}",
+        rd_gone.report()
+    );
+}
