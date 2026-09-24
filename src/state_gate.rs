@@ -14148,3 +14148,706 @@ fn the_r99_rules_have_teeth() {
         rd_gone.report()
     );
 }
+
+// ══════════════ R169：带 `data-i18n` 的静态控件，标签归 markup 那个键所有 ══════════════
+//
+// 一个静态控件的标签只有一个来源：`ui/index.html` 的 `data-i18n`，由 `applyStatic()` 填充
+// （`innerHTML = t(key)`；只在 `setLang()` 与 `DOMContentLoaded` 两处被调）。交互态可以**临时**
+// 换文案（忙碌态），但**收尾必须回到该控件自己的来源**：要么先捕获它原来的值再写回（仓库成例是
+// `withLoading`：`const orig = btn.innerHTML` → `btn.innerHTML = orig`，另有四处同形），要么写回
+// markup 声明的那个键。
+//
+// 破在最显眼的地方：`#login-form` 的提交按钮出厂是 `login.enter`（zh「进入平台」/ en「Enter」），
+// 而它的提交处理器在 `finally` 里**恢复**成 `T("login.submit")`（zh「登 录」/ en「Sign in」）——
+// 即**别人的键**。于是输错一次密码之后按钮改口说另一句话，而登录页没有语言切换器 ⇒
+// **整会话不自愈**（只有切语言或刷新才会被 `applyStatic()` 纠正）。溯源是漂移不是取舍：
+// `8bd1063`（P2-A 登录对接）在同一个提交里既挂了 markup 的「进入平台」又手写
+// `btn.textContent = "登 录"`，`68f9f70`（i18n 语言包）把两句各翻成一个键，从此一个控件两个键。
+//
+// 三条规则全部**派生**（#469：门禁不许把这次编辑的字面量写死）：
+//   R1（轴）  —— 名册里**会写自己标签**的那些成员（今天恰一个：`#login-form`）：母集不为空，且每个
+//                成员的处理器里**最后一次**写标签的表达式必须派生自该元素自己的来源 ——
+//                ①对该元素的**捕获读**（`const x = btn.textContent;` 之后再写回 `x`），或
+//                ②`T(k)` 且 `k ==` `ui/index.html` 给这个控件声明的键（键**从 markup 读**）。
+//   R2（类）  —— `ui/index.html` 里**每个「提交按钮带 `data-i18n` 的表单」**都是成员（今日 5 个，
+//                下界 2）：每个成员都必须能在 `ui/js/app.js` 里**解出恰好一个**提交处理器
+//                （零个或两个以上＝响亮地红：解不出 ≠ 干净，#477），且不得以别人的键收尾。
+//   R3（反向）—— 那些会写标签的成员，处理器里对同一按钮的标签写必须**至少两次**（先忙碌态、再
+//                收尾）——「把忙碌态删掉」不能算合格。运行时证据是探针 `r169_probe.js` 的 `C4` 腿
+//                （它在**第一个 `await` 之前**采样，证明忙碌态真的发生过）。
+//
+// 射程（如实，并写进 `ui/README.md`）：
+//   · 门禁是**词法**的 —— 它证明「收尾的表达式与 markup 声明的键同源」；`ui/index.html` 与
+//     `ui/js/app.js` 是它读的两个制品。它**不证**屏幕上那一刻渲染出的标签（那半归 jsdom 探针）。
+//   · 句柄只认本仓的主导写法 `querySelector('button[type="submit"]')`（今天四处：login / register /
+//     verify / share）。`#forgot-form` 用的是 `querySelector("button[type=submit]")`（另一种拼法），
+//     不在词法射程内 —— 它因此**不计入**「会写标签的成员」，如实记录，不假装覆盖。
+//   · 刻意放行：把 markup 改标成 `login.submit`（两边自洽）也能过 R1–R3 —— 那枚按钮就不再是设计
+//     原型印的那句话，挡它的是探针的 `D2` 腿（设计基线），如同 R92 的「同义词」不对称。
+
+/// 绑到「表单的提交按钮」的句柄写法（本门禁引用的唯一一个选择器字面量）。
+const R169_SUBMIT_SELECTOR: &str = "querySelector('button[type=\"submit\"]')";
+/// 提交处理器的绑定后缀（`$("#id")` 直绑与 `const formEl = $("#id")` 别名共用）。
+const R169_BIND_SUFFIX: &str = ".addEventListener(\"submit\"";
+/// 表单的射程边界（名册从这里派生）。
+const R169_FORM_OPEN: &str = "<form id=\"";
+const R169_FORM_CLOSE: &str = "</form>";
+/// 表单里的提交按钮与它自己的键。
+const R169_SUBMIT_TYPE: &str = "type=\"submit\"";
+const R169_I18N_ATTR: &str = "data-i18n=\"";
+/// 名册下界：**至少两个**成员（今日 5 个）—— 防止类规则在提取器坏掉时静默退化成单例。
+const R169_MIN_MEMBERS: usize = 2;
+/// 会写标签的成员**至少**要写两次（忙碌 + 收尾）—— R3 的下界。
+const R169_MIN_LABEL_WRITES: usize = 2;
+
+/// 字节等长的「代码化」文本：注释、字符串/模板串、正则字面量的**内容**换成空格，长度不变
+/// ⇒ 偏移可以直接拿来切**原始**源码（偏移与文本必须同一把尺子，否则会静默切错地方）。
+/// 正则那一步是必须的：`/[&<>"']/g`（`esc()`）与 `/[",\r\n]/`（CSV 转义）里都带**引号**，
+/// 把它们当字符串起始会吞掉大段代码（R92 就是被这一条咬过的）。
+fn r169_code_mask(src: &str) -> Vec<u8> {
+    let b = src.as_bytes();
+    let mut out = b.to_vec();
+    let mut i = 0usize;
+    while i < b.len() {
+        let c = b[i];
+        let (end, lexeme) = if c == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            (r92_skip_line_comment(b, i), true)
+        } else if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            (r92_skip_block_comment(b, i), true)
+        } else if c == b'/' && r92_regex_starts(b, i) {
+            (r92_skip_regex(b, i), true)
+        } else if c == b'"' || c == b'\'' || c == b'`' {
+            (r92_skip_string(b, i), true)
+        } else {
+            (i + 1, false)
+        };
+        if lexeme {
+            for k in i..end.min(out.len()) {
+                if out[k] != b'\n' && out[k] != b'\r' {
+                    out[k] = b' ';
+                }
+            }
+        }
+        i = end;
+    }
+    out
+}
+
+/// `prefix="…"` 的属性值。
+fn r169_attr(tag: &str, prefix: &str) -> Option<String> {
+    let i = tag.find(prefix)? + prefix.len();
+    let rest = &tag[i..];
+    let j = rest.find('"')?;
+    Some(rest[..j].to_string())
+}
+
+/// 表单名册：`ui/index.html` 里**提交按钮带 `data-i18n`** 的每个表单 ⇒ `(表单 id, 按钮自己的键)`。
+/// 键**从 markup 读** —— R1/R2 的期望值全部长在这里，门禁里没有第二个键名。
+fn r169_forms(html: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = html[from..].find(R169_FORM_OPEN) {
+        let at = from + rel + R169_FORM_OPEN.len();
+        let Some(id_end) = html[at..].find('"').map(|p| at + p) else {
+            break;
+        };
+        let id = html[at..id_end].to_string();
+        let close = html[at..]
+            .find(R169_FORM_CLOSE)
+            .map(|p| at + p)
+            .unwrap_or(html.len());
+        let body = &html[at..close];
+        let mut scan = 0usize;
+        while let Some(b) = body[scan..].find("<button") {
+            let tag_start = scan + b;
+            let tag_end = body[tag_start..]
+                .find('>')
+                .map(|p| tag_start + p + 1)
+                .unwrap_or(body.len());
+            let tag = &body[tag_start..tag_end];
+            scan = tag_end.max(tag_start + 1);
+            if !tag.contains(R169_SUBMIT_TYPE) {
+                continue;
+            }
+            if let Some(k) = r169_attr(tag, R169_I18N_ATTR) {
+                out.push((id.clone(), k));
+                break;
+            }
+        }
+        if close <= at {
+            break;
+        }
+        from = close;
+    }
+    out
+}
+
+/// 某个表单的提交处理器在 `ui/js/app.js` 里的**候选起点**（偏移 + 命中的绑定片段）。
+/// 两种绑定写法都算：`$("#id").addEventListener("submit"`，或先 `const formEl = $("#id");`
+/// 再 `formEl.addEventListener("submit"`（别名从声明行读出来，不写死）。
+fn r169_binding_starts(app: &str, form_id: &str) -> Vec<(usize, String)> {
+    let mut found: Vec<(usize, String)> = Vec::new();
+    let direct = format!("$(\"#{form_id}\"){R169_BIND_SUFFIX}");
+    let mut from = 0usize;
+    while let Some(rel) = app[from..].find(&direct) {
+        let at = from + rel;
+        found.push((at, direct.clone()));
+        from = at + 1;
+    }
+    let decl = format!("= $(\"#{form_id}\")");
+    let mut from = 0usize;
+    while let Some(rel) = app[from..].find(&decl) {
+        let at = from + rel;
+        from = at + 1;
+        let ls = app[..at].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let Some(alias) = app[ls..at].trim().strip_prefix("const ") else {
+            continue;
+        };
+        let alias = alias.trim();
+        if alias.is_empty() {
+            continue;
+        }
+        let bind = format!("{alias}{R169_BIND_SUFFIX}");
+        let mut f2 = 0usize;
+        while let Some(r2) = app[f2..].find(&bind) {
+            let a2 = f2 + r2;
+            found.push((a2, bind.clone()));
+            f2 = a2 + 1;
+        }
+    }
+    found.sort_by_key(|(at, _)| *at);
+    found.dedup_by_key(|(at, _)| *at);
+    found
+}
+
+/// 处理器体：从**唯一**的绑定起点出发，在代码化文本上做花括号配对（掩码保长度 ⇒ 偏移同尺），
+/// 再把该区间从**原始**源码里切出来。候选不是恰好一个、或括号不闭合 ⇒ `None`（规则把它变成
+/// 响亮失败，而不是在空串上「通过」：解不出 ≠ 干净）。
+fn r169_handler_body(app: &str, form_id: &str) -> Option<String> {
+    let starts = r169_binding_starts(app, form_id);
+    if starts.len() != 1 {
+        return None;
+    }
+    let start = starts[0].0;
+    let masked = r169_code_mask(app);
+    let open = masked[start..].iter().position(|&c| c == b'{')? + start;
+    let mut depth = 0i32;
+    for k in open..masked.len() {
+        match masked[k] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(app[start..=k].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 处理器里**绑到该表单提交按钮**的句柄（`const x = …querySelector('button[type="submit"]')`）。
+fn r169_handles(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let Some(at) = line.find(R169_SUBMIT_SELECTOR) else {
+            continue;
+        };
+        let Some(eq) = line[..at].rfind('=') else {
+            continue;
+        };
+        let name = line[..eq].split_whitespace().last().unwrap_or("");
+        if !name.is_empty() && name.bytes().all(r92_ident_byte) && !out.iter().any(|h| h == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// 一行里对某句柄标签的**写** ⇒ 右值（`handle.textContent = <rhs>`；`==` 与捕获读都不算写）。
+fn r169_write_rhs(line: &str, handle: &str) -> Option<String> {
+    for prop in ["textContent", "innerHTML", "innerText"] {
+        let needle = format!("{handle}.{prop}");
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find(&needle) {
+            let at = from + rel + needle.len();
+            from = at;
+            let rest = line[at..].trim_start();
+            let Some(after_eq) = rest.strip_prefix('=') else {
+                continue;
+            };
+            if after_eq.starts_with('=') {
+                continue;
+            }
+            let rhs = after_eq.trim_start();
+            let end = rhs.find([';', '}']).unwrap_or(rhs.len());
+            return Some(rhs[..end].trim().to_string());
+        }
+    }
+    None
+}
+
+/// 处理器对同一按钮标签的**写**，按出现顺序 ⇒ `(句柄, 右值)`。
+fn r169_label_writes(body: &str, handles: &[String]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in body.lines() {
+        for h in handles {
+            if let Some(rhs) = r169_write_rhs(line, h) {
+                out.push((h.clone(), rhs));
+            }
+        }
+    }
+    out
+}
+
+/// 处理器里对该元素的**捕获读**得到的标识符（`const orig = btn.textContent;` —— 含守卫式
+/// `const orig = btn ? btn.textContent : "";`；判据是「这一行**读**了这个元素的标签」）。
+fn r169_captures(body: &str, handles: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in body.lines() {
+        for h in handles {
+            if r169_write_rhs(line, h).is_some() {
+                continue;
+            }
+            if !["textContent", "innerHTML", "innerText"]
+                .iter()
+                .any(|p| line.contains(&format!("{h}.{p}")))
+            {
+                continue;
+            }
+            let Some(eq) = line.find('=') else {
+                continue;
+            };
+            let lhs = line[..eq].trim();
+            let name = ["const ", "let ", "var "]
+                .iter()
+                .find_map(|kw| lhs.strip_prefix(*kw))
+                .unwrap_or(lhs)
+                .trim();
+            if !name.is_empty()
+                && name.bytes().all(r92_ident_byte)
+                && !out.iter().any(|x| x == name)
+            {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// 这次写是否**派生自该元素自己的来源**（R1 的两条合法形状；其余一律 `None` ＝ 别人的键）。
+fn r169_derives_from_element(
+    rhs: &str,
+    captures: &[String],
+    own_key: &str,
+) -> Option<&'static str> {
+    if captures.iter().any(|c| c == rhs) {
+        return Some("capture (read from the element)");
+    }
+    if let Some(k) = rhs.strip_prefix("T(\"") {
+        if let Some(k) = k.strip_suffix("\")") {
+            if k == own_key {
+                return Some("literal naming the markup key");
+            }
+        }
+    }
+    None
+}
+
+/// 一个名册成员的全部派生事实。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct R169Member {
+    id: String,
+    own_key: String,
+    binding: Option<String>,
+    resolved: bool,
+    handles: Vec<String>,
+    captures: Vec<String>,
+    writes: Vec<(String, String)>,
+    last_how: Option<String>,
+    delegated: bool,
+}
+
+/// 一次读取的全部证据与三条判词。
+struct R169Reading {
+    members: Vec<R169Member>,
+    unresolved: BTreeSet<String>,
+    foreign: BTreeMap<String, String>,
+    /// 会写自己标签的成员（R1/R3 的母集）。
+    axis: BTreeSet<String>,
+    /// 写标签但**少于**两次的成员（R3 的牙）。
+    thin: BTreeSet<String>,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+}
+
+impl R169Reading {
+    fn verdicts(&self) -> (bool, bool, bool) {
+        (self.r1, self.r2, self.r3)
+    }
+
+    fn report(&self) -> String {
+        let rows: Vec<String> = self
+            .members
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}[key={} resolved={} delegated={} handles={:?} captures={:?} writes={} last={:?}]",
+                    m.id,
+                    m.own_key,
+                    m.resolved,
+                    m.delegated,
+                    m.handles,
+                    m.captures,
+                    m.writes.len(),
+                    m.last_how
+                )
+            })
+            .collect();
+        format!(
+            "r1={} r2={} r3={} | members={} axis={:?} thin={:?} unresolved={:?} foreign={:?}\n    {}",
+            self.r1,
+            self.r2,
+            self.r3,
+            self.members.len(),
+            self.axis,
+            self.thin,
+            self.unresolved,
+            self.foreign,
+            rows.join("\n    ")
+        )
+    }
+}
+
+/// 读一棵树：名册与键从 `html` 派生、处理器事实从 `app` 派生（两条腿喂不同的树）。
+fn r169_read(html: &str, app: &str) -> R169Reading {
+    let mut members: Vec<R169Member> = Vec::new();
+    for (id, own_key) in r169_forms(html) {
+        let starts = r169_binding_starts(app, &id);
+        let binding = if starts.len() == 1 {
+            Some(starts[0].1.clone())
+        } else {
+            None
+        };
+        let resolved_body = r169_handler_body(app, &id);
+        let resolved = resolved_body.is_some();
+        let body = resolved_body.unwrap_or_default();
+        let handles = r169_handles(&body);
+        let captures = r169_captures(&body, &handles);
+        let writes = r169_label_writes(&body, &handles);
+        let last_how = writes.last().map(|(_, rhs)| {
+            r169_derives_from_element(rhs, &captures, &own_key)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("FOREIGN: {rhs:?}"))
+        });
+        members.push(R169Member {
+            id,
+            own_key,
+            binding,
+            resolved,
+            handles,
+            captures,
+            writes,
+            last_how,
+            delegated: body.contains("withLoading("),
+        });
+    }
+    let unresolved: BTreeSet<String> = members
+        .iter()
+        .filter(|m| !m.resolved)
+        .map(|m| m.id.clone())
+        .collect();
+    let foreign: BTreeMap<String, String> = members
+        .iter()
+        .filter(|m| m.resolved)
+        .filter_map(|m| match &m.last_how {
+            Some(h) if h.starts_with("FOREIGN") => Some((m.id.clone(), h.clone())),
+            _ => None,
+        })
+        .collect();
+    let axis: BTreeSet<String> = members
+        .iter()
+        .filter(|m| !m.writes.is_empty())
+        .map(|m| m.id.clone())
+        .collect();
+    let thin: BTreeSet<String> = members
+        .iter()
+        .filter(|m| !m.writes.is_empty() && m.writes.len() < R169_MIN_LABEL_WRITES)
+        .map(|m| m.id.clone())
+        .collect();
+    // 三条都带**空集保护**：母集为空时规则红，而不是在空集上恒真（坑 68 家族）。
+    let r1 = !axis.is_empty() && axis.iter().all(|m| !foreign.contains_key(m));
+    let r2 = unresolved.is_empty() && members.len() >= R169_MIN_MEMBERS && foreign.is_empty();
+    let r3 = !axis.is_empty() && thin.is_empty();
+    R169Reading {
+        members,
+        unresolved,
+        foreign,
+        axis,
+        thin,
+        r1,
+        r2,
+        r3,
+    }
+}
+
+/// 名册里**会写自己标签**的那个成员（今日：`#login-form`）—— 变体构造的锚。
+fn r169_axis_or_panic(html: &str, app: &str) -> R169Member {
+    let rd = r169_read(html, app);
+    assert_eq!(
+        rd.axis.len(),
+        1,
+        "写自己标签的成员不是恰好一个 —— 变体无从构造：{}",
+        rd.report()
+    );
+    rd.members
+        .iter()
+        .find(|m| !m.writes.is_empty())
+        .cloned()
+        .unwrap_or_else(|| panic!("名册里没有写标签的成员：{}", rd.report()))
+}
+
+/// 变异体①：轴的**收尾**改成**别人的键**（键从 `ui/index.html` 派生 —— 原缺陷的形状）。
+fn r169_variant_foreign(html: &str, app: &str) -> String {
+    let m = r169_axis_or_panic(html, app);
+    let (h, rhs) = m.writes.last().cloned().expect("轴成员没有收尾写");
+    let other = r169_forms(html)
+        .into_iter()
+        .map(|(_, k)| k)
+        .find(|k| *k != m.own_key)
+        .expect("markup 里没有第二个键");
+    let old = format!("{h}.textContent = {rhs};");
+    let new = format!("{h}.textContent = T(\"{other}\");");
+    assert_eq!(app.matches(&old).count(), 1, "收尾写的锚点不唯一：{old:?}");
+    app.replacen(&old, &new, 1)
+}
+
+/// 变异体②：整行删掉**忙碌态**写（忙碌 + 禁用在一起 —— 「把忙碌态删掉」式修法；只该翻 R3）。
+fn r169_variant_drop_busy(html: &str, app: &str) -> String {
+    let m = r169_axis_or_panic(html, app);
+    let (h, rhs) = m.writes.first().cloned().expect("轴成员没有忙碌写");
+    let needle = format!("{h}.textContent = {rhs};");
+    assert_eq!(
+        app.matches(&needle).count(),
+        1,
+        "忙碌写的锚点不唯一：{needle:?}"
+    );
+    let out = app
+        .lines()
+        .filter(|l| !l.contains(&needle))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(out, app, "忙碌写那一行没有被删掉");
+    out
+}
+
+/// 变异体③：收尾写成 `T(自己的键)` —— R1 接受的**另一条形状**（把 markup 的键在 JS 里复述一遍）。
+fn r169_variant_own_key(html: &str, app: &str) -> String {
+    let m = r169_axis_or_panic(html, app);
+    let (h, rhs) = m.writes.last().cloned().expect("轴成员没有收尾写");
+    let old = format!("{h}.textContent = {rhs};");
+    let new = format!("{h}.textContent = T(\"{}\");", m.own_key);
+    assert_eq!(app.matches(&old).count(), 1, "收尾写的锚点不唯一：{old:?}");
+    app.replacen(&old, &new, 1)
+}
+
+/// 变异体④：把一个**非轴**成员的绑定改成扫描器认不出的写法 —— 只该翻 R2（解不出 ≠ 干净）。
+fn r169_variant_unresolved(html: &str, app: &str) -> String {
+    let rd = r169_read(html, app);
+    let m = rd
+        .members
+        .iter()
+        .find(|m| m.resolved && m.writes.is_empty() && !rd.axis.contains(&m.id))
+        .cloned()
+        .expect("没有可用的非轴成员");
+    let binding = m.binding.clone().expect("已解析的成员应当带绑定片段");
+    let new = format!("document.querySelector(\"#{}\"){}", m.id, R169_BIND_SUFFIX);
+    assert_eq!(
+        app.matches(&binding).count(),
+        1,
+        "绑定片段不唯一：{binding:?}"
+    );
+    let out = app.replacen(&binding, &new, 1);
+    assert!(
+        r169_handler_body(&out, &m.id).is_none(),
+        "改完之后那个成员仍能被解出 —— 变体没生效"
+    );
+    out
+}
+
+/// 轴：带 `data-i18n` 的静态控件，收尾必须回到**该控件自己的来源**（R169）。
+///
+/// 三条规则各自的含义见文件头。本测试只断言「三条同时成立」；每条规则的**牙**由
+/// [`the_r169_rules_have_teeth`] 用合成变异体逐条测量（基线＝已知为绿的活树）。
+#[test]
+fn the_control_that_rests_owns_its_label() {
+    let rd = r169_read(INDEX_HTML, APP_JS);
+    assert!(
+        rd.members.len() >= R169_MIN_MEMBERS,
+        "名册少于 {R169_MIN_MEMBERS} 个成员 —— R2 退化成单例上的关系式：{}",
+        rd.report()
+    );
+    assert!(
+        !rd.axis.is_empty(),
+        "没有任何成员写自己的标签 —— R1/R3 的母集是空的（规则会在空集上恒真）：{}",
+        rd.report()
+    );
+    assert!(
+        rd.verdicts() == (true, true, true),
+        "R169 未修：某个带 `data-i18n` 的提交按钮被处理器用**别人的键**收尾（或处理器解不出、\
+         或收尾只写了一次）。\n  {}",
+        rd.report()
+    );
+}
+
+/// 阳性对照：派生器在**已知为绿**的活树上读到东西（名册、键、句柄、捕获、写次数）。
+///
+/// 这是三条规则的射程保险：提取器若只会返回常量/空集，规则就成了恒真断言。⚠️ 绝对判词只打在
+/// 自己读出来的事实上，且每一项都点名活树（#314：真树在两条腿上形状不同）。
+#[test]
+fn the_r169_roster_is_real() {
+    // ① 名册：从 `ui/index.html` 派生的五个表单（多一个少一个都在这里响）。
+    let roster: Vec<String> = r169_forms(INDEX_HTML)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(
+        roster,
+        vec![
+            "login-form",
+            "register-form",
+            "verify-form",
+            "forgot-form",
+            "share-form"
+        ],
+        "从 markup 派生的名册变了"
+    );
+
+    // ② 键**从 markup 读**（不是门禁里写死的）：`#login-form` 的提交按钮声明的是 `login.enter`。
+    let own = r169_forms(INDEX_HTML)
+        .into_iter()
+        .find(|(id, _)| id == "login-form")
+        .map(|(_, k)| k)
+        .expect("`#login-form` 不在名册里");
+    assert_eq!(own, "login.enter", "markup 提取器读到的键变了");
+
+    // ③ 提取器自证：五个处理器体都切对了地方（停在收尾花括号上、体里有 `preventDefault`）。
+    for (id, _) in r169_forms(INDEX_HTML) {
+        let b =
+            r169_handler_body(APP_JS, &id).unwrap_or_else(|| panic!("`#{id}` 的处理器体切不出来"));
+        assert!(
+            b.trim_end().ends_with('}'),
+            "`#{id}` 的处理器体没有停在收尾花括号上：{:?}",
+            b.trim_end().chars().last()
+        );
+        assert!(
+            b.contains("preventDefault"),
+            "`#{id}` 的处理器体里没有 `preventDefault` —— 切错地方了"
+        );
+    }
+
+    // ④ 轴上的事实（句柄 / 捕获 / 两次写），全部从活树派生。
+    let rd = r169_read(INDEX_HTML, APP_JS);
+    let m = rd
+        .members
+        .iter()
+        .find(|m| m.id == "login-form")
+        .expect("轴成员不在名册里");
+    assert_eq!(m.handles, vec!["btn".to_string()], "提交按钮的句柄名册变了");
+    assert_eq!(
+        m.captures,
+        vec!["origLabel".to_string()],
+        "捕获名册变了（收尾据此写回）"
+    );
+    assert_eq!(m.writes.len(), 2, "标签写次数不是两次（忙碌 + 收尾）");
+    assert_eq!(
+        rd.axis,
+        ["login-form"]
+            .into_iter()
+            .map(String::from)
+            .collect::<BTreeSet<_>>(),
+        "会写自己标签的成员不是恰好 `#login-form`"
+    );
+    assert!(
+        m.last_how.as_deref() == Some("capture (read from the element)"),
+        "轴的收尾判词不是「捕获」：{:?}",
+        m.last_how
+    );
+    // ⑤ 另外三个带句柄的成员只切 `disabled`（不写标签）⇒ 不进 R1/R3 的母集；上架表单委托给
+    //    `withLoading`（那个工具的收尾本身就是捕获）—— 两者都是**合法形状**，如实钉住。
+    for id in ["register-form", "verify-form", "share-form"] {
+        let m = rd
+            .members
+            .iter()
+            .find(|m| m.id == id)
+            .expect("成员不在名册里");
+        assert!(m.writes.is_empty(), "`#{id}` 不该写标签：{:?}", m.writes);
+    }
+    let share = rd
+        .members
+        .iter()
+        .find(|m| m.id == "share-form")
+        .expect("成员不在名册里");
+    assert!(
+        share.delegated,
+        "上架表单没有委托给 `withLoading` —— 射程说明过期了"
+    );
+}
+
+/// 三条规则**各有独立的牙**：合成变异体各只打翻它针对的那条（基线＝已知为绿的活树）。
+///
+/// ⚠️ 变异体一律从**活树**上构造（不写第二棵基线），且每个锚点都断言唯一（#612 家族）：
+/// 变体若没生效，构造器里的断言先响，而不是让某条腿因错误的原因变绿（#605）。
+#[test]
+fn the_r169_rules_have_teeth() {
+    // ① 原缺陷的形状：收尾写**别人的键** ⇒ R1（轴）与 R2（类）翻红，R3（反向）不动。
+    let foreign = r169_variant_foreign(INDEX_HTML, APP_JS);
+    let rd = r169_read(INDEX_HTML, &foreign);
+    assert_eq!(
+        rd.verdicts(),
+        (false, false, true),
+        "把收尾改回别人的键，只应翻掉 R1 与 R2：{}",
+        rd.report()
+    );
+
+    // ② 删掉忙碌态写 ⇒ 只翻 R3。
+    let dropped = r169_variant_drop_busy(INDEX_HTML, APP_JS);
+    let rd = r169_read(INDEX_HTML, &dropped);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, false),
+        "删掉忙碌态只应翻掉 R3：{}",
+        rd.report()
+    );
+
+    // ③ 收尾写成 `T(自己的键)` —— R1 接受的另一条形状 ⇒ 三条全绿。
+    let own_key = r169_variant_own_key(INDEX_HTML, APP_JS);
+    let rd = r169_read(INDEX_HTML, &own_key);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, true),
+        "写回 markup 自己的键是 R1 接受的形状：{}",
+        rd.report()
+    );
+
+    // ④ 一个非轴成员的绑定认不出来了 ⇒ 只翻 R2（解不出 ≠ 干净）；且该成员必须真的进了未解析集。
+    let unresolved = r169_variant_unresolved(INDEX_HTML, APP_JS);
+    let rd = r169_read(INDEX_HTML, &unresolved);
+    assert_eq!(
+        rd.verdicts(),
+        (true, false, true),
+        "把一个非轴成员的绑定改成认不出的写法只应翻掉 R2：{}",
+        rd.report()
+    );
+    assert_eq!(
+        rd.unresolved,
+        ["register-form"]
+            .into_iter()
+            .map(String::from)
+            .collect::<BTreeSet<_>>(),
+        "未解析集不是恰好被改动的那个成员：{}",
+        rd.report()
+    );
+}

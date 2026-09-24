@@ -3728,6 +3728,7 @@
       // 记住我（P2-A：token 存 localStorage 长期 / sessionStorage 关闭失效）
       try { localStorage.setItem("atp-remember", $("#login-remember").checked ? "1" : "0"); } catch (err) { /* 隐私模式忽略 */ }
       const btn = e.target.querySelector('button[type="submit"]');
+      const origLabel = btn ? btn.textContent : "";
       if (btn) { btn.disabled = true; btn.textContent = T("login.logging"); }
       try {
         // 这个端点的 401 是「凭据不对」，不是「会话失效」——必须声明（C2120）：否则 api.js
@@ -3756,7 +3757,7 @@
           toast((err && err.message) ? I18n.mapErr(err.message) : T("login.err.fail"), "error");
         }
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = T("login.submit"); }
+        if (btn) { btn.disabled = false; btn.textContent = origLabel; }
       }
     });
 
