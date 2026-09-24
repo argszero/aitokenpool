@@ -14851,3 +14851,424 @@ fn the_r169_rules_have_teeth() {
         rd.report()
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// R171 · 市场上架页的「高峰计价」开关，必须点名它**显示**的那些高峰价字段
+//        （`modelsToView` 的触发器 vs `billing::effective_prices` 的逐字段规则）
+// ---------------------------------------------------------------------------------------
+//
+// 计费引擎**逐字段**判定：`effective_prices()` 对三个高峰价字段各自问 `peak_x > 0.0`，
+// 缺省 0 的那个字段**沿用空闲价**（它自己的单测 `billing.rs` 把「部分缺省」形态逐字钉住）。
+// 而市场上架页一行模型只有一个布尔 `const peak = (m.peak_input_per_m || 0) > 0;`，
+// 价格格徽标 / 能力标签 / 详情行 / ×N 乘数**全部**由它派生 ⇒ 「只配了高峰输出价」的模型
+// 在高峰时段按高峰收价、界面上却**零披露**；「只配了高峰输入价」的模型输出那格印 0，
+// 而引擎实际收的是空闲输出价。
+//
+// 规则（期望值**全部派生**，不写死字段名，#469）：
+//   R1  上界：触发器**不得**点名 `effective_prices` 忽略的字段（否则能力标签会为一个
+//       引擎根本不认的「高峰价」而亮）。
+//   R2  下界：行**显示**了高峰价的每个字段（从视图自己构造的两个高峰价槽 `peakIn:` /
+//       `peakOut:` 里引用的 `m.peak_*_per_m` **推导**）都必须被触发器点名。
+//   R3  非空（防真空）：`displayed` 与 `trigger` 两个集合都非空 —— 空集上的包含关系恒真。
+//   R4  阳性对照：徽标文案 `mk.peak.badge` 仍带 `{n}`（否则「乘数是 0」也能自圆其说）。
+//
+// 射程（如实）：本门禁是**静态词法**的 —— 它证「触发器点名的字段集合」与「行显示的集合」
+// 之间是夹逼关系，**不证**屏幕上那一刻渲染出来的数值（那一半归 jsdom 探针
+// `r171_peak_gate_probe.js` 的 A1/A2/A3/A4 腿）。**为什么不用「触发器 == 引擎那三个字段」**：
+// `peak_cache_hit_input_per_m` 是引擎认的、却没有任何一列显示它，而 `mk.peak.badge` 总带
+// `{n}` 乘数 ⇒ 把它拉进触发器会让「只有高峰缓存价」的模型印出「高峰 ×0」（比漏标更糟的假话）。
+// 所以尺子必须是**夹逼**（displayed ⊆ trigger ⊆ engine），下界从**视图自己的构造**推导。
+
+/// `src/billing.rs`：上界（引擎认哪些高峰价字段）的真源。
+const BILLING_RS: &str = include_str!("billing.rs");
+
+/// 引擎至少要点名这么多个高峰价字段（低一步就让 R1 在近乎空集上恒真 —— 坑 68 家族）。
+const R171_MIN_ENGINE_FIELDS: usize = 3;
+
+/// 一次读取的全部证据与四条判词。
+struct R171Reading {
+    engine: BTreeSet<String>,
+    trigger: BTreeSet<String>,
+    displayed: BTreeSet<String>,
+    badge_zh: Option<String>,
+    badge_en: Option<String>,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+    r4: bool,
+}
+
+impl R171Reading {
+    fn verdicts(&self) -> (bool, bool, bool, bool) {
+        (self.r1, self.r2, self.r3, self.r4)
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} r4={} | engine={:?} trigger={:?} displayed={:?} badge_zh={:?} badge_en={:?}",
+            self.r1,
+            self.r2,
+            self.r3,
+            self.r4,
+            self.engine,
+            self.trigger,
+            self.displayed,
+            self.badge_zh,
+            self.badge_en
+        )
+    }
+}
+
+/// 去掉行注释 / 块注释与字符串**内容**（保留引号本身）—— 注释里也写着 `const peak = …`
+/// 与字段名（坑 #296 的镜像），扫描器必须先剥掉它们。
+fn r171_bare(src: &str) -> String {
+    let b: Vec<char> = src.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == '/' && i + 1 < b.len() && b[i + 1] == '/' {
+            while i < b.len() && b[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && i + 1 < b.len() && b[i + 1] == '*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        if c == '"' || c == '\'' || c == '`' {
+            out.push(c);
+            i += 1;
+            while i < b.len() {
+                if b[i] == '\\' {
+                    i += 2;
+                    continue;
+                }
+                if b[i] == c {
+                    break;
+                }
+                i += 1;
+            }
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// `ui/js/app.js` 里 `modelsToView` 的函数体（从声明到下一个两空格缩进的收尾 `}`）。
+fn r171_models_body(src: &str) -> Option<&str> {
+    let at = src.find("function modelsToView(list)")?;
+    let rest = &src[at..];
+    let stop = rest.find("\n  }\n")?;
+    Some(&rest[..stop])
+}
+
+/// 函数体里的 `const NAME = EXPR;` 映射（触发器可能是内联的复合表达式 ⇒ 必须解析名字）。
+fn r171_consts(body: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for line in body.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("const ") else {
+            continue;
+        };
+        // `const peak = …` / `const peakInOn = …`；`const a = 1, b = 2;` 在本视图里不出现。
+        let Some(eq) = rest.find(" = ") else {
+            continue;
+        };
+        let name = rest[..eq].trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let expr = rest[eq + 3..].trim().trim_end_matches(';').to_string();
+        out.insert(name.to_string(), expr);
+    }
+    out
+}
+
+/// 表达式里出现的**标识符**（用于把触发器的 `const` 名字追进它的定义）。
+fn r171_idents(expr: &str) -> BTreeSet<String> {
+    let c: Vec<char> = expr.chars().collect();
+    let mut out = BTreeSet::new();
+    let mut i = 0;
+    while i < c.len() {
+        if c[i].is_ascii_alphabetic() || c[i] == '_' || c[i] == '$' {
+            let mut s = String::new();
+            while i < c.len() && (c[i].is_ascii_alphanumeric() || c[i] == '_' || c[i] == '$') {
+                s.push(c[i]);
+                i += 1;
+            }
+            out.insert(s);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// 表达式里 `m.<ident>` 形式的字段名，只留 `_per_m` 结尾的（价格字段的拼写后缀）。
+fn r171_m_per_m(expr: &str) -> BTreeSet<String> {
+    let c: Vec<char> = expr.chars().collect();
+    let mut out = BTreeSet::new();
+    let mut i = 0;
+    while i + 1 < c.len() {
+        if c[i] == 'm' && c[i + 1] == '.' {
+            let mut s = String::new();
+            let mut j = i + 2;
+            while j < c.len() && (c[j].is_ascii_alphanumeric() || c[j] == '_' || c[j] == '$') {
+                s.push(c[j]);
+                j += 1;
+            }
+            if s.ends_with("_per_m") {
+                out.insert(s);
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// 触发器点名的价格字段集：从 `const peak = …` 出发，把同函数里的 `const` 名字**传递地**
+/// 追进它们的定义（修法把触发器写成 `peakInOn || peakOutOn` 两个布尔名字 ⇒ 只认未修拼写的
+/// 尺子会对**每一棵修好的树**报空集，把不变量被满足读成违反，#469/#484）。
+fn r171_trigger_fields(consts: &BTreeMap<String, String>) -> BTreeSet<String> {
+    let Some(start) = consts.get("peak").cloned() else {
+        return BTreeSet::new();
+    };
+    let mut fields = BTreeSet::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut queue = vec![start];
+    while let Some(expr) = queue.pop() {
+        fields.extend(r171_m_per_m(&expr));
+        for id in r171_idents(&expr) {
+            if let Some(def) = consts.get(&id) {
+                if seen.insert(id) {
+                    queue.push(def.clone());
+                }
+            }
+        }
+    }
+    fields
+}
+
+/// 行**显示**了高峰价的字段集：视图自己构造的两个高峰价槽 `peakIn:` / `peakOut:` 里引用的
+/// `m.peak_*_per_m`（**从视图的构造推导**，不手抄字段名）。要求 `peak_` 前缀：槽里同时出现
+/// 空闲价 `m.input_per_m`（修法的回落分支），它不是高峰字段。
+fn r171_displayed_fields(body: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in body.lines() {
+        let t = line.trim_start();
+        if t.starts_with("peakIn:") || t.starts_with("peakOut:") {
+            for f in r171_m_per_m(t) {
+                if f.starts_with("peak_") {
+                    out.insert(f);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 引擎认哪些高峰价字段：`effective_prices` 里 `if peak_x > 0.0 {` 的守卫。
+fn r171_engine_fields(src: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in src.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("if ") else {
+            continue;
+        };
+        let Some(idx) = rest.find(" > 0.0 {") else {
+            continue;
+        };
+        let name = rest[..idx].trim();
+        if name.starts_with("peak_") && name.ends_with("_per_m") {
+            out.insert(name.to_string());
+        }
+    }
+    out
+}
+
+/// 语言包里一个键的字符串值（单行、可含 `{n}` 之类占位符；读到未转义的收尾引号）。
+fn r171_pack_value(pack: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\": \"");
+    let at = pack.find(&needle)? + needle.len();
+    let mut out = String::new();
+    let mut it = pack[at..].chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            out.push(it.next()?);
+            continue;
+        }
+        if c == '"' {
+            return Some(out);
+        }
+        if c == '\n' {
+            return None;
+        }
+        out.push(c);
+    }
+    None
+}
+
+/// 读三处真源（引擎 / 视图 / 语言包），导出四条判词。
+fn r171_read(billing: &str, app: &str, i18n: &str) -> R171Reading {
+    let engine = r171_engine_fields(billing);
+    let bare = r171_models_body(app).map(r171_bare).unwrap_or_default();
+    let consts = r171_consts(&bare);
+    let trigger = r171_trigger_fields(&consts);
+    let displayed = r171_displayed_fields(&bare);
+    let zh = pack_region_strict(i18n, ZH_PACK_START, EN_PACK_START);
+    let en = pack_region_strict(i18n, EN_PACK_START, PACK_END);
+    let badge_zh = r171_pack_value(zh, "mk.peak.badge");
+    let badge_en = r171_pack_value(en, "mk.peak.badge");
+    // R1/R2 是**纯**包含关系（空集上恒真）⇒ R3 单独负责把「真空」这件事说出来（坑 68 家族：
+    // 三条规则各有独立的牙 —— 删掉两个显示槽只翻 R3，改名一个引擎不认的字段只翻 R1）。
+    let r1 = trigger.is_subset(&engine);
+    let r2 = displayed.is_subset(&trigger);
+    let r3 = !trigger.is_empty() && !displayed.is_empty();
+    let r4 = badge_zh.as_deref().is_some_and(|v| v.contains("{n}"))
+        && badge_en.as_deref().is_some_and(|v| v.contains("{n}"));
+    R171Reading {
+        engine,
+        trigger,
+        displayed,
+        badge_zh,
+        badge_en,
+        r1,
+        r2,
+        r3,
+        r4,
+    }
+}
+
+/// 轴：市场上架页的「高峰计价」触发器必须点名它**显示**的那些高峰价字段。
+///
+/// 四条规则的含义见上方文件头。每条规则的**牙**由 [`the_r171_rules_have_teeth`] 用合成
+/// 变异体逐条测量（基线＝已知为绿的活树）。
+#[test]
+fn the_marketplace_peak_trigger_names_the_fields_it_displays() {
+    let rd = r171_read(BILLING_RS, APP_JS, I18N_JS);
+    assert!(
+        rd.engine.len() >= R171_MIN_ENGINE_FIELDS,
+        "引擎认的高峰价字段少于 {R171_MIN_ENGINE_FIELDS} 个 —— R1 退化成近乎空集上的包含关系：{}",
+        rd.report()
+    );
+    assert!(
+        rd.verdicts() == (true, true, true, true),
+        "R171 未修：市场上架页的「高峰计价」开关没有点名它显示的全部高峰价字段\
+         （displayed ⊆ trigger ⊆ engine 被破坏）：{}",
+        rd.report()
+    );
+}
+
+/// 四条规则**各有独立的牙**：合成变异体各只打翻它针对的那条（基线＝已知为绿的活树）。
+///
+/// ⚠️ 变异体一律从**活树**上构造，且每个锚点都断言唯一（#612 家族）：变体若没生效，
+/// 构造器里的断言先响，而不是让某条腿因错误的原因变绿（#605）。
+#[test]
+fn the_r171_rules_have_teeth() {
+    let live = r171_read(BILLING_RS, APP_JS, I18N_JS);
+    assert_eq!(
+        live.verdicts(),
+        (true, true, true, true),
+        "基线不是绿的 —— 变异体的读数无从解释：{}",
+        live.report()
+    );
+
+    // 提取器的自证：三处真源真的被读出东西（空集是尺子坏了的指纹，#484）。
+    assert_eq!(
+        live.engine.len(),
+        R171_MIN_ENGINE_FIELDS,
+        "引擎字段提取器失手"
+    );
+    assert!(!live.trigger.is_empty(), "触发器字段提取器失手");
+    assert!(!live.displayed.is_empty(), "显示字段提取器失手");
+
+    // ① 原缺陷的形状：触发器退回**一个**字段 ⇒ 显示集 ⊄ 触发器 ⇒ 只翻 R2。
+    let single = r171_variant_single_field(APP_JS);
+    let rd = r171_read(BILLING_RS, &single, I18N_JS);
+    assert_eq!(
+        rd.verdicts(),
+        (true, false, true, true),
+        "退回单字段触发器只应翻掉 R2：{}",
+        rd.report()
+    );
+
+    // ② 反向过度：触发器多点一个**引擎不认**的字段 ⇒ 只翻 R1（上界有牙）。
+    let bogus = r171_variant_bogus_field(APP_JS);
+    let rd = r171_read(BILLING_RS, &bogus, I18N_JS);
+    assert_eq!(
+        rd.verdicts(),
+        (false, true, true, true),
+        "点名一个引擎不认的字段只应翻掉 R1：{}",
+        rd.report()
+    );
+
+    // ③ 视真空：整段删掉两个显示槽 ⇒ displayed 空 ⇒ 只翻 R3（R1/R2 在空集上恒真）。
+    let slots = r171_variant_drop_slots(APP_JS);
+    let rd = r171_read(BILLING_RS, &slots, I18N_JS);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, false, true),
+        "删掉两个显示槽只应翻掉 R3：{}",
+        rd.report()
+    );
+
+    // ④ 阳性对照：徽标文案丢掉 `{n}` ⇒ 只翻 R4。
+    let i18n = I18N_JS.replace(
+        "\"mk.peak.badge\": \"高峰 ×{n}\"",
+        "\"mk.peak.badge\": \"高峰\"",
+    );
+    assert_ne!(i18n, I18N_JS, "R4 变体的锚点没命中");
+    let rd = r171_read(BILLING_RS, APP_JS, &i18n);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, true, false),
+        "徽标丢掉 {{n}} 只应翻掉 R4：{}",
+        rd.report()
+    );
+}
+
+/// 变异体①：触发器退回**一个**字段（原缺陷的形状；槽不动）。
+fn r171_variant_single_field(app: &str) -> String {
+    let old = "      const peakInOn = (m.peak_input_per_m || 0) > 0;\n      const peakOutOn = (m.peak_output_per_m || 0) > 0;\n      const peak = peakInOn || peakOutOn;";
+    let new = "      const peak = (m.peak_input_per_m || 0) > 0;";
+    assert_eq!(app.matches(old).count(), 1, "触发器锚点不唯一");
+    app.replacen(old, new, 1)
+}
+
+/// 变异体②：触发器多点一个**引擎不认**的字段（上界的牙）。
+fn r171_variant_bogus_field(app: &str) -> String {
+    let old = "      const peak = peakInOn || peakOutOn;";
+    let new = "      const peak = peakInOn || peakOutOn || (m.peak_vision_per_m || 0) > 0;";
+    assert_eq!(app.matches(old).count(), 1, "触发器锚点不唯一");
+    app.replacen(old, new, 1)
+}
+
+/// 变异体③：整段删掉 `peakIn:` / `peakOut:` 两个显示槽（R3 的牙 —— 真空）。
+fn r171_variant_drop_slots(app: &str) -> String {
+    let out: String = app
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !(t.starts_with("peakIn:") || t.starts_with("peakOut:"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(out, app, "两个显示槽没有被删掉");
+    assert!(
+        !out.contains("peakIn:") && !out.contains("peakOut:"),
+        "仍有显示槽残留"
+    );
+    out
+}
