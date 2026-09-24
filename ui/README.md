@@ -1122,3 +1122,40 @@ key**（正常操作）于是让运营者看到红色故障警报，而屏幕上
 ⛔ 本轴**刻意不读** `ui/README.md`：名册是从**制品**推导的，若再钉一行手写契约，
 同一事实就有了两个来源 —— 那正是本轴要消灭的漂移。本文件「页面清单」第 5 条的枚举是**文档**，
 不是门禁的尺子。
+
+## 被拒绝的视图切换：调用方必须知道「没进去」，并落到**本身份的家**（R163，2026-09-25）
+
+- **两张脸，一处根**。`switchView(id)` 是「换视图」的唯一入口，先过身份守卫（游客只进市场；
+  管理视图仅 `admin`；运营视图仅 `ops`），守卫拒绝时 `toast` 一句然后**直接返回**。屏幕上有
+  东西时这是对的（用户点了个进不去的入口，留在原地看着提示）；**会话建立那一刻**不一样 ——
+  C2136 之后 boot 只搭外壳（`renderNav()` / `bindEvents()` / 余额占位），C2137 删掉了 boot 里那句
+  无条件 `renderView("dashboard")` ⇒ 那一刻**什么都没渲染过**，DOM 还是静态骨架。而
+  `enterApp()` 的目的地取自 URL hash（刷新 / 换账号都带上一次的 hash）⇒ 一个指向「当前身份进不去」
+  的 hash 会让用户**用一个 toast 换来一块从没人渲染过的骨架屏**：`#dash-stats` / `#dash-trend` /
+  `#dash-month-changes` / `#dash-sharings` 全空、此后**零请求**、整会话不自愈
+  （`enterApp` 只在会话建立那一刻跑一次）。
+- **可达**：① 同浏览器换账号（`exitGuest()` 不清 `location.hash`）② `#/ops` 对**所有人**恒真
+  （`ops` 角色至今没有生产者，见 R162 的在册轴）③ 过期 token 后换账号。
+- **约定**：**切换器报告结果，调用方消费它，兜底目标按身份取**。
+  1. `switchView` 的**每一个**拒绝都 `return false;`，成功路径以 `return true;` 收尾；
+  2. 会话建立时唯一那条「把 hash 解析结果交给切换器」的语句必须带兜底：
+     `if (!switchView(viewFromHash() || "dashboard")) switchView(homeView());`；
+  3. 兜底目标**必须**由**身份**派生（`homeView()` ＝ 游客 `marketplace`、登录用户 `dashboard`）——
+     游客的家不是仪表盘（`GUEST_VIEWS` 之外），无条件重定向会**再撞一次访客守卫**（实测：
+     丢解释性 toast ＋ `RangeError: Maximum call stack size exceeded`）；
+  4. 反向：`switchView` **不得**在自己的体内再调用自己。
+  ⛔ 不得先算一个 `mayEnter(id)` 再决定目的地 —— 那会把守卫里那句解释性 toast 吞掉（探针 `D1` 当场红）。
+- **门禁**：`state_gate::the_refused_view_switch_never_leaves_an_unrendered_view`（规则 1–4，函数名
+  **全部派生**、期望值零手写）
+  ＋ `state_gate::the_r163_roster_is_real`（提取器自证 ＋ 两半一起退回缺陷形状的对照）
+  ＋ `state_gate::the_r163_rules_have_teeth`（四条变体腿各翻一条）。
+- ⚠️ **射程**：门禁是**静态词法**的 —— 它证「拒绝被报告」「调用方兜底」「兜底按身份取」三件
+  **形状**，**不**证屏幕上真的渲染出了内容，也不证 `#/ops` 对所有人恒真的前提（`ops` 角色的
+  可达性是另一条在册轴，方向待裁定）。浏览器事实与症状归 jsdom 探针（11 腿：`base` 恰
+  `B1`/`B2`/`B3`/`F1` 红、`fix` 全绿、竞争修法 `m_redirect` 被 `E1`/`E3` 拒）。
+  两台仪器各自能看见对方看不见的东西（C2148／R168／R173 同款分工）。
+- ⚠️ **与 R173 的接口**：R173 的规则原先是「`switchView` 里**每一个** `return` 都在 `kbdClear()`
+  之前」。R163 让成功路径也有了返回值（**函数体最后一条语句**上的 `return true;`）—— 它天然落在
+  清除之后，语义完全正确。判据因此按 R173 声明原话（「每一个 `return` **守卫**」）收紧：
+  只豁免**末尾那一条语句上**的 `return`，其后的任何 `return` 仍算守卫、仍判红
+  （`r173_is_last_statement`）。
