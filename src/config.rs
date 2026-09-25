@@ -130,7 +130,6 @@ impl Default for Log {
 
 /// 顶层配置
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)] // P0-A 仅用 server；points/providers/plans 由后续 P0 网关/定价阶段消费（parse 测试已校验）
 pub struct Config {
     #[serde(default)]
     pub server: Server,
@@ -149,31 +148,40 @@ pub struct Config {
 }
 
 /// 点数规则（账本层的锚）
+///
+/// 生产代码只读 `anchor_currency` / `points_per_unit`（→ `billing::calc_points`）；
+/// `display_name` / `symbol` 只有 config.toml 与下面的 parse 测试在读，接线或删除
+/// **尚未裁定** ⇒ 先按**字段**静音，而不是整个结构体：结构体级抑制会把**将来**
+/// 新增的字段一并静默，这正是本文件此前那六个属性的问题。
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct Points {
     /// 货币锚：USD | CNY
     pub anchor_currency: String,
     /// 1 个单位锚定货币 = 多少「点」
     pub points_per_unit: u32,
     /// 显示名（仅 UI）
+    #[allow(dead_code)]
     pub display_name: String,
     /// 符号（仅 UI）
+    #[allow(dead_code)]
     pub symbol: String,
 }
 
 /// 提供商（一家模型厂商）
+///
+/// 生产代码只读 `id`（`validate()` 用它校验 plan 的 provider 引用）；`name` / `country`
+/// 只有 config.toml 与下面的 parse 测试在读 —— 与 `Points` 那两枚同理，按**字段**静音。
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct Provider {
     pub id: String,
+    #[allow(dead_code)]
     pub name: String,
+    #[allow(dead_code)]
     pub country: String,
 }
 
 /// Plan 端点（一个可被路由到的上游端点）
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct Plan {
     pub id: String,
     pub provider: String,
@@ -189,7 +197,6 @@ pub struct Plan {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct Endpoint {
     /// openai_chat | anthropic | responses
     pub protocol: String,
@@ -198,7 +205,6 @@ pub struct Endpoint {
 
 /// 模型定义（rant 2026-08-20T10:27:13：config.toml 唯一真源，替代 models.json + price_overrides）
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct Model {
     pub provider: String,
     pub model: String,
