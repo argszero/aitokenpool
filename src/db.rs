@@ -599,7 +599,12 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
         )?;
         n += 1;
     }
-    // 同步删除 config 中已移除的模型（模型行无外键引用，usage_records/transactions 均按 model 字符串记）
+    // 同步删除 config 中已移除的模型。⚠️ **不变量**：`models` 行是路由键 `keys.model` 的**计价依赖** ——
+    // 一把 `status='on'` 的 key 若其 (provider, model) 在目录里没有行，调用仍可被路由，但结算取价会落
+    // `None` ⇒ 静默免费（R156）。因此**删除/改名一个 (provider, model) 之前，必须处理引用它的 key**；
+    // 本函数与 `admin_models::{remove, patch}` 是全部三个写入者，都受此约束。权威执行点是路由入口
+    // （`gateway::forward{,_stream}` 在发往上游前要求该 (provider, model) 可取价）与创建入口
+    // （`sharing::create`）；此处只记约束、**不做数据清理** —— `keys` 是用户数据，绝不因目录变动被改写。
     let mut removed = 0u32;
     let stale: Vec<(String, String)> = {
         let mut stmt = conn

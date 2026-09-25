@@ -16680,3 +16680,451 @@ fn r2174_variant_coherent_wrong_rename(pack: &str) -> String {
         "    \"ops.keys.sub\": \"Aggregated by provider · enabled vs. total listed keys\",\n",
     )
 }
+
+// ---------------------------------------------------------------------------------------
+// R156 · 「可路由」与「可计价」是两扇门：路由入口必须在发往上游前要求 (provider, model) 可取价
+//        （`forward` / `forward_stream` 的计价门 ＋ 结算兜底臂必须响亮）
+// ---------------------------------------------------------------------------------------
+//
+// 路由只认 `model`（`dao::find_keys_by_model` 的 SQL 里没有 provider），而计费按
+// `(key.provider, model)` 查 `models` 目录。目录行被改名/删除 —— 管理页编辑（provider/model
+// 两个字段都可改）、删除，或 config 收缩触发的启动同步 —— 之后，一把 `status='on'` 的 key 仍可
+// 被路由（它的 `model` 还在），但结算取价落 `None => (0.0, 0.0)`：一次真实调用 200 正常返回、
+// 消费者不扣点、分享者无收益、`usage_records.cost = 0`。因 `pts = 0` 余额不降，只要余额一次
+// > 0 就能无限复现（静默免费）。
+//
+// 创建入口已拒绝这样的 (provider, model)（`sharing::create` 的 400，句子已在词表里），而
+// **目录变更**是同一个不变量漏掉的第二扇门 —— 本门禁钉的就是那扇门。
+//
+// 规则（每条都从代码**派生**，不写死函数名 —— 转发器名册由「哪些函数调用 `router.pick(`」
+// 读出，结算函数由「谁调用 `billing::settle(`」读出，#469）：
+//   R1  计价门：**每个**转发器（调用 `router.pick(` 的函数）都在**选中 key 之前**调用取价
+//       （位置判据：取价调用点 < 第一次 `router.pick(`）。缺了它，目录里没有 (provider, model)
+//       的 key 会被照常送给上游。
+//   R2  兜底响亮：结算函数的 `None =>` 臂（到兜底值 `(0.0` 为止）必须带 `log::` —— 纵深防御：
+//       目录若在预检与结算之间变了，必须留下痕迹，而不是与「价真的是 0」共用同一载体
+//       （stream-usage-billing 轴：「缺数据」≠「数据为 0」）。
+//   R3  质量（不是「一律拒绝」）：每个**含计价调用**的转发器，其调用的**结果**必须骑在一个
+//       谓词上（`.is_some()` / `.is_none()`）—— 取价后把结果丢掉、或把门写成无条件拒绝，都会
+//       翻转它。R3 只对「已出现计价调用」的转发器断言（存在性归 R1）⇒ 删掉计价调用只翻 R1。
+//
+// 射程（如实）：本门禁是**静态词法**的 —— 它证「每个转发器在选 key 前取价」「兜底臂留痕」
+// 「取价结果确实决定分支」三件**形状**；**不证**运行期「目录行存在时那次调用真的 200」
+// （那一半归探针 `r156_model_price_invariant_probe.py` 的 L1/L8 腿与 A/B 腿）。两台仪器各自
+// 能看见对方看不见的东西（C2148／R168／R173 前例）。
+
+/// `src/gateway.rs`：路由、计价门与结算兜底的真源（R156）。
+const GATEWAY_RS: &str = include_str!("gateway.rs");
+
+/// 取价调用的拼写（含模块前缀）—— 本门禁唯一手写的调用名。
+const R156_PRICE_CALL: &str = "dao::get_model_price(";
+
+/// 选 key 的调用拼写 —— 「转发器」名册的判据（谁在选 key 送出上游，谁就得先取价）。
+const R156_PICK_CALL: &str = "router.pick(";
+
+/// 结算函数的判据：只有它调用 `billing::settle(`。
+const R156_SETTLE_CALL: &str = "billing::settle(";
+
+/// 转发器名册的下限（低一步就让 R1 在单个函数上恒真 —— 坑 68 家族）。
+const R156_MIN_FORWARDERS: usize = 2;
+
+// ── 扫描器 ──────────────────────────────────────────────────────────────────────────────
+
+/// Rust 一行里的 `fn NAME(` 名字（`pub fn` / `async fn` / `pub async fn` 都认）。
+///
+/// 只认**声明形状**：`fn` 之前（同行，去空白）只能是声明关键字 ⇒ `my_fn(`、`x.fn_(` 之类的
+/// 用法不会被误收（否则名册会被调用点污染）。
+fn r156_fn_name(line: &str) -> Option<String> {
+    let at = line.find("fn ")?;
+    let prefix = line[..at].trim();
+    const OK: &[&str] = &[
+        "",
+        "pub",
+        "async",
+        "pub async",
+        "unsafe",
+        "pub unsafe",
+        "extern",
+        "pub extern",
+        "pub(crate)",
+        "pub(crate) async",
+    ];
+    if !OK.contains(&prefix) {
+        return None;
+    }
+    let name: String = line[at + 3..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// `fn NAME(` 之后按**花括号配平**的函数体（含两端花括号）。
+///
+/// 不用 JS 的声明行收尾约定：Rust 签名可换行（同 `r164_body_after` 的理由）。格式串里的
+/// `{}` / `{e}` 是成对的，不影响配平。
+fn r156_fn_body(code: &str, name: &str) -> Option<String> {
+    r164_body_after(code, &format!("fn {name}("))
+}
+
+/// 「转发器」名册：调用 `router.pick(` 的函数 → 它的函数体。
+fn r156_forwarders(code: &str) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for line in code.lines() {
+        let Some(name) = r156_fn_name(line) else {
+            continue;
+        };
+        if out.contains_key(&name) {
+            continue;
+        }
+        if let Some(body) = r156_fn_body(code, &name) {
+            if body.contains(R156_PICK_CALL) {
+                out.insert(name, body);
+            }
+        }
+    }
+    out
+}
+
+/// 结算函数体：唯一调用 `billing::settle(` 的那个函数。
+fn r156_settle_body(code: &str) -> Option<String> {
+    for line in code.lines() {
+        let Some(name) = r156_fn_name(line) else {
+            continue;
+        };
+        if let Some(body) = r156_fn_body(code, &name) {
+            if body.contains(R156_SETTLE_CALL) {
+                return Some(body);
+            }
+        }
+    }
+    None
+}
+
+/// `open` 处必须是 `(`；返回与它配平的 `)` 的下标。
+fn r156_matching_paren(src: &str, open: usize) -> Option<usize> {
+    if src.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    for (i, c) in src[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 一个转发器的计价门读数（全部从它的函数体派生）。
+struct R156Gate {
+    /// 第一次取价调用的位置。
+    price_at: Option<usize>,
+    /// 第一次 `router.pick(` 的位置。
+    pick_at: Option<usize>,
+    /// 取价调用的**结果**是否骑在谓词上（`.is_some()` / `.is_none()`）。
+    gated: bool,
+}
+
+fn r156_gate(body: &str) -> R156Gate {
+    let price_at = body.find(R156_PRICE_CALL);
+    let pick_at = body.find(R156_PICK_CALL);
+    let gated =
+        match price_at.and_then(|at| r156_matching_paren(body, at + R156_PRICE_CALL.len() - 1)) {
+            Some(close) => {
+                let after = body[close + 1..].trim_start();
+                after.starts_with(".is_some()") || after.starts_with(".is_none()")
+            }
+            None => false,
+        };
+    R156Gate {
+        price_at,
+        pick_at,
+        gated,
+    }
+}
+
+/// 结算函数体里的 `None =>` 兜底臂（到兜底值 `(0.0` 为止）是否带 `log::`。
+fn r156_none_arm_logs(body: &str) -> bool {
+    let mut from = 0usize;
+    while let Some(rel) = body[from..].find("None =>") {
+        let at = from + rel + "None =>".len();
+        let end = body[at..]
+            .find("(0.0")
+            .map(|i| at + i)
+            .unwrap_or(body.len());
+        if body[at..end].contains("log::") {
+            return true;
+        }
+        from = at;
+        if from >= body.len() {
+            break;
+        }
+    }
+    false
+}
+
+// ── 判词 ────────────────────────────────────────────────────────────────────────────────
+
+/// 一次读取的全部证据与三条判词。
+struct R156Reading {
+    forwarders: BTreeSet<String>,
+    price_present: BTreeSet<String>,
+    gated: BTreeSet<String>,
+    settle_found: bool,
+    settle_logs: bool,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+}
+
+impl R156Reading {
+    fn verdicts(&self) -> (bool, bool, bool) {
+        (self.r1, self.r2, self.r3)
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} | forwarders={:?} price_present={:?} gated={:?} \
+             settle_found={} settle_logs={}",
+            self.r1,
+            self.r2,
+            self.r3,
+            self.forwarders,
+            self.price_present,
+            self.gated,
+            self.settle_found,
+            self.settle_logs
+        )
+    }
+}
+
+/// 读 `src/gateway.rs`（注释剥掉），导出三条判词。名册与期望值全部**派生**。
+fn r156_read(src: &str) -> R156Reading {
+    let code = code_text(src);
+    // 只扫**生产代码**：`#[cfg(test)]` 之后的测试模块不上线（与 `backend_error_literals` 同款，
+    // 也避免测试夹具里的同名函数污染名册）。
+    let code = match code.find("#[cfg(test)]") {
+        Some(i) => code[..i].to_string(),
+        None => code,
+    };
+    let fw = r156_forwarders(&code);
+
+    let mut forwarders: BTreeSet<String> = BTreeSet::new();
+    let mut price_present: BTreeSet<String> = BTreeSet::new();
+    let mut gated: BTreeSet<String> = BTreeSet::new();
+    let mut before_pick: BTreeSet<String> = BTreeSet::new();
+    for (name, body) in &fw {
+        forwarders.insert(name.clone());
+        let g = r156_gate(body);
+        if g.price_at.is_some() {
+            price_present.insert(name.clone());
+        }
+        if g.gated {
+            gated.insert(name.clone());
+        }
+        if let (Some(p), Some(k)) = (g.price_at, g.pick_at) {
+            if p < k {
+                before_pick.insert(name.clone());
+            }
+        }
+    }
+
+    let settle = r156_settle_body(&code);
+    let settle_found = settle.is_some();
+    let settle_logs = settle.as_deref().is_some_and(r156_none_arm_logs);
+
+    let r1 = !forwarders.is_empty() && before_pick == forwarders;
+    let r2 = settle_found && settle_logs;
+    let r3 = gated == price_present;
+
+    R156Reading {
+        forwarders,
+        price_present,
+        gated,
+        settle_found,
+        settle_logs,
+        r1,
+        r2,
+        r3,
+    }
+}
+
+// ── 测试 ────────────────────────────────────────────────────────────────────────────────
+
+/// 轴：路由入口必须在发往上游前要求 (provider, model) 可取价。
+///
+/// 三条规则的含义见上方文件头。每条规则的**牙**由 [`the_r156_rules_have_teeth`] 用合成变异体
+/// 逐条测量（基线＝已知为绿的活树）。
+#[test]
+fn the_router_requires_a_price_before_it_reaches_upstream() {
+    let rd = r156_read(GATEWAY_RS);
+    assert!(
+        rd.forwarders.len() >= R156_MIN_FORWARDERS,
+        "转发器名册少于 {R156_MIN_FORWARDERS} 个 —— R1 退化成单函数上的关系式：{}",
+        rd.report()
+    );
+    assert!(
+        rd.verdicts() == (true, true, true),
+        "R156 未修：路由入口没有要求 (provider, model) 可取价\
+         （R1 计价门／R2 兜底响亮／R3 取价结果确实决定分支）：{}",
+        rd.report()
+    );
+}
+
+/// 提取器自证 ＋ 反面对照：退回原缺陷形状（两扇门都不关）⇒ R1/R2 同时红、R3 仍绿。
+#[test]
+fn the_r156_roster_is_real() {
+    let live = r156_read(GATEWAY_RS);
+    assert!(
+        live.forwarders.len() >= R156_MIN_FORWARDERS,
+        "转发器名册没被推导出来：{}",
+        live.report()
+    );
+    assert_eq!(
+        live.price_present,
+        live.forwarders,
+        "活树上有转发器没取价 —— 变异体的读数无从解释：{}",
+        live.report()
+    );
+    assert_eq!(
+        live.gated,
+        live.price_present,
+        "活树上有取价调用不决定分支：{}",
+        live.report()
+    );
+    assert!(live.settle_found, "结算函数没被推导出来：{}", live.report());
+    assert!(live.settle_logs, "活树上兜底臂就不响亮：{}", live.report());
+
+    let broken = r156_variant_defect(GATEWAY_RS);
+    let rd = r156_read(&broken);
+    assert_eq!(
+        rd.verdicts(),
+        (false, false, true),
+        "退回缺陷形状没有同时打翻 R1/R2（R3 应仍绿——零取价调用上它空洞为真）：{}",
+        rd.report()
+    );
+}
+
+/// 三条规则**各有独立的牙**：每个合成变异体只打翻它针对的那一条（基线＝已知为绿的活树）。
+///
+/// ⚠️ 变异体一律从**活树**上构造，且每个锚点都断言唯一（#612 家族）：变体若没生效，
+/// 构造器里的断言先响，而不是让某条腿因错误的原因变绿（#605）。
+#[test]
+fn the_r156_rules_have_teeth() {
+    let live = r156_read(GATEWAY_RS);
+    assert_eq!(
+        live.verdicts(),
+        (true, true, true),
+        "基线不是绿的 —— 变异体的读数无从解释：{}",
+        live.report()
+    );
+
+    // ① 原缺陷的一半：两个转发器都不再取价 ⇒ 只翻 R1（R3 在零取价调用上空洞为真）。
+    let v = r156_variant_drop_gate(GATEWAY_RS);
+    let rd = r156_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (false, true, true),
+        "删掉计价门只应翻掉 R1：{}",
+        rd.report()
+    );
+
+    // ② 兜底臂不再响亮 ⇒ 只翻 R2。
+    let v = r156_variant_bare_none(GATEWAY_RS);
+    let rd = r156_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (true, false, true),
+        "兜底臂丢掉 log 只应翻掉 R2：{}",
+        rd.report()
+    );
+
+    // ③ 取价结果被丢掉（调用仍在、位置仍对，但不决定分支）⇒ 只翻 R3。
+    let v = r156_variant_discard_result(GATEWAY_RS);
+    let rd = r156_read(&v);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, false),
+        "取价后把结果丢掉只应翻掉 R3：{}",
+        rd.report()
+    );
+}
+
+/// 扫描器自证：位置判据与配平在**合成输入**上按声明工作（与活树无关）。
+#[test]
+fn the_r156_scanners_have_teeth() {
+    // 名册只认声明形状：`fn` 之前必须是关键字。
+    assert_eq!(
+        r156_fn_name("async fn forward(").as_deref(),
+        Some("forward")
+    );
+    assert_eq!(r156_fn_name("pub fn x(").as_deref(), Some("x"));
+    assert_eq!(r156_fn_name("fn y(").as_deref(), Some("y"));
+    assert_eq!(r156_fn_name("    my_fn(a);"), None);
+    assert_eq!(r156_fn_name("let f = fn_call("), None);
+
+    // 配平：内层括号不提前收尾。
+    assert_eq!(
+        r156_matching_paren("f(a(b), c) rest", 1),
+        Some(9),
+        "配平停在了内层括号"
+    );
+
+    // 位置判据：取价在 `router.pick(` **之后** ⇒ 不算「在选 key 之前」。
+    let after = "let x = router.pick(); dao::get_model_price(a).is_some();";
+    let g = r156_gate(after);
+    assert!(g.price_at > g.pick_at, "位置读数错了：{after:?}");
+
+    // 兜底臂：`(0.0` 之前有 log 才算响亮。
+    assert!(r156_none_arm_logs(
+        "None => { log::error!(\"x\"); (0.0, 0.0) }"
+    ));
+    assert!(!r156_none_arm_logs("None => (0.0, 0.0)"));
+    assert!(!r156_none_arm_logs("None => { (0.0, 0.0) }"));
+}
+
+/// 变异体①：两个转发器都不再取价（原缺陷的形状）。
+fn r156_variant_drop_gate(src: &str) -> String {
+    let line =
+        "            .filter(|k| dao::get_model_price(&conn, &k.provider, model).is_some())\n";
+    assert_eq!(
+        src.matches(line).count(),
+        2,
+        "计价门锚点不唯一（应恰两处：forward / forward_stream）"
+    );
+    src.replace(line, "            .filter(|_k| true)\n")
+}
+
+/// 变异体②：结算兜底臂丢掉日志，退回裸 `(0.0, 0.0)`。
+fn r156_variant_bare_none(src: &str) -> String {
+    let log = "            log::error!(\n                \"计价失败（models 目录中无 provider/model）key_id={} provider={} model={} ⇒ 本次按 0 计费\",\n                key.id,\n                key.provider,\n                model\n            );\n";
+    assert_eq!(src.matches(log).count(), 1, "兜底日志锚点不唯一");
+    src.replace(log, "")
+}
+
+/// 变异体③：取价结果被丢掉（调用仍在、位置仍对，但不决定分支）—— R3 的牙。
+fn r156_variant_discard_result(src: &str) -> String {
+    let line =
+        "            .filter(|k| dao::get_model_price(&conn, &k.provider, model).is_some())\n";
+    assert_eq!(src.matches(line).count(), 2, "计价门锚点不唯一");
+    src.replace(
+        line,
+        "            .filter(|k| { let _ = dao::get_model_price(&conn, &k.provider, model); true })\n",
+    )
+}
+
+/// 原缺陷形状：两扇门都不关（R1/R2 一起红，R3 仍绿）。
+fn r156_variant_defect(src: &str) -> String {
+    r156_variant_bare_none(&r156_variant_drop_gate(src))
+}
