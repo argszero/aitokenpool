@@ -677,6 +677,34 @@ try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance;
 - **CI 覆盖**：`src/state_gate.rs::the_ops_members_balance_cell_is_the_half_its_caption_names`（三规则：① 取值表达式按**标识符 token** 同时读到 `balance` 与 `gift_balance` ② 两包列头须落在**可花族**（标记由 `wallet.balance` 的包值派生）③ 反向：`admin.emp.col.perm` 仍只读 `balance`）。
 - ⚠️ **射程**：门禁是**词法**的 —— 它证明取值**读到**两个字段、名字落在可花族，**不证明算术是 `+`**；行为由仪器 `c2173_probe.js` 钉（19 腿；甲/乙两棵合法树全绿，三条「半个答案 / 化妆 / 自相矛盾」被拒）。
 
+## 运营「上游 key 状态」卡的行计数用**这张卡自己的名词**（C2174）
+
+- **一个词一个数**：`/api/ops/runtime` 的 `key_health` 每行是 `{provider,total,on,off}`，其中
+  `total` 是 `COUNT(*)`（**全部状态**：`on` / `paused` / `off`＝软删/彻底下架）。而产品把
+  「上架」严格绑给 `status='on'` —— 同屏正上方那张卡 `ops.stats.keys`（zh「上架 key 数」）
+  数的是 `WHERE status='on'`，共享页也把「上架中」绑给 `status==='on'`、把含非 `on` 行的计数
+  叫「历史」（`cnt.hist`）。于是这一行若把 `total` 称作「上架 key」，同一个词在同一个视口里
+  就带了两个数（6 行／5 启用 vs 上面那张卡的 5）。
+- **正确称谓在卡片自己身上**：这张卡的**标题**（`ops.keys.title` zh「上游 key 状态」）与**空态**
+  （`ops.keys.empty`「尚未上架任何**上游 key**」）称这批行为「上游 key」；设计基线原型写的是
+  `k.n + " 个上游 key"`。漂移发生在改版那一次（`09e4121` / #157 新造这组键时把「上游」改称
+  「上架」），数据源（`COUNT(*)`，`85982e8` / #80）一字未改。
+- **修法**：**改词不改数** —— `ops.keys.count` 与 `ops.keys.sub` 两包四串换回「上游 key /
+  upstream key」族 ＋ `ui/index.html` 的 `data-i18n="ops.keys.sub"` 静态 fallback 同步
+  ＋ `i18n.js?v=` 自增。**零新 i18n 键、零后端改动**。⛔ 不许把 `total` 改成只数 `on`
+  （同一行的 pill「N 个停用 / 全部停用」会结构性恒绿＝把承诺删掉），也不许把同屏那张
+  「上架 key 数」改宽（它的值确实只有 `on`）。
+- **CI 覆盖**：`src/state_gate.rs::the_ops_key_rows_are_named_the_way_their_own_card_names_them`
+  （R1 名词＝`ops.keys.title` 去掉末 token，**门禁里零手写词**；R2 计数行两包都含该名词；
+  R3 同卡副标题也必须含（它给的是同一个数的另一个称呼）；R4 前置：两包三串齐、名词确实变短、
+  两包 `ops.keys.*` 键集相等、三份语料各带这张卡的一部分；R5 阳性对照：两个占位符仍在）。
+  配 `the_r2174_scanners_have_teeth`（名词派生 / 大小写 / **注释里的键名不算键**）。
+- ⚠️ **射程与一条声明为盲的腿**：门禁是**词法**的 —— 它证「行计数的名词与卡片自己的标题同源」，
+  **不证**屏幕上那一刻的文本（那半归 jsdom 探针），也**不证** `total` 的算法该不该含 `off` 行
+  （那由 pill 的结构需求固定）。**盲区（由 `the_r2174_rules_have_teeth` 的变异体④实测）**：
+  把**称谓整体**改成与数据不符的那一族（标题 ＋ 计数行 ＋ 副标题一起改、彼此自洽）门禁**全绿** ——
+  挡它的是设计基线（原型写的就是「上游 key」）与运行期探针，不是这条词法规则。
+
 
 ## 表单控件的 property 式 `disabled`：必须有一个在**回收路径**上的清除点（R139）
 

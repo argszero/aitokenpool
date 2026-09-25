@@ -660,9 +660,13 @@
     "ops.hours.title": "今日调用量（按小时）",
     "ops.hours.sub": "按小时用量记录 · 服务端 UTC 时区",
     "ops.hours.empty": "今日暂无调用记录",
+    // 这一卡数的是**全部状态**的上游 key（含 paused / off），所以行计数必须用卡片自己的称谓
+    // 「上游 key」；「上架 key」＝ status='on'（同屏「上架 key 数」那张卡与共享页「上架中」的画）。
+    // 静态门禁 state_gate::the_ops_key_rows_are_named_the_way_their_own_card_names_them 从
+    // ops.keys.title 派生名词，标题 / count / sub 三处必须同源。
     "ops.keys.title": "上游 key 状态",
-    "ops.keys.sub": "按厂商聚合 · 启用状态与总上架数",
-    "ops.keys.count": "{total} 个上架 key · {on} 个启用",
+    "ops.keys.sub": "按厂商聚合 · 启用状态与总上游 key 数",
+    "ops.keys.count": "{total} 个上游 key · {on} 个启用",
     "ops.keys.allOn": "全部启用",
     "ops.keys.someOff": "{n} 个停用",
     "ops.keys.allOff": "全部停用",
@@ -1476,9 +1480,12 @@
     "ops.hours.title": "Calls today (by hour)",
     "ops.hours.sub": "Hourly usage records · server UTC",
     "ops.hours.empty": "No calls recorded today",
+    // The row counts upstream keys of **every** status (including paused / off), so it must use the
+    // card's own noun ("upstream key"); "listed key" means status = 'on' — the wording of the
+    // "Active keys" stat card and of the sharing page's "Listed" pill.
     "ops.keys.title": "Upstream key status",
-    "ops.keys.sub": "Aggregated by provider · enabled vs. total listings",
-    "ops.keys.count": "{total} listed keys · {on} enabled",
+    "ops.keys.sub": "Aggregated by provider · enabled vs. total upstream keys",
+    "ops.keys.count": "{total} upstream keys · {on} enabled",
     "ops.keys.allOn": "All enabled",
     "ops.keys.someOff": "{n} disabled",
     "ops.keys.allOff": "All disabled",
