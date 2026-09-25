@@ -17128,3 +17128,405 @@ fn r156_variant_discard_result(src: &str) -> String {
 fn r156_variant_defect(src: &str) -> String {
     r156_variant_bare_none(&r156_variant_drop_gate(src))
 }
+
+// ── C2175：趋势卡的绿柱必须用**它自己那件事**的名字（一个事实一个词） ────────────────────────
+//
+// `ui/index.html` 的仪表盘「近 14 天消耗与收益」卡里有一张 `.legend`，绿柱那一支的标签键是
+// `dash.trend.earn`。可是这根柱子画的是 `/api/transactions/trend` 的 **`income`** 列 ——
+// 后端方向白名单 `earn + topup + gift`（`src/routes/wallet.rs::TX_INCOME_TYPES`）——
+// 而**同一屏**那张 `dash.earnings` 统计卡（`renderDashboard` 里由 `Live.wallet.month_earn`
+// 供数，SQL 是 `type = 'earn'`）的中文名**也是**「共享收益」。⇒ 一个名字指着两个事实：
+// 充值过的用户会看到绿柱高 5000（唯一一笔 topup）而旁边那张「共享收益」卡写 0。
+//
+// 同一条 `income` 序列在交易页有**四条**载体，都叫「收入 / Income」（`tx.trend.metric.income`
+// 的档位按钮 / 图例 / tooltip，以及 `tx.summary.income`＝「总收入」，其副标题自陈
+// 「共享分成**等**收益」—— 它自己就说这个合计是收益的**超集**）。出生顺序也说明这是漂移而非
+// 取舍：「收入」生于 #133，**晚 22 个 PR** 的 #155 给同一条序列起了更窄的名字，而那一版的
+// 注释写着「口径与交易页一致」。修法是**改名字、不改数据**：键 `dash.trend.earn` →
+// `dash.trend.income`，值「收入」/「Income」；数据侧一个字都不动。
+//
+// 为什么必须由静态门禁钉，而不是由那支 jsdom 探针钉（C2128 坑 #287 的同款理由）：探针只能
+// 证明「这一刻屏幕上两条读数的名字不同」，证明不了**以后**新加的那个载体用的是哪个键 ——
+// 而本轴的缺陷形状恰恰是「同一件事悄悄有了第二个名字」。门禁钉的是那句**声明**。
+//
+// 射程（如实）：词法级。它证①绿柱读的是 `income` 字段②三个载体是同一个**键**③该键的包值与
+// 交易页那条序列的键**逐字相同**④earn-only 卡另有一个名字、且它的供数仍是 `month_earn`。
+// 它**不证**屏幕上那一刻的数值（那一半归 jsdom 探针），也不解析正则字面量与模板串。
+
+/// 图例容器（绿柱标签的静态载体 —— 射程起点）。
+const R68_LEGEND_ID: &str = "id=\"dash-trend-legend\"";
+/// 绿柱在**标记**里的形状（`index.html` 与交易页图例同款）。
+const R68_EARN_MARK: &str = "<i class=\"earn\">";
+/// 绿柱在**渲染器**里的形状（`renderDashTrend` 里那一列）。
+const R68_EARN_BAR: &str = "trend-bar earn";
+/// 一个事实的第二个载体：同屏那张 earn-only 的统计卡。
+const R68_EARNINGS_KEY: &str = "dash.earnings";
+/// 那张卡的供数必须落在钱包载荷的这个字段上（`type='earn'` 的那一半）。
+const R68_EARN_FIELD: &str = "month_earn";
+/// 绿柱取值的字段名 —— 方向白名单 `earn + topup + gift` 在后端的投影名。
+const R68_INCOME_FIELD: &str = "income";
+/// 语言层原语（取标签键时的锚）。
+const R68_T_OPEN: &str = "T(\"";
+
+/// 从 `marker` 所在元素的**起始 `<div`** 起配平到它的收尾（返回值含 `</div>`）。
+///
+/// 不为整页做 DOM：本门禁只需要「这个容器里有什么」。`marker` 必须是该元素**自己的**属性
+/// 片段（如 `id="dash-trend-legend"`）—— 先向前退到最近的 `<div`，再从那里按 `<div` /
+/// `</div>` 计数配平（`<span>` 等兄弟标签不参与计数）。
+///
+/// 逐**字节**扫描：正文里有中文，按字符下标切字符串会落在码点中间 panic。
+fn r68_element_block(src: &str, marker: &str) -> Option<String> {
+    let at = src.find(marker)?;
+    let open = src[..at].rfind("<div")?;
+    let rest = &src[open..];
+    let b = rest.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0usize;
+    while i < b.len() {
+        if b[i] == b'<' {
+            if b[i..].starts_with(b"<div") {
+                depth += 1;
+                i += 4;
+                continue;
+            }
+            if b[i..].starts_with(b"</div>") {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(rest[..i + 6].to_string());
+                }
+                i += 6;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 元素区块里 `mark` **之后**第一个 `data-i18n="…"` 的键。
+///
+/// 只认 `data-i18n="`（带 `="`）⇒ `data-i18n-title="` / `data-i18n-label="` 不会被误当文本键。
+fn r68_first_data_i18n_after(block: &str, mark: &str) -> Option<String> {
+    const OPEN: &str = "data-i18n=\"";
+    let at = block.find(mark)?;
+    let rest = &block[at..];
+    let s = rest.find(OPEN)? + OPEN.len();
+    let e = rest[s..].find('"')? + s;
+    Some(rest[s..e].to_string())
+}
+
+/// 文本里第一个 `T("…")` 的键。
+fn r68_first_t_key(text: &str) -> Option<String> {
+    let at = text.find(R68_T_OPEN)? + R68_T_OPEN.len();
+    let end = text[at..].find('"')? + at;
+    Some(text[at..end].to_string())
+}
+
+/// `renderDashTrend` 里绿柱高度表达式 `h(<var>)` 的那个 `<var>`（不是标识符 ⇒ `None`）。
+///
+/// 「绿柱那一列」由**柱体类名**定位（`trend-bar earn`），不是由行号 —— 行号是别的 PR 的自由。
+fn r68_earn_bar_var(body: &str) -> Option<String> {
+    let at = body.find(R68_EARN_BAR)?;
+    let rest = &body[at..];
+    let h = rest.find("h(")? + 2;
+    let tail = &rest[h..];
+    let end = tail.find(')')?;
+    let v = tail[..end].trim();
+    if v.is_empty()
+        || !v
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        return None;
+    }
+    Some(v.to_string())
+}
+
+/// `<var> = <右值>` 的右值（到行内第一个 `,` / `;` / 换行为止）。
+///
+/// 必须在**标识符边界**上匹配：`const date = x;` 里含子串 `e = `，但那不是 `e` 的绑定
+/// （否则 `e` 会拿到 `date` 的右值，R1 就成了随机读数）。
+fn r68_binding_rhs(src: &str, var: &str) -> Option<String> {
+    let needle = format!("{var} = ");
+    let mut from = 0usize;
+    while let Some(p) = src[from..].find(&needle) {
+        let at = from + p;
+        let boundary = match src[..at].chars().next_back() {
+            Some(c) => !(c.is_ascii_alphanumeric() || c == '_' || c == '$'),
+            None => true,
+        };
+        if boundary {
+            let rest = &src[at + needle.len()..];
+            let end = rest.find([',', ';', '\n']).unwrap_or(rest.len());
+            return Some(rest[..end].trim().to_string());
+        }
+        from = at + needle.len();
+    }
+    None
+}
+
+/// 渲染器里**紧挨在** `D.fmt(<var>)` 之前的那个 `T("…")` 键（tooltip 的标签）。
+///
+/// 取「最近的一个」而不是「行里第一个」：tooltip 那一行同时印消费与收益两支，
+/// 第一个 `T(` 属于消费。
+fn r68_tooltip_key(body: &str, var: &str) -> Option<String> {
+    let at = body.find(&format!("D.fmt({var})"))?;
+    let before = &body[..at];
+    let mut from = 0usize;
+    let mut found: Option<String> = None;
+    while let Some(p) = before[from..].find(R68_T_OPEN) {
+        let s = from + p + R68_T_OPEN.len();
+        let e = before[s..].find('"')? + s;
+        found = Some(before[s..e].to_string());
+        from = s;
+    }
+    found
+}
+
+/// 四条判词的真值（顺序同 R1..R4）。
+#[derive(Debug)]
+struct R68Reading {
+    r1: bool,
+    r2: bool,
+    r3: bool,
+    r4: bool,
+    detail: String,
+}
+
+impl R68Reading {
+    fn verdicts(&self) -> (bool, bool, bool, bool) {
+        (self.r1, self.r2, self.r3, self.r4)
+    }
+
+    fn report(&self) -> String {
+        self.detail.clone()
+    }
+}
+
+/// 读三份制品（语言包 / markup / 渲染器），导出四条判词。键与期望值全部**派生**：
+/// 图例的键来自 markup、tooltip 的键来自渲染器、交易页那条序列的键来自 `app.js` 自己的
+/// 图例行、绿柱的字段名来自绿柱自己的绑定 —— 名册里没有一个手抄的键。
+fn r68_read(pack: &str, html: &str, app: &str) -> R68Reading {
+    let zh = pack_region_strict(pack, ZH_PACK_START, EN_PACK_START);
+    let en = pack_region_strict(pack, EN_PACK_START, PACK_END);
+
+    let dash_body = js_function_body(app, "renderDashTrend").unwrap_or("");
+    let card_body = js_function_body(app, "renderDashboard").unwrap_or("");
+
+    // 三个载体的键：图例（markup 的 `data-i18n`）、tooltip（渲染器里的 `T()`）、交易页图例。
+    let legend_key = r68_element_block(html, R68_LEGEND_ID)
+        .and_then(|b| r68_first_data_i18n_after(&b, R68_EARN_MARK));
+    let bar_var = r68_earn_bar_var(dash_body);
+    let tooltip_key = bar_var
+        .as_deref()
+        .and_then(|v| r68_tooltip_key(dash_body, v));
+    let tx_key = app
+        .lines()
+        .find(|l| !l.trim_start().starts_with("//") && l.contains(R68_EARN_MARK))
+        .and_then(r68_first_t_key);
+
+    // R1：绿柱读的是**它自己的**字段（`income` 白名单的投影），不是 `.earn`。
+    let rhs = bar_var
+        .as_deref()
+        .and_then(|v| r68_binding_rhs(dash_body, v));
+    let r1 = match rhs.as_deref() {
+        Some(r) => r.contains(R68_INCOME_FIELD) && !r.contains(".earn"),
+        None => false,
+    };
+
+    // R2：三个载体是**同一个键**，且该键的包值与交易页那条序列的键**逐字相同**。
+    let one_key = legend_key.is_some() && legend_key == tooltip_key;
+    let same_value = match (legend_key.as_deref(), tx_key.as_deref()) {
+        (Some(a), Some(b)) => {
+            let (za, zb) = (pack_string(zh, a), pack_string(zh, b));
+            let (ea, eb) = (pack_string(en, a), pack_string(en, b));
+            za.is_some() && za == zb && ea.is_some() && ea == eb
+        }
+        _ => false,
+    };
+    let r2 = one_key && same_value;
+
+    // R3：同一个词不得同时指「绿柱」与那张 earn-only 卡（修前树的形状正是两者同名）。
+    let r3 = match (
+        legend_key.as_deref(),
+        pack_string(zh, R68_EARNINGS_KEY),
+        pack_string(en, R68_EARNINGS_KEY),
+    ) {
+        (Some(k), Some(zc), Some(ec)) => match (pack_string(zh, k), pack_string(en, k)) {
+            (Some(zk), Some(ek)) => zk != zc && ek != ec,
+            _ => false,
+        },
+        _ => false,
+    };
+
+    // R4（反向）：那张 earn-only 卡的供数**仍**是钱包的 `month_earn` —— 挡住「想让两处名字
+    // 一致，就把这张卡也接到 income 上」那种修法（那只是把同一个错换个方向重犯）。
+    let r4 = card_body.contains(&format!("Live.wallet.{R68_EARN_FIELD}"))
+        && !card_body.contains(R68_INCOME_FIELD);
+
+    R68Reading {
+        r1,
+        r2,
+        r3,
+        r4,
+        detail: format!(
+            "r1={r1} r2={r2} r3={r3} r4={r4} | legend_key={legend_key:?} \
+             bar_var={bar_var:?} tooltip_key={tooltip_key:?} tx_key={tx_key:?} rhs={rhs:?}"
+        ),
+    }
+}
+
+/// 绿柱与交易页那条序列同名，而 earn-only 卡另有其名 —— 一个事实一个词。
+#[test]
+fn the_dashboard_trend_names_its_series_the_way_the_transactions_trend_names_it() {
+    let rd = r68_read(I18N_JS, INDEX_HTML, APP_JS);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, true, true),
+        "绿柱的名字与它画的那条序列不是同一件事：{}",
+        rd.report()
+    );
+}
+
+/// 阳性对照：三个载体都**真的**扫到了，且两侧的键都能在**两个**包里取到值。
+///
+/// 没有这一条，上面的断言在「提取器返回空」时会恒真 —— 坑 #68 家族的老形状。
+#[test]
+fn the_dashboard_trend_label_roster_is_derived() {
+    let zh = pack_region_strict(I18N_JS, ZH_PACK_START, EN_PACK_START);
+    let en = pack_region_strict(I18N_JS, EN_PACK_START, PACK_END);
+
+    let legend = r68_element_block(INDEX_HTML, R68_LEGEND_ID)
+        .expect("图例容器 `#dash-trend-legend` 未找到 —— markup 结构变了？");
+    let legend_key = r68_first_data_i18n_after(&legend, R68_EARN_MARK)
+        .expect("图例里绿柱那一支没有 `data-i18n`");
+    let tx_key = APP_JS
+        .lines()
+        .find(|l| !l.trim_start().starts_with("//") && l.contains(R68_EARN_MARK))
+        .and_then(r68_first_t_key)
+        .expect("`app.js` 里找不到交易页图例的绿柱行");
+
+    for k in [&legend_key, &tx_key] {
+        assert!(pack_string(zh, k).is_some(), "zh 包缺键 `{k}`");
+        assert!(pack_string(en, k).is_some(), "en 包缺键 `{k}`");
+    }
+
+    // 图例与 tooltip 必须是**同一个键** —— 它们是同一张卡里同一条序列的两个载体。
+    let body = js_function_body(APP_JS, "renderDashTrend").expect("`renderDashTrend` 未找到");
+    let bar_var = r68_earn_bar_var(body).expect("绿柱的高度表达式不是 `h(<ident>)`");
+    let tip = r68_tooltip_key(body, &bar_var).expect("tooltip 里找不到绿柱那一支的 `T()`");
+    assert_eq!(legend_key, tip, "图例与 tooltip 用了两个不同的键");
+
+    // 同屏那张 earn-only 卡也必须存在（R3/R4 的射程里有它）。
+    assert!(
+        pack_string(zh, R68_EARNINGS_KEY).is_some() && pack_string(en, R68_EARNINGS_KEY).is_some(),
+        "语言包里缺 `{R68_EARNINGS_KEY}` —— 那台仪器读的是另一张卡了"
+    );
+}
+
+/// 每条规则**各有独立的牙**：每个合成变异体只打翻它针对的那一条（基线＝已知为绿的活树）。
+///
+/// ⚠️ 变异体一律从**活树**上构造，且每个锚点都断言唯一（#612 家族）：变体若没生效，
+/// 构造器里的断言先响，而不是让某条腿因错误的原因变绿（#605）。
+#[test]
+fn the_dashboard_trend_label_rules_have_teeth() {
+    let live = r68_read(I18N_JS, INDEX_HTML, APP_JS);
+    assert_eq!(
+        live.verdicts(),
+        (true, true, true, true),
+        "基线不是绿的 —— 变异体的读数无从解释：{}",
+        live.report()
+    );
+
+    // ① 把绿柱接到 `.earn` 上（「改数据迁就旧名字」的竞争修法）⇒ 只翻 R1。
+    let app = r68_variant_earn_field(APP_JS);
+    let rd = r68_read(I18N_JS, INDEX_HTML, &app);
+    assert_eq!(rd.verdicts(), (false, true, true, true), "{}", rd.report());
+
+    // ② 只改包值（给同一条序列另起一个同义的窄词）⇒ 只翻 R2。
+    let pack = r68_variant_pack_value(I18N_JS, "dash.trend.income", "共享分成");
+    let rd = r68_read(&pack, INDEX_HTML, APP_JS);
+    assert_eq!(rd.verdicts(), (true, false, true, true), "{}", rd.report());
+
+    // ③ 让 earn-only 卡与绿柱共用同一个词（**修前树的形状**）⇒ 只翻 R3。
+    let pack = r68_variant_pack_value(I18N_JS, R68_EARNINGS_KEY, "收入");
+    let rd = r68_read(&pack, INDEX_HTML, APP_JS);
+    assert_eq!(rd.verdicts(), (true, true, false, true), "{}", rd.report());
+
+    // ④ 把 earn-only 卡也接到 income 上（把同一个错换个方向重犯）⇒ 只翻 R4。
+    let app = r68_variant_widen_card(APP_JS);
+    let rd = r68_read(I18N_JS, INDEX_HTML, &app);
+    assert_eq!(rd.verdicts(), (true, true, true, false), "{}", rd.report());
+}
+
+/// 扫描器自证：提取器与配平在**合成输入**上按声明工作（与活树无关）。
+#[test]
+fn the_dashboard_trend_label_scanners_have_teeth() {
+    // 元素配平：只吃这一个 `<div>`，不越界吞掉后面的兄弟。
+    let html = "<div class=\"legend\" id=\"dash-trend-legend\">\n<span><i class=\"earn\"></i><span data-i18n=\"k\">v</span></span>\n</div>\n<div id=\"next\"></div>";
+    let block = r68_element_block(html, R68_LEGEND_ID).expect("配平失败");
+    assert!(block.contains("data-i18n=\"k\""));
+    assert!(!block.contains("id=\"next\""), "配平越界了：{block}");
+    assert_eq!(
+        r68_first_data_i18n_after(&block, R68_EARN_MARK).as_deref(),
+        Some("k")
+    );
+    // 属性型钩子不算文本键。
+    let attr_only =
+        "<i class=\"earn\"></i><span data-i18n-title=\"t\"></span><span data-i18n=\"kk\">v</span>";
+    assert_eq!(
+        r68_first_data_i18n_after(attr_only, R68_EARN_MARK).as_deref(),
+        Some("kk")
+    );
+    // 没有 `<div>` 起点 ⇒ `None`（不许拿整页当区块）。
+    assert_eq!(
+        r68_element_block("id=\"dash-trend-legend\"", R68_LEGEND_ID),
+        None
+    );
+
+    // 绿柱取值变量：只认柱体那一列，且高度必须真是 `h(<标识符>)`。
+    let body = "const c = b.expense || 0, e = b.income || 0;\n'<div class=\"trend-bar earn\" style=\"height:' + h(e) + '%\"></div>'\n";
+    assert_eq!(r68_earn_bar_var(body).as_deref(), Some("e"));
+    assert_eq!(r68_binding_rhs(body, "e").as_deref(), Some("b.income || 0"));
+    assert_eq!(
+        r68_earn_bar_var("trend-bar earn\" style=\"height:' + h(c + 1)"),
+        None,
+        "非标识符的表达式被当成了变量名"
+    );
+
+    // 绑定右值必须在**标识符边界**上匹配：`const date = x;` 里的 `e = ` 不是 `e` 的绑定。
+    assert_eq!(r68_binding_rhs("const date = x;", "e"), None);
+    assert_eq!(
+        r68_binding_rhs(", e = 1, f = 2;", "e").as_deref(),
+        Some("1")
+    );
+
+    // tooltip 取的是**最近**的那个键（同一行还有消费那一支）。
+    let tip = "const tip = T(\"a.consume\") + D.fmt(c) + \" / \" + T(\"a.income\") + D.fmt(e);";
+    assert_eq!(r68_tooltip_key(tip, "e").as_deref(), Some("a.income"));
+}
+
+/// 变异体①：把绿柱接到 `.earn` 上（「改数据迁就旧名字」）—— 只翻 R1。
+fn r68_variant_earn_field(app: &str) -> String {
+    let body = js_function_body(app, "renderDashTrend").expect("`renderDashTrend` 未找到");
+    let old = "e = b.income || 0";
+    assert_eq!(body.matches(old).count(), 1, "绿柱取值的锚点不唯一");
+    app.replacen(body, &body.replace(old, "e = b.earn || 0"), 1)
+}
+
+/// 变异体②/③：把语言包里**第一处**（zh 包）该键的值换成别的词。
+fn r68_variant_pack_value(pack: &str, key: &str, value: &str) -> String {
+    let needle = format!("\"{key}\": \"");
+    let at = pack.find(&needle).expect("变异锚点：语言包里找不到该键") + needle.len();
+    let end = pack[at..].find('"').expect("变异锚点：值未收尾") + at;
+    format!("{}{}{}", &pack[..at], value, &pack[end..])
+}
+
+/// 变异体④：把 earn-only 卡的供数也接到 `income` 上 —— 只翻 R4。
+fn r68_variant_widen_card(app: &str) -> String {
+    let body = js_function_body(app, "renderDashboard").expect("`renderDashboard` 未找到");
+    let old = format!("Live.wallet.{R68_EARN_FIELD}");
+    assert_eq!(body.matches(old.as_str()).count(), 1, "供数锚点不唯一");
+    let new = format!("Live.wallet.month_{R68_INCOME_FIELD}");
+    app.replacen(body, &body.replace(old.as_str(), new.as_str()), 1)
+}

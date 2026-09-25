@@ -135,6 +135,8 @@ ui/
 
 - **零外部依赖**：手写 SVG（`sparkline(values, opts)`），`--accent` / `--ok` / `--danger` 等现有 CSS 变量着色；每点带 `<title>`（hover 显示日期 + 数值）；
 - **使用**：`lastDayLabels(n)` 生成近 n 天 MM-DD 标签；`dailySeries(days, filter)` 按天聚合交易点数；仪表盘「本月点数变化」画近 7 日净变化折线（渐变填充），「我的共享」画收益累计趋势（`--ok` 色，无数据保留空状态）；
+- **一条序列一个词（一条事实一个名字）**：仪表盘「近 14 天消耗与收益」的**绿柱**画的是 `/api/transactions/trend` 的 **`income`** 列 —— 即方向白名单 `earn + topup + gift`（`src/routes/wallet.rs` 的 `TX_INCOME_TYPES`），**不是** `type='earn'`。它与交易页趋势卡是**同一条序列**，故两边必须用**同一个词**：图例 `data-i18n="dash.trend.income"` 与交易页图例 `tx.trend.metric.income` 的**包值逐字相同**（图中 tooltip 亦用同一键）。同屏那张 `dash.earnings`（「共享收益」）才是 earn-only，两者的名字**不得相同**。
+  由 `state_gate::the_dashboard_trend_names_its_series_the_way_the_transactions_trend_names_it` 钉住。**射程（如实）**：该门禁是**词法**的 —— 它证「绿柱读的是 `income` 字段」「三个载体是同**一个键**」「该键与交易页那条同值」「earn-only 卡另有一名」，**不证**屏幕上那一刻的数值（那一半归 jsdom 探针）；扫描器不解析正则字面量与模板串。
 - 样式 `.sparkline`（宽 100% / 高 38px）。
 
 ## 主题约定（v1.18，rant 2026-08-17T18:06:09 B 亮色主题）

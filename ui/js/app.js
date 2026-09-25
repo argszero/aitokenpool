@@ -698,7 +698,12 @@
   }
 
   // 仪表盘「近 14 天消耗与收益」双色柱图（rant 2026-09-11T16:23:43 第 3 节：仪表盘新增
-  // 双色趋势图，消费=accent / 共享收益=ok，含 .legend 图例，柱高按当日 max 归一，最小高度 2%）。
+  // 双色趋势图，消费=accent / 收益=ok，含 .legend 图例，柱高按当日 max 归一，最小高度 2%）。
+  // ⚠️ 绿柱画的是后端 **`income`** 那一列 —— 即方向白名单 `earn + topup + gift`（`wallet.rs`
+  // 的 `TX_INCOME_TYPES`），**不是** `type='earn'` 的共享收益。它和交易页趋势卡是同一条序列，
+  // 因此两边必须用**同一个词**（`dash.trend.income`，与 `tx.trend.metric.income` 逐字同值）；
+  // 同屏那张 `dash.earnings` 卡才是 earn-only，两者的名字不得相同（见
+  // `state_gate::the_dashboard_trend_names_its_series_the_way_the_transactions_trend_names_it`）。
   // 零 mock：数据源为 /api/transactions/trend（income/expense 已按日聚合，口径与交易页一致），
   // 登录态失败 → 空态文案，绝不回落 D. 静态序列（rant 15:54:06）。
   //
@@ -744,7 +749,7 @@
       const c = b.expense || 0, e = b.income || 0;
       const day = bucketLabel(b.t, "day");
       const h = (v) => Math.max(2, (v / max) * 100).toFixed(1);
-      const tip = day + " " + T("dash.trend.consume") + " " + D.fmt(c) + " / " + T("dash.trend.earn") + " " + D.fmt(e);
+      const tip = day + " " + T("dash.trend.consume") + " " + D.fmt(c) + " / " + T("dash.trend.income") + " " + D.fmt(e);
       return '<div class="trend-col" title="' + esc(tip) + '"><div class="trend-pair">' +
         '<div class="trend-bar consume" style="height:' + h(c) + '%"></div>' +
         '<div class="trend-bar earn" style="height:' + h(e) + '%"></div>' +
