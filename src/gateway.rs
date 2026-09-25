@@ -212,7 +212,20 @@ fn settle_usage(
             );
             (pts, cost)
         }
-        None => (0.0, 0.0),
+        None => {
+            // 计价门（R156）：`forward`/`forward_stream` 已在发往上游之前滤掉取不到价的
+            // (provider, model)，所以正常路径不该走到这里。真到了说明目录在「预检取价」与
+            // 「结算」之间变了，或有别的调用点绕过了预检 —— 此时按 0 计费等于把这次真实
+            // 调用白送出去，必须留下可追溯的痕迹（「缺数据」不能和「数据为 0」共用同一
+            // 载体，见 stream-usage-billing 轴），而不是静默免费。
+            log::error!(
+                "计价失败（models 目录中无 provider/model）key_id={} provider={} model={} ⇒ 本次按 0 计费",
+                key.id,
+                key.provider,
+                model
+            );
+            (0.0, 0.0)
+        }
     };
     let params = billing::SettleParams {
         consumer_id: auth.user_id,
@@ -259,6 +272,27 @@ async fn forward(
         return Err(err_json(
             StatusCode::SERVICE_UNAVAILABLE,
             "该模型暂无可用 key",
+        ));
+    }
+
+    // 计价门（R156）：路由只认 `model`（`find_keys_by_model` 的 SQL 里没有 provider），计费却按
+    // `(key.provider, model)` 查 `models` 目录 —— 而**目录变更不维护 `keys`**：管理页改
+    // provider/model、删目录行，或 config 收缩触发的启动同步，都能让一把 `status='on'` 的 key
+    // 落到「有 key、没有价」的状态。那种调用会 200 正常返回，而 `settle_usage` 取到
+    // `None => (0.0, 0.0)` ⇒ 消费者不扣点、分享者无收益：一次真实调用静默变成免费。
+    // 创建入口（C2065 `sharing::create`）已拒绝这样的 (provider, model)；这里是同一不变量的
+    // 第二扇门，覆盖目录变更这条路径 —— 候选 key 逐个对目录取价，取不到的**不进候选集**
+    // （否则粘性/随机可能正好选中它），全被滤掉即该模型不可计价：**发往上游之前**就拒绝。
+    let keys: Vec<dao::KeyRow> = {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        keys.into_iter()
+            .filter(|k| dao::get_model_price(&conn, &k.provider, model).is_some())
+            .collect()
+    };
+    if keys.is_empty() {
+        return Err(err_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider 与 model 不在模型目录中，无法计价",
         ));
     }
 
@@ -471,6 +505,22 @@ async fn forward_stream(
         return Err(err_json(
             StatusCode::SERVICE_UNAVAILABLE,
             "该模型暂无可用 key",
+        ));
+    }
+
+    // 计价门（R156，与 `forward` 同一条不变量、同一句话）：候选 key 必须能在 `models`
+    // 目录里取到 (provider, model) 的价，否则这次调用会在 `settle_usage` 里落到
+    // `None => (0.0, 0.0)` 而静默免费 —— 流式与非流式是两扇门，必须同口径。
+    let keys: Vec<dao::KeyRow> = {
+        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+        keys.into_iter()
+            .filter(|k| dao::get_model_price(&conn, &k.provider, model).is_some())
+            .collect()
+    };
+    if keys.is_empty() {
+        return Err(err_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider 与 model 不在模型目录中，无法计价",
         ));
     }
 
@@ -1375,6 +1425,13 @@ mod tests {
     async fn dead_upstream_failover_503() {
         // 两个 key 都指向不可达端口 → 3 次尝试全失败 → 503 + 冷却 2 个 key
         let st = test_state("dead", "test-dead", "http://127.0.0.1:9");
+        // R156：计价门要求 (provider, model) 在目录里可取价，否则在发往上游前就被拒（503）。
+        // 本测试要的是**上游全挂**那条路径，故先给 `dead-model` 一行价（`insert_key` 的 provider
+        // 是 'test'）。
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "dead-model", 10.0, 20.0);
+        }
         insert_key(&st, 100, 1, "dead-model", "test-dead");
         insert_key(&st, 101, 1, "dead-model", "test-dead");
         let key = login_key(st.clone()).await;
@@ -1397,6 +1454,40 @@ mod tests {
             .unwrap()
             .contains("暂无可用 key"));
         assert_eq!(st.router.cooldown_len(), 2, "两次失败后两个 key 均进入冷却");
+    }
+
+    #[tokio::test]
+    async fn unpriced_model_503_before_upstream() {
+        // R156：「可路由」与「可计价」是两扇门。key 在（model 匹配、status=on），但
+        // (provider, model) 不在 `models` 目录里 ⇒ 必须在**发往上游之前**拒绝，而不是照常
+        // 转发、结算时落到 `None => (0.0, 0.0)` 静默免费。
+        let st = test_state("unpriced", "test-unpriced", "http://127.0.0.1:9");
+        insert_key(&st, 200, 1, "no-price-model", "test-unpriced");
+        let key = login_key(st.clone()).await;
+        let (s, body) = post_raw(
+            st.clone(),
+            "/v1/chat/completions",
+            r#"{"model":"no-price-model"}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            v["error"]["message"].as_str().unwrap().contains("无法计价"),
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            st.router.cooldown_len(),
+            0,
+            "被计价门拒绝的调用不该碰上游，更不该把 key 打进冷却"
+        );
     }
 
     #[tokio::test]
