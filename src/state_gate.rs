@@ -16311,3 +16311,372 @@ fn r163_variant_self_call(app: &str) -> String {
 fn r163_variant_defect(app: &str) -> String {
     r163_variant_drop_fallback(&r163_variant_refusal_falls_through(app))
 }
+
+// ── C2174：运营「上游 key 状态」卡的行计数必须用这张卡自己的名词 ────────────────────────────────
+
+/// 这一卡的三个键。**标题是名词的唯一来源**（见 [`ops_key_rows_noun`]）。
+const OPS_KEYS_TITLE: &str = "ops.keys.title";
+const OPS_KEYS_COUNT: &str = "ops.keys.count";
+const OPS_KEYS_SUB: &str = "ops.keys.sub";
+
+/// 卡片自己给这批行的**名词**：`ops.keys.title` 去掉最后一个空格分隔的 token。
+///
+/// zh「上游 key 状态」→「上游 key」；en「Upstream key status」→「Upstream key」。
+/// 门禁里**零手写**这些词 —— 改称谓只改语言包，不改门禁（否则改一次词就要改一次门禁）。
+/// 标题只剩一个 token ⇒ `None`（「去掉末词」不再是可靠的派生，而门禁宁可判前置失败）。
+fn ops_key_rows_noun(title: &str) -> Option<String> {
+    let toks: Vec<&str> = title.split_whitespace().collect();
+    if toks.len() < 2 {
+        return None;
+    }
+    let noun = toks[..toks.len() - 1].join(" ");
+    if noun.is_empty() {
+        None
+    } else {
+        Some(noun)
+    }
+}
+
+/// `haystack` 是否含 `noun`（**ASCII 大小写不敏感** —— en 的「Upstream key」要认「upstream keys」；
+/// CJK 不受影响）。
+fn ops_noun_mentioned(haystack: &str, noun: &str) -> bool {
+    haystack
+        .to_ascii_lowercase()
+        .contains(&noun.to_ascii_lowercase())
+}
+
+/// 语言包区段里**真的当过键**的 `ops.keys.*` 名字（只认 `"key": ` 这种形状 ——
+/// 注释里提到的键名不算，见坑 #296 家族）。
+fn ops_keys_in(region: &str) -> BTreeSet<String> {
+    // 先剥注释：语言包区段里现在有解释性散文（本卡的三行 `//` 就在其中），而注释里写下的
+    // `"ops.keys.x": ` 不是键（坑 #296 家族 —— 注释里的表达式会把计数带偏）。
+    let region = code_text(region);
+    let region = region.as_str();
+    let mut out = BTreeSet::new();
+    let mut from = 0usize;
+    while let Some(rel) = region[from..].find("\"ops.keys.") {
+        let at = from + rel + 1;
+        let rest = &region[at..];
+        let end = match rest.find('"') {
+            Some(e) => e,
+            None => break,
+        };
+        if rest[end + 1..].trim_start().starts_with(':') {
+            out.insert(rest[..end].to_string());
+        }
+        from = at + end + 1;
+    }
+    out
+}
+
+/// 一个语言包在这一卡上的取值与派生名词。
+struct R2174Pack {
+    title: Option<String>,
+    noun: Option<String>,
+    count: Option<String>,
+    sub: Option<String>,
+    keys: BTreeSet<String>,
+}
+
+fn r2174_pack(region: &str) -> R2174Pack {
+    let title = pack_string(region, OPS_KEYS_TITLE);
+    let noun = title.as_deref().and_then(ops_key_rows_noun);
+    R2174Pack {
+        title,
+        noun,
+        count: pack_string(region, OPS_KEYS_COUNT),
+        sub: pack_string(region, OPS_KEYS_SUB),
+        keys: ops_keys_in(region),
+    }
+}
+
+/// 一次读取的全部证据与四条判词（R1 的产物是两包的 `noun`，不是判词）。
+struct R2174Reading {
+    zh: R2174Pack,
+    en: R2174Pack,
+    r2: bool,
+    r3: bool,
+    r4: bool,
+    r5: bool,
+}
+
+impl R2174Reading {
+    fn report(&self) -> String {
+        format!(
+            "r2={} r3={} r4={} r5={} | zh noun={:?} count={:?} sub={:?} | en noun={:?} count={:?} sub={:?}",
+            self.r2,
+            self.r3,
+            self.r4,
+            self.r5,
+            self.zh.noun,
+            self.zh.count,
+            self.zh.sub,
+            self.en.noun,
+            self.en.count,
+            self.en.sub
+        )
+    }
+}
+
+/// 读三份制品（语言包 / markup / 渲染器），导出四条判词。名册与期望值全部**派生**：
+/// 名词来自标题、键集来自语言包、渲染器与 markup 的存在性来自那两个文件本身。
+fn r2174_read(pack: &str, html: &str, app: &str) -> R2174Reading {
+    let zh = r2174_pack(pack_region_strict(pack, ZH_PACK_START, EN_PACK_START));
+    let en = r2174_pack(pack_region_strict(pack, EN_PACK_START, PACK_END));
+
+    let named = |p: &R2174Pack, v: &Option<String>| match (p.noun.as_deref(), v.as_deref()) {
+        (Some(n), Some(text)) => ops_noun_mentioned(text, n),
+        _ => false,
+    };
+
+    // R4（前置，防空集/空语料假绿 —— 坑 #68 家族）：两包的三个串都取到、名词派生成功且**确实
+    // 短了**、两包的 `ops.keys.*` 键集相等且非空、三份语料各自携带这张卡的一部分。
+    let r4 = zh.title.is_some()
+        && zh.count.is_some()
+        && zh.sub.is_some()
+        && en.title.is_some()
+        && en.count.is_some()
+        && en.sub.is_some()
+        && zh.noun.is_some()
+        && en.noun.is_some()
+        && zh.noun != zh.title
+        && en.noun != en.title
+        && !zh.keys.is_empty()
+        && zh.keys == en.keys
+        && html.contains(&format!("data-i18n=\"{OPS_KEYS_TITLE}\""))
+        && app.contains(&format!("T(\"{OPS_KEYS_COUNT}\""));
+
+    // R5（阳性对照）：计数行必须**仍**带两个占位符 —— 挡住「把计数行删掉 / 删掉一个数」那种
+    // 「把承诺删掉」的化妆式修法（同 C2172 的 R5）。
+    let r5 = zh
+        .count
+        .as_deref()
+        .is_some_and(|v| v.contains("{total}") && v.contains("{on}"))
+        && en
+            .count
+            .as_deref()
+            .is_some_and(|v| v.contains("{total}") && v.contains("{on}"));
+
+    R2174Reading {
+        r2: named(&zh, &zh.count) && named(&en, &en.count),
+        r3: named(&zh, &zh.sub) && named(&en, &en.sub),
+        r4,
+        r5,
+        zh,
+        en,
+    }
+}
+
+/// 轴：运营「上游 key 状态」卡的行计数说的是它数的那批行。
+///
+/// `/api/ops/runtime` 的 `key_health` 每行给 `{provider,total,on,off}`，其中 `total` 是
+/// `COUNT(*)`（**全部状态**：`on` / `paused` / `off`＝软删），而同屏正上方的统计卡
+/// （`ops.stats.keys`「上架 key 数」）数的是 `WHERE status = 'on'`。产品把「上架」严格绑给
+/// `status='on'`（共享页「上架中」；含非 `on` 行的计数在那里叫「历史」）⇒ 这张卡的行若把
+/// `total` 称作「上架 key」，同一个词在同一个视口里就带了两个数。
+///
+/// 三条规则（R2/R3/R5）各有各的牙，见 [`the_r2174_rules_have_teeth`]。
+#[test]
+fn the_ops_key_rows_are_named_the_way_their_own_card_names_them() {
+    let rd = r2174_read(I18N_JS, INDEX_HTML, APP_JS);
+    assert!(
+        rd.r4,
+        "前置不成立 —— 门禁的语料或键集已失真（空集上的断言会假绿）：{}",
+        rd.report()
+    );
+    assert!(
+        rd.r2,
+        "运营「上游 key 状态」卡的行计数没有用这张卡自己的名词 —— 它数的是**全部状态**的上游 key\
+         （含 `paused` / `off`），而「上架 key」＝ `status='on'`（同屏「上架 key 数」那张卡与共享页\
+         「上架中」用的就是后者）：{}",
+        rd.report()
+    );
+    assert!(
+        rd.r3,
+        "同一张卡的副标题（`{OPS_KEYS_SUB}`）给的是**同一个数**的另一个称呼，也必须用卡片自己的\
+         名词 —— 只修计数行会在副标题留下同一处错词：{}",
+        rd.report()
+    );
+    assert!(
+        rd.r5,
+        "计数行丢了占位符（`{{total}}` / `{{on}}`）—— 「把承诺删掉」不是修：{}",
+        rd.report()
+    );
+}
+
+/// 三条规则的**牙**：每个合成变异体只打翻它针对的那一条（基线＝已知为绿的活树）。
+///
+/// ⚠️ 变异体一律从**活树**构造，每个锚点先断言唯一（#612 家族）：变体没生效时构造器先响，
+/// 而不是让某条腿因错误的原因变绿（#605）。
+#[test]
+fn the_r2174_rules_have_teeth() {
+    let live = r2174_read(I18N_JS, INDEX_HTML, APP_JS);
+    assert!(
+        live.r2 && live.r3 && live.r4 && live.r5,
+        "基线不是绿的 —— 变异体的读数无从解释：{}",
+        live.report()
+    );
+
+    // ① 计数行退回缺陷措辞（两个包一起退，那是缺陷的忠实形状）⇒ 只翻 R2。
+    let v = r2174_variant_count_reverts(I18N_JS);
+    let rd = r2174_read(&v, INDEX_HTML, APP_JS);
+    assert_eq!(
+        (rd.r2, rd.r3, rd.r5),
+        (false, true, true),
+        "① 计数行的名词退回「上架家族」只应翻掉 R2：{}",
+        rd.report()
+    );
+
+    // ② 只把副标题退回缺陷措辞 ⇒ 只翻 R3。
+    let v = r2174_variant_sub_reverts(I18N_JS);
+    let rd = r2174_read(&v, INDEX_HTML, APP_JS);
+    assert_eq!(
+        (rd.r2, rd.r3, rd.r5),
+        (true, false, true),
+        "② 副标题的名词退回「上架家族」只应翻掉 R3：{}",
+        rd.report()
+    );
+
+    // ③ 计数行丢一个占位符 ⇒ 只翻 R5。
+    let v = r2174_variant_placeholder_dropped(I18N_JS);
+    let rd = r2174_read(&v, INDEX_HTML, APP_JS);
+    assert_eq!(
+        (rd.r2, rd.r3, rd.r5),
+        (true, true, false),
+        "③ 丢掉 `{{on}}` 只应翻掉 R5：{}",
+        rd.report()
+    );
+
+    // ④ **声明为盲**的一条腿：把**称谓**整体改成与数据不符的那一族 —— 标题 ＋ 计数行 ＋ 副标题
+    //    一起改、彼此自洽 ⇒ 门禁**全绿**。这条词法规则挡不住「改名而不改数据」的竞争修法
+    //    （挡它的是设计基线原型写的就是「上游 key」，以及 jsdom 探针的 `m_card_widen` 腿）。
+    //    这里断言它**确实**全绿 —— 盲区要被测量，不能被当成「反正不会发生」。
+    let v = r2174_variant_coherent_wrong_rename(I18N_JS);
+    let rd = r2174_read(&v, INDEX_HTML, APP_JS);
+    assert!(
+        rd.r2 && rd.r3 && rd.r4 && rd.r5,
+        "④ 是**声明为盲**的腿：它必须真的全绿（否则它就不是盲区，而是我们的判别式漏了它）：{}",
+        rd.report()
+    );
+}
+
+/// 提取器自证：名词派生与键扫描在**合成输入**上按声明工作（与活树无关）。
+#[test]
+fn the_r2174_scanners_have_teeth() {
+    // 名词 = 标题去掉末词（两种语言的形状）。
+    assert_eq!(
+        ops_key_rows_noun("上游 key 状态").as_deref(),
+        Some("上游 key")
+    );
+    assert_eq!(
+        ops_key_rows_noun("Upstream key status").as_deref(),
+        Some("Upstream key")
+    );
+    // 单 token ⇒ None（派生不可靠，宁判前置失败）。
+    assert_eq!(ops_key_rows_noun("状态"), None);
+    assert_eq!(ops_key_rows_noun(""), None);
+    // 多余空白不改变结果（split_whitespace）。
+    assert_eq!(
+        ops_key_rows_noun("上游  key   状态").as_deref(),
+        Some("上游 key")
+    );
+
+    // 大小写：en 的复数要认单数名词；zh 原样。
+    assert!(ops_noun_mentioned(
+        "Total upstream keys here",
+        "Upstream key"
+    ));
+    assert!(ops_noun_mentioned(
+        "{total} 个上游 key · {on} 个启用",
+        "上游 key"
+    ));
+    assert!(!ops_noun_mentioned("{total} listed keys", "upstream key"));
+
+    // 键扫描只认 `"key": ` 形状：注释里提到的键名不算。
+    let synthetic = "    // \"ops.keys.fake\": 这是注释\n    \"ops.keys.count\": \"x\",\n";
+    let keys = ops_keys_in(synthetic);
+    assert!(
+        keys.contains("ops.keys.count") && !keys.contains("ops.keys.fake"),
+        "键扫描把注释里的键名当成了真键：{keys:?}"
+    );
+}
+
+/// 变异体①：计数行退回缺陷措辞（`total` 被称作「上架 key」）。
+fn r2174_variant_count_reverts(pack: &str) -> String {
+    let zh = "    \"ops.keys.count\": \"{total} 个上游 key · {on} 个启用\",\n";
+    let en = "    \"ops.keys.count\": \"{total} upstream keys · {on} enabled\",\n";
+    assert_eq!(pack.matches(zh).count(), 1, "zh 计数行锚点不唯一");
+    assert_eq!(pack.matches(en).count(), 1, "en 计数行锚点不唯一");
+    pack.replace(
+        zh,
+        "    \"ops.keys.count\": \"{total} 个上架 key · {on} 个启用\",\n",
+    )
+    .replace(
+        en,
+        "    \"ops.keys.count\": \"{total} listed keys · {on} enabled\",\n",
+    )
+}
+
+/// 变异体②：只把副标题退回缺陷措辞（计数行不动）。
+fn r2174_variant_sub_reverts(pack: &str) -> String {
+    let zh = "    \"ops.keys.sub\": \"按厂商聚合 · 启用状态与总上游 key 数\",\n";
+    let en =
+        "    \"ops.keys.sub\": \"Aggregated by provider · enabled vs. total upstream keys\",\n";
+    assert_eq!(pack.matches(zh).count(), 1, "zh 副标题锚点不唯一");
+    assert_eq!(pack.matches(en).count(), 1, "en 副标题锚点不唯一");
+    pack.replace(
+        zh,
+        "    \"ops.keys.sub\": \"按厂商聚合 · 启用状态与总上架数\",\n",
+    )
+    .replace(
+        en,
+        "    \"ops.keys.sub\": \"Aggregated by provider · enabled vs. total listings\",\n",
+    )
+}
+
+/// 变异体③：计数行丢掉 `{on}` 占位符（词没变）⇒ 只应翻 R5。
+fn r2174_variant_placeholder_dropped(pack: &str) -> String {
+    let zh = "    \"ops.keys.count\": \"{total} 个上游 key · {on} 个启用\",\n";
+    assert_eq!(pack.matches(zh).count(), 1, "zh 计数行锚点不唯一");
+    pack.replace(zh, "    \"ops.keys.count\": \"{total} 个上游 key\",\n")
+}
+
+/// 变异体④（**声明为盲**的腿）：把称谓整体改成与数据不符的那一族 —— 标题、计数行、副标题
+/// 一起改且彼此自洽 ⇒ 门禁全绿。（与探针的 `m_card_widen` 腿配对：那条腿在运行期拒绝它。）
+fn r2174_variant_coherent_wrong_rename(pack: &str) -> String {
+    let anchors = [
+        "    \"ops.keys.title\": \"上游 key 状态\",\n",
+        "    \"ops.keys.title\": \"Upstream key status\",\n",
+        "    \"ops.keys.count\": \"{total} 个上游 key · {on} 个启用\",\n",
+        "    \"ops.keys.count\": \"{total} upstream keys · {on} enabled\",\n",
+        "    \"ops.keys.sub\": \"按厂商聚合 · 启用状态与总上游 key 数\",\n",
+        "    \"ops.keys.sub\": \"Aggregated by provider · enabled vs. total upstream keys\",\n",
+    ];
+    for a in anchors {
+        assert_eq!(pack.matches(a).count(), 1, "变异体④锚点不唯一：{a:?}");
+    }
+    pack.replace(
+        "    \"ops.keys.title\": \"上游 key 状态\",\n",
+        "    \"ops.keys.title\": \"上架 key 状态\",\n",
+    )
+    .replace(
+        "    \"ops.keys.title\": \"Upstream key status\",\n",
+        "    \"ops.keys.title\": \"Listed key status\",\n",
+    )
+    .replace(
+        "    \"ops.keys.count\": \"{total} 个上游 key · {on} 个启用\",\n",
+        "    \"ops.keys.count\": \"{total} 个上架 key · {on} 个启用\",\n",
+    )
+    .replace(
+        "    \"ops.keys.count\": \"{total} upstream keys · {on} enabled\",\n",
+        "    \"ops.keys.count\": \"{total} listed keys · {on} enabled\",\n",
+    )
+    .replace(
+        "    \"ops.keys.sub\": \"按厂商聚合 · 启用状态与总上游 key 数\",\n",
+        "    \"ops.keys.sub\": \"按厂商聚合 · 启用状态与总上架 key 数\",\n",
+    )
+    .replace(
+        "    \"ops.keys.sub\": \"Aggregated by provider · enabled vs. total upstream keys\",\n",
+        "    \"ops.keys.sub\": \"Aggregated by provider · enabled vs. total listed keys\",\n",
+    )
+}
