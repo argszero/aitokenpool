@@ -31,3 +31,39 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+  # Cargo.toml 声明 rust-version = "1.86"，CONTRIBUTING.md 把它写成对贡献者的契约，而上面的
+  # job 只装最新 stable —— 声明因此没有任何执行者：clippy 的修复建议会推着代码越过这条线
+  # （例如 unsigned_is_multiple_of 是 1.87 才稳定的 API），在 stable 上仍然是全绿。
+  # 本 job 只装「被声明的那一版」，让该契约第一次变成一道会红的门禁。
+  msrv:
+    name: msrv (the version Cargo.toml declares)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the declared MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.86
+
+      # 声明一旦抬高，这里必须同步：否则本 job 测着旧版本、而 Cargo.toml 已经声明新高，
+      # 等于又退回「声明没有执行者」。这一步把两者钉在一起。
+      - name: Assert the installed toolchain is the declared rust-version
+        run: |
+          declared=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          installed=$(rustc --version | cut -d' ' -f2)
+          echo "Cargo.toml rust-version = ${declared}; installed rustc = ${installed}"
+          case "$installed" in
+            "$declared"|"$declared".*) ;;
+            *)
+              echo "::error::Cargo.toml declares rust-version \"${declared}\" but this job installs rustc ${installed} — bump the toolchain in .github/workflows/ci.yml"
+              exit 1
+              ;;
+          esac
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # --locked：钉住仓库里那份 Cargo.lock —— 否则 lockfile 与 Cargo.toml 一旦不一致，
+      # runner 会就地重新解析、构建照样通过，而提交进仓库的那份 lockfile 仍是坏的。
+      - name: Build with the declared MSRV
+        run: cargo build --locked
