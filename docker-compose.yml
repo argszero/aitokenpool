@@ -1,4 +1,4 @@
-# AITokenPool — Docker Compose 一键部署（v0.6.6）
+# AITokenPool — Docker Compose 一键部署（v0.7.28）
 #
 # 快速开始：
 #   export ATP_MASTER_KEY=$(openssl rand -hex 32)   # 必填，见下方说明
@@ -16,7 +16,7 @@
 services:
   aitokenpool:
     build: .
-    image: aitokenpool:0.6.6
+    image: aitokenpool:0.7.28
     ports:
       - "8080:8080"
     volumes:
