@@ -20,6 +20,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 镜像标签由 git ref 决定（下面 docker/metadata-action 的 type=ref,event=tag），而镜像里的
+      # 二进制自报的是 Cargo.toml 的版本（routes/mod.rs 的 /healthz → env!("CARGO_PKG_VERSION")）。
+      # 两者之间原本没有任何断言：把一个与清单不符的 tag 推上去（或给旧版本补发 tag），就会把
+      # 「名实不符」的镜像发布到 ghcr.io —— 而 README 教的公开拉取路径正是它。这一步在构建之前
+      # 把两者钉在一起：宁可这一趟红，也不要一个标签与内容不一致的镜像。
+      #
+      # 只在 tag 构建时判定：workflow_dispatch 的 GITHUB_REF_NAME 是分支名，拿它比会把手动重发
+      # 误杀。⛔ 版本只从 Cargo.toml 读（不复制到本文件，也不装第三方 action）——跨格式无法
+      # import，能抄的前提是有人守（deploy_gate.rs 守着 compose / Dockerfile 里的副本，本步骤
+      # 守着发行链的输入端）。
+      - name: Refuse a tag that is not the version Cargo.toml declares
+        if: "startsWith(github.ref, 'refs/tags/')"
+        run: |
+          declared=$(awk -F'"' '/^\[package\]/ { in_pkg = 1; next } /^\[/ { in_pkg = 0 } in_pkg && /^version[[:space:]]*=/ { print $2; exit }' Cargo.toml)
+          echo "Cargo.toml version = ${declared}; release tag = ${GITHUB_REF_NAME:-}"
+          if [ "v${declared}" != "${GITHUB_REF_NAME:-}" ]; then
+            echo "::error::release tag \"${GITHUB_REF_NAME:-}\" does not match the version Cargo.toml declares (\"v${declared}\") — the image would be published under a version its own binary does not report"
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
