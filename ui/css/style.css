@@ -1099,7 +1099,8 @@ mark {
 .split > .card + .card, .card-grid > .card + .card, .card-grid-3 > .card + .card { margin-top: 0; }
 
 /* stat-card：原型统计卡（等宽大数值 + 单位 + 可选 delta）；
-   作为 .stat 的别名提供，供 PR4–PR6 直接按原型类名书写 */
+   #154 起以原型规范名取代历史名 .stat（那一整族规则已删，这里**没有**别名规则），
+   供 PR4–PR6 直接按原型类名书写 */
 .stat-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
