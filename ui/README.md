@@ -231,7 +231,7 @@ ui/
 
 ## 登录页约定（v1.19，rant 2026-08-17T20:39:30 G）
 
-- **视觉 polish**：`.login-card .logo` 加大（52px，渐变微光 `box-shadow: 0 0 0 1px rgba(78,205,196,.35), 0 0 18px rgba(78,205,196,.35)`）；`.login-brand h1` 22px；`.login-form .input:focus` 加 `0 0 0 3px var(--accent-soft)` 聚焦光晕（深/亮主题通用）；
+- **视觉 polish**：`.login-form .input:focus` 加 `0 0 0 3px var(--accent-soft)` 聚焦光晕（深/亮主题通用）；⚠️ 2026-09-11 全站 UI 重设计（`e33bf2e` / #153）更正：本条原先记录的 `.login-card .logo`（52px 渐变微光）与 `.login-brand h1`（22px）已随「单卡片 → 左右分栏」删除 —— logo 现为 `.logo-tile` 圆角方块（无 ring），标题现为 `h1.lb-headline`（`clamp(30px, min(4.4vw, 6.2vh), 54px)`）；
 - **行内校验**：空邮箱 →「请输入邮箱 / 账号」、空密码 →「请输入密码」（复用 `setFieldError`/`field-error` 组件：红边框 + 行内文案 + 聚焦首个错误 + 输入自动清除）；表单 `novalidate` 自管校验；输入框带 id（`#login-email` / `#login-pass`）；
 - **记住我**：`#login-remember` checkbox → localStorage `atp-remember`（登录提交时存，DOMContentLoaded 时还原）；`demo-hint` 小字显示演示账号；
 - 冒烟测试注意：stub 中 `setFieldError` 依赖 `input.parentNode.querySelector(".field-error")` —— stub 的 parentNode 需实现该查询；`insertAdjacentElement` 记录插入元素供断言。
@@ -317,10 +317,9 @@ ui/
 ## 品牌与登录页氛围约定（v1.20，rant 2026-08-17T20:46:57 G）
 
 - **favicon**：`ui/index.html` `<head>` 内 **inline SVG data URI**（`rel="icon" type="image/svg+xml"`）——渐变圆角方块（`#4ecdc4→#2a9d8f`）+ AT 文字，零外部文件；URL 编码（`%23`=#、`%3E`=>、`%3C`=<）；
-- **登录页氛围**：`.login-view::before` = 44px 淡色网格（两个 1px `linear-gradient`）+ **径向 mask**（`radial-gradient(ellipse … #000 25%, transparent 72%)`）边缘淡出，`pointer-events:none`；`.login-view::after` = accent 微光圆（`rgba(78,205,196,.16)` 径向渐变）+ `login-float`（10s `translate` + `scale` 交替动画）；`.login-card { position:relative; z-index:1 }` 浮于氛围层之上；
-- **logo 质感**：`.logo`（登录页 + 侧边栏共用）加 accent 描边 ring（`0 0 0 1.5px rgba(78,205,196,.45)`）+ 外发光（`0 0 14px`）；`.logo::after` 顶部内高光 `inset 0 1px 0 rgba(255,255,255,.30)` + 底部内阴影 `inset 0 -1px 0 rgba(0,0,0,.14)`（`position:relative` 定位基准）；
-- **reduced-motion**：全局规则（`prefers-reduced-motion` 下 `animation-iteration-count:1 !important`）自动让 `login-float` 静止，无需单独规则；
-- 冒烟测试以结构断言为主（favicon data URI 含渐变/AT、::before 网格、::after 动画、logo::after 内高光、reduced-motion 覆盖）。
+- ⚠️ 2026-09-11 全站 UI 重设计（`e33bf2e` / #153，rant 2026-09-11T16:23:43 PR2）更正：本节原先记录的三件氛围装饰已随「单卡片 → 左右分栏」一并删除 —— `.login-view::before`（44px 网格 + 径向 mask）、`.login-view::after`（accent 微光圆）+ `login-float`（10s 动画）、`.logo` 的 accent 描边 ring + `.logo::after` 内高光。这四个选择器在本文件之外（`ui/index.html` / `ui/css/style.css` / `ui/js/`）**零命中**，只剩本文件还在复述；今天登录页的氛围 = 左栏品牌叙事区 `.login-brand`（`.eyebrow` / `h1.lb-headline` / `.lb-points` 卖点药丸 / `.gw` 端点卡）+ 右上角毛玻璃主题切换 `.login-theme`，logo 是 `.logo-tile`（`linear-gradient(135deg, color-mix(in oklch, …))` 圆角方块，无 ring、无 `::after`）；
+- **reduced-motion**：全局规则仍在（`ui/css/style.css` 的 `@media (prefers-reduced-motion: reduce)` ⇒ `animation-duration:.01ms !important` + `animation-iteration-count:1 !important`），全站动画自动静止、登录页无需单独规则（`login-float` 已不存在，本条不再指向具体动画）；
+- 冒烟测试以结构断言为主（favicon data URI 含渐变/AT、reduced-motion 覆盖）。
 
 ## 数据说明
 
