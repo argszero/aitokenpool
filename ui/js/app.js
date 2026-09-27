@@ -843,16 +843,21 @@
 
   // 市场行展开详情（rant 20:39:30 F：max tokens / 1M tokens ≈ N 点换算 / 多 key 故障转移说明）
   function mkDetailHtml(m) {
-    // 零 mock（rant 2026-08-19T15:54:06）：live 行 max/success 后端暂无 → 显示「—」；
-    // 仅游客行可查 data.js MODELS（mock 仅游客）
+    // 零 mock（rant 2026-08-19T15:54:06）：live 行的 max/success 后端暂无 ⇒ max 印「未公布」、
+    // 成功率整句不印（见下面 availTxt）；仅游客行可查 data.js MODELS（mock 仅游客）
     const md = (!m.live) ? D.MODELS.find((x) => x.model === m.model) : null;
     const maxTok = (md && md.max) ? D.fmt(md.max) : T("mk.detail.unpublished");
-    const succ = m.success == null ? "—" : m.success;
+    // 成功率只在**有真实值**时印：`{p}` 被喂进「无数据」标记会印成「成功率 —%」（单位跟着标记走）。
+    // 与同一行单元格同一规则（见 renderMarketplace 里 `m.success != null` 的那个守卫）——
+    // 同一个字段、同一句判据，两处都必须有。
+    const availTxt = m.avail
+      ? (m.success == null ? T("mk.detail.availOn") : T("mk.detail.availOnRate", { p: m.success }))
+      : (m.success == null ? T("mk.detail.availOff") : T("mk.detail.availOffRate", { p: m.success }));
     const items = [
       [T("mk.detail.max"), maxTok],
       [T("mk.detail.price"), T("mk.detail.priceVal", { out: D.fmt(m.out), in: D.fmt(m.in) })],
       [T("mk.detail.ctx"), T("mk.detail.ctxVal", { n: D.ctxFmt(m.ctx) })],
-      [T("mk.detail.avail"), m.avail ? T("mk.detail.availOn", { p: succ }) : T("mk.detail.availOff", { p: succ })],
+      [T("mk.detail.avail"), availTxt],
     ];
     // 高峰时段价（rant 2026-08-20T11:58:40：DeepSeek 高峰 9-12/14-18 北京时翻倍）
     if (m.peak) items.push([T("mk.detail.peak"), T("mk.detail.peakVal", { out: D.fmt(m.peakOut), in: D.fmt(m.peakIn) })]);
