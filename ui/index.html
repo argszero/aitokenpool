@@ -694,7 +694,7 @@
         </div>
         <div class="card">
           <h3 data-i18n="admin.models.list">模型列表</h3>
-          <p class="card-sub" data-i18n="admin.models.sub">厂商 / 模型 / 价格 / 上下文 / 读图——增删改查即时生效；模型删除后该 model 的调用按 0 计费。</p>
+          <p class="card-sub" data-i18n="admin.models.sub">厂商 / 模型 / 价格 / 上下文 / 读图——增删改查即时生效；删除模型后，仍指向它的 key 无法计价，调用会在发往上游前被拒。</p>
           <div class="table-wrap compact">
             <table class="table">
               <thead><tr><th data-i18n="admin.models.col.provider">厂商</th><th data-i18n="admin.models.col.model">模型</th><th class="num" data-i18n="admin.models.col.in">输入价</th><th class="num" data-i18n="admin.models.col.out">输出价</th><th class="num" data-i18n="admin.models.col.ctx">上下文</th><th class="num" data-i18n="admin.models.col.outmax">最大输出</th><th data-i18n="admin.models.col.vision">读图</th><th></th></tr></thead>
@@ -861,7 +861,7 @@
 
 <script src="js/api.js?v=20260914-13"></script>
 <script src="js/data.js?v=20260914-11"></script>
-<script src="js/i18n.js?v=20260927-2"></script>
+<script src="js/i18n.js?v=20260927-3"></script>
 <script src="js/app.js?v=20260927-2"></script>
 </body>
 </html>
