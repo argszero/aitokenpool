@@ -64,6 +64,35 @@
 //! 为什么标题**不算散文**（第二条规则明确把散文划出射程）：它处在文件里机器可读的**结构位**，
 //! 而这个文件的整体职责就是陈述版本。因此**只守标题、不守正文** —— 正文里的资产令牌枚举之类
 //! 仍是散文，走「修数据、不上门禁」。实现与两条伴生测试在文件末尾。
+//!
+//! # 第四条规则（R84）：编译期内嵌（`include_str!`）的目标必须落在 **Docker 构建上下文**里
+//!
+//! `include_str!` 是**编译期**读文件：目标不在构建上下文里，`docker build` 就直接失败
+//!（`couldn't read …`）。而上下文由**两个**东西共同定义 —— Dockerfile 的 `COPY` 源
+//!（哪些路径进得了构建机）与 `.dockerignore`（哪些路径被挡回去）。缺任一条都会漏掉一类。
+//!
+//! 这条属性此前**没有执行者**：`src/**` 的内嵌站点里，发布期可达的只有 `main.rs` 的那一处
+//!（`COPY config ./config` 正是为它加的 —— 理由只写在 `Dockerfile` 的注释里，而**注释不是
+//! 执行者**），其余**全部**落在 `#[cfg(test)]` 模块里，安全的唯一原因就是那个属性
+//!（R84 落地时实测 **7 处**落在上下文之外、无一例外全在测试期模块里：本文件 5 处
+//!〔`docker-compose.yml` / `Dockerfile` / 两份 README / `CHANGELOG.md`〕，`state_gate.rs`
+//! 1 处〔引导原型 HTML〕，加上本条规则自己引的 `../.dockerignore`）。
+//!
+//! 它与 R76（MSRV）/ R80（发行 tag）/ R82（CHANGELOG 标题）是同一族的又一员：**声明有消费者、
+//! 没有执行者**；而且失败点正好落在发行链上 —— `docker-publish.yml` 的 publish job 跑的是真
+//! `docker build`（打 tag 那步会红），README 首推的 `docker compose up -d --build` 同样会失败，
+//! 而 **CI 从不 `docker build`** ⇒ 平时全绿，只有发行/部署才炸。
+//!
+//! **断言**：每一处内嵌，要么目标在上下文里，要么该站点**发布期不可达** —— 所在模块是
+//! `main.rs` 声明的 `#[cfg(test)]` 模块，或站点落在该文件自己的 `#[cfg(test)]` 之后。
+//! 名册从 `src/main.rs` **派生**（不写快照），语料是**运行期走盘** `src/**/*.rs`
+//!（`CARGO_MANIFEST_DIR`，与 `body_limit_gate.rs::source_files` 同型）⇒ 明天新增的源文件
+//! 自动进入射程，没有需要同步的清单。
+//!
+//! **射程（词法，如实记录）**：本规则判的是「该文件的路径进不进得了上下文」与「该站点发布期
+//! 是否可达」—— 它**不**证明 `docker build` 真能跑（那要 Linux 容器，与 R76 同款缺口）、
+//! **不**校验 `COPY` 的目标路径写对没有、也**不**实现 `.dockerignore` 的 `**` 与取反（`!`）
+//! 语义（本仓现用的那 10 行里没有这两者）。实现与三条测试（轴 + 阳性对照 + 规则牙齿）在文件末尾。
 
 /// 编译期读入的部署/配置产物。
 const FILES: &[(&str, &str)] = &[
@@ -715,5 +744,635 @@ fn the_changelog_heading_rule_flags_a_stale_heading() {
     assert_eq!(
         version_headings("## v1.2.3 (x)\n### v9.9.9\n## not-a-version\n## v1.2.3\n"),
         vec![(1, "1.2.3".to_string()), (4, "1.2.3".to_string())]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 第四条规则（R84）：编译期内嵌（`include_str!`）的目标必须在 Docker 构建上下文里
+// ---------------------------------------------------------------------------
+//
+// 动机与射程见文件头的模块文档。要点：
+// - **上下文有两个决定者**：Dockerfile 的 `COPY` 源与 `.dockerignore` 的模式。只看一个
+//   会漏掉一整类 —— 两份 README 与 `CHANGELOG.md` 是被 `*.md` 拿掉的，而
+//   `docker-compose.yml` / `Dockerfile` 是**根本没有** `COPY` 源。
+// - **名册与语料都不写快照**：`#[cfg(test)]` 归属从 `src/main.rs` **派生**；语料**走盘**。
+// - 走盘而不是手写 `include_str!` 清单：手写清单需要额外的「清单完整性」守卫，
+//   `read_dir` 天然覆盖新文件（同 `body_limit_gate.rs::source_files`）。
+
+/// `.dockerignore` 原文 —— 构建上下文的第二个决定者。
+const DOCKERIGNORE: &str = include_str!("../.dockerignore");
+
+/// 词法掩码：把注释（以及可选的字符串正文）替换成**等长**空格 —— **字节长度不变**，
+/// 因此偏移量与原文一一对应（报行号、比生产区都靠这个）。
+///
+/// - `mask_strings = false`：只掩注释（`//` 与可嵌套的 `/* */`）。
+/// - `mask_strings = true` ：连字符串/字符字面量的正文一起掩 —— 用来判断某个关键字是否
+///   落在**代码**位置（字符串里出现的同名字面量不是站点）。
+///
+/// ⚠️ 为什么不能按行截断第一个 `//`：`"https://…"` 里的 `//` 不是注释，而本仓 `src` 里
+/// 就有这种字符串字面量；注释优先于字符串，两者必须在同一个状态机里判。
+fn code_mask(src: &str, mask_strings: bool) -> String {
+    let b = src.as_bytes();
+    let mut out = b.to_vec();
+    let mut i = 0usize;
+    while i < b.len() {
+        if b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+            while i < b.len() && b[i] != b'\n' {
+                out[i] = b' ';
+                i += 1;
+            }
+        } else if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+            let mut depth = 0usize;
+            while i < b.len() {
+                if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                    depth += 1;
+                    out[i] = b' ';
+                    out[i + 1] = b' ';
+                    i += 2;
+                } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                    depth -= 1;
+                    out[i] = b' ';
+                    out[i + 1] = b' ';
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    if b[i] != b'\n' {
+                        out[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+        } else if let Some(len) = raw_string_len(&src[i..]) {
+            if mask_strings {
+                blank(&mut out, i, i + len);
+            }
+            i += len;
+        } else if b[i] == b'"' {
+            let len = string_len(&src[i..]).unwrap_or(b.len() - i);
+            if mask_strings {
+                blank(&mut out, i, i + len);
+            }
+            i += len;
+        } else if b[i] == b'\'' {
+            match char_literal_len(&src[i..]) {
+                Some(len) => {
+                    if mask_strings {
+                        blank(&mut out, i, i + len);
+                    }
+                    i += len;
+                }
+                None => i += 1, // 生命周期标注（`&'static str`）不是字面量
+            }
+        } else {
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// 把 `[from, to)` 的字节换成空格（**不碰换行**，行号才不漂）。
+fn blank(out: &mut [u8], from: usize, to: usize) {
+    let end = to.min(out.len());
+    for x in out[..end].iter_mut().skip(from) {
+        if *x != b'\n' {
+            *x = b' ';
+        }
+    }
+}
+
+/// 原始字符串 `r"…"` / `r#"…"#` / `br#"…"#` 的**整段**长度（含起止引号与井号）。
+fn raw_string_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = if b.first() == Some(&b'b') { 1 } else { 0 };
+    if b.get(i) != Some(&b'r') {
+        return None;
+    }
+    i += 1;
+    let mut hashes = 0usize;
+    while b.get(i) == Some(&b'#') {
+        hashes += 1;
+        i += 1;
+    }
+    if b.get(i) != Some(&b'"') {
+        return None;
+    }
+    i += 1;
+    let mut j = i;
+    while j < b.len() {
+        if b[j] == b'"' {
+            let end = j + 1 + hashes;
+            if end <= b.len() && b[j + 1..end].iter().all(|c| *c == b'#') {
+                return Some(end);
+            }
+        }
+        j += 1;
+    }
+    Some(b.len()) // 未闭合：吃到尾（这样的源码本来就编不过）
+}
+
+/// 普通字符串 `"…"` 的整段长度（含两侧引号；`\"` 不结束）。
+fn string_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'"') {
+        return None;
+    }
+    let mut i = 1usize;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    Some(b.len())
+}
+
+/// 字符字面量 `'x'` / `'\n'` / `'"'` / `'中'` 的整段长度；`None` = 不是字面量。
+fn char_literal_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'\'') {
+        return None;
+    }
+    if b.get(1) == Some(&b'\\') {
+        let mut i = 2usize;
+        while i < b.len() && i < 8 {
+            if b[i] == b'\'' {
+                return Some(i + 1);
+            }
+            i += 1;
+        }
+        return None;
+    }
+    let c = s.get(1..)?.chars().next()?;
+    if c == '\'' {
+        return None;
+    }
+    let end = 1 + c.len_utf8();
+    if b.get(end) == Some(&b'\'') {
+        Some(end + 1)
+    } else {
+        None
+    }
+}
+
+/// `src/**/*.rs`：(仓库相对路径, 文本)。运行期走盘（`CARGO_MANIFEST_DIR`），不依赖工作目录。
+///
+/// ⚠️ **不**跳过 `*_gate.rs`（与 `body_limit_gate.rs::source_files` 不同）：本规则要判的
+/// 正是那些门禁模块自己的内嵌站点，跳过它们等于把要守的东西从语料里删掉。
+fn rust_sources() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, root, out);
+            } else if p.extension().map(|x| x == "rs").unwrap_or(false) {
+                let rel = p
+                    .strip_prefix(root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if let Ok(text) = std::fs::read_to_string(&p) {
+                    out.push((format!("src/{rel}"), text));
+                }
+            }
+        }
+    }
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut out = Vec::new();
+    walk(&root, &root, &mut out);
+    out.sort();
+    out
+}
+
+/// `include_str!` / `include_bytes!` 的站点：`(行号, 字节偏移, 目标字面量)`。
+///
+/// **只在代码位置认定站点**：注释里的（本仓 8 处）与字符串正文里的同名字面量都不算。
+/// 后者不是假想 —— 本文件自己的测试夹具就是字符串里的 `include_str!("…")`：R84 实测，
+/// 「按行截断 `//`」的旧写法把它们读成站点，还读出 `…CHANGELOG.md\` 这种带反斜杠的目标。
+fn include_sites(src: &str) -> Vec<(usize, usize, String)> {
+    let no_comments = code_mask(src, false);
+    let code_only = code_mask(src, true);
+    let mut out = Vec::new();
+    for kw in ["include_str!(", "include_bytes!("] {
+        let mut from = 0usize;
+        while let Some(rel) = no_comments[from..].find(kw) {
+            let at = from + rel;
+            // 关键字本身必须落在代码里：字符串正文在 code_only 里已被掩成空格
+            if code_only.as_bytes().get(at) != Some(&b' ') {
+                if let Some(target) = literal_at(src, at + kw.len()) {
+                    let line = src[..at].matches('\n').count() + 1;
+                    out.push((line, at, target));
+                }
+            }
+            from = at + kw.len();
+        }
+    }
+    out.sort_by_key(|(_, off, _)| *off);
+    out
+}
+
+/// 从 `pos` 起解析一个字面量实参（跳过空白；支持 `"…"` 与 `r#"…"#`）。
+///
+/// 认不出来的形态（如 `b"…"`）返回 `None` ⇒ 该站点不入名册 —— 所以阳性对照断言的是
+/// **站点的准确条数**，任何形态漏读都会让那条断言变红。
+fn literal_at(src: &str, pos: usize) -> Option<String> {
+    let rest = src.get(pos..)?;
+    let trimmed = rest.trim_start();
+    if let Some(len) = raw_string_len(trimmed) {
+        let raw = trimmed.get(..len)?;
+        let q = raw.find('"')?;
+        let hashes = raw[..q].chars().filter(|c| *c == '#').count();
+        let body_end = raw.len().checked_sub(1 + hashes)?;
+        return Some(raw[q + 1..body_end].to_string());
+    }
+    if trimmed.starts_with('"') {
+        let len = string_len(trimmed)?;
+        let body = trimmed.get(1..len.checked_sub(1)?)?;
+        return Some(body.replace("\\\"", "\"").replace("\\\\", "\\"));
+    }
+    None
+}
+
+/// 生产区（最后一个行首 `#[cfg(test)]` 之前）在**掩码文本**里的长度。
+///
+/// 切割规则与 `body_limit_gate.rs::production_region` 刻意一致：两个门禁对「生产区」不该
+/// 有两个口径。（取**最后**一个而非第一个 —— 顶格的 `#[cfg(test)] mod X;` 出现在 `main.rs` 顶部。）
+fn release_region_len(masked: &str) -> usize {
+    match masked.rfind("\n#[cfg(test)]") {
+        Some(i) => i,
+        None => masked.len(),
+    }
+}
+
+/// `main.rs` 里带 `#[cfg(test)]` 的模块名（`mod X;` 的**紧前一行**是 `#[cfg(test)]`）。
+///
+/// 块模块（`mod tests {`）不收集 —— 它没有对应文件，是文件内的测试模块。
+fn test_only_modules(main_rs: &str) -> Vec<String> {
+    let lines: Vec<&str> = main_rs.lines().collect();
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some(name) = line
+            .trim()
+            .strip_prefix("mod ")
+            .and_then(|r| r.strip_suffix(';'))
+        else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        if i > 0 && lines[i - 1].trim() == "#[cfg(test)]" {
+            out.push(name.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// 文件所属的**顶层**模块名（`src/routes/admin.rs` → `routes`；`src/deploy_gate.rs` → `deploy_gate`）。
+fn top_module(rel: &str) -> String {
+    let p = rel.strip_prefix("src/").unwrap_or(rel);
+    match p.split_once('/') {
+        Some((first, _)) => first.to_string(),
+        None => p.trim_end_matches(".rs").to_string(),
+    }
+}
+
+/// 以 `base_dir` 为基准解析内嵌的相对路径（Rust 语义：`include_str!` 相对**包含者所在目录**）。
+fn resolve_include(base_dir: &str, rel: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in base_dir.split('/').chain(rel.split('/')) {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}
+
+/// Dockerfile 的构建上下文 `COPY` 源。跳过 `COPY --from=…`（跨阶段拷贝不读上下文）。
+fn copy_sources(dockerfile: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in dockerfile.lines() {
+        let Some(rest) = line.trim().strip_prefix("COPY ") else {
+            continue;
+        };
+        let toks: Vec<&str> = rest.split_whitespace().collect();
+        if toks
+            .iter()
+            .any(|t| t.trim_start_matches('-').starts_with("from="))
+        {
+            continue; // 源在上一阶段，不在构建上下文里
+        }
+        let args: Vec<&str> = toks.into_iter().filter(|t| !t.starts_with("--")).collect();
+        if args.len() < 2 {
+            continue; // 至少一个源 + 一个目标
+        }
+        for s in &args[..args.len() - 1] {
+            out.push(s.trim_start_matches("./").to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// `.dockerignore` 的模式（跳过空行与 `#` 注释）。
+fn ignore_patterns(src: &str) -> Vec<String> {
+    src.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// 单个模式是否命中该路径（Docker 语义）。
+///
+/// `*` 与 `?` **不跨 `/`** —— 所以 `.dockerignore` 里的 `*.md` 只拿掉根级的 `*.md`，
+/// 而 `ui/README.md` 靠 `COPY ui ./ui` 照样进上下文。命中某个**目录**即命中其下全部，
+/// 故模式可以命中路径本身，也可以命中它的任一祖先。
+fn pattern_matches(pat: &str, path: &str) -> bool {
+    let pat = pat.trim().trim_end_matches('/');
+    if pat.is_empty() || pat.starts_with('#') {
+        return false;
+    }
+    let segs: Vec<&str> = pat.split('/').collect();
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    (1..=parts.len())
+        .any(|k| segs.len() == k && segs.iter().zip(&parts[..k]).all(|(p, s)| seg_glob(p, s)))
+}
+
+/// 单段通配匹配（`*` / `?`，均不跨段 —— 调用方已按 `/` 切好）。
+fn seg_glob(pat: &str, s: &str) -> bool {
+    let (p, t) = (pat.as_bytes(), s.as_bytes());
+    let (mut i, mut j, mut star, mut mark) = (0usize, 0usize, None::<usize>, 0usize);
+    while j < t.len() {
+        if i < p.len() && (p[i] == b'?' || p[i] == t[j]) {
+            i += 1;
+            j += 1;
+        } else if i < p.len() && p[i] == b'*' {
+            star = Some(i);
+            mark = j;
+            i += 1;
+        } else if let Some(sp) = star {
+            i = sp + 1;
+            mark += 1;
+            j = mark;
+        } else {
+            return false;
+        }
+    }
+    while i < p.len() && p[i] == b'*' {
+        i += 1;
+    }
+    i == p.len()
+}
+
+/// 该路径是否落在构建上下文里 = **有 `COPY` 源覆盖** ∧ **未被 `.dockerignore` 命中**。
+fn in_build_context(path: &str, copies: &[String], patterns: &[String]) -> bool {
+    let covered = copies.iter().any(|c| {
+        let c = c.trim_end_matches('/');
+        !c.is_empty() && (path == c || path.starts_with(&format!("{c}/")))
+    });
+    covered && !patterns.iter().any(|p| pattern_matches(p, path))
+}
+
+/// 越界内嵌的违规项（人类可读）。空 = 通过。
+///
+/// 四个入参（语料 / `COPY` 源 / ignore 模式 / cfg(test) 名册）都可注入，好让合成语料单独
+/// 测量**规则本身** —— 规则与「活树此刻是否合规」是两件事，不该互相污染读数。
+fn include_context_violations(
+    files: &[(String, String)],
+    copies: &[String],
+    patterns: &[String],
+    test_only: &[String],
+) -> Vec<String> {
+    let mut bad = Vec::new();
+    for (rel, src) in files {
+        let text = code_mask(src, false);
+        let prod = release_region_len(&text);
+        let dir = match rel.rfind('/') {
+            Some(i) => &rel[..i],
+            None => "",
+        };
+        if test_only.iter().any(|m| *m == top_module(rel)) {
+            continue; // 整个模块仅测试期编译 ⇒ 发布构建根本看不到它的内嵌
+        }
+        for (line, off, target) in include_sites(src) {
+            if off >= prod {
+                continue; // 落在该文件自己的 `#[cfg(test)]` 之后 ⇒ 发布期不可达
+            }
+            let resolved = resolve_include(dir, &target);
+            if !in_build_context(&resolved, copies, patterns) {
+                bad.push(format!(
+                    "{rel}:{line}: {target} → {resolved} 不在 Docker 构建上下文里，而 {rel} 属发布期模块（发布构建会编译到它，构建机会因缺该文件而失败）"
+                ));
+            }
+        }
+    }
+    bad
+}
+
+/// 活树上的四组输入：语料 / `COPY` 源 / ignore 模式 / cfg(test) 名册。
+struct BuildContextInputs {
+    files: Vec<(String, String)>,
+    copies: Vec<String>,
+    patterns: Vec<String>,
+    test_only: Vec<String>,
+}
+
+fn build_context_inputs() -> BuildContextInputs {
+    let files = rust_sources();
+    let dockerfile = FILES
+        .iter()
+        .find(|(n, _)| *n == "Dockerfile")
+        .expect("FILES 里应有 Dockerfile")
+        .1;
+    let main_rs = files
+        .iter()
+        .find(|(r, _)| r == "src/main.rs")
+        .map(|(_, s)| s.as_str())
+        .unwrap_or_default();
+    let test_only = test_only_modules(main_rs);
+    let copies = copy_sources(dockerfile);
+    let patterns = ignore_patterns(DOCKERIGNORE);
+    BuildContextInputs {
+        files,
+        copies,
+        patterns,
+        test_only,
+    }
+}
+
+#[test]
+fn every_compile_time_include_is_in_the_docker_build_context_or_test_only() {
+    let ctx = build_context_inputs();
+    let bad = include_context_violations(&ctx.files, &ctx.copies, &ctx.patterns, &ctx.test_only);
+    assert!(
+        bad.is_empty(),
+        "发布期模块不得内嵌构建上下文之外的文件（`docker build` 会因缺该文件失败）：\n{}",
+        bad.join("\n")
+    );
+}
+
+#[test]
+fn the_build_context_scanner_sees_the_includes_and_the_context_it_judges_them_by() {
+    // 阳性对照：扫描器若因改名/改路径而返回空集，上面那条会在空集上「通过」。
+    let ctx = build_context_inputs();
+    let (files, copies, patterns, test_only) =
+        (&ctx.files, &ctx.copies, &ctx.patterns, &ctx.test_only);
+    assert!(
+        files.len() >= 20,
+        "只走到 {} 个源文件 —— 走盘本身坏了（空集上通过是假绿）",
+        files.len()
+    );
+    let sites: usize = files.iter().map(|(_, s)| include_sites(s).len()).sum();
+    assert!(sites >= 40, "只扫到 {sites} 处内嵌站点，远少于本仓实际数量");
+
+    // 掩码器**在干活**（这条对照是派生出来的，不是快照）：原文里的关键字出现次数必须
+    // **严格多于**代码位置的站点数 —— 差额正是注释里的（本仓十余行）与被字符串包住的
+    // （本文件自己的夹具、以及本模块 `for kw in […]` 里那两串关键字本身就是字符串字面量）。
+    let raw: usize = files
+        .iter()
+        .map(|(_, s)| s.matches("include_str!(").count() + s.matches("include_bytes!(").count())
+        .sum();
+    assert!(
+        raw > sites,
+        "掩码器没在过滤：原文 {raw} 处 vs 代码位置 {sites} 处"
+    );
+
+    // 读出来的每个目标都必须是**干净的路径字面量**。这是 R84 实测缺陷的回归断言：
+    // 「按行截断 `//`」的旧写法把本文件的字符串夹具读成站点，读出的目标就带反斜杠。
+    let self_src = files
+        .iter()
+        .find(|(r, _)| r == "src/deploy_gate.rs")
+        .map(|(_, s)| s.as_str())
+        .expect("语料里应有 src/deploy_gate.rs");
+    assert!(
+        self_src.matches("include_str!(\\\"").count() >= 3,
+        "本文件的字符串夹具应仍在（否则反斜杠那条对照空转）"
+    );
+    for (rel, src) in files {
+        for (line, _, t) in include_sites(src) {
+            assert!(
+                !t.is_empty() && !t.chars().any(|c| "\"\\; \n".contains(c)),
+                "{rel}:{line} 读出的目标不像路径字面量：{t:?}"
+            );
+        }
+    }
+
+    // 上下文的两把尺子都要解析出来，且解析结果与实测一致。
+    for want in ["src", "ui", "config", "Cargo.toml"] {
+        assert!(
+            copies.iter().any(|c| c == want),
+            "上下文 COPY 源应含 {want}：{copies:?}"
+        );
+    }
+    assert!(
+        !copies.iter().any(|c| c.contains("target/release")),
+        "`COPY --from=builder` 是跨阶段拷贝，不该被当成上下文源：{copies:?}"
+    );
+    assert!(
+        patterns.len() >= 5 && patterns.iter().any(|p| p == "*.md"),
+        ".dockerignore 的模式应被解析出来：{patterns:?}"
+    );
+
+    // 匹配语义：`*` 不跨 `/`（Docker 规则）。
+    assert!(pattern_matches("*.md", "README.md"));
+    assert!(!pattern_matches("*.md", "ui/README.md"));
+    assert!(pattern_matches("docs/", "docs/prototype/x.html"));
+    assert!(pattern_matches("config/config.toml", "config/config.toml"));
+    assert!(!pattern_matches(
+        "config/config.toml",
+        "config/config.example.toml"
+    ));
+    assert!(
+        in_build_context("ui/README.md", copies, patterns),
+        "`ui/README.md` 在上下文里：`COPY ui ./ui` 覆盖它，而 `*.md` 不跨 `/`"
+    );
+
+    // 名册确实派生出来了：非空、不把块模块（`mod tests {`）当文件模块、且每个名字都真有文件。
+    assert!(test_only.len() >= 5, "cfg(test) 名册应非空：{test_only:?}");
+    assert!(
+        !test_only.iter().any(|m| m == "tests"),
+        "`mod tests {{` 是块模块，没有对应文件：{test_only:?}"
+    );
+    for m in test_only {
+        assert!(
+            files
+                .iter()
+                .any(|(rel, _)| rel == &format!("src/{m}.rs") || rel == &format!("src/{m}/mod.rs")),
+            "名册里的 {m} 应在语料里有对应文件：{test_only:?}"
+        );
+    }
+
+    // **非空转**：本仓至少有一处内嵌落在上下文之外 —— 否则这条规则是空转的（那才是假绿）。
+    let outside = files
+        .iter()
+        .filter(|(rel, src)| {
+            let dir = match rel.rfind('/') {
+                Some(i) => &rel[..i],
+                None => "",
+            };
+            include_sites(src)
+                .iter()
+                .any(|(_, _, t)| !in_build_context(&resolve_include(dir, t), copies, patterns))
+        })
+        .count();
+    assert!(
+        outside >= 1,
+        "本仓应至少有一处内嵌落在上下文之外（否则该规则空转）；若它真的归零，请重新评估本规则"
+    );
+}
+
+#[test]
+fn the_build_context_rule_flags_a_release_module_that_embeds_outside_the_context() {
+    // 规则本身有牙：合成输入（规则与「活树此刻是否合规」是两件事，不该互相污染读数）。
+    let copies = vec![
+        "Cargo.toml".to_string(),
+        "src".to_string(),
+        "ui".to_string(),
+        "config".to_string(),
+    ];
+    let patterns = vec!["docs/".to_string(), "*.md".to_string()];
+    let files = |src: &str| vec![("src/foo.rs".to_string(), src.to_string())];
+
+    let outside = "const A: &str = include_str!(\"../CHANGELOG.md\");\n";
+    // 发布期模块 + 越界目标 ⇒ 报违规。
+    let bad = include_context_violations(&files(outside), &copies, &patterns, &[]);
+    assert_eq!(bad.len(), 1, "越界内嵌必须被抓到：{bad:?}");
+    assert!(
+        bad[0].contains("src/foo.rs:1") && bad[0].contains("CHANGELOG.md"),
+        "{bad:?}"
+    );
+    // 同一个站点，模块改为 `#[cfg(test)]` ⇒ 放行。
+    let ok = include_context_violations(&files(outside), &copies, &patterns, &["foo".to_string()]);
+    assert!(ok.is_empty(), "仅测试期模块不得报违规：{ok:?}");
+    // 目标在上下文里 ⇒ 发布期模块也放行。
+    let inside = "const B: &str = include_str!(\"../ui/js/app.js\");\n";
+    assert!(include_context_violations(&files(inside), &copies, &patterns, &[]).is_empty());
+    // 站点落在该文件自己的 `#[cfg(test)]` 之后 ⇒ 发布期不可达，放行。
+    let inline =
+        "fn f() {}\n#[cfg(test)]\nmod tests {\n    const C: &str = include_str!(\"../CHANGELOG.md\");\n}\n";
+    assert!(include_context_violations(&files(inline), &copies, &patterns, &[]).is_empty());
+    // 注释里的 `include_str!` 不是站点。
+    let commented = "// const D: &str = include_str!(\"../CHANGELOG.md\");\n";
+    assert!(include_context_violations(&files(commented), &copies, &patterns, &[]).is_empty());
+    // 被 `.dockerignore`（目录前缀）挡掉的路径同样是越界。
+    let docs = "const E: &str = include_str!(\"../docs/x.html\");\n";
+    assert_eq!(
+        include_context_violations(&files(docs), &copies, &patterns, &[]).len(),
+        1,
+        "`docs/` 之下的目标必须报违规"
     );
 }
