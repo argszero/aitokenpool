@@ -99,12 +99,12 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 794;
-const EN_KEY_COUNT: usize = 794;
+const ZH_KEY_COUNT: usize = 796;
+const EN_KEY_COUNT: usize = 796;
 const STATIC_ATTR_COUNT: usize = 335;
 const STATIC_ATTR_DISTINCT: usize = 309;
-const T_LITERAL_COUNT: usize = 544;
-const T_LITERAL_DISTINCT: usize = 433;
+const T_LITERAL_COUNT: usize = 546;
+const T_LITERAL_DISTINCT: usize = 435;
 
 /// 切出语言包区段（起点标记 → 终点标记，含起点）。
 fn pack_region<'a>(src: &'a str, start_mark: &str, end_mark: &str) -> &'a str {
@@ -559,6 +559,11 @@ fn scan_object_entries(region: &str) -> Vec<(String, String, bool)> {
 struct TCallSite {
     key: String,
     vars: Vec<String>,
+    /// 实参对象里 `name: <值源码>` 的**值源码**（首尾空白已剥，顺序与 `vars` 一致 ——
+    /// 两者出自同一个 `obj_var_entries`，不可能分叉）。
+    values: Vec<(String, String)>,
+    /// `T` 那个字符在源文里的下标（供「往这个调用点**之前**找声明」用）。
+    t_at: usize,
 }
 
 /// 从语料中每处字符串字面量里取出 `{name}` 形态的占位符（保持出现顺序）。
@@ -593,7 +598,7 @@ fn scan_t_call_sites(src: &str) -> Vec<TCallSite> {
     let b = src.as_bytes();
     let mut out = Vec::new();
     for site in scan_t_literal_sites(src) {
-        let mut vars = Vec::new();
+        let mut entries = Vec::new();
         // 只剩 `)` 立即收尾 ⇒ 无实参对象
         let mut p = site.after_quote;
         while p < b.len() && matches!(b[p], b' ' | b'\t' | b'\n' | b'\r') {
@@ -606,14 +611,16 @@ fn scan_t_call_sites(src: &str) -> Vec<TCallSite> {
             }
             if p < b.len() && b[p] == b'{' {
                 if let Some(e) = match_brace(src, site.open_paren) {
-                    vars = obj_var_names(&src[p + 1..e]);
+                    entries = obj_var_entries(&src[p + 1..e]);
                 }
             }
             // 实参不是对象字面量（如 `T(k, someVar)`）：本仓不存在，扫到的变量集为空即可
         }
         out.push(TCallSite {
             key: site.key,
-            vars,
+            vars: entries.iter().map(|(n, _)| n.clone()).collect(),
+            values: entries,
+            t_at: site.open_paren.saturating_sub(1),
         });
     }
     out
@@ -682,14 +689,17 @@ fn match_brace(src: &str, open_paren: usize) -> Option<usize> {
     None
 }
 
-/// 取对象字面量**内部**代码里的 `name:` 变量名（跳过字符串与嵌套对象内容）。
-fn obj_var_names(body: &str) -> Vec<String> {
+/// 取对象字面量**内部**代码里的 `name: <值源码>` 条目（跳过字符串）。
+///
+/// 唯一的一遍扫描：变量名与值源码一起产出，`vars` 由它派生 —— 「喂给了谁」与
+/// 「喂的是什么」永不分叉（两遍扫描正是本模块反复抓的那类漂移）。
+fn obj_var_entries(body: &str) -> Vec<(String, String)> {
     let bb = body.as_bytes();
-    let mut vars = Vec::new();
+    let mut out = Vec::new();
     let mut t = 0;
     while t < bb.len() {
         let c = bb[t];
-        if c == b'"' || c == b'\'' {
+        if c == b'"' || c == b'\'' || c == b'`' {
             let q = c;
             t += 1;
             while t < bb.len() && bb[t] != q {
@@ -714,13 +724,330 @@ fn obj_var_names(body: &str) -> Vec<String> {
             }
             // 只有 `ident:` 才算显式变量名（简写 `{ n }` 形态本仓不存在）
             if u < bb.len() && bb[u] == b':' {
-                vars.push(ident.to_string());
+                let mut depth = 0i32;
+                let mut v = u + 1;
+                while v < bb.len() {
+                    let d = bb[v];
+                    if d == b'"' || d == b'\'' || d == b'`' {
+                        let q = d;
+                        v += 1;
+                        while v < bb.len() && bb[v] != q {
+                            if bb[v] == b'\\' {
+                                v += 1;
+                            }
+                            v += 1;
+                        }
+                    } else if d == b'(' || d == b'[' || d == b'{' {
+                        depth += 1;
+                    } else if d == b')' || d == b']' || d == b'}' {
+                        depth -= 1;
+                    } else if d == b',' && depth == 0 {
+                        break;
+                    }
+                    v += 1;
+                }
+                out.push((
+                    ident.to_string(),
+                    body[u + 1..v.min(bb.len())].trim().to_string(),
+                ));
+                t = v;
+                continue;
             }
             continue;
         }
         t += 1;
     }
-    vars
+    out
+}
+
+/// 把 JS 里**不是代码**的区段抹成空格：行注释、块注释、正则字面量。
+///
+/// 字符串字面量**原样保留**（i18n 键与「展示哨兵」`"—"` 都在里面），模板字面量按
+/// 字符串处理。**逐字节等长**（`\n` 位置不变）⇒ 返回值的下标可直接用于原串。
+///
+/// 为什么要抹正则：`esc()` 的 `/[&<>"']/g` 里那个 `'` 会被朴素扫描器当成字符串起点，
+/// 于是其后整片代码被吞进「字符串」——74 个调用点塌成 16 个、连 `function toast(`
+/// 的定义处都到不了，症状看着像「阈值没过」而不是「扫描器错了」（坑 #641）。
+fn mask_js_noncode(src: &str) -> String {
+    let b = src.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0usize;
+    let mut prev_sig: u8 = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            while i < b.len() && b[i] != b'\n' {
+                out.push(b' ');
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            out.push(b' ');
+            out.push(b' ');
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                out.push(if b[i] == b'\n' { b'\n' } else { b' ' });
+                i += 1;
+            }
+            out.push(b' ');
+            out.push(b' ');
+            i += 2;
+            continue;
+        }
+        if c == b'"' || c == b'\'' || c == b'`' {
+            let q = c;
+            out.push(c);
+            i += 1;
+            while i < b.len() {
+                if b[i] == b'\\' {
+                    out.push(b[i]);
+                    if i + 1 < b.len() {
+                        out.push(b[i + 1]);
+                    }
+                    i += 2;
+                    continue;
+                }
+                out.push(b[i]);
+                let done = b[i] == q;
+                i += 1;
+                if done {
+                    break;
+                }
+            }
+            prev_sig = b'x';
+            continue;
+        }
+        if c == b'/' && !matches!(prev_sig, b')' | b']' | b'x') {
+            out.push(b'/');
+            i += 1;
+            let mut in_class = false;
+            while i < b.len() && b[i] != b'\n' {
+                if b[i] == b'\\' {
+                    out.push(b' ');
+                    out.push(b' ');
+                    i += 2;
+                    continue;
+                }
+                let d = b[i];
+                if d == b'[' {
+                    in_class = true;
+                } else if d == b']' {
+                    in_class = false;
+                } else if d == b'/' && !in_class {
+                    out.push(b'/');
+                    i += 1;
+                    while i < b.len() && b[i].is_ascii_alphabetic() {
+                        out.push(b[i]);
+                        i += 1;
+                    }
+                    break;
+                }
+                out.push(b' ');
+                i += 1;
+            }
+            prev_sig = b'x';
+            continue;
+        }
+        if !c.is_ascii_whitespace() {
+            prev_sig = c;
+        }
+        out.push(c);
+        i += 1;
+    }
+    String::from_utf8(out).expect("mask 只替换字节为 ASCII，UTF-8 结构不变")
+}
+
+/// 从 `open_brace` 出发返回配对的 `}`（跳过字符串字面量 —— 文案里就含 `{out}`）。
+fn brace_span(src: &str, open_brace: usize) -> Option<usize> {
+    let b = src.as_bytes();
+    let mut depth = 0usize;
+    let mut j = open_brace;
+    while j < b.len() {
+        let c = b[j];
+        if c == b'"' || c == b'\'' || c == b'`' {
+            let q = c;
+            j += 1;
+            while j < b.len() && b[j] != q {
+                if b[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+        } else if c == b'{' {
+            depth += 1;
+        } else if c == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(j);
+            }
+        }
+        j += 1;
+    }
+    None
+}
+
+/// 包含 `pos` 的**最内层** `function …(…) { … }` 函数体的起止下标。
+///
+/// 变量名在同一个长函数里被反复复用（`n`/`name`/`model`/`theme` 全仓重名），
+/// 所以「这个标识符被赋了什么」只有在**它所在的函数体**里问才问得对；按整文件问会
+/// 把同名但无关的声明算进来（实测整文件口径在真语料上多报 5 处假阳性）。
+fn enclosing_function(src: &str, pos: usize) -> Option<(usize, usize)> {
+    let b = src.as_bytes();
+    let mut best: Option<(usize, usize)> = None;
+    let mut i = 0usize;
+    while let Some(rel) = src[i..].find("function") {
+        let at = i + rel;
+        i = at + "function".len();
+        if at > 0 {
+            let p = b[at - 1];
+            if p.is_ascii_alphanumeric()
+                || p == b'_'
+                || p == b'$'
+                || p == b'"'
+                || p == b'\''
+                || p == b'`'
+            {
+                continue;
+            }
+        }
+        let mut j = at + "function".len();
+        while j < b.len() && b[j] != b'{' && b[j] != b';' {
+            j += 1;
+        }
+        if j >= b.len() || b[j] != b'{' {
+            continue;
+        }
+        if let Some(cb) = brace_span(src, j) {
+            if j <= pos && pos <= cb && best.is_none_or(|(s, _)| j > s) {
+                best = Some((j, cb));
+            }
+        }
+    }
+    best
+}
+
+/// 在 `body` 里找出 `const|let|var <name> = <初始化式>` 的初始化式源码（到 `;` 或行尾）。
+fn declaration_initializers(body: &str, name: &str) -> Vec<String> {
+    let b = body.as_bytes();
+    let mut out = Vec::new();
+    for kw in ["const", "let", "var"] {
+        let mut i = 0usize;
+        while let Some(rel) = body[i..].find(kw) {
+            let at = i + rel;
+            i = at + kw.len();
+            if i >= b.len() {
+                break;
+            }
+            let p = b[at.saturating_sub(1)];
+            if at > 0 && (p.is_ascii_alphanumeric() || p == b'_' || p == b'$') {
+                continue;
+            }
+            if !b[i].is_ascii_whitespace() {
+                continue;
+            }
+            let mut j = i;
+            while j < b.len() && b[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let ns = j;
+            while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_' || b[j] == b'$') {
+                j += 1;
+            }
+            if &body[ns..j] != name {
+                continue;
+            }
+            let mut k = j;
+            while k < b.len() && b[k].is_ascii_whitespace() {
+                k += 1;
+            }
+            if k >= b.len() || b[k] != b'=' {
+                continue;
+            }
+            let mut v = k + 1;
+            while v < b.len() && b[v] != b';' && b[v] != b'\n' {
+                v += 1;
+            }
+            out.push(body[k + 1..v].trim().to_string());
+        }
+    }
+    out
+}
+
+/// 是裸标识符（不含 `.`/`(`/空白等）—— 只有这种形态才需要回头找它的声明。
+fn is_bare_ident(s: &str) -> bool {
+    !s.is_empty()
+        && !s.as_bytes()[0].is_ascii_digit()
+        && s.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'$')
+}
+
+/// 是字符串字面量（`"—"` 这类**展示哨兵**的静态形态）。
+fn is_string_literal(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 2 && (b[0] == b'"' || b[0] == b'\'') && b[b.len() - 1] == b[0]
+}
+
+/// 表达式的**顶层操作数**里，有没有**一个整操作数就是字符串字面量**。
+///
+/// 这一条是整条规则的判别式，也是它有没有牙的地方：条件表达式的一支直接取字面量
+/// （`x == null ? "—" : x` 的 `"—"`）＝「无数据」被写成了**展示文案**；而
+/// `raw || T("common.unnamed")`、`v === "" ? T("common.unassigned") : …`、
+/// `typeof x === "number"` 这些看着相似的写法，字面量都**不是**整操作数
+/// （它们是比较的另一侧、或调用实参），必须一律放行 —— 实测宽口径会让真语料多报
+/// 4–5 处假阳性。
+fn has_bare_literal_branch(expr: &str) -> bool {
+    if !(expr.contains('?') || expr.contains("||") || expr.contains("&&")) {
+        return false;
+    }
+    const LIT: u8 = 0x01;
+    let b = expr.as_bytes();
+    let mut ops: Vec<Vec<u8>> = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut depth = 0i32;
+    let mut i = 0usize;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'"' || c == b'\'' || c == b'`' {
+            let q = c;
+            i += 1;
+            while i < b.len() && b[i] != q {
+                if b[i] == b'\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            buf.push(LIT);
+            i += 1;
+            continue;
+        }
+        if c == b'(' || c == b'[' || c == b'{' {
+            depth += 1;
+        } else if c == b')' || c == b']' || c == b'}' {
+            depth -= 1;
+        }
+        if depth == 0 && (c == b'?' || c == b':') {
+            ops.push(std::mem::take(&mut buf));
+            i += 1;
+            continue;
+        }
+        if depth == 0 && (c == b'|' || c == b'&') && i + 1 < b.len() && b[i + 1] == c {
+            ops.push(std::mem::take(&mut buf));
+            i += 2;
+            continue;
+        }
+        buf.push(c);
+        i += 1;
+    }
+    ops.push(buf);
+    ops.iter().any(|o| {
+        let t: Vec<u8> = o
+            .iter()
+            .copied()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect();
+        t.len() == 1 && t[0] == LIT
+    })
 }
 
 /// 剥掉 JS 源码里的**注释**，只留代码（供「字面量里不许有中文」这类断言使用）。
@@ -1558,6 +1885,166 @@ mod tests {
             vec!["n".to_string(), "m".to_string()],
             "字符串内部的 `x, y: z` 不应被当作变量名"
         );
+    }
+
+    /// 扫出「插值占位符被**展示哨兵**填充」的调用点。
+    ///
+    /// 返回 (检查过的插值槽数, 违规说明)。插值槽数同时是**阳性对照**：它是「扫描器真的
+    /// 走到了那批调用点」的读数，恒为 0 的检查等价于没有检查。
+    fn sentinel_filled_placeholders(
+        src: &str,
+        zh: &BTreeMap<String, String>,
+        en: &BTreeMap<String, String>,
+    ) -> (usize, Vec<String>) {
+        let masked = mask_js_noncode(src);
+        let sites = scan_t_call_sites(&masked);
+        let mut slots = 0usize;
+        let mut problems: Vec<String> = Vec::new();
+        for site in &sites {
+            let mut needed = placeholders(zh.get(&site.key).map(String::as_str).unwrap_or(""));
+            needed.extend(placeholders(
+                en.get(&site.key).map(String::as_str).unwrap_or(""),
+            ));
+            needed.sort();
+            needed.dedup();
+            // 键没有占位符 ⇒ 没有「被填进去的值」这回事，跳过（这正是修法要求的那一半）
+            if needed.is_empty() {
+                continue;
+            }
+            let Some((fs, fe)) = enclosing_function(&masked, site.t_at) else {
+                continue;
+            };
+            let body = &masked[fs..fe];
+            for (name, value) in &site.values {
+                if !needed.contains(name) {
+                    continue;
+                }
+                slots += 1;
+                let sentinel = is_string_literal(value)
+                    || (is_bare_ident(value)
+                        && declaration_initializers(body, value)
+                            .iter()
+                            .any(|init| has_bare_literal_branch(init)));
+                if sentinel {
+                    problems.push(format!(
+                        "T(\"{}\", {{ {}: {} }}) —— 占位符 `{}` 由**无数据标记**填充；\
+                         界面会把标记连同单位一起印出来（「成功率 —%」），而不是不印这一句",
+                        site.key, name, value, name
+                    ));
+                }
+            }
+        }
+        (slots, problems)
+    }
+
+    /// 插值占位符**不得**由「无数据标记」填充（R87）。
+    ///
+    /// 缺陷形态（`mkDetailHtml` 的原始写法）：
+    /// ```js
+    /// const succ = m.success == null ? "—" : m.success;
+    /// T("mk.detail.availOn", { p: succ })   // ⇒「当前可用 · 成功率 —%」
+    /// ```
+    /// `—` 是**没有这个数**的展示标记，而 `{p}` 在文案里紧跟着单位 `%` ⇒ 标记被当成数值
+    /// 填进单位里，句子从「这句不成立」变成「这个数不存在」。正确的形态是同一条约定在
+    /// 别处的写法（`app.js` 的 `admin.org.stats.used` 一行）：**有真值才渲染那句模板**，
+    /// 无值时改说一句不含占位符的话。
+    ///
+    /// 与 `every_t_call_site_supplies_its_placeholders` 互补而非重复：那条问「占位符有没
+    /// 有人喂」，这条问「喂进去的是不是数据」。后者查不到前者（漏传变量会原样印 `{p}`），
+    /// 前者也查不到后者（喂了哨兵同样是**有**变量）。
+    #[test]
+    fn a_placeholder_is_never_filled_by_a_display_sentinel() {
+        let LanguagePacks { zh, en, .. } = packs();
+        let (slots, problems) = sentinel_filled_placeholders(APP_JS, &zh, &en);
+        assert!(
+            slots >= 90,
+            "阳性对照失效：只读到 {slots} 个插值槽（落地时实测 95）—— 扫描器或语言包已经漂移，\
+             这条门禁此刻证明不了任何事"
+        );
+        assert!(
+            problems.is_empty(),
+            "插值占位符被无数据标记填充（界面会印出「成功率 —%」这类句子）：\n  - {}",
+            problems.join("\n  - ")
+        );
+    }
+
+    /// 阴性对照：哨兵规则必须真的会失败，且不得误伤「看着像」的合法写法。
+    #[test]
+    fn the_sentinel_rule_has_teeth() {
+        // ① 判别式本体：八条形态，四条**必须**报、四条**必须**放行。
+        //    四对之间的差别只有一个：「字面量是不是**整个操作数**」。
+        let must_fire = [
+            // 缺值时给标记 —— 正是被修的那一行
+            "m.success == null ? \"—\" : m.success",
+            // 逻辑或的兜底支是标记
+            "v || \"—\"",
+            // 反向三元
+            "ok ? real : \"—\"",
+            // 单引号同形
+            "ok ? '-' : real",
+        ];
+        let must_pass = [
+            // 两支都是调用（字面量在实参里，不是操作数）
+            "t === \"light\" ? T(\"a.light\") : T(\"a.dark\")",
+            // 比较的另一侧是字面量
+            "typeof x.total === \"number\" && x.total",
+            // 兜底支是**取键**，不是标记
+            "raw || T(\"common.unnamed\")",
+            // 字面量出现在**比较**的右侧，两个分支都是真值
+            "v === \"\" ? T(\"common.unassigned\") : (find(v) || {}).name",
+        ];
+        for e in must_fire {
+            assert!(
+                has_bare_literal_branch(e),
+                "阴性对照失败：`{e}` 的一支就是无数据标记，却没被认出"
+            );
+        }
+        for e in must_pass {
+            assert!(
+                !has_bare_literal_branch(e),
+                "阳性对照失败：`{e}` 是合法写法（字面量不是整个操作数），却被误报"
+            );
+        }
+
+        // ② 端到端：同一段合成语料，把缺陷那一行放进去必须报、拿掉必须不报。
+        //    `cnt.calls` 的 zh 值是 `{n} 次` —— 前置条件先钉住，否则整条会在空语料上「通过」。
+        let LanguagePacks { zh, en, .. } = packs();
+        assert_eq!(
+            placeholders(zh.get("cnt.calls").expect("基准包应有 cnt.calls")),
+            vec!["n".to_string()],
+            "前置条件：cnt.calls 的中文文案应恰含一个占位符 n"
+        );
+        let bad =
+            "function f() {\n  const n = rt.month_calls == null ? \"—\" : rt.month_calls;\n  \
+                   return T(\"cnt.calls\", { n: n });\n}\n";
+        let (slots, problems) = sentinel_filled_placeholders(bad, &zh, &en);
+        assert_eq!(slots, 1, "合成语料应恰有 1 个插值槽，实得 {slots}");
+        assert_eq!(problems.len(), 1, "合成缺陷未被报出：{problems:?}");
+
+        let good = "function f() {\n  const n = rt.month_calls;\n  \
+                    return T(\"cnt.calls\", { n: n });\n}\n";
+        let (slots, problems) = sentinel_filled_placeholders(good, &zh, &en);
+        assert_eq!(slots, 1, "合成语料应恰有 1 个插值槽，实得 {slots}");
+        assert!(problems.is_empty(), "合法写法被误报：{problems:?}");
+
+        // ③ 解析范围必须是**所在函数**：同名变量在别的函数里带哨兵，不得算到这个
+        //    调用点头上。整文件口径实测在真语料上多报 5 处（`n`/`name`/`model` 全仓重名）。
+        let cross_function = "function a_fn() {\n  const n = x == null ? \"—\" : x;\n  \
+                              return n;\n}\nfunction b_fn() {\n  const n = rt.month_calls;\n  \
+                              return T(\"cnt.calls\", { n: n });\n}\n";
+        let (slots, problems) = sentinel_filled_placeholders(cross_function, &zh, &en);
+        assert_eq!(slots, 1, "合成语料应恰有 1 个插值槽，实得 {slots}");
+        assert!(
+            problems.is_empty(),
+            "把别的函数里的同名声明算进来了（此处的 n 来自 b_fn，不带哨兵）：{problems:?}"
+        );
+
+        // ④ 反向：正主在**本函数**里带哨兵时，必须报出来 —— 否则 ③ 只是一条「什么都不报」的假绿。
+        let same_function = "function a_fn() {\n  const n = x == null ? \"—\" : x;\n  \
+                             return T(\"cnt.calls\", { n: n });\n}\n";
+        let (slots, problems) = sentinel_filled_placeholders(same_function, &zh, &en);
+        assert_eq!(slots, 1, "合成语料应恰有 1 个插值槽，实得 {slots}");
+        assert_eq!(problems.len(), 1, "同函数内的哨兵未被报出：{problems:?}");
     }
 
     /// `ui/js/api.js` 的错误文案必须**按 key 取**，不得内嵌中文原文（C2029）。
