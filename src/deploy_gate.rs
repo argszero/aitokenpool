@@ -51,6 +51,19 @@
 //! **射程**：只覆盖部署产物；`CONTRIBUTING.md` / `docs/architecture.md` 里的散文提及
 //! 不在射程内（散文无运行时后果，且本仓库既有的约定是「能不抄就不抄」，
 //! 见 `docs/plan-api-matrix.md` 第 4 节）。
+//!
+//! # 第三条规则（R82）：`CHANGELOG.md` 的最新 `## v<semver>` 标题必须等于 `Cargo.toml` 声明的版本
+//!
+//! 发行链上共有**四个**版本事实载体，前三个已各有守卫：`Cargo.toml` 是运行时真源
+//!（`/healthz` 自报 `CARGO_PKG_VERSION`）、`Dockerfile` / `docker-compose.yml` 里的副本由
+//! 上文第二条规则守、发行 **tag** 由 `.github/workflows/docker-publish.yml` 守 —— **只剩
+//! `CHANGELOG.md` 的最新 `## v<semver>` 标题没有任何执行者**（它在 23/23 个 tag 上一直正确，
+//! 但从未被断言过，与 R76 的 MSRV、R80 的 tag 同形）。R78 之后发行 PR 要改的文件从 3 个变成
+//! 5 个：漏改部署产物有第二条规则抓、tag 不符有 docker-publish 抓，**CHANGELOG 的标题没人抓**。
+//!
+//! 为什么标题**不算散文**（第二条规则明确把散文划出射程）：它处在文件里机器可读的**结构位**，
+//! 而这个文件的整体职责就是陈述版本。因此**只守标题、不守正文** —— 正文里的资产令牌枚举之类
+//! 仍是散文，走「修数据、不上门禁」。实现与两条伴生测试在文件末尾。
 
 /// 编译期读入的部署/配置产物。
 const FILES: &[(&str, &str)] = &[
@@ -578,4 +591,129 @@ fn the_version_scanners_flag_the_stale_shapes() {
             "{to:?} 必须被判违规：{bad:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 第三条规则（R82）：CHANGELOG 的最新 `## v<semver>` 标题必须等于 `Cargo.toml` 的 `version`
+// ---------------------------------------------------------------------------
+//
+// 设计动机与射程见文件头的模块文档。要点：期望值**从 `Cargo.toml` 派生**
+//（`declared_version()`，不写快照），`include_str!` 编译期读入，**零新文件零新依赖** ——
+// 与上一条规则同型。射程只到**标题**：正文（资产令牌枚举等散文）不参与判定。
+
+/// `CHANGELOG.md` 原文 —— 本文件的最新版本标题是发行链上第四个版本事实载体。
+const CHANGELOG: &str = include_str!("../CHANGELOG.md");
+
+/// `## v<semver>` 形态的版本标题（`##` 级 ＋ `v` ＋ `x.y.z`，行尾可另有日期等）。
+///
+/// 只认 `##` 级：`# Changelog` 是文件题头、`### …` 是条目内的小节标题，都不是版本声明。
+fn version_headings(src: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (i, line) in src.lines().enumerate() {
+        let Some(rest) = line.trim_start().strip_prefix("##") else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix('v') else {
+            continue;
+        };
+        let ver: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if looks_like_version(&ver) {
+            out.push((i + 1, ver));
+        }
+    }
+    out
+}
+
+/// 最新（文件里第一条）版本标题。
+fn latest_changelog_version(src: &str) -> Option<(usize, String)> {
+    version_headings(src).into_iter().next()
+}
+
+/// CHANGELOG 版本标题的违规项（人类可读）。空 = 通过。
+fn changelog_violations_of(src: &str) -> Vec<String> {
+    let ver = declared_version();
+    match latest_changelog_version(src) {
+        None => vec![format!(
+            "CHANGELOG.md: 找不到任何 `## v<semver>` 标题（期望最新条目是 v{ver}）"
+        )],
+        Some((ln, v)) if v != ver => vec![format!(
+            "CHANGELOG.md:{ln}: 最新条目标题是 v{v}，而 Cargo.toml 声明的是 {ver}（发行链上的版本副本没跟上）"
+        )],
+        Some(_) => Vec::new(),
+    }
+}
+
+fn changelog_violations() -> Vec<String> {
+    changelog_violations_of(CHANGELOG)
+}
+
+#[test]
+fn the_changelog_heading_carries_the_version_the_manifest_declares() {
+    let bad = changelog_violations();
+    assert!(
+        bad.is_empty(),
+        "CHANGELOG.md 的最新版本标题必须与 Cargo.toml 一致：\n{}",
+        bad.join("\n")
+    );
+}
+
+#[test]
+fn the_changelog_heading_scanner_actually_sees_the_heading_it_guards() {
+    // 阳性对照：扫描器若因改名/改格式而返回空集，上面那条会在空集上「通过」。
+    let headings = version_headings(CHANGELOG);
+    assert!(
+        !headings.is_empty(),
+        "CHANGELOG 里应至少有一个 `## v<semver>` 标题"
+    );
+    let (ln, v) = latest_changelog_version(CHANGELOG).expect("最新标题存在");
+    assert!(ln <= 10, "最新版本标题应在文件顶部几行内，实际第 {ln} 行");
+    // 被扫到的那行确实是 `## v…` 标题（防「扫到正文里的数字」）。
+    let line = CHANGELOG.lines().nth(ln - 1).expect("标题行存在");
+    assert!(
+        line.starts_with("## v"),
+        "被扫到的行应是 `## v…` 标题：{line:?}"
+    );
+    // 扫描器解出的确实是一个版本号（防「解出空串也照样不比」）。
+    // ⚠️ 这里**刻意不**与 `declared_version()` 比较，也不检查标题是否重复：「标题 == 清单版本」
+    // 这条主张只能有**一个** owner（上面那条门禁）；否则同一处陈旧会让两条测试同时红，
+    // 诊断时看不出谁在报，且报的那条会显得比它守的规则更宽。
+    assert!(
+        looks_like_version(&v),
+        "扫描器应解出 x.y.z 形态的版本：{v:?}"
+    );
+}
+
+#[test]
+fn the_changelog_heading_rule_flags_a_stale_heading() {
+    // 规则本身有牙：用**合成输入**（规则与「活文件此刻是否已修」是两件事，不该互相污染读数）。
+    let ver = declared_version();
+    let ok = format!("# Changelog\n\n## v{ver} (2026-01-01)\n\n- x\n\n## v0.0.1 (2025-01-01)\n");
+    assert!(
+        changelog_violations_of(&ok).is_empty(),
+        "合规输入不得报违规：{:?}",
+        changelog_violations_of(&ok)
+    );
+
+    let stale = ok.replace(&format!("## v{ver}"), "## v9.9.9");
+    assert_ne!(stale, ok, "synthetic 替换必须真的发生");
+    let bad = changelog_violations_of(&stale);
+    assert!(
+        bad.iter().any(|m| m.contains("v9.9.9")),
+        "陈旧标题必须被判违规：{bad:?}"
+    );
+
+    // 「扫到 0 条」不得等同于「合规」。
+    assert!(
+        !changelog_violations_of("# Changelog\n\nno headings here\n").is_empty(),
+        "没有版本标题时必须报违规，而不是静默通过"
+    );
+
+    // 形态：只认 `##` 级；`###` 小节与 `## not-a-version` 都不算。
+    assert_eq!(
+        version_headings("## v1.2.3 (x)\n### v9.9.9\n## not-a-version\n## v1.2.3\n"),
+        vec![(1, "1.2.3".to_string()), (4, "1.2.3".to_string())]
+    );
 }
