@@ -1198,7 +1198,8 @@ textarea.input:focus { border-color: var(--accent); }
 .bar-track { height: 8px; border-radius: 999px; background: var(--fg-soft); overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 999px; background: var(--accent); }
 .bar-fill.alt { background: color-mix(in oklch, var(--accent) 45%, var(--muted)); }
-/* .bar-row .bar-top：原型「名称左 / 数值右」的行头（线上 .bar-label 为其别名） */
+/* .bar-row .bar-top：原型「名称左 / 数值右」的行头；
+   #154 起以原型规范名取代历史名 .bar-label（那一整族规则已删，这里**没有**别名规则） */
 .bar-row .bar-top { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px; }
 
 /* ---- 空态 ---- */
