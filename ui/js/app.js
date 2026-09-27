@@ -1582,7 +1582,7 @@
   // `txQuerySig()`：它一进签名，切一次档就会重拉一次，四档也不再同源。
   //
   // 本块是**纯函数**（不碰 DOM、不读 `Live`、不调 `T()`）⇒ 可独立执行/断言，见
-  // `r109_logic_probe.js`；DOM 那一半在 `renderTxTrend()`。
+  // 仓外逻辑探针；DOM 那一半在 `renderTxTrend()`。
   const TX_TREND_METRICS = ["net", "consume", "earn", "both"];
   // 「总点数」档的折线颜色：**中性色**（`--fg`）—— 它既不是消费也不是收益，借用哪一支的色都会
   // 让图例说另一件事（图例的 `<i class="net">` 必须与它是同一个色）。

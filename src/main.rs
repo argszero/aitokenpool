@@ -51,6 +51,10 @@ mod state_gate;
 // 加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod body_limit_gate;
+// 引用门禁（R94）：同样是仅测试期编译 —— 全仓文本文件在测试期读一遍，
+// 加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod citation_gate;
 
 use std::sync::Arc;
 
