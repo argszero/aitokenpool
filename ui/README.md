@@ -274,9 +274,10 @@ ui/
 ## 市场「最近使用」约定（v1.20，rant 2026-08-17T20:46:57 D）
 
 - 位置：市场页工具栏计数下方 `#mk-recent` 行（`recent-label` + `.chips` 容器 `#mk-recent-chips` + 「清空」按钮 `data-mk-recent-clear`），无记录时 `hidden`；
-- 数据：**localStorage `atp-recent-models`** = 最近模型 id 数组（JSON），**最多 5 个**、**去重**（`markRecentUsed(id)`：先滤掉已存在再 `unshift` 置顶，`saveRecentIds` 截断 5）；`getRecentIds()` try/catch 容错（旧数据/隐私模式 → 空数组）；
-- 渲染：`renderRecent()` 把 id 映射为 `.chip` 按钮（`data-recent-model`，找不到模型则跳过），写入 chips 容器并同步 `#mk-recent.hidden`；**`renderMarketplace()` 末尾调用**（进市场即还原）+ **`openChat()` 内 markRecentUsed 后立即调用**（使用后即时更新）；
-- 交互：`#mk-recent` click 委托——`[data-recent-model]` → 游客 toast「请先登录」/ 否则 `openChat(id)`（复用市场「使用 / 消费」主操作）；`[data-mk-recent-clear]` → `saveRecentIds([])` + `renderRecent()`（行隐藏）；
+- 数据：**localStorage `atp-recent-models`** = 最近模型**身份串**（`provider/model`）数组（JSON），**最多 5 个**、**去重**（`markRecentUsed(key)`：先滤掉已存在再 `unshift` 置顶，`saveRecentKeys` 截断 5）；`getRecentKeys()` try/catch 容错 ＋ **只认身份串**（旧版本存下的下标按空处理、一次性丢弃）→ 空数组；
+  - ⚠️ C2138（#255）更正：本节原先记录的「`id` 数组」口径已作废 —— 当时的两个助手已改名为 `getRecentKeys`/`saveRecentKeys`，存储值由**数组下标**改为**身份串**；详见下文「模型身份：`provider/model`，不是数组下标」。
+- 渲染：`renderRecent()` 把身份串按 `find((x) => modelKey(x) === key)` 映射为 `.chip` 按钮（`data-recent-model`，找不到模型则跳过），写入 chips 容器并同步 `#mk-recent.hidden`；**`renderMarketplace()` 末尾调用**（进市场即还原）+ **`openChat()` 内 markRecentUsed 后立即调用**（使用后即时更新）；
+- 交互：`#mk-recent` click 委托——`[data-recent-model]` → 游客 toast「请先登录」/ 否则 `openChat(c.dataset.recentModel)`（复用市场「使用 / 消费」主操作）；`[data-mk-recent-clear]` → `saveRecentKeys([])` + `renderRecent()`（行隐藏）；
 - 样式：`.recent-row`（flex 换行，label 次要色）+ `.recent-row .chip:hover` accent 高亮（复用 `.chip` 基础药丸）；冒烟测试注意 stub 需给 chip 元素 `closest("[data-recent-model]")` 返回自身。
 
 ## 交易记录导出 CSV 约定（v1.20，rant 2026-08-17T20:46:57 E）
