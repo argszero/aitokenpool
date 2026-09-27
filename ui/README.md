@@ -355,7 +355,7 @@ ui/
 
 ## 界面国际化 i18n 约定（v1.21.1，rant 2026-08-18T20:49:22 + 21:40:10 去中英混排）
 
-- **语言包**：`ui/js/i18n.js` 零依赖 IIFE，`I18N = { zh, en }` 双词典（806 键 ×2，覆盖导航/登录/视图标题/通用/仪表盘/市场/共享/钱包/交易/设置/管理/运营/聊天/游客/相对时间/帮助/tour/主题/错误映射）；`window.t(key, vars)` 查当前语言，**缺失回退 zh，再缺回退 key 本身**；`{var}` 占位符插值；
+- **语言包**：`ui/js/i18n.js` 零依赖 IIFE，`I18N = { zh, en }` 双词典（zh/en 双份，**键数由 `src/i18n_pack.rs` 的阳性对照常量拥有**，此处不复述——复述即同一事实的第二个载体，会随包变动而静默漂移；覆盖导航/登录/视图标题/通用/仪表盘/市场/共享/钱包/交易/设置/管理/运营/聊天/游客/相对时间/帮助/tour/主题/错误映射）；`window.t(key, vars)` 查当前语言，**缺失回退 zh，再缺回退 key 本身**；`{var}` 占位符插值；
 - **切换机制**：设置页「偏好 → 界面语言」下拉（`#prefs-lang`，zh/en）→ `I18n.setLang()`：写 `localStorage('atp_lang')` + `document.documentElement.lang` 同步（zh→`zh-CN` / en→`en`）+ 派发 `atp:langchange` → app.js 重渲染 `renderNav()` + `renderView(activeView)` + `document.title`（引导中额外 `renderTourStep()`；帮助面板开着时 `renderHelp()`）；**首载**：localStorage → `navigator.language` 前缀（`zh*`→zh，否则 en）→ 默认 zh；切换即时生效无需刷新；
 - **开着的东西都要跟着走（R94）**：切语言时刷新的是**用户此刻可能正开着的**每一块 —— 导航、数据表表头、当前视图、标题、引导、以及**非模态的帮助面板**。`#help-panel` 的标题与关闭按钮是 `[data-i18n]`（`applyStatic()` 换掉），四行快捷键与 `#help-context` 却是 `renderHelp()` 用 JS 建的、**没有钩子**，而它全仓唯一调用点是 `toggleHelp` 的**打开**分支 ⇒ 漏刷新就是「同一块面板两种语言」，且整会话不自愈。**门禁** `state_gate::the_language_switch_refreshes_every_overlay_it_can_show` 从两处**推导**：浮层名册取自 `ui/index.html`（`#app` 之后的顶行元素带 `hidden` 类）；模态与否取自 `ui/css/style.css` 的类规则里有没有 `inset: 0`（模态浮层的全屏遮罩挡住了设置页的语言下拉 ⇒ 用户不可能在它开着时切语言，故不入射程）；写者名册取自「函数体里同时出现该浮层的某个 id 与 `T(`」⇒ **新增浮层或新增写者忘了登记会变红**。**射程**：门禁是**词法**的 —— 它证明刷新名册覆盖了派生出来的每个非模态浮层的每个写者，**不**证明屏幕上那一刻的文案真的是当前语言（那一半归 jsdom 探针），也**看不见**「切语言时干脆把面板关掉」这种竞争修法（探针 `A4` 腿把它拒掉）。
 - **占位符不得由「无数据标记」填充（R87）**：`T("key", { p: x })` 里的 `x` 必须是**数据**。若某处没有这个数，**换一句不含占位符的话说**，不要把 `"—"` 这类展示标记塞进 `{p}` —— 文案里 `{p}` 常常紧接着单位（`成功率 {p}%`），标记会连同单位一起印出来（「当前可用 · 成功率 —%」）。`mkDetailHtml` 的可用性一行曾正是这个形态（`const succ = m.success == null ? "—" : m.success`）⇒ 拆成 `mk.detail.availOn`/`availOff`（不含占位符）+ `mk.detail.availOnRate`/`availOffRate`（含 `{p}`）两对键，按 `m.success == null` 选。同一约定在别处的既有写法可作样板：`app.js` 的 `admin.org.stats.used` 一行（`totalQuota ? T("…used.sub", { p: … }) : "—"`，标记落在**模板之外**）。**门禁** `i18n_pack::a_placeholder_is_never_filled_by_a_display_sentinel` 的判别式是「条件表达式或逻辑兜底的**某个整操作数本身就是字符串字面量**」——`x == null ? "—" : x` 报，而 `raw || T("common.unnamed")`、`v === "" ? T("common.unassigned") : …`、`typeof x === "number"` 这些**看着像**的写法一律放行（字面量只是比较的另一侧或调用实参，不是整操作数；宽口径实测在真语料上多报 4–5 处）。变量名先按**所在函数体**解析（`n`/`name`/`model` 全仓重名，整文件口径多报 5 处）。**射程**：门禁是**词法**的 —— 它证明「喂进占位符的那个值不是展示标记」，**不**证明屏幕上的数字对（那一半归 jsdom 探针）；也**看不见**「本该带 `{p}` 的那句被整个删掉」这种竞争修法。
@@ -364,9 +364,9 @@ ui/
 - **数字/时间本地化**：`I18n.fmtNum`（zh→`zh-CN` / en→`en-US` `toLocaleString`）；`I18n.fmtRelTime`（刚刚/N 分钟前/N 小时前/昨天 ↔ just now/N min ago/N hr ago/yesterday）；数量单位（人/个/笔/次）用 `cnt.*` 键（zh 带量词，en 纯数字）；
 - **后端错误映射**：`api.js` 抛错前过 `I18n.mapErr()`——en 模式下已知中文错误映射为英文，未知**原样返回**；zh 模式原样透传；`ERR_MAP`（`i18n.js`）按**最长匹配**取值，带运行期插值的消息只登记到插值符之前的稳定前缀（写全模板永远匹配不上）。**后端每写一条用户可见的中文错误，就必须在 `ERR_MAP` 里登记**，并给两个包加对应键——否则英文界面上直接显示中文，而 `cargo test` 全绿（`src/i18n_pack.rs::every_backend_error_message_reaches_the_wordlist` 现在把这条约束变成门禁：它扫 `BACKEND_ERROR_SOURCES` 列出的后端源码，逐条断言「能被 `ERR_MAP` 命中」，并由 `backend_error_sources_cover_every_file_that_emits_an_error_literal` 用「实际发出错误字面量的文件集合」兜住漏登记的文件，另由 `every_error_key_site_has_a_readable_write_form` 兜住「值被写成裸标识符、提取器读不到」的形态——见下节）；**`api.js` 自己的文案一律按 key 取**（`T("err.network")` / `T("err.http", {n})` 等），文件内不写中文原文（`api_client_error_text_is_key_based`）。
 - **单语原则（v1.21.1 去混排）**：zh 词典值一律纯中文（仅保留 API/Key/Plan/tokens/CSV 等专有名词、键盘快捷键与占位符），不再内联英文注释；`index.html` 已移除全部 `<span class="en">` 静态小字（55 处）；`.en` CSS 样式已删除；en 词典保持纯英文；
-- 冒烟测试：node 无 DOM 桩跑 i18n.js（t/setLang/mapErr/fmtNum/fmtRelTime 断言，见开发记录）；Key 一致性扫描（`src/i18n_pack.rs` 门禁：app.js 的 `T()` 字面量 431 个、index.html 的 `data-i18n*` 305 个，去重并集 681 键全部存在于 ZH/EN）。
+- 冒烟测试：node 无 DOM 桩跑 i18n.js（t/setLang/mapErr/fmtNum/fmtRelTime 断言，见开发记录）；Key 一致性扫描（`src/i18n_pack.rs` 门禁：`app.js` 的 `T()` 字面量与 `index.html` 的 `data-i18n*` 属性，**逐条断言每个被引用的键都存在于 ZH/EN**；两侧的计数由该文件的阳性对照常量（`T_LITERAL_DISTINCT` / `STATIC_ATTR_DISTINCT`）拥有，此处不复述）。
 - **整包可达性（C2155）**：语言包是**双份**的，一个没人引用的键不会报错、也不会被上面两条门禁看见——它们只问「**引用了的**键在不在包里」，方向**相反**。而 C2153 证明这类**孤儿键可以是活缺陷的指纹**（`share.toggle.relisted` 两包俱在却无人可达 ⇒ 共享切换的结局少了「重新上架」那一支），C2154 把当时那 59 个逐条裁定为残留/弱项/宿主裁定（零活缺陷）。**不变量**：一个键「可达」当且仅当它以**键 token 边界**（ASCII 字母数字 ＋ `_` `.` `-`）出现在消费语料——`app.js`/`api.js`/`data.js` **剥注释**后的代码 ＋ `index.html` **剥注释**后的标记 ＋ `i18n.js` 语言包区段**之外**的代码——或以**动态前缀**（`T("share.day." + …)`；前缀集合派生自语料本身，不写名册）开头。注释里的键名**不是**消费者（#296）。
-- **CI 覆盖**：`src/i18n_pack.rs::every_pack_key_reaches_a_consumer` 断言「计算出的不可达集合 == `UNREACHABLE_PACK_KEYS`」**精确相等**（不是子集）。该清单是**日落清单**不是豁免注册表：新增一个无人用的键变红、从清单删一条而键仍不可达变红、**把某条日落键接上线也变红**（必须**同时**移出清单）。判别式由 `pack_reachability_checker_detects_injected_defects` 用**合成输入**自证：边界规则（`a.b` 不得被 `a.bc` 里的子串命中，坑 #333）、动态前缀、注释不是消费者、空语料下全部不可达。**射程**：门禁钉的是**清单**，**不删键**（缩清单——可安全删的是 `dup-sibling`/`zero-mock`/`composite`/`rename` 四类共 23 条——是独立后续轮）。⚠️ 动态前缀规则在**今天的真语料上是冗余的**（`share.day.1..7` 同时被 `index.html:305-311` 的周几芯片静态绑定 ⇒ 删掉 `app.js` 那段拼接，该家族仍可达、门禁照绿）；它是为**未来**的动态家族准备的，牙齿由合成输入证明。
+- **CI 覆盖**：`src/i18n_pack.rs::every_pack_key_reaches_a_consumer` 断言「计算出的不可达集合 == `UNREACHABLE_PACK_KEYS`」**精确相等**（不是子集）。该清单是**日落清单**不是豁免注册表：新增一个无人用的键变红、从清单删一条而键仍不可达变红、**把某条日落键接上线也变红**（必须**同时**移出清单）。判别式由 `pack_reachability_checker_detects_injected_defects` 用**合成输入**自证：边界规则（`a.b` 不得被 `a.bc` 里的子串命中，坑 #333）、动态前缀、注释不是消费者、空语料下全部不可达。**射程**：门禁钉的是**清单**，**不删键**（缩清单——可安全删的是 `dup-sibling`/`zero-mock`/`composite`/`rename` 四类——#270 `pack-key-shrink` 已落地；此后仍会有新键进入清单，长度以 `UNREACHABLE_PACK_KEYS` 为准，此处不复述）。⚠️ 动态前缀规则在**今天的真语料上是冗余的**（`share.day.1..7` 同时被 `index.html:305-311` 的周几芯片静态绑定 ⇒ 删掉 `app.js` 那段拼接，该家族仍可达、门禁照绿）；它是为**未来**的动态家族准备的，牙齿由合成输入证明。
 
 ## 仪表盘「我的共享」数据源与降级约定（v1.21.2，rant 2026-08-19T15:48:17 BUG）
 
@@ -936,8 +936,10 @@ R3 签名收据捕获的标识符其初始化式必须调用**守卫比较的那
 ⚠️ **射程只到「嵌套」这一条轴**：A/B 里那条竞争修法 `m_drop_parent`（把祖先的 `data-i18n` 整个删掉，
 例如让 `<h3>` 不带钩子）**确能让本门禁通过** —— 它真的消掉了嵌套。但它换来的是**另一条轴**上的缺陷：
 那位祖先的文案从此不再本地化，键 `admin.raise.title` 沦为**孤儿**（除语言包外零引用，实测孤儿集
-恰好 +1）。孤儿键今天无人守（全仓已有 60 余个不可达键）、**本次不入射程**，A/B 如实记录这条腿
-按声明为 GREEN，而不是伪装成被拒绝。
+恰好 +1）。**写下这段时**孤儿键无人守、本次不入射程，A/B 如实记录这条腿按声明为 GREEN、而不是
+伪装成被拒绝 —— 但那条轴**今天已有守卫**：`src/i18n_pack.rs::every_pack_key_reaches_a_consumer`
+（见上文「整包可达性」一节）断言「计算出的不可达集合 == `UNREACHABLE_PACK_KEYS`」**精确相等** ⇒
+`m_drop_parent` 这种修法今天会被它拒掉（那位祖先的键落入不可达集合，而日落清单不会自己变长）。
 
 ⚠️ **本次未覆盖的边界**（已测量、非盲区）：`data-i18n*` 属性若落在**被 JS 整体替换内容的容器**里
 （`app.js` 对某 id 做 `innerHTML =`）同样是死的。今日实测为 **0 处**，故未建门禁 ——
