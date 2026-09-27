@@ -159,7 +159,7 @@ ui/
 ## 动效与系统偏好约定（v1.18，rant 2026-08-17T18:06:09 E）
 
 - **按压反馈**：`.btn:active:not(:disabled) { transform: scale(0.98) }`（配合 `.btn` 既有 `transition: all .15s`）；disabled 按钮不触发；
-- **统计卡 hover**：`.stat:hover` `translateY(-2px)` + 边框/阴影提升（与 `.card:hover` 语言一致，过渡 0.15–0.18s）；
+- **统计卡 hover**：`.stat-card:hover` `translateY(-2px)` + 边框/阴影提升（与 `.card:hover` 语言一致，过渡 0.15–0.18s）；⚠️ 2026-09-11 组件层（`75dcb2c` / #154）更正：本条原写 `.stat:hover` —— 那次改动删掉了 `.stat` 整族、改用原型规范名 `.stat-card`，样式表里**从未**保留 `.stat` 规则，今天按本条写 `class="stat"` 的元素不匹配任何声明；
 - **数字跳动**：`bump(el)` 助手（remove `.bump` → reflow → add，重放 `@keyframes numJump`：`translateY(-3px) scale(1.02)`，0.35s）；**接入 3 处余额变化点**（共 4 次 `bump()` 调用）——钱包充值（`#side-balance` + `#wallet-balance`）、运营者给自己充值（`u.email === D.USER.email` 行内判断）、聊天消费扣款；⚠️ 2026-08-19 零 mock 重构（`89963f3` / #94）更正：本条原写「4 处」，多出来的那处是**加额批准** —— 它当时在本地 mock 分支里就地改 `D.USER.balance` 之后跳动，改成真实 API（`approveRaise()` 成功后只 `loadAdmin()` 刷新列表）时随本地改动一并消失；同一次重构把「运营者给自己充值」的守卫从具名布尔变量改成上面的行内比较式。`#side-balance` 为 inline 元素需 `display:inline-block` 才可 transform；
 - **系统偏好**：`@media (prefers-reduced-motion: reduce)` 全局压 `animation-duration`/`transition-duration` 到 0.01ms、`animation-iteration-count: 1`、`scroll-behavior: auto`——**禁用过渡/动画但保留全部功能**；新增加动画时不得绕过此规则。
 
