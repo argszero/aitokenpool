@@ -59,7 +59,7 @@ See comments in `config/config.example.toml` for the full configuration.
 
 ### Gateway access
 
-OpenAI-compatible endpoints: `POST /v1/chat/completions`, `POST /v1/responses`, `POST /anthropic/v1/messages`, `GET /v1/models`. The base URL is shown on the settings page and built from `[server].public_url` (set it to your real domain in production). Full API reference: [docs/architecture.md](docs/architecture.md).
+OpenAI-compatible endpoints: `POST /v1/chat/completions`, `POST /v1/responses`, `POST /anthropic/v1/messages`, `GET /v1/models`. The base URL is shown on the settings page and built from `[server].public_url` (set it to your real domain in production). See [docs/architecture.md](docs/architecture.md) for an overview; the authoritative list is `router()` in `src/routes/mod.rs`.
 
 ## Documentation
 

@@ -55,6 +55,10 @@ mod body_limit_gate;
 // 加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod citation_gate;
+// 双语文档对偶门禁（R106）：同样是仅测试期编译 —— 两份 README 都在编译期读入，
+// 加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod readme_gate;
 
 use std::sync::Arc;
 
