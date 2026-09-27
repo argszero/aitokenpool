@@ -361,7 +361,7 @@ ui/
 - **静态文案**：`index.html` 内静态中文用 `data-i18n` / `data-i18n-ph`（placeholder）/ `data-i18n-title`（title）标记，`applyStatic()` 启动时与每次切换时批量替换；**容器含表单控件的 `<label>` 用 `<label><span data-i18n="KEY">文本</span><input…></label>` 结构**（避免 innerHTML 替换销毁控件）；
 - **动态文案**：`app.js` 面向用户字符串全部走 `t('key')`；**语言敏感常量存 key 而非文案**（NAV/VIEW_TITLE/TOUR_STEPS/HELP_KEYS 存 key，渲染时 `T()` 解析；SHARE_STATUS/RAISE_STATUS 的 `text` 为函数；TX_COLUMNS 的 `title`/`options` 为函数；`DAY_LABELS` 动态 `T("share.day."+n)`）——保证切换语言后重渲染即时生效；
 - **数字/时间本地化**：`I18n.fmtNum`（zh→`zh-CN` / en→`en-US` `toLocaleString`）；`I18n.fmtRelTime`（刚刚/N 分钟前/N 小时前/昨天 ↔ just now/N min ago/N hr ago/yesterday）；数量单位（人/个/笔/次）用 `cnt.*` 键（zh 带量词，en 纯数字）；
-- **后端错误映射**：`api.js` 抛错前过 `I18n.mapErr()`——en 模式下已知中文错误映射为英文，未知**原样返回**；zh 模式原样透传；`ERR_MAP`（`i18n.js`）按**最长匹配**取值，带运行期插值的消息只登记到插值符之前的稳定前缀（写全模板永远匹配不上）。**后端每写一条用户可见的中文错误，就必须在 `ERR_MAP` 里登记**，并给两个包加对应键——否则英文界面上直接显示中文，而 `cargo test` 全绿（`src/i18n_pack.rs::every_backend_error_message_reaches_the_wordlist` 现在把这条约束变成门禁：它扫 `BACKEND_ERROR_SOURCES` 列出的后端源码，逐条断言「能被 `ERR_MAP` 命中」，并由 `backend_error_sources_cover_the_routes_directory` 用 `src/routes/` 的实际目录项兜住漏登记的文件）；**`api.js` 自己的文案一律按 key 取**（`T("err.network")` / `T("err.http", {n})` 等），文件内不写中文原文（`api_client_error_text_is_key_based`）。
+- **后端错误映射**：`api.js` 抛错前过 `I18n.mapErr()`——en 模式下已知中文错误映射为英文，未知**原样返回**；zh 模式原样透传；`ERR_MAP`（`i18n.js`）按**最长匹配**取值，带运行期插值的消息只登记到插值符之前的稳定前缀（写全模板永远匹配不上）。**后端每写一条用户可见的中文错误，就必须在 `ERR_MAP` 里登记**，并给两个包加对应键——否则英文界面上直接显示中文，而 `cargo test` 全绿（`src/i18n_pack.rs::every_backend_error_message_reaches_the_wordlist` 现在把这条约束变成门禁：它扫 `BACKEND_ERROR_SOURCES` 列出的后端源码，逐条断言「能被 `ERR_MAP` 命中」，并由 `backend_error_sources_cover_every_file_that_emits_an_error_literal` 用「实际发出错误字面量的文件集合」兜住漏登记的文件，另由 `every_error_key_site_has_a_readable_write_form` 兜住「值被写成裸标识符、提取器读不到」的形态——见下节）；**`api.js` 自己的文案一律按 key 取**（`T("err.network")` / `T("err.http", {n})` 等），文件内不写中文原文（`api_client_error_text_is_key_based`）。
 - **单语原则（v1.21.1 去混排）**：zh 词典值一律纯中文（仅保留 API/Key/Plan/tokens/CSV 等专有名词、键盘快捷键与占位符），不再内联英文注释；`index.html` 已移除全部 `<span class="en">` 静态小字（55 处）；`.en` CSS 样式已删除；en 词典保持纯英文；
 - 冒烟测试：node 无 DOM 桩跑 i18n.js（t/setLang/mapErr/fmtNum/fmtRelTime 断言，见开发记录）；Key 一致性扫描（`src/i18n_pack.rs` 门禁：app.js 的 `T()` 字面量 431 个、index.html 的 `data-i18n*` 305 个，去重并集 681 键全部存在于 ZH/EN）。
 - **整包可达性（C2155）**：语言包是**双份**的，一个没人引用的键不会报错、也不会被上面两条门禁看见——它们只问「**引用了的**键在不在包里」，方向**相反**。而 C2153 证明这类**孤儿键可以是活缺陷的指纹**（`share.toggle.relisted` 两包俱在却无人可达 ⇒ 共享切换的结局少了「重新上架」那一支），C2154 把当时那 59 个逐条裁定为残留/弱项/宿主裁定（零活缺陷）。**不变量**：一个键「可达」当且仅当它以**键 token 边界**（ASCII 字母数字 ＋ `_` `.` `-`）出现在消费语料——`app.js`/`api.js`/`data.js` **剥注释**后的代码 ＋ `index.html` **剥注释**后的标记 ＋ `i18n.js` 语言包区段**之外**的代码——或以**动态前缀**（`T("share.day." + …)`；前缀集合派生自语料本身，不写名册）开头。注释里的键名**不是**消费者（#296）。
@@ -1189,3 +1189,35 @@ key**（正常操作）于是让运营者看到红色故障警报，而屏幕上
   清除之后，语义完全正确。判据因此按 R173 声明原话（「每一个 `return` **守卫**」）收紧：
   只豁免**末尾那一条语句上**的 `return`，其后的任何 `return` 仍算守卫、仍判红
   （`r173_is_last_statement`）。
+
+## 后端错误文案的**书写形态**：提取器读不到的写法等于没写（R86，2026-09-27）
+
+- **契约**：后端每一处用户可见错误文案，值都必须**直接写在站点上**——`json!({ "error": "…" })` /
+  `json!({ "error": format!("…") })` / `err_json(StatusCode::X, "…")`；或者是以 `{` 开头的
+  结构化信封（网关那条 `{"error":{"message":…}}`，它的 `message` 由调用方给，按设计进不了文案语料）。
+- **不变量**：**不得**把文案的书写交给一个接收 `String` 的助手或闭包再转手（
+  `let bad = |msg: String| … json!({ "error": msg })`）。`src/i18n_pack.rs::backend_error_literals`
+  是**词法**提取器：值写成裸标识符时它读不到 —— 于是那个站点**既不报错也不计数**，
+  `every_backend_error_message_reaches_the_wordlist`（C2129）在它身上**恒真**。
+  实证：交易列表的排序校验三条 400（`src/routes/wallet.rs::tx_order_by`）曾这样产出，
+  en 模式下这三条一直显示中文而 `cargo test` 全绿（#284 引入，**晚于**词表门禁 35 个 PR）。
+  修法就是把信封写回调用点——仓内其余 60 余处都是这个形状。
+- **门禁**：`src/i18n_pack.rs::every_error_key_site_has_a_readable_write_form`。语料由
+  `backend_source_candidates()` 从**文件系统**推出（`src/*.rs` ＋ `src/routes/*.rs` ⇒ 新增文件
+  自动进射程），只读 `#[cfg(test)]` 之前的生产区、先剥注释。它先做**阳性对照**（逐文件比对
+  「扫描器看见的可读站点数」与「提取器读出的文案条数」，不一致＝扫描器瞎了），再断言
+  `Opaque` 站点为零，最后核对两个**站点计数**常量（`READABLE_ERROR_WRITE_SITES` /
+  `STRUCTURED_ERROR_WRITE_SITES`）——所以新增或改动一条错误文案要顺手改那个常量，它是
+  「仪器没瞎」的定量读数。规则与提取器**共用** `error_value_pos` / `err_json_value_pos`
+  （射程同源是结构上的，不靠注释同步）。牙齿在
+  `error_write_form_scanner_detects_injected_defects`（三种形态 ＋ 三种**不是站点**的写法：
+  值位置的 `"error"`、match 臂、`fn err_json(` 定义处）。
+- **插值文案在包里的写法**：这三条带运行期插值（`sort 必须为 {} 之一`…），`ERR_MAP` 只登记
+  插值符之前的**稳定前缀**，包里的句子是**通用的**（`err.txSortKeyInvalid` ＝「排序键无效」/
+  "Invalid sort key"，同 `err.txTypeInvalid` 的写法）——`mapErr` 走的是 `T(key)`，带
+  `{}` 占位符的句子在那里不会被插值。
+- ⚠️ **射程**：门禁是**词法**的 —— 它证的是**值的书写形态**（不是裸标识符），**不证**屏幕上或
+  响应体里那一刻的文案。运行期那半**没有仪器**，而且**刻意不留**：前端**发不出**非法
+  `sort`/`dir`（R164 的门禁把服务端白名单与前端列名册钉在同一个 build 上），只有直接调 API 的
+  客户端才够得着这三条 400——所以这是一条 **API 契约／一致性**约束与**门禁盲区**的结构修复，
+  不是用户可见的界面缺陷。

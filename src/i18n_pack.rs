@@ -39,9 +39,9 @@ const DATA_JS: &str = include_str!("../ui/js/data.js");
 /// en 界面上就多一句中文，而 `cargo test` 全绿。本清单就是这条断言要扫的语料。
 ///
 /// ⚠️ 手写清单正是本仓反复踩过的坑（C2072 键盘导航名册、C2127 Enter 登记名册）——
-/// 所以它由 `backend_error_sources_cover_the_routes_directory` 兜住：该测试把
-/// `src/routes/` 的实际目录项与本清单比对，新增路由文件而忘了登记会直接变红，
-/// 而不是「静默少扫一个文件、门禁照常通过」。
+/// 所以它由 `backend_error_sources_cover_every_file_that_emits_an_error_literal` 兜住：
+/// 该测试扫 `src/*.rs` 与 `src/routes/*.rs`，把**实际发出错误字面量的文件集合**与本清单比对，
+/// 新增文件而忘了登记会直接变红，而不是「静默少扫一个文件、门禁照常通过」。
 const BACKEND_ERROR_SOURCES: &[(&str, &str)] = &[
     ("src/gateway.rs", include_str!("gateway.rs")),
     ("src/routes/mod.rs", include_str!("routes/mod.rs")),
@@ -67,8 +67,8 @@ const ERR_MAP_END: &str = "\n  ];";
 /// 这两个数把「提取器静默失真」与「后端/词表真的变了」区分开：语料被判空时，
 /// 「每条中文都在词表里」会**恒真**——这正是 C2106 坑 245（提取器返回空字典 ⇒
 /// 「0 处漂移」的假绿）。
-const ERR_MAP_ENTRY_COUNT: usize = 49;
-const BACKEND_ERROR_CJK_COUNT: usize = 45;
+const ERR_MAP_ENTRY_COUNT: usize = 52;
+const BACKEND_ERROR_CJK_COUNT: usize = 48;
 
 /// 语言包区段的起止标记。
 ///
@@ -99,8 +99,8 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 791;
-const EN_KEY_COUNT: usize = 791;
+const ZH_KEY_COUNT: usize = 794;
+const EN_KEY_COUNT: usize = 794;
 const STATIC_ATTR_COUNT: usize = 335;
 const STATIC_ATTR_DISTINCT: usize = 309;
 const T_LITERAL_COUNT: usize = 544;
@@ -1781,34 +1781,67 @@ mod tests {
         matches!(c, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
     }
 
+    /// 生产区：`#[cfg(test)]` 之后的测试代码一律不看（测试里的断言说明也是中文，但它们不上线）。
+    fn production_region(src: &str) -> &str {
+        match src.find("#[cfg(test)]") {
+            Some(i) => &src[..i],
+            None => src,
+        }
+    }
+
+    /// 跳过值的书写前缀（`&`、`format!`、包裹括号与空白）→ 值的第一个字节。
+    ///
+    /// [`backend_error_literals`] 与 [`error_write_forms`] **共用**它：提取器「读的位置」与
+    /// 形态分类器「判的位置」因此是同一段代码，而不是靠注释对齐的两份约定。
+    fn skip_value_prefix(src: &str, mut i: usize) -> usize {
+        if src.as_bytes().get(i) == Some(&b'&') {
+            i = skip_ws(src, i + 1);
+        }
+        if src[i..].starts_with("format!") {
+            i += "format!".len();
+        }
+        i = skip_ws(src, i);
+        if src.as_bytes().get(i) == Some(&b'(') {
+            i = skip_ws(src, i + 1);
+        }
+        i
+    }
+
+    /// 形态 A：`"error"` **之后**的下标 → 值的第一个字节。
+    fn error_value_pos(src: &str, after: usize) -> usize {
+        let mut i = skip_ws(src, after);
+        if src.as_bytes().get(i) == Some(&b':') {
+            i = skip_ws(src, i + 1);
+        }
+        skip_value_prefix(src, i)
+    }
+
+    /// 形态 B：`err_json(` **之后**的下标 → 值的第一个字节（先跳过状态码那个实参）。
+    fn err_json_value_pos(src: &str, after: usize) -> usize {
+        let mut i = after;
+        while i < src.len() && src.as_bytes()[i] != b',' {
+            i += 1;
+        }
+        skip_value_prefix(src, skip_ws(src, i + 1))
+    }
+
     /// 后端 `"error"` 文案的两种书写形态：
     /// `json!({ "error": "…" })` / `json!({ "error": format!("…") })`，以及
     /// `err_json(StatusCode::X, "…")` / `err_json(StatusCode::X, &format!("…"))`。
     ///
-    /// `#[cfg(test)]` 之后的内容一律不读：测试里的断言说明也是中文，但它们不上线。
+    /// ⚠️ 两种形态都要求**值本身就是字符串字面量** —— 值是裸标识符时 [`read_quoted`] 失败、
+    /// 该站点被**静默**跳过（既不报错也不计数）。这条盲区由
+    /// [`every_error_key_site_has_a_readable_write_form`] 封住；两者共用
+    /// [`error_value_pos`] / [`err_json_value_pos`]，所以那条规则看的正是这里读的位置。
     fn backend_error_literals(src: &str) -> Vec<String> {
-        let src = match src.find("#[cfg(test)]") {
-            Some(i) => &src[..i],
-            None => src,
-        };
+        let src = production_region(src);
         let mut out = Vec::new();
 
         // 形态 A：`"error"` 之后（可带 `format!(` / `(`）紧跟的字面量
         let mut from = 0usize;
         while let Some(rel) = src[from..].find("\"error\"") {
             let after = from + rel + "\"error\"".len();
-            let mut i = skip_ws(src, after);
-            if src.as_bytes().get(i) == Some(&b':') {
-                i = skip_ws(src, i + 1);
-            }
-            if src[i..].starts_with("format!") {
-                i += "format!".len();
-            }
-            i = skip_ws(src, i);
-            if src.as_bytes().get(i) == Some(&b'(') {
-                i = skip_ws(src, i + 1);
-            }
-            if let Some((lit, end)) = read_quoted(src, i) {
+            if let Some((lit, end)) = read_quoted(src, error_value_pos(src, after)) {
                 out.push(lit);
                 from = end;
             } else {
@@ -1820,27 +1853,96 @@ mod tests {
         let mut from = 0usize;
         while let Some(rel) = src[from..].find("err_json(") {
             let after = from + rel + "err_json(".len();
-            let mut i = after;
-            while i < src.len() && src.as_bytes()[i] != b',' {
-                i += 1;
-            }
-            i = skip_ws(src, i + 1);
-            if src.as_bytes().get(i) == Some(&b'&') {
-                i = skip_ws(src, i + 1);
-            }
-            if src[i..].starts_with("format!") {
-                i += "format!".len();
-            }
-            i = skip_ws(src, i);
-            if src.as_bytes().get(i) == Some(&b'(') {
-                i = skip_ws(src, i + 1);
-            }
-            if let Some((lit, end)) = read_quoted(src, i) {
+            if let Some((lit, end)) = read_quoted(src, err_json_value_pos(src, after)) {
                 out.push(lit);
                 from = end;
             } else {
                 from = after;
             }
+        }
+        out
+    }
+
+    /// 一处错误文案站点的**值形态**。
+    ///
+    /// [`backend_error_literals`] 只认两种书写形态（`"error"` 键位的值、`err_json(` 的第二实参），
+    /// 两种都要求**值本身就是字符串字面量**。写成别的形态时提取器读不到它 —— 该站点既不报错
+    /// 也不计数，于是 `every_backend_error_message_reaches_the_wordlist` 对它**恒真**。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ErrorWriteForm {
+        /// 值是字符串字面量（可带 `format!(` / `(` / `&` 包裹）—— 提取器读得到。
+        Readable,
+        /// 值是结构化对象（以 `{` 开头，如网关那个 `{"error":{"message":…}}` 信封）——
+        /// 它不是一句文案（其 `message` 由调用方给），按设计不进文案语料。
+        Structured,
+        /// 值是别的什么（裸标识符、`String::from(…)`…）—— 提取器**读不到**。
+        Opaque,
+    }
+
+    /// 语料里每一处**错误文案站点**的值形态，附带一段用于诊断的**原文片段**。
+    ///
+    /// 「站点」只有两种（两条循环各一种），其余出现一律**不是**站点、不进来：
+    /// * `"error"` 后面（跳过空白）不是 `:` —— 那是**值**（`"type": "error"`）或 match 臂
+    ///   （`"error" => …`），那里本来就没有文案；
+    /// * `err_json(` 是**定义处**（`fn err_json(…)`）—— 它的第二个参数是形参声明。
+    ///
+    /// 两条循环与 [`backend_error_literals`] **同形**：同一个 [`error_value_pos`] /
+    /// [`err_json_value_pos`]，同一套「读到字面量就跳到它之后、读不到就跳过这个键」的推进。
+    /// 区别只在于这里给值**分类**而不是取字面量 —— 所以「提取器读的位置」与「这条规则判的位置」
+    /// 是同一段代码，不靠注释同步。
+    ///
+    /// ⚠️ 入口先剥注释、再截到 `#[cfg(test)]` 之前：生产区的文档注释里正写着
+    /// `json!({ "error": … })` 这类**例子**，不剥注释它们会被当成站点（那不是一个站点，
+    /// 它是一句说明）。两者都会改变偏移，所以片段取自**这份处理后的文本**，只用于诊断。
+    fn error_write_forms(src: &str) -> Vec<(String, ErrorWriteForm)> {
+        let owned = strip_rust_comments(src);
+        let src = production_region(&owned);
+        let snippet = |at: usize| -> String {
+            src[at..]
+                .chars()
+                .take(50)
+                .map(|c| if c.is_whitespace() { ' ' } else { c })
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let form_at = |i: usize| match src.as_bytes().get(i) {
+            Some(&b'"') => ErrorWriteForm::Readable,
+            Some(&b'{') => ErrorWriteForm::Structured,
+            _ => ErrorWriteForm::Opaque,
+        };
+        let mut out = Vec::new();
+
+        let mut from = 0usize;
+        while let Some(rel) = src[from..].find("\"error\"") {
+            let at = from + rel;
+            let after = at + "\"error\"".len();
+            // 站点判据：`"error"` 之后（跳过空白）必须是 `:`。否则它是**值**
+            // （`"type": "error"`）或 match 臂（`"error" => …`）—— 提取器在那里也读不到东西，
+            // 但那里本来就没有东西可读。
+            if src.as_bytes().get(skip_ws(src, after)) != Some(&b':') {
+                from = after;
+                continue;
+            }
+            let i = error_value_pos(src, after);
+            out.push((snippet(at), form_at(i)));
+            // 与提取器同步推进：读到字面量就跳到它之后，否则只跳过这个键。
+            from = read_quoted(src, i).map_or(after, |(_, end)| end);
+        }
+
+        let mut from = 0usize;
+        while let Some(rel) = src[from..].find("err_json(") {
+            let at = from + rel;
+            let after = at + "err_json(".len();
+            // 定义处 `fn err_json(…)` 不是站点：它的第二个参数是**形参声明**，不是文案。
+            if src[..at].trim_end().ends_with("fn") {
+                from = after;
+                continue;
+            }
+            let i = err_json_value_pos(src, after);
+            out.push((snippet(at), form_at(i)));
+            from = read_quoted(src, i).map_or(after, |(_, end)| end);
         }
         out
     }
@@ -2018,22 +2120,12 @@ mod tests {
         );
     }
 
-    /// 手写清单的兜底：**文件系统里的「谁会发出错误文案」才是名册**。
+    /// 后端源码里**可能**写出错误文案的全部文件：`src/*.rs` ＋ `src/routes/*.rs`
+    /// （`src/gateway.rs` 置首，沿用既有顺序）。
     ///
-    /// 没有这一条，新增一个文件就是**静默**逃过上面那条门禁（名册不随文件增长 ——
-    /// C2072 / C2127 的同一个形状）。这里刻意读一次文件系统（`CARGO_MANIFEST_DIR` 是
-    /// 编译期绝对路径，与工作目录无关），把「名册」变成**派生**：
-    ///
-    /// 判据不是「`src/routes/` 的目录项与名册一致」（那只覆盖一个目录，顶层新增
-    /// `src/foo.rs` 照样逃逸），而是**用同一个提取器扫全部 `src/*.rs` 与
-    /// `src/routes/*.rs`，产出错误字面量的文件集合必须恰好等于名册**。等号两侧都带牙齿：
-    /// 少登记一个有产出的文件 = 漏扫；名册里留一个没有产出的文件 = 名册在腐烂。
-    ///
-    /// （`src/` 顶层其余文件当前产出 0 条：gate 模块的示例都写在 `#[cfg(test)]` 之内，
-    /// 而提取器在第一个 `#[cfg(test)]` 处截断 —— 这正是它必须截断的理由之一。）
-    #[test]
-    fn backend_error_sources_cover_every_file_that_emits_an_error_literal() {
-        let root = env!("CARGO_MANIFEST_DIR");
+    /// 名册由**文件系统**推出，不手抄：新增一个文件就自动进入两条规则的射程
+    /// （C2072 / C2127 的同一个形状 —— 手抄名册不会随文件增长）。
+    fn backend_source_candidates(root: &str) -> Vec<String> {
         let mut candidates: Vec<String> = vec!["src/gateway.rs".to_string()];
         for dir in ["src", "src/routes"] {
             let d = format!("{root}/{dir}");
@@ -2051,6 +2143,26 @@ mod tests {
                 }
             }
         }
+        candidates
+    }
+
+    /// 手写清单的兜底：**文件系统里的「谁会发出错误文案」才是名册**。
+    ///
+    /// 没有这一条，新增一个文件就是**静默**逃过上面那条门禁（名册不随文件增长 ——
+    /// C2072 / C2127 的同一个形状）。这里刻意读一次文件系统（`CARGO_MANIFEST_DIR` 是
+    /// 编译期绝对路径，与工作目录无关），把「名册」变成**派生**：
+    ///
+    /// 判据不是「`src/routes/` 的目录项与名册一致」（那只覆盖一个目录，顶层新增
+    /// `src/foo.rs` 照样逃逸），而是**用同一个提取器扫全部 `src/*.rs` 与
+    /// `src/routes/*.rs`，产出错误字面量的文件集合必须恰好等于名册**。等号两侧都带牙齿：
+    /// 少登记一个有产出的文件 = 漏扫；名册里留一个没有产出的文件 = 名册在腐烂。
+    ///
+    /// （`src/` 顶层其余文件当前产出 0 条：gate 模块的示例都写在 `#[cfg(test)]` 之内，
+    /// 而提取器在第一个 `#[cfg(test)]` 处截断 —— 这正是它必须截断的理由之一。）
+    #[test]
+    fn backend_error_sources_cover_every_file_that_emits_an_error_literal() {
+        let root = env!("CARGO_MANIFEST_DIR");
+        let candidates = backend_source_candidates(root);
 
         let mut emitters: Vec<String> = Vec::new();
         for rel in &candidates {
@@ -2073,6 +2185,147 @@ mod tests {
             "BACKEND_ERROR_SOURCES 与「实际发出错误文案的文件」不一致 —— 左＝磁盘上的产出者，\
              右＝名册。漏登记的产出者，其文案不受词表门禁覆盖（英文界面上就是中文）；\
              名册里多出的条目则是在腐烂。"
+        );
+    }
+
+    /// 阳性对照真值（口径同 `ZH_KEY_COUNT`：**别口算，让门禁报出真值再照抄**）。
+    ///
+    /// 两者都数**站点**（不是去重后的文案）：`READABLE` 是提取器读得到的值，
+    /// `STRUCTURED` 是按设计不进语料的结构化信封。新增一条错误文案就是在改这两个数 ——
+    /// 这正是它们的作用：它们证明扫描器没有变瞎，而不是证明语料静止。
+    const READABLE_ERROR_WRITE_SITES: usize = 81;
+    const STRUCTURED_ERROR_WRITE_SITES: usize = 2;
+
+    /// **每一处**错误文案站点的值都必须是提取器读得到的写法。
+    ///
+    /// `every_backend_error_message_reaches_the_wordlist` 问的是「读到的文案都登记了吗」——
+    /// 它**默认**站点都会被读到，而 [`backend_error_literals`] 是词法的：值写成裸标识符
+    /// （`json!({ "error": msg })`）时它两者都读不到 ⇒ 那个站点既不报错也不计数，
+    /// 「后端每一条错误文案都在词表里」在它身上**恒真**。实证：`src/routes/wallet.rs` 的
+    /// `tx_order_by` 曾把三条 400 文案交给一个接收 `String` 的闭包产出
+    /// （`let bad = |msg: String| … json!({ "error": msg })`），于是那三条在 en 界面上
+    /// 显示中文而 `cargo test` 全绿（#284 引入，晚于词表门禁 35 个 PR）。
+    ///
+    /// 本条把默认**翻过来**：不是「读到的都要登记」，而是「**没读到的必须不存在**」。
+    /// 语料是 `src/*.rs` ＋ `src/routes/*.rs`（由 [`backend_source_candidates`] 从文件系统
+    /// 推出 ⇒ 新增文件自动进射程，不多不少）。允许的两种形态：
+    ///
+    /// * `Readable` —— 值本身就是字面量，提取器读得到，词表门禁覆盖它；
+    /// * `Structured` —— 值是 `{…}` 信封（网关那条 `{"error":{"message":…}}`），
+    ///   按设计它的 `message` 由调用方给，进不了文案语料。
+    ///
+    /// 其余一律算违规。
+    #[test]
+    fn every_error_key_site_has_a_readable_write_form() {
+        let root = env!("CARGO_MANIFEST_DIR");
+        let mut readable = 0usize;
+        let mut structured = 0usize;
+        let mut offenders: Vec<String> = Vec::new();
+        // 阳性对照：扫描器必须在每个语料文件上与提取器**看见同一批站点**。
+        // 没有这一条，「0 处违规」可能只是「0 处扫描」（C2106 坑 245 的同一个形状）。
+        let mut blind: Vec<String> = Vec::new();
+
+        for rel in backend_source_candidates(root) {
+            let src = std::fs::read_to_string(format!("{root}/{rel}"))
+                .unwrap_or_else(|_| panic!("应能读取 {rel}"));
+            let forms = error_write_forms(&src);
+            let readable_here = forms
+                .iter()
+                .filter(|(_, f)| *f == ErrorWriteForm::Readable)
+                .count();
+            let literals_here = backend_error_literals(&src).len();
+            if readable_here != literals_here {
+                blind.push(format!(
+                    "{rel}：扫描器看见 {readable_here} 处可读站点，提取器读出 {literals_here} 条文案"
+                ));
+            }
+            for (snippet, form) in forms {
+                match form {
+                    ErrorWriteForm::Readable => readable += 1,
+                    ErrorWriteForm::Structured => structured += 1,
+                    ErrorWriteForm::Opaque => offenders.push(format!("{rel}: {snippet}")),
+                }
+            }
+        }
+
+        // ① 先证仪器没瞎（否则下面的「0 处违规」什么也没证明 —— C2106 坑 245 的同一个形状）
+        assert!(
+            blind.is_empty(),
+            "阳性对照失败：扫描器与提取器看见的站点不一致 —— 扫描器瞎了，\
+             于是「0 处违规」可能只是「0 处扫描」：\n  - {}",
+            blind.join("\n  - ")
+        );
+        // ② 再问规则本身
+        assert!(
+            offenders.is_empty(),
+            "有 {} 处错误文案站点的值**提取器读不到** —— 这些文案不受词表门禁覆盖，\
+             en 界面上会原样显示中文（`src/routes/wallet.rs` 的三条排序校验文案就是这么漏掉的）：\n  - {}",
+            offenders.len(),
+            offenders.join("\n  - ")
+        );
+        // ③ 最后是「仪器没瞎」的**定量**读数：站点总数必须与常量相符。
+        //    新增/改动一条错误文案就是在改这两个数 —— 这正是它们的作用。
+        assert_eq!(
+            readable, READABLE_ERROR_WRITE_SITES,
+            "可读站点数应为 {READABLE_ERROR_WRITE_SITES}，实得 {readable} —— \
+             或是扫描器失真，或是后端真的新增/改了错误文案（变了就把这个常量改对，别让它变成空话）"
+        );
+        assert_eq!(
+            structured, STRUCTURED_ERROR_WRITE_SITES,
+            "结构化信封站点数应为 {STRUCTURED_ERROR_WRITE_SITES}，实得 {structured} —— \
+             新增一个信封（值是 `{{…}}` 的站点）就要在这里留痕"
+        );
+    }
+
+    /// 上面那条规则的**牙齿**：合成样本里三种形态、三种**不是站点**的写法、注释里的例子、
+    /// `#[cfg(test)]` 之后的代码，扫描器必须逐一对上号。没有这一条，
+    /// `every_error_key_site_has_a_readable_write_form` 无法自证「它有能力失败」。
+    #[test]
+    fn error_write_form_scanner_detects_injected_defects() {
+        let sample = r#"
+            fn err_json(status: StatusCode, msg: &str) -> ApiErr { todo!() }
+            fn f() {
+                json!({ "error": "可读甲" })
+                json!({ "error": format!("可读乙 {u}") })
+                json!({ "error": { "message": msg } })
+                json!({ "error": msg })
+                json!({ "error": String::from("不可读") })
+                err_json(StatusCode::BAD_REQUEST, "可读丙")
+                err_json(StatusCode::BAD_REQUEST, &format!("可读丁 {u}"))
+                err_json(StatusCode::BAD_REQUEST, bad)
+                let kind = serde_json::json!({ "type": "error" });
+                match kind { "error" => {}, _ => {} }
+                // json!({ "error": 注释里的例子不算站点 })
+                // json!({ "error": "注释里的字面量也不算" })
+            }
+            #[cfg(test)]
+            mod tests { fn t() { json!({ "error": "测试里的不算" }) } }
+        "#;
+        let forms = error_write_forms(sample);
+        let count = |want: ErrorWriteForm| forms.iter().filter(|(_, f)| *f == want).count();
+        assert_eq!(
+            count(ErrorWriteForm::Readable),
+            4,
+            "可读站点应为 4（可读甲/乙 + 可读丙/丁），实得 {forms:?}"
+        );
+        assert_eq!(
+            count(ErrorWriteForm::Structured),
+            1,
+            "结构化信封应为 1，实得 {forms:?}"
+        );
+        assert_eq!(
+            count(ErrorWriteForm::Opaque),
+            3,
+            "不可读站点应为 3（`json!({{\"error\": msg}})`、`String::from(…)`、`err_json(…, bad)`）\
+             —— 漏掉任何一个形态，规则就在那个形态上恒真，实得 {forms:?}"
+        );
+        // 三种「不是站点」的写法一处都不许被报出来：值位置的 `"error"`、match 臂、
+        // `fn err_json` 定义处。它们混进来的话，规则会对着不是文案的地方喊。
+        assert_eq!(
+            forms.len(),
+            8,
+            "站点总数应为 8（4 可读 + 1 信封 + 3 不可读）—— 多出来的就是不是站点的写法\
+             （值位置的 `\"error\"` / match 臂 / `fn err_json(` 定义处），实得 {forms:?}"
         );
     }
 
