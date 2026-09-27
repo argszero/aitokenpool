@@ -841,6 +841,9 @@
     "err.missingModel": "请求体缺少 model 字段",
     "err.upstreamReadFail": "上游响应读取失败（响应体未完整到达）",
     "err.streamConvertUnsupported": "该协议组合的流式转换暂未支持",
+    "err.txSortDirMismatch": "sort 与 dir 必须逐列对应",
+    "err.txSortKeyInvalid": "排序键无效",
+    "err.txDirInvalid": "排序方向无效",
   };
 
   var EN = {
@@ -1652,6 +1655,9 @@
     "err.missingModel": "Request body is missing the model field",
     "err.upstreamReadFail": "Failed to read the upstream response (the body did not arrive in full)",
     "err.streamConvertUnsupported": "Streaming conversion for this protocol combination is not supported yet",
+    "err.txSortDirMismatch": "sort and dir must be paired one direction per key",
+    "err.txSortKeyInvalid": "Invalid sort key",
+    "err.txDirInvalid": "Invalid sort direction",
   };
 
   // 后端中文错误 → en 键（lang=en 时对已知错误做映射；未知原样返回）
@@ -1716,6 +1722,12 @@
     ["reason 不能为空", "err.reasonRequired"],
     ["quota 必须大于 0", "err.quotaPositive"],
     ["部门「", "err.deptExists"],
+    //    交易列表的排序校验（`src/routes/wallet.rs::tx_order_by`）：三条 400 文案此前**写不出**
+    //    ——它们经一个接收 `String` 的闭包产出，`"error"` 的值是裸标识符，提取器两种书写形态
+    //    都读不到 ⇒ 既不报错也不计数，静默逃出词表门禁（详见 `every_error_key_site_has_a_readable_write_form`）。
+    ["sort 与 dir 必须逐列对应", "err.txSortDirMismatch"],
+    ["sort 必须为", "err.txSortKeyInvalid"],
+    ["dir 必须为", "err.txDirInvalid"],
   ];
 
   var current = "zh";

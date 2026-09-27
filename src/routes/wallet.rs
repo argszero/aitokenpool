@@ -125,12 +125,10 @@ fn tx_sort_expr(key: &str) -> Option<String> {
 /// - 尾部恒加 `, t.id DESC`：分页是 `LIMIT/OFFSET`，非唯一排序会让相邻页的边界不确定
 ///   （同一行出现两次、另一行永不出现）。
 fn tx_order_by(sort: Option<&str>, dir: Option<&str>) -> Result<String, ApiErr> {
-    let bad = |msg: String| {
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": msg })),
-        )
-    };
+    // ⚠️ 400 的信封**写在调用点**（`json!({ "error": … })`，与仓内其余 60 余处同形），
+    // 不要收回成「接收 `String` 的助手/闭包」：那样 `"error"` 的值就成了**裸标识符**，
+    // `src/i18n_pack.rs::backend_error_literals` 的两种书写形态都读不到它 —— 这条文案
+    // 既不报错也不计数，**静默**逃出词表门禁（`every_error_key_site_has_a_readable_write_form`）。
     let split = |s: &str| -> Vec<String> {
         s.split(',')
             .map(str::trim)
@@ -144,19 +142,35 @@ fn tx_order_by(sort: Option<&str>, dir: Option<&str>) -> Result<String, ApiErr> 
     }
     let dirs = dir.map(split).unwrap_or_default();
     if !dirs.is_empty() && dirs.len() != keys.len() {
-        return Err(bad(format!(
-            "sort 与 dir 必须逐列对应（sort 有 {} 个键、dir 有 {} 个方向）",
-            keys.len(),
-            dirs.len()
-        )));
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "sort 与 dir 必须逐列对应（sort 有 {} 个键、dir 有 {} 个方向）",
+                    keys.len(),
+                    dirs.len()
+                ),
+            })),
+        ));
     }
     let mut parts: Vec<String> = Vec::with_capacity(keys.len() + 1);
     for (i, key) in keys.iter().enumerate() {
-        let expr = tx_sort_expr(key)
-            .ok_or_else(|| bad(format!("sort 必须为 {} 之一", TX_SORT_KEYS.join(" / "))))?;
+        let expr = tx_sort_expr(key).ok_or_else(|| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("sort 必须为 {} 之一", TX_SORT_KEYS.join(" / ")),
+                })),
+            )
+        })?;
         let d = dirs.get(i).map(String::as_str).unwrap_or("asc");
         if !TX_SORT_DIRS.contains(&d) {
-            return Err(bad(format!("dir 必须为 {} 之一", TX_SORT_DIRS.join(" / "))));
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("dir 必须为 {} 之一", TX_SORT_DIRS.join(" / ")),
+                })),
+            ));
         }
         parts.push(format!("{expr} {}", d.to_uppercase()));
     }
