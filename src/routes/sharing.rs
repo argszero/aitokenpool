@@ -92,9 +92,9 @@ pub async fn create(
     };
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     // 只能上架平台**能计价**的 (provider, model)：计费按 `keys.provider` + model 查 `models` 行的价
-    // （`dao::get_model_price`：`WHERE provider = ?1 AND model = ?2`），查不到即 0 计费 ——
-    // 一次真实调用会**静默变成免费**（消费者不扣点、分享者无收益）。校验对象是 `models` 行而不是
-    // `[[providers]]` 表：openai / anthropic / google / xai 只有 `[[models]]` 行、没有 provider 行。
+    // （`dao::get_model_price`：`WHERE provider = ?1 AND model = ?2`），查不到的 (provider, model) 建
+    // 出来的 key **调不通** —— 路由入口取不到价即拒（503「无法计价」，R156）。校验对象是 `models` 行
+    // 而不是 `[[providers]]` 表：openai / anthropic / google / xai 只有 `[[models]]` 行、没有 provider 行。
     if conn
         .query_row(
             "SELECT 1 FROM models WHERE provider = ?1 AND model = ?2",
@@ -756,9 +756,9 @@ mod tests {
 
     /// 上架只接受平台**能计价**的 (provider, model)（C2065）。
     ///
-    /// 计费按 `keys.provider` + model 查 `models` 行的价（`dao::get_model_price`），查不到
-    /// `settle_usage` 取 `None => (0.0, 0.0)` ⇒ 一次真实调用会**静默变成免费**：消费者不扣点、
-    /// 分享者无收益、`usage_records.cost=0`，而调用本身 200 正常返回。故入口拒绝。
+    /// 计费按 `keys.provider` + model 查 `models` 行的价（`dao::get_model_price`），查不到即
+    /// **无法计价**：路由入口在发往上游之前就把这样的调用拒掉（503，R156）⇒ 建出来的 key 一次也
+    /// 调不通。故入口拒绝。
     ///
     /// 本用例锁三件事：① 目录外的 provider → 400；② 同 provider 下拼错的 model → 400；
     /// ③ **400 时不得落库**（校验必须在 `INSERT` 之前）；④ 阳性对照：目录中的组合 → 200 且落库
