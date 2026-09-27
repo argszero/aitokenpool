@@ -78,10 +78,10 @@ ui/
 
 - **toast 分级**：`toast(msg, "success" | "error" | "info")`——成功 / 失败校验 / 信息提示不同边框与文字色；
   - **调用点的分级必须取自这把尺子**（R92）：`toast()` 体里 `el.className = "toast" + (type ? " " + type : "")` **不校验 `type`** ⇒ 写一个没有 `.toast.<x>` 规则的词不是报错，是**静默退回基类样式**。忘记密码那条成功消息原本写的是 `toast(T("forgot.done"), "ok")` —— `"ok"` 是同一个 `if (r.status === "ok")` 的**判据字面量**被复用成了分级，而 `.toast.ok` 全仓没有规则（它只存在于设计原型），于是全应用唯一一条「成功」提示拿不到成功色。静态门禁 `src/state_gate.rs::every_toast_level_is_a_level_the_sheet_declares` 钉三件事（**每一件都从被测算的代码/样式表/文档里推导**，零手写名册）：① 每个 `toast(...)` 调用点的第二实参是**纯字面量**且落在「`.toast.<x>` 规则集合 − 函数体自己 `classList.add` 的状态类」里；② 该词表与本文档这一行写的契约**双向**相等；③ 反向 —— 每条分级规则都得有调用点用到（无死分级）。
-  - ⚠️ **射程**：门禁是**词法**的 —— 它扫 `ui/js/app.js` 的源码文本（括号/字符串/注释/正则字面量感知），证明**词**与**规则**同源；**不证**屏幕上那一刻渲染出来的 class（那半归 jsdom 探针 `r92_probe.js`：真 boot ＋ 真表单 ＋ 读 `#toast-wrap` 的 `className`）。**也不要**用「给样式表补一条 `.toast.ok` 同体规则」（调用点不动）来消掉它 —— 屏幕当场变绿，但词表里多出一个本文档没写的同义词，门禁照样拒（两条仪器都实测：探针 `B2`/`C3` 腿、门禁 `R2`）。
+  - ⚠️ **射程**：门禁是**词法**的 —— 它扫 `ui/js/app.js` 的源码文本（括号/字符串/注释/正则字面量感知），证明**词**与**规则**同源；**不证**屏幕上那一刻渲染出来的 class（那半归仓外 jsdom 探针：真 boot ＋ 真表单 ＋ 读 `#toast-wrap` 的 `className`）。**也不要**用「给样式表补一条 `.toast.ok` 同体规则」（调用点不动）来消掉它 —— 屏幕当场变绿，但词表里多出一个本文档没写的同义词，门禁照样拒（两条仪器都实测：探针 `B2`/`C3` 腿、门禁 `R2`）。
 - **按钮 loading**：提交类按钮用 `withLoading(btn, fn)`（转圈 + 禁用，模拟反馈后恢复）；
 - **标签所有权（R169）**：带 `data-i18n` 的静态控件，它的标签**归 markup 那个键所有**——临时的忙碌 / 反馈文案可以**另起一个键**，但**收尾必须回到该控件自己的来源**（捕获原值，或引用 markup 声明的键），不得写死另一个键。静态门禁 `state_gate::the_control_that_rests_owns_its_label` 钉三件事（**每一件都从被测算的制品推导**，零手写键名）：① 名册里**会写自己标签**的成员（今天恰一个：`#login-form` 的提交按钮 —— 出厂 `login.enter`，却把标签恢复成另一个键）**最后一次**写标签必须派生自该元素自己的来源；② `ui/index.html` 里**每个「提交按钮带 `data-i18n` 的表单」**（今天 5 个）都要**解得出恰好一个**提交处理器，且不得以别人的键收尾；③ 反向：会写标签的成员对同一按钮的标签写**至少两次**（忙碌 + 收尾），「把忙碌态删掉」不算合格。
-  - ⚠️ **射程**：门禁是**词法**的 —— 它证「收尾的表达式与 markup 声明的键同源」；**不证**屏幕上那一刻渲染出来的标签（那半归 jsdom 探针 `r169_probe.js`：真 boot ＋ 真 `submit`，读真渲染出的按钮文字，其中 `C4` 腿在**第一个 `await` 之前**采样，证明忙碌态真的发生过）。句柄只认本仓的主导写法 `querySelector('button[type="submit"]')`（今天 login / register / verify / share 四处）；`#forgot-form` 用的是 `querySelector("button[type=submit]")`（另一种拼法）⇒ 它**不计入**「会写标签的成员」，如实记录、不假装覆盖。**也不要**用「把 markup 改标成 `login.submit`」（两边自洽、门禁全绿）来消掉它 —— 探针 `D2` 腿按设计基线拒（那枚按钮就不再是原型印的那句话）。
+  - ⚠️ **射程**：门禁是**词法**的 —— 它证「收尾的表达式与 markup 声明的键同源」；**不证**屏幕上那一刻渲染出来的标签（那半归仓外 jsdom 探针：真 boot ＋ 真 `submit`，读真渲染出的按钮文字，其中 `C4` 腿在**第一个 `await` 之前**采样，证明忙碌态真的发生过）。句柄只认本仓的主导写法 `querySelector('button[type="submit"]')`（今天 login / register / verify / share 四处）；`#forgot-form` 用的是 `querySelector("button[type=submit]")`（另一种拼法）⇒ 它**不计入**「会写标签的成员」，如实记录、不假装覆盖。**也不要**用「把 markup 改标成 `login.submit`」（两边自洽、门禁全绿）来消掉它 —— 探针 `D2` 腿按设计基线拒（那枚按钮就不再是原型印的那句话）。
 - **复制反馈**：API Key 复制后按钮短暂变「已复制 ✓」（1.2s 恢复）；降级路径显示「请 Ctrl+C」；
 - **键盘可达**：行内表单 Enter 提交、Esc 关闭行内卡片、打开时自动聚焦焦点。
 
@@ -117,7 +117,7 @@ ui/
 
 - **组件**：`setFieldError(input, msg)` 给输入框加 `.input-error`（红边框）并在其后插入 `.field-error`（红字小号行内文案），输入事件自动清除；`clearFieldError(input)` 手动清除；打开表单时重置；
 - **覆盖**：充值自定义金额、申请加额（点数/原因）、部门表单（名称/配额/重名）、共享上架表单（API Key/厂商·Plan·模型·额度）；提交校验失败聚焦首个错误字段，不依赖 toast。
-- **文案必须描述触发它的条件**：每条字段级错误说的是**它自己那个守卫**判定的条件（「空」与「太短」是两条规则、两句话）；同一把嗓子不得同时服务两类条件（`register.err.pass`＝「请输入密码」只服务「空」）。同一条规则在客户端与服务端必须用**同一句**：口令下限那句就是 `err.weakPassword`（服务端原话经 `I18N.mapErr` 的 `ERR_MAP` 落到它），客户端行内守卫直接引这个键，**不新造同值键**。静态门禁 `src/state_gate.rs::the_forgot_password_length_speaks_the_message_the_same_rule_gets_from_the_server` 钉这个形状（三条规则：至少有一个长度守卫 / 每个长度守卫都用**推导出来的**那个键 / 全文件没有键同时服务两类条件）。⚠️ **射程**：门禁只扫 `ui/js/app.js` 里**行内**写的 `if (<cond>) setFieldError(<field>, T("<key>"))` 这一种形态（跨行写、键经变量传、非 `T(...)` 的都在射程外，另行计数不参与分类）；它证的是**键**与规则同源，**不证**屏幕上那一刻的**值**（值与运行期归 jsdom 探针 `r93_probe.js`）。
+- **文案必须描述触发它的条件**：每条字段级错误说的是**它自己那个守卫**判定的条件（「空」与「太短」是两条规则、两句话）；同一把嗓子不得同时服务两类条件（`register.err.pass`＝「请输入密码」只服务「空」）。同一条规则在客户端与服务端必须用**同一句**：口令下限那句就是 `err.weakPassword`（服务端原话经 `I18N.mapErr` 的 `ERR_MAP` 落到它），客户端行内守卫直接引这个键，**不新造同值键**。静态门禁 `src/state_gate.rs::the_forgot_password_length_speaks_the_message_the_same_rule_gets_from_the_server` 钉这个形状（三条规则：至少有一个长度守卫 / 每个长度守卫都用**推导出来的**那个键 / 全文件没有键同时服务两类条件）。⚠️ **射程**：门禁只扫 `ui/js/app.js` 里**行内**写的 `if (<cond>) setFieldError(<field>, T("<key>"))` 这一种形态（跨行写、键经变量传、非 `T(...)` 的都在射程外，另行计数不参与分类）；它证的是**键**与规则同源，**不证**屏幕上那一刻的**值**（值与运行期归仓外 jsdom 探针）。
 
 ## 过渡动画约定（v1.17，rant 2026-08-17T16:57:17 F 视图过渡）
 
@@ -463,7 +463,7 @@ ui/
 - **`Live` 是按会话的缓存**（上节讲它的写者），所以它的**生命周期**与「谁登录了」绑定。两条不变量：
   1. **身份边界必须丢弃每一个槽**。会话建立（`loadSession`：boot / 登录，两者都经 `restoreSession`）与会话结束（`exitGuest`：登出 / 401）两侧都要清空。清空必须**派生自** `Live` 的对象字面量（`Object.keys(Live).forEach((k) => { Live[k] = null; })`）—— 手抄名册会在新增槽时静默漏掉。
   2. **`renderView` 的每个分支都必须「既渲染又拉取」**。它是唯一允许「先同步渲染缓存、再异步拉取」的地方，于是「只渲染不拉取」的分支就是**永远显示缓存**的分支。
-  3. **边界要收拾的不只是 `#app`**（C2171）。`#app` 之外的浮层（帮助面板 / 聊天弹窗 / 首启引导）是它的**兄弟节点** ⇒ `$("#app").classList.add("hidden")` **不会**连带隐藏它们。`exitGuest()` 因此还要调 `resetSessionOverlays()`，把每个浮层交回它自己的关闭器（`toggleHelp(false)` / `closeChat()` / `closeTour()`）。元素集合由 `state_gate::the_identity_boundary_closes_the_panels_outside_the_app` 与 `ui/index.html` **派生比对**（`#app` 起始行之后的**顶行**元素、其 `class` 含独立 token `hidden`），**零豁免清单**。⚠️ **射程**：门禁是**词法**的 —— 它证明「每个派生元素各有一个宣称要隐藏它的关闭器落在边界的调用闭包内」，**不**证明运行期屏幕上真的隐藏了（那是 `c2171-probe.js` 的射程，仓内 CI 无 JS 运行器）；已知盲区＝只认顶行（列 0）元素、只认字面量 `"#<id>"`、`classList.toggle("hidden", false)` 这种带第二布尔实参的隐藏不在判别式内。
+  3. **边界要收拾的不只是 `#app`**（C2171）。`#app` 之外的浮层（帮助面板 / 聊天弹窗 / 首启引导）是它的**兄弟节点** ⇒ `$("#app").classList.add("hidden")` **不会**连带隐藏它们。`exitGuest()` 因此还要调 `resetSessionOverlays()`，把每个浮层交回它自己的关闭器（`toggleHelp(false)` / `closeChat()` / `closeTour()`）。元素集合由 `state_gate::the_identity_boundary_closes_the_panels_outside_the_app` 与 `ui/index.html` **派生比对**（`#app` 起始行之后的**顶行**元素、其 `class` 含独立 token `hidden`），**零豁免清单**。⚠️ **射程**：门禁是**词法**的 —— 它证明「每个派生元素各有一个宣称要隐藏它的关闭器落在边界的调用闭包内」，**不**证明运行期屏幕上真的隐藏了（那是仓外仪器的射程，仓内 CI 无 JS 运行器）；已知盲区＝只认顶行（列 0）元素、只认字面量 `"#<id>"`、`classList.toggle("hidden", false)` 这种带第二布尔实参的隐藏不在判别式内。
   4. **边界清的不只是槽**（C2170）。`Live` 之外还有**模块级**的会话状态：交易视图的 `txTable`（`sort` / `filters` / `page` / `pageSize`）与 `txRange` / `txCustomStart` / `txCustomEnd` 都是模块级的，其中 `txTable.loadedPage` / `loadedPageSize` / `loadedQuerySig` 是载荷的**有效性证据** —— 证据属于载荷：载荷被清空而证据留下，守卫（`txQuerySig()` 比对）就会认一份**不存在**的载荷为「已加载」，下一位用户的首帧因此是**空表**（服务端按 `offset=(page-1)*page_size` 返回 `items: []`，而 `total` 照旧非零）且**不自愈**。`resetSessionCaches()` 因此还要调 `resetTxView()`，复位到**声明处的默认值**（含 `txTable.pageSize = 10` —— 清成 `undefined` 会让 `Math.max(1, txTable.pageSize || 10)` 的兜底把每页退化到 1 行）。名字集合由 `state_gate::the_identity_boundary_resets_the_transaction_view_state` **派生**（`txTable` 字面量的字段 + `txTable.loaded*` + `txQuerySig()` 读到的模块级 `let`），**零手抄名册**；证据的写者只允许装载器与边界闭包——否则在 `renderTransactions()` 里清会把守卫每次渲染都重新武装成**请求风暴**（C2146 同形）。
 - **修前的两张脸**（jsdom 启真 `index.html` + 四脚本、只 stub `fetch`，驱动真导航 / 真登出 / 真登录表单）：甲用完仪表盘登出、乙登录后打开钱包 —— `#wallet-forever`（「永久点数」）显示的是**甲的** `Live.wallet.balance`（实测 `4,242.42424`，乙应为 `7.5`），**且永不自愈**：`renderView("wallet")` 当时是八个分支里**唯一**只 `renderWallet()` 的，缓存不被清就再也没人刷新它。同一根因的**瞬态**脸：乙落在仪表盘时，`renderView` 先**同步**用甲的缓存渲染 `#dash-stats`（冻结乙自己的 `/api/wallet` 即可读到：本月用量是甲的 `12,345.6789`）。
 - **改法两半，缺一留红**：① `resetSessionCaches()`（派生式）在 `exitGuest()` 与 `loadSession()` 开头各调一次；② 钱包分支补上自己的 loader `loadWallet()`（镜像 `loadDashboard` 的尾段：`refreshWallet()` → `renderWallet()`）。② 顺带修掉**单会话**下的口径错 —— 此前登录后直接进钱包，`Live.wallet` 永远是 `null`，单元格只能回落到 `D.USER.balance`（= `available` = 永久 + 当日赠送）冒充「永久」。
@@ -490,7 +490,7 @@ ui/
 - **修法**：boot 只搭外壳（`renderNav()` / `bindEvents()` / 余额占位），**不渲染也不装载任何视图**；视图一律由 `switchView` 按当前目的地渲染装载（登录后由 `enterApp`、游客由 `enterGuest` 触发）。带 token 刷新不会白屏：`restoreSession()` 成功即 `enterApp()`，非 401 失败也照常 `enterApp()`（C2124），401 则 `api.js` 已回登录页。
 - **不变量（`src/state_gate.rs::the_boot_handler_touches_no_view`）**：① boot 处理器体内**不得**调用视图层的「渲染器 / 装载器」（视图层名册**派生自** `renderView` 的各分支，不写第二份名册）；② `renderView(...)` 只许以**当前目的地**为实参（全仓唯一合法的一处是语言切换监听器里的 `renderView(activeView)`）；③ `switchView` **必须仍调用** `renderView`（防止矫枉过正 —— 把 boot 那句删掉之后顺手清空 `renderView` 的调用点，就得到一个什么都不渲染的空壳）。
 - **为什么必须静态钉**：`renderDashboard()` 单独留在 boot（只渲染不装载）、或 `if (!api.getToken()) renderView("dashboard")`，都能让请求日志／通知计数全绿 —— 三者都只是**症状消失**。C2136 的 A/B：三种「最小改法」变体在探针上**全绿**，而门禁按形状收窄到「boot 不碰视图层」。
-- **冒烟测试注意**（`tmp/c2136_probe.js`）：① 判「仪表盘那套」时要连**查询形状**一起比 —— 交易视图自己也拉 `/api/transactions/trend`（`bucket=hour`），只按路径匹配会把别人的请求算进来（假红）；② 参数匹配要锚定（`page_size=1` 不能用裸子串，否则命中 `page_size=10`）；③ 计数不要数 DOM：`TOAST_MAX` 会把 6 条截成 3 条，用 `Object.defineProperty(window, "__atpLogout", { set })` 截住赋值再包装计数；④ 阴性对照腿＝**无 token** 的 boot（必须 0 个视图数据请求）。
+- **冒烟测试注意**（仓外探针）：① 判「仪表盘那套」时要连**查询形状**一起比 —— 交易视图自己也拉 `/api/transactions/trend`（`bucket=hour`），只按路径匹配会把别人的请求算进来（假红）；② 参数匹配要锚定（`page_size=1` 不能用裸子串，否则命中 `page_size=10`）；③ 计数不要数 DOM：`TOAST_MAX` 会把 6 条截成 3 条，用 `Object.defineProperty(window, "__atpLogout", { set })` 截住赋值再包装计数；④ 阴性对照腿＝**无 token** 的 boot（必须 0 个视图数据请求）。
 
 
 ## 模型身份：`provider/model`，不是数组下标（C2138）
@@ -502,7 +502,7 @@ ui/
 - **存储层只认身份串**：`getRecentKeys()` 只接受 `typeof x === "string" && x.indexOf("/") > 0`；**旧版本存下来的下标无法被诚实地还原成某个模型**，按空处理、一次性丢弃（刻意的 —— 把它「尽力翻译」成某个模型正是本缺陷本身）。解析一律 `find((x) => modelKey(x) === key)`（`renderRecent` / `openChat` / `consumeModel`）。
 - **不变量（`src/state_gate.rs::the_model_row_identity_is_the_model_not_its_position`）**：① `modelsToView` 的 `.map(` 回调**只许一个形参**、行对象里不得声明字段 `id`；② 三处 `data-*` 必须由 `modelKey(` 产出、点击侧不得出现 `Number(`；③ `modelKey` 全仓**只有一处定义**，体内同时提到 `provider` 与 `model`、从不提到 `id`；④ `markRecentUsed(...)` 的每个调用点都在写 `modelKey(...)`。
 - **判别式注意**：渲染侧与读取侧**长得像**（`data-x="…"` vs `querySelector('[data-x="' + id + '"]')`）⇒ `renders_attr` 必须**同时**要求「属性后跟 `=`」**且**「这一行不是选择器查询」，否则消费者会被算成渲染点（门禁第一版正是这样假红的）。
-- **冒烟测试注意**（`tmp/c2138_probe.js`）：① 控制腿要落在**这条路径对该身份本来就成立**的会话里 —— 游客点「最近使用」芯片是被刻意拦住的（`chat.login.need`），把它写成控制腿会恒红（坑 #316）；② 断言必须**逐条目**判「叫的是用过的那个模型」（两个身份空间部分重叠，重叠的那一项看起来是对的，坑 #317）；③ 只有**目录位移**那条腿拒得掉「手工把游客表 id 对齐今日目录」这种竞争修法 —— 它骗得过游客市场那张脸（坑 #318）。
+- **冒烟测试注意**（仓外探针）：① 控制腿要落在**这条路径对该身份本来就成立**的会话里 —— 游客点「最近使用」芯片是被刻意拦住的（`chat.login.need`），把它写成控制腿会恒红（坑 #316）；② 断言必须**逐条目**判「叫的是用过的那个模型」（两个身份空间部分重叠，重叠的那一项看起来是对的，坑 #317）；③ 只有**目录位移**那条腿拒得掉「手工把游客表 id 对齐今日目录」这种竞争修法 —— 它骗得过游客市场那张脸（坑 #318）。
 
 ## 后端自造的显示文案：分界线在「数据字段 / 文案字段」（C2133）
 
@@ -514,7 +514,7 @@ ui/
 - **改法**：① 无部门的桶改用**空串**（与同一个 handler 里 `users[].dept_name` 的 `COALESCE(d.name, '')` 同口径），前端 `d.name || T("common.unassigned")` 兜底；② `/api/plans` 的 `name` 改为 config **原值**（未配置即空串），前端新增 `planLabel(pl)`：有 `name` 用原文，否则按 `type` 取新键 `share.planName.paygo|token|coding`（下拉与 toast 共用这一个函数）；③ Plan 下拉框的重建判据从「建过没有」（一次性 `dataset.init`）改成**数据源**（`dataset.plansSrc`）——登录后首次渲染时 `/api/plans` 还在路上，兜底表会先建一次，一次性守卫会让它**赢到底**（实测：真实清单回来后下拉框不再重建，`en` 界面上仍是兜底表里的中文名）；级联填充函数也改成**调用时**读数据源，否则只登记一次的监听器会永远指着那份兜底表。
 - **CI 覆盖**：`src/i18n_pack.rs` 三条 —— ① `backend_data_fields_are_language_neutral`：扫全部 `src/**/*.rs`，提取「以 `json!` **数据**字段（key ≠ `error`）交付的中文字面量」，其集合必须**恰好等于**已裁定豁免清单（两侧都有牙：新增一处变红、删掉豁免项也变红；清单只给 1 个名额 —— 它是**日落清单**，不是注册表，扩容要显式改那个数）。提取器必须能穿透 `let name = … "中文" …; json!({ "name": name })` 这层间接（计划名就是这种写法；不穿透就漏掉一半的类），并跳过嵌套 `json!`、跳过 `#[cfg(test)]`；② `backend_neutral_data_labels_are_localized_in_the_client`：两个渲染点必须**有**本地化兜底（`#usage-dept` 的 `barRow` 首参含 `T(`、`planLabel` 体内含 `pl.name` 与 `T("share.planName.…")`），且下拉框必须按**数据源**重建（不得退回一次性守卫）；③ `GET /api/admin/usage` 的运行期契约：无部门用户有用量时，桶名不得含 CJK（`src/routes/mod.rs` 的 router 测试）。
 - **豁免清单为什么存在**：`src/routes/mod.rs` 注册接口的 `"name": name` 里那个默认用户名（`email.split('@').next().unwrap_or(...)`）是**用户数据**的默认值（同 `db.rs` 种子里的 `'管理员'`），不是后端自造的显示标签 —— 且 `split().next()` 恒 `Some`，该默认值不可达。豁免项带**理由**、且与提取结果**等价**（`==`，不是 `⊆`），所以它不会腐烂。
-- **冒烟测试（`tmp/c2133_probe.js`，jsdom 真 `index.html` + 四脚本、只 stub `fetch`、强制 `atp_lang=en`）**：腿 PRE（`origin/main` 的前端 + 老后端那两份载荷）红 `{B1,B2}`；腿 POST（工作树 + 语言中性载荷）10/10 绿；两条**竞争修法**腿各红在**不相交**的一半 —— 「只加 `planLabel`、保留一次性守卫」红 `{B2b,D2}`（下拉框里仍是兜底表的中文名）、「改前前端 + 老载荷」红 `{B1,B2,D1,E2}`（部门半张脸）。控制腿：真实部门名 `研发` 与 config 里配了 `name` 的 plan **原样透传**（本轴只约束**自造**标签）。
+- **冒烟测试（仓外探针，jsdom 真 `index.html` + 四脚本、只 stub `fetch`、强制 `atp_lang=en`）**：腿 PRE（`origin/main` 的前端 + 老后端那两份载荷）红 `{B1,B2}`；腿 POST（工作树 + 语言中性载荷）10/10 绿；两条**竞争修法**腿各红在**不相交**的一半 —— 「只加 `planLabel`、保留一次性守卫」红 `{B2b,D2}`（下拉框里仍是兜底表的中文名）、「改前前端 + 老载荷」红 `{B1,B2,D1,E2}`（部门半张脸）。控制腿：真实部门名 `研发` 与 config 里配了 `name` 的 plan **原样透传**（本轴只约束**自造**标签）。
 - **同轴未修（记录，勿顺手带上）**：`ui/js/data.js` 的 `PLANS[].name` 是**客户端**自带的一份显示标签（`API（按量）`、`Kimi Code 会员`…）。`/api/plans` 拉取**失败**时前端落回这张表，`en` 界面上就会显示它的中文名（成功路径已由 ③ 的重建判据修好）。它与本 PR 的**生产者**不同（客户端数据表 vs 后端响应字段），且需要先裁定「品牌名放行 / 通用名取语言包」的边界 —— 对照组：`provLabel()` 是**正确**写法（`I18n.lang === "zh"` 才用 `PROVIDER_LABELS`，`en` 直接回 id），`data.js` 的 PLANS 名可以照抄这个形状。
 ## 数据源由**会话状态**决定，不由「数据到没到」决定（C2140）
 
@@ -580,7 +580,7 @@ A/B 里各自有互不相交的红集）**：
 ⇒ 两条仪器各管一半：**门禁管形状**（能拒掉探针全绿的第二处读取），**探针管值**（能拒掉「形状对、值仍错」
 的撒谎行）。前者比探针更严（实测第 3 行），后者比门禁更严（第 5 行）—— 如实记录，不假装一支够用。
 
-**冒烟测试注意**（`tmp/c2140_probe.js`，jsdom 启真 `index.html` + 四脚本、只 stub 并记账 `fetch`）：
+**冒烟测试注意**（仓外探针，jsdom 启真 `index.html` + 四脚本、只 stub 并记账 `fetch`）：
 
 - 「最近使用」芯片那张脸**需要夹具**：芯片 key 要同时存在于游客表与活目录（`deepseek/deepseek-flash`），
   否则守卫为真、芯片不渲染，缺陷看不见 —— 因此必须配一条**空 store 的对照腿**（`D1`）证明「红是因为夹具，
@@ -628,7 +628,7 @@ stat(T("admin.emp.stats.total"), D.fmt(total) + " " + T("common.points"), T("adm
 `contains("balance")` 又会被 `gift_balance` 这个后缀满足（哑子串匹配）⇒ 判别式按**标识符 token** 比。
 
 **为什么 CI 用静态门禁**：CI 里没有 JS 运行器，`cargo test` 是唯一能长期守住的关口；探针
-（`tmp/c2142_probe.js`）只用于本地证明**方向**（卡片值 == 同视图「可用」列的和；每行「可用」单元 ==
+（仓外）只用于本地证明**方向**（卡片值 == 同视图「可用」列的和；每行「可用」单元 ==
 `balance + gift_balance`），并拒掉竞争修法。
 
 ## 会话余额是一个事实：一个来源，且取的是**可花额**那一半（C2145）
@@ -670,7 +670,7 @@ try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance;
 字面量里那行 `wallet: null, // GET /api/wallet` 是代码 + 尾注释，只按端点匹配会幻影红）的判别式自证。
 
 **为什么 CI 用静态门禁**：规则 2 钉的是「同一事实只有一个来源」这个**形状**，而 DOM 探针只能证明
-「屏幕上数字对」—— 竞争修法在探针下全绿（`tmp/c2145_probe.js` 实测：修复树 9/9、改前树恰 `A2`/`A3`
+「屏幕上数字对」—— 竞争修法在探针下全绿（仓外探针实测：修复树 9/9、改前树恰 `A2`/`A3`
 两腿红、竞争者 8/9 被 `A3` 拒绝）。CI 里没有 JS 运行器，`cargo test` 是唯一能长期守住的关口。
 
 ## 运营成员表的「余额」列 = 可花额 = 用户自己所见（C2173）
@@ -678,7 +678,7 @@ try { const w = await api.get("/api/wallet"); if (w) D.USER.balance = w.balance;
 - **一个词一个数**：全站把**不带限定的**「点数余额 / Points balance」绑给 `available = balance + gift_balance`（`common.balance` / `dash.balance` / `wallet.balance` 三处），把「**永久**点数 / Permanent points」绑给 `balance`（`wallet.forever` / `admin.emp.col.perm`）。运营成员表的列头用的正是**前者**（`ops.users.col.balance` zh「余额（点数）」/ en「Balance (pts)」），而取值只印 `u.balance` ⇒ 用户自己看 101、运营者看 100，差的正是「赠送」那一半（可花、会过期、真划走，`gift.rs` 清扫时真扣）。
 - **修法**：取值折进 `gift_balance`，**与兄弟表逐字同形** —— `admin.emp.col.avail` 那一格早就是 `D.fmt((u.balance || 0) + (u.gift_balance || 0))`（同一个 PR 家族里写对了的范本）。**零新 i18n 键**。
 - **CI 覆盖**：`src/state_gate.rs::the_ops_members_balance_cell_is_the_half_its_caption_names`（三规则：① 取值表达式按**标识符 token** 同时读到 `balance` 与 `gift_balance` ② 两包列头须落在**可花族**（标记由 `wallet.balance` 的包值派生）③ 反向：`admin.emp.col.perm` 仍只读 `balance`）。
-- ⚠️ **射程**：门禁是**词法**的 —— 它证明取值**读到**两个字段、名字落在可花族，**不证明算术是 `+`**；行为由仪器 `c2173_probe.js` 钉（19 腿；甲/乙两棵合法树全绿，三条「半个答案 / 化妆 / 自相矛盾」被拒）。
+- ⚠️ **射程**：门禁是**词法**的 —— 它证明取值**读到**两个字段、名字落在可花族，**不证明算术是 `+`**；行为由仓外仪器钉（19 腿；甲/乙两棵合法树全绿，三条「半个答案 / 化妆 / 自相矛盾」被拒）。
 
 ## 运营「上游 key 状态」卡的行计数用**这张卡自己的名词**（C2174）
 
@@ -767,7 +767,7 @@ function txQuerySig() {                      // 只此一处定义「载荷是�
 「命中行之前最近声明的函数」会把归属判给那个嵌套函数）。
 
 **为什么 CI 用静态门禁**：请求次数是运行期可观测量，但 CI 里没有 JS 运行器；探针
-（`tmp/c2146_probe.js`）只用于本地证明**方向**（改前树恰 `A1`/`B1` 红 = 第 2 页上改时间段发两遍列表 +
+（仓外）只用于本地证明**方向**（改前树恰 `A1`/`B1` 红 = 第 2 页上改时间段发两遍列表 +
 两遍趋势），并拒掉最诱人的错修（签名取 `txRangeParams()` ⇒ 请求风暴）。
 
 ## 载荷的**收据**由发起它的那次请求写，不由最后落地的响应「问一次现在」（R155）
@@ -872,7 +872,7 @@ R3 签名收据捕获的标识符其初始化式必须调用**守卫比较的那
 `name` 句柄）；且**无 id / 无 name 的控件永远算未接线**（那三枚开关就靠这条抓）。
 ⚠️ HTML 注释先剥掉再断言（修法自己就会在控件旁写解释性注释）。
 
-**为什么 CI 用静态门禁**：探针 `tmp/c2148_probe.js` 能证明屏幕上的事实（jsdom 真启动四脚本、
+**为什么 CI 用静态门禁**：仓外探针能证明屏幕上的事实（jsdom 真启动四脚本、
 驱动真控件）—— 改前树恰 7 条轴腿红、修复树 14/14、两条竞争修法分别被 `D1`（过度纠正）与
 `A2`（持久化但不消费）拒掉；但 CI 里没有 JS 运行器，长期守住这条约定的是上面那条静态门禁
 （原地变异 6/6 如声明：未修树红、过度纠正红、半修红、只标记不解释红、只写一包红、修复树绿）。
@@ -988,7 +988,7 @@ R3 签名收据捕获的标识符其初始化式必须调用**守卫比较的那
 **射程**（#341）：门禁 `state_gate::the_sort_indicator_and_the_order_by_share_one_source` 是**词法**的
 —— 它证明三处载体都读同一个状态、白名单与列名册**精确相等**、`ORDER BY {…}` 由白名单守卫的构造器
 渲染、`q.sort`/`q.dir` **只**在那一处绑定里被采。它**不**证明运行期行真的按全局顺序排（那是 jsdom
-探针 `r164_probe.js` 的职责，`cargo test` 里没有 JS 运行器），也不证明 `ORDER BY` 语义本身
+探针（仓外）的职责，`cargo test` 里没有 JS 运行器），也不证明 `ORDER BY` 语义本身
 （那是 `src/routes/wallet.rs` 的行为测试）。
 
 ## 共享行的「动作」与「结局文案」必须由同一条目给出（C2153）
@@ -1034,7 +1034,7 @@ toast(next === "paused" ? T("share.toggle.paused", …) : T("share.toggle.resume
 处理器是**推**出来的：把状态交给 `/api/sharings/` 的端点里，**恰好一个**是「由状态推出」的
 （把状态写成字面量的那些是删除这类直接端点）—— 多于一个即两条各自解释状态的路径。
 
-**为什么 CI 用静态门禁**：`cargo test` 里没有 JS 运行器。仪器 `tmp/c2153_probe.js`（jsdom、真四脚本、
+**为什么 CI 用静态门禁**：`cargo test` 里没有 JS 运行器。仓外仪器（jsdom、真四脚本、
 真导航 → 真按钮 → 真 PATCH、读 `#toast-wrap`，`expect` 逐腿声明）实测：改前树 `10/10 as declared`
 且恰 `A2`/`A3`/`Z1` 三条轴腿红（en 与 zh 两包都错）、修复树 `10/10` 全绿、竞争修法（把**按钮**也
 塌成两值、让两边"一致"）`5/10` 红 —— 仪器钉得住方向；「删键」式逃逸也被拒（断言打在**渲染文本**上）。
@@ -1047,7 +1047,7 @@ toast(next === "paused" ? T("share.toggle.paused", …) : T("share.toggle.resume
 
 - **单位由它汇总的那张表决定**：`#mk-count` 数的是**过滤后的模型行数**（`marketRows()` → `/api/models`，一行一个模型），所以文案必须与同一张表的**行身份列**同单位 —— `ui/index.html` 的 `<th data-i18n="mk.col.providerModel">厂商 / 模型</th>`。旧值 `cnt.on`「{n} 个在售 key」把**模型行数**印成「**key** 数」，而同屏既有「无 key」的行、又有「可用 · 3 key」的行 ⇒ 同一张表里数字与单位互相打脸（夹具 `Σkey = 6 ≠ 4 行`）。改名 `cnt.models`（zh「{n} 个模型」/ en「{n} models」）**净键数不变**（每包改 1 个键名），且不留一个「名字在撒谎」的键。
 - **CI 覆盖**：`src/i18n_pack.rs::the_marketplace_count_is_expressed_in_the_unit_of_its_rows`（五条规则：计数键从 `app.js` 派生 / 行身份键从 `index.html` 派生 / 两包都须含行单位词 / 两包都不得含 `share.col.key` 的 key 词 / `mk.avail.` pill 族仍用同一把尺子）。
-- ⚠️ **射程**：门禁钉**单位**不钉**数值**；删掉**一个**填充位点门禁看不见（位点数一起降）⇒ 数值与「不许把计数删掉」由仪器 `c2172_probe.js` 的 `F1/F2/P0b/T1` 腿钉。本轴**不新增也不删除**任何包键，也**不动** `UNREACHABLE_PACK_KEYS`。
+- ⚠️ **射程**：门禁钉**单位**不钉**数值**；删掉**一个**填充位点门禁看不见（位点数一起降）⇒ 数值与「不许把计数删掉」由仓外仪器的 `F1/F2/P0b/T1` 腿钉。本轴**不新增也不删除**任何包键，也**不动** `UNREACHABLE_PACK_KEYS`。
   （旧值那枚「同值的孤儿键」`mk.count` 已在队列更早的一跳 `pack-key-shrink`（PR #270）里被删掉 ⇒ 本轴落地时这段文案在包里只此一处。）
 
 
@@ -1101,7 +1101,7 @@ key**（正常操作）于是让运营者看到红色故障警报，而屏幕上
 ＋ `i18n_pack::the_ops_key_state_scanners_have_teeth`（两条判别式的合成自证）。
 
 ⚠️ **射程**：门禁是**词法**的 —— 它证明**键名与键集**，**不**证明渲染出来的**句子**与数据一致。
-那一半由 jsdom 仪器 `c2158_probe.js` 承接（`A1`–`A4` / `B1` / `C1` 机制腿：共享页真暂停一枚 key →
+那一半由仓外 jsdom 仪器承接（`A1`–`A4` / `B1` / `C1` 机制腿：共享页真暂停一枚 key →
 真 `PATCH` → 回运营视图，该厂商行不得变成红色故障态）。两半**互补**且已实测：把**文案**改对而
 **键名**照旧的竞争修法，探针**接受**（屏幕上的句子是对的）、门禁**拒绝**（键名仍在宣称健康）。
 
@@ -1224,3 +1224,23 @@ key**（正常操作）于是让运营者看到红色故障警报，而屏幕上
   `sort`/`dir`（R164 的门禁把服务端白名单与前端列名册钉在同一个 build 上），只有直接调 API 的
   客户端才够得着这三条 400——所以这是一条 **API 契约／一致性**约束与**门禁盲区**的结构修复，
   不是用户可见的界面缺陷。
+
+## 不引用仓库外的仪器文件名（R94，2026-09-27）
+
+证明「另一半」的那些仪器（jsdom 探针 / Python 编译门禁 / 编辑表 / 预检单 …）住在**仓库外**，
+从未进仓 —— 根因就是本文档反复写的那句：**CI 里没有 JS 运行器**，`cargo test` 是唯一能长期
+守住的关口。因此源码注释与本文档里写它们的**文件名**，对任何读者都是一条**打不开的死链**。
+
+- **约定**：只说「哪一半由谁证」，**不写文件名**。`src/state_gate.rs` 的 R165 一块是这条约定的
+  先例（「仪器住在仓外，故此处不写文件名 —— #606」）。需要指仪器时写它的**种类**（「仓外 jsdom
+  探针」「落地轮的编译器门禁」「落地轮编辑表」），或干脆写「那半归 jsdom 探针」。
+- **门禁**：`src/citation_gate.rs::every_citation_names_a_file_the_repository_has`。语料＝仓库树里的
+  文本文件（`rs`/`md`/`js`/`html`/`css`/`toml`/`yml`，运行期走盘 ⇒ 新增文件自动进射程）；
+  对 `.rs` 只取**注释正文**（字符串字面量掩成空格 —— 站点按定义写在注释里，而门禁自己的合成夹具
+  写在字符串里）。站点＝被**单反引号**包裹、整体形如文件名的 token；判词＝basename 命中会话仪器
+  命名（`^[rc][0-9]+[-_]`）**且**仓库里没有同名文件。
+- ⚠️ **射程**：判据是**命名形态 ＋ 在场检查**，**不**证明「任意非仓库引用」。刻意不报四类：
+  运行期产物（`<data>/config.toml`）、**否定**陈述（「仓库没有 `ui/package.json`」）、历史条目
+  （「Removed `data/models.example.json`」）、占位符（`aitokenpool-transactions-YYYYMMDD.csv`）——
+  它们要么真是运行期事实、要么正因为不存在才这么写。阳性对照断言语料里确有 ≥200 个反引号
+  文件名（否则「0 条违规」与「扫描器是瞎的」读数相同）。

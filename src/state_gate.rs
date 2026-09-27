@@ -238,7 +238,7 @@
 //!
 //! 已知边界（如实的射程）：本门禁是**词法**的 —— 它证明闭包**赋值**了每个名字、且值回到声明处的
 //! 字面量，**不**证明这些赋值无条件执行，也不证明屏幕上真的换了数据（那半归 jsdom 探针
-//! `c2170-probe.js`，仓内 CI 无 JS 运行器）。闭包只收 `function NAME(` 形式声明的函数（`call_graph`
+//! 的射程，仓内 CI 无 JS 运行器）。闭包只收 `function NAME(` 形式声明的函数（`call_graph`
 //! 的键）：把复位写进箭头常量时它看不见那个体的**内容**，规则 1 因此会**红**（诚实失败，不是假绿）。
 //!
 use std::collections::{BTreeMap, BTreeSet};
@@ -2522,7 +2522,7 @@ fn caption_names_spendable_half(
 // 的写点，都必须能在**表单回收路径**上找到**同一频道**的 `.disabled = false`。
 //
 // ⚠️ 浏览器事实（`reset()` 不清 property）与「点一个星期没反应」只有 DOM 仪器能证
-// （`r139_probe.js`：未修树恰 `{B1,B2}` 红 / 修复树 9/9 绿 / 竞争修法 `m_drop` 被 `{C3,C2,A3}` 拒绝）。
+// （仓外探针：未修树恰 `{B1,B2}` 红 / 修复树 9/9 绿 / 竞争修法 `m_drop` 被 `{C3,C2,A3}` 拒绝）。
 // 本模块只钉**代码形状** —— 与 C2148 同款分工：**形状归门禁、事实归探针**。
 //
 // 已知边界（如实的射程，不是承诺）：
@@ -2530,7 +2530,7 @@ fn caption_names_spendable_half(
 //   `$` / `$$` 工具一律双引号，而十几处**按钮**瞬时禁用走 `querySelector('button…')`（单引号）
 //   或事件目标 ⇒ 天然不在射程内（不是靠名册排除的）。
 // - 写点的频道按**向上 80 行内最近的一个**含 `input` 标签的选择器字面量归属；今日全仓只有一个
-//   这样的频道（`#sf-days .chip input`），`r139_verify_anchors.py` 的 `D4` 腿把它钉成 1。
+//   这样的频道（`#sf-days .chip input`），仓外锚点验证器的 `D4` 腿把它钉成 1。
 
 /// 从一行里取出 `const NAME = (` / `let NAME = (` / `var NAME = (` 的 `NAME`（只认行首声明）。
 fn arrow_name(line: &str) -> Option<&str> {
@@ -2896,7 +2896,7 @@ fn r139_reading(app: &str, html: &str) -> R139Reading {
 // 出口（悬停）在文件里根本不存在（`fmtTokensExact` 只喂 `title`）。
 //
 // 本门禁钉的是**形状**：卡片不许自带拼写、必须委派；导出必须写数字；单元格必须仍是缩写。
-// 「屏幕与文件真的对不对得上」由 DOM 仪器 `r158_probe.js` 证（形状归门禁，事实归探针）。
+// 「屏幕与文件真的对不对得上」由仓外 DOM 仪器证（形状归门禁，事实归探针）。
 
 /// 交易表四个 token 列的**显示字段**（= 视图模型 `txsToView` 返回对象里的键名）。
 ///
@@ -3167,7 +3167,7 @@ impl R158Reading {
 //
 // 本门禁钉的是**形状**：粒度函数体内不许再出现控件选项值、必须委派给 `txRangeParams()`、
 // 返回的粒度字面量恰为 `{hour, day, week}`、且窗口真源与控件**都还在**。
-// 「屏幕上的轴与请求窗口真的对不对得上」由 jsdom 探针 `r165_probe.js` 证。
+// 「屏幕上的轴与请求窗口真的对不对得上」由仓外 jsdom 探针证。
 
 /// `#tx-range` 这个 `<select>` 的开标签特征 —— 选项集**从 `ui/index.html` 派生**，不写名册。
 const R165_CONTROL_SELECT: &str = "id=\"tx-range\"";
@@ -3183,11 +3183,11 @@ const R165_WINDOW_SOURCE: &str = "txRangeParams";
 /// 允许被返回的粒度字面量（上层与下层都给界 —— #325）。
 const R165_GRAINS: [&str; 3] = ["hour", "day", "week"];
 
-/// 修复后的函数**体**（逐字摘自编辑表 `r165_verify_edits.py` 的 E1 新文本）。
+/// 修复后的函数**体**（逐字摘自落地轮编辑表的 E1 新文本）。
 ///
 /// 它只出现在变体树里（牙齿测试与鉴别力测试的绿基线），**不**参与对真树的断言：真树今天还是
 /// 旧实现，轴测试必须因此为红。跨制品对账（这段文本确实是 E1 产物的子串）由
-/// `r165_compile_gate.py` 断言 —— 复制粘贴的常量最怕的就是悄悄漂移。
+/// 落地轮的编译器门禁断言 —— 复制粘贴的常量最怕的就是悄悄漂移。
 const R165_FIXED_BODY: &str = concat!(
     "    const p = new URLSearchParams(txRangeParams());\n",
     "    const s = p.get(\"start\");\n",
@@ -3297,7 +3297,7 @@ fn r165_body(app: &str) -> Option<String> {
 /// 把粒度函数的**体**替换成给定文本（造变体用）。锚点漂移即 panic —— 不静默失去射程。
 ///
 /// 尾部锚点是「换行 + 恰好两空格 + `}` + 换行」：函数体内部的闭合括号缩进更深，
-/// 所以第一个命中的就是函数自己的收尾（与 `r165_probe.js` 的 `replaceFn` 同一判据）。
+/// 所以第一个命中的就是函数自己的收尾（与仓外探针的 `replaceFn` 同一判据）。
 fn r165_with_body(app: &str, body: &str) -> String {
     let head = format!("function {R165_GRAIN_FN}() {{");
     let at = app
@@ -3698,7 +3698,7 @@ fn pass_min_read(mod_rs: &str, app_js: &str, i18n: &str, proto: &str) -> PassMin
 //   PART A (`r164_*` helpers)  -> insert BEFORE the line `mod tests {`
 //   PART B (the tests)         -> insert INSIDE `mod tests {`, right after `    use super::*;`
 //
-// Splice/split is done by `r164_compile_gate.py`, which also COMPILES and RUNS this fragment
+// Splice/split is done by the landing round's compile gate, which also COMPILES and RUNS this fragment
 // against an explicitly materialized pre-fix tree (`git archive <HEAD>`) and against the landed
 // tree -- the discrimination proof travels with the fragment.
 //
@@ -3731,7 +3731,7 @@ fn pass_min_read(mod_rs: &str, app_js: &str, i18n: &str, proto: &str) -> PassMin
 //
 // SCOPE, the honest half (#341): the rules are LEXICAL. They prove the SHAPE (three carriers
 // agree, the whitelist IS the roster). They do NOT prove that the rows on screen really are
-// globally ordered -- that belongs to the jsdom probe (`r164_probe.js`, legs S1-S7, re-run on the
+// globally ordered -- that belongs to the jsdom probe (out of repo, legs S1-S7, re-run on the
 // landed bytes), and the ORDER BY semantics themselves to `src/routes/wallet.rs`'s behaviour
 // tests. Shape belongs to the gate; facts belong to the instruments.
 // ============================================================================================
@@ -4200,11 +4200,11 @@ fn r164_read(app: &str, wallet: &str) -> R164Reading {
 
 // ── 合成夹具：牙齿测试与鉴别力测试都跑在同一份**自足**的迷你源码上（#612：为树 A 写的
 // 声明表对树 B 无效 —— 所以变体树不从真树派生，而是自带一份）。真树由轴测试与
-// `r164_compile_gate.py` 的物化基线腿覆盖。
+// 落地轮的编译器门禁的物化基线腿覆盖。
 //
 // 迷你源码的形态与真树**同构**（同样的锚点：`const TX_COLUMNS = [`、`function txSortParams(`、
 // `"/api/transactions?`、`let order = tx_order_by(q.sort…`、`ORDER BY {order}`），
-// 只是把 11 列压到 6 列；`r164_compile_gate.py` 另有一条腿断言修复体的关键片段确实是真树的子串。
+// 只是把 11 列压到 6 列；落地轮的编译器门禁另有一条腿断言修复体的关键片段确实是真树的子串。
 
 const R164_MINI_APP: &str = concat!(
     "const TX_COLUMNS = [\n",
@@ -4337,7 +4337,7 @@ fn r164_swap(src: &str, needle: &str, repl: &str) -> String {
 //
 // 本门禁钉的是**派生关系**（#469：门禁不许把这一次编辑的字面量写死）：它从函数体里读出 A / B，
 // 再要求 L == A + 2、R == B + 1 —— 于是它接受**任何自洽的窗口**（含比修复体更宽的那种）；
-// 「屏幕上真的没有缺口」「窗口真的够窄」由 jsdom 探针 `r167_pager_harness.js` 证。
+// 「屏幕上真的没有缺口」「窗口真的够窄」由仓外 jsdom 探针证。
 
 /// 分页器函数名。
 const R167_FN: &str = "pagerButtons";
@@ -4357,11 +4357,11 @@ const R167_ELLIPSIS: &str = "out.push(\"…\")";
 /// `pagerButtons` 的唯一消费点（R4 的输入）。
 const R167_CONSUMER: &str = "pagerButtons(state.page, pages)";
 
-/// 修复后的函数**体**（逐字摘自编辑表 `r167_verify_edits.py` 的 E1 新文本，由生成器切片而非手抄）。
+/// 修复后的函数**体**（逐字摘自落地轮编辑表的 E1 新文本，由生成器切片而非手抄）。
 ///
 /// 它只出现在变体树里（牙齿测试与鉴别力测试的绿基线），**不**参与对真树的断言：真树今天还是
 /// 旧实现，轴测试必须因此为红。跨制品对账（这段文本确实是 E1 产物的子串）由
-/// `r167_compile_gate.py` 断言 —— 复制粘贴的常量最怕的就是悄悄漂移。
+/// 落地轮的编译器门禁断言 —— 复制粘贴的常量最怕的就是悄悄漂移。
 const R167_FIXED_BODY: &str = concat!(
     "    const out = [];\n",
     "    if (pages <= 9) { for (let i = 1; i <= pages; i++) out.push(i); return out; }\n",
@@ -4657,7 +4657,7 @@ fn r167_variant_mark_only(app: &str) -> String {
 //
 // 三条规则都从代码里**派生**（#469：门禁不许把这一次编辑的字面量写死）。唯一写死的字面量是变体的
 // 绿基线 `R168_FIXED_GUARD` —— 与 R167 的 `R167_FIXED_BODY` 同型：它只出现在**自己拼出来的树**里，
-// 且由 `r168_compile_gate.py` 断言它确实是编辑表 E1 产物的子串（跨制品对账，#548：导入制品取值，
+// 且由落地轮的编译器门禁断言它确实是编辑表 E1 产物的子串（跨制品对账，#548：导入制品取值，
 // 绝不重新抄一遍）。
 //
 // ⚠️ 关于派生集合：C2171 的浮层集合里还包含 `tour-ring` / `tour-pop` —— 它们是**引导的零件**而不是
@@ -4927,7 +4927,7 @@ fn r168_variant_mark_only(app: &str) -> String {
 //
 // **射程（诚实边界，已写进 `ui/README.md`）**：本门禁是**词法**的 —— 它证「那个位点用的**键**
 // 与规则同源」，**不证**运行期那一刻屏幕上真的出现了那句话、也**不证**两条消息的**值**（字符串）
-// 相等。值与运行期归 jsdom 探针（`r93_probe.js`：驱动真表单、逐语言取参照物）与
+// 相等。值与运行期归仓外 jsdom 探针（驱动真表单、逐语言取参照物）与
 // `src/routes/mod.rs` 的口令边界测试 —— **形状归门禁，事实归探针**。
 //
 // 语料：`ui/js/app.js` 复用 `APP_JS`，语言包复用 `I18N_JS`，服务端真源**复用** R78（口令下限）
@@ -5441,7 +5441,7 @@ impl R93Reading {
 //       「非模态」这一半恒真/恒假，规则就退化成空集上的关系式（坑 68 家族）。
 //
 // 射程（如实）：本门禁是**词法**的。它证明「处理器的刷新名册覆盖了派生出来的每个非模态浮层的每个
-// 写者」，**不**证明屏幕上那一刻的文案真的是当前语言（那一半归 jsdom 探针 `r94_probe.js` 的
+// 写者」，**不**证明屏幕上那一刻的文案真的是当前语言（那一半归仓外 jsdom 探针的
 // A1/A2/Z1 腿）。竞争修法「干脆把用户自己开的面板关掉」**两边都拒、但理由不同**：探针（A4）按
 // DOM 实况拒它（面板被夺走），本门禁因为**写者没被调用**而拒它 —— 两个仪器各自能看见对方看不见的
 // 东西（C2148 的分工：形状归门禁，事实归探针），这条边界实测于
@@ -5461,7 +5461,7 @@ const R94_TOUR_GUARD: &str = "if (tourStep >= 0) renderTourStep();";
 /// 修复体新增的调用（代码部分，不含行尾注释）—— 变体树的**绿基线**。
 ///
 /// 与 R167 的 `R167_FIXED_BODY` / R168 的 `R168_FIXED_GUARD` 同型：它只出现在**自己拼出来的树**
-/// 里，且由 `r94_compile_gate.py` 断言它确实是编辑表 E1 产物的子串（#548：导入制品，绝不重抄）。
+/// 里，且由落地轮的编译器门禁断言它确实是编辑表 E1 产物的子串（#548：导入制品，绝不重抄）。
 const R94_FIXED_GUARD: &str = concat!(
     "if (!$(\"#help-panel\").classList.contains(\"hidden\")) ",
     "renderHelp();",
@@ -6161,7 +6161,7 @@ mod tests {
 
     /// 规则与**竞争修法**的关系，逐腿声明（#339/#341：声明的期望与实际各印一列）。
     ///
-    /// 竞争修法来自 jsdom 探针 `r94_probe.js`（它按 DOM 实况逐条裁定）：
+    /// 竞争修法来自仓外 jsdom 探针（它按 DOM 实况逐条裁定）：
     /// - `m_close`：切线时把用户自己开的面板**关掉**（「屏幕上没有面板，就没有陈旧的行」）。
     ///   本门禁**也**拒它 —— 但理由是「写者 `renderHelp` 没被调用」（R1 问的是刷新了没），而探针的
     ///   `A4` 腿拒它的理由是「用户的面板被夺走」。**同判不同因**：这条边界实测在这里，不是只写在注释里
@@ -6234,7 +6234,7 @@ mod tests {
         );
     }
 
-    /// 修复体常量与插入锚点的自洽（跨制品那一腿在 `r94_compile_gate.py` 里，真值取自编辑表）。
+    /// 修复体常量与插入锚点的自洽（跨制品那一腿在落地轮的编译器门禁里，真值取自编辑表）。
     #[test]
     fn the_r94_fixed_guard_is_the_edit_sheet_text() {
         assert!(
@@ -6947,7 +6947,7 @@ mod tests {
 
     /// 规则与**竞争修法**的关系，逐腿声明（#339/#341：声明的期望与实际各印一列）。
     ///
-    /// 竞争修法出自 jsdom 探针 `r168_probe.js`（它按 DOM 实况把它们全部拒掉）：
+    /// 竞争修法出自仓外 jsdom 探针（它按 DOM 实况把它们全部拒掉）：
     /// - `m_after_typing`：守卫挂到 `typing` 守卫**之后** —— 本门禁的 `R3` 拒掉它（探针的 `B1` 也是）。
     /// - `m_property_guard`：把探针写成属性形式（守卫恒真）—— 本门禁的 `R2` 拒掉它（探针的 `D2` 也是）。
     /// - `m_mark_only`：只加一句解释性注释 —— **注释不参与**，判词必须与未修形状逐条相同。
@@ -7019,12 +7019,12 @@ mod tests {
             real.report()
         );
         // ⚠️ 落地轮必做（#314：默认期望必须钉在**显式基线**上）：真树修好之后，
-        // `r168_compile_gate.py` 的 `DECLARED_RED` 表必须从 `base: [AXIS]` 改成 `base: []`，
+        // 落地轮的编译器门禁的 `DECLARED_RED` 表必须从 `base: [AXIS]` 改成 `base: []`，
         // 否则轴测试会为红而仪器仍宣称「未修」。两处一起改。
         println!("{}", reports.join("\n"));
     }
 
-    /// 修复体文本**逐字**来自编辑表 E1；`r168_compile_gate.py` 另外断言它与 E1 的产物是子串关系
+    /// 修复体文本**逐字**来自编辑表 E1；落地轮的编译器门禁另外断言它与 E1 的产物是子串关系
     /// （跨制品对账）。这里钉「常量非空、形状齐全、且两个变体构造器是幂等的」。
     #[test]
     fn the_r168_fixed_guard_is_the_edit_sheet_text() {
@@ -7249,7 +7249,7 @@ mod tests {
 
     /// 规则与**竞争修法**的关系，逐腿声明（#339/#341：声明的期望与实际各印一列）。
     ///
-    /// 竞争修法出自 jsdom 探针 `r167_pager_harness.js`（它按值把它们全部拒掉）：
+    /// 竞争修法出自仓外 jsdom 探针（它按值把它们全部拒掉）：
     /// - `m_wide_window`：把窗口放宽到 `A = B = 2` 并按**同一推导**给出判据 —— **自洽**，故本门禁
     ///   **接受**它，探针的形状腿 `C2`（token 数 ≤ 7）拒掉它。这一格不是漏，是本门禁的射程边界：
     ///   推导关系归门禁，窗口大小归探针。
@@ -7342,12 +7342,12 @@ mod tests {
             real.report()
         );
         // ⚠️ 落地轮必做（#314：默认期望必须钉在**显式基线**上）：真树修好之后，
-        // `r167_compile_gate.py` 的 `DECLARED_RED` 表必须从 `base: [AXIS]` 改成 `base: []`，
+        // 落地轮的编译器门禁的 `DECLARED_RED` 表必须从 `base: [AXIS]` 改成 `base: []`，
         // 否则轴测试会为红而仪器仍宣称「未修」。两处一起改，否则门禁与仪器会各说一套。
         println!("{}", reports.join("\n"));
     }
 
-    /// 修复体文本**逐字**来自编辑表 E1；`r167_compile_gate.py` 另外断言它与 E1 的产物是子串
+    /// 修复体文本**逐字**来自编辑表 E1；落地轮的编译器门禁另外断言它与 E1 的产物是子串
     /// 关系（跨制品对账）。这里钉「常量非空、形状齐全、且判据确实由窗口推导」。
     #[test]
     fn the_r167_fixed_body_is_the_edit_sheet_text() {
@@ -7865,7 +7865,7 @@ mod tests {
 
     /// 规则与**竞争修法**的关系，逐腿声明（#339/#341：声明的期望与实际各印一列）。
     ///
-    /// 三条竞争修法都出自 jsdom 探针 `r165_probe.js`（它按值把它们全部拒掉）：
+    /// 三条竞争修法都出自仓外 jsdom 探针（它按值把它们全部拒掉）：
     /// - `m_day`：把「无下界」那一支改回 `day` —— **形状与修复体逐字同类**（仍委派、仍无控件
     ///   选项值、粒度集合不变）⇒ 本门禁**接受**它，探针的 `K3`（`all` 控制腿）拒掉它。
     ///   这一格不是漏，是本门禁的射程边界：形状归门禁，取值归探针。
@@ -7971,7 +7971,7 @@ mod tests {
         println!("real tree: {}\n{}", real.report(), reports.join("\n"));
     }
 
-    /// 修复体文本**逐字**来自编辑表 E1；`r165_compile_gate.py` 另外断言它与 E1 的产物
+    /// 修复体文本**逐字**来自编辑表 E1；落地轮的编译器门禁另外断言它与 E1 的产物
     /// 是子串关系（跨制品对账）。这里只钉「常量非空且不是占位符」。
     #[test]
     fn the_r165_fixed_body_is_the_edit_sheet_text() {
@@ -8154,7 +8154,7 @@ mod tests {
     /// 变体从**修好之后的树**派生（`r158_fix` 幂等），所以在改前树与修复树上都成立：它证的是
     /// 「规则能认出缺陷」，不是「此刻这棵树有缺陷」。
     ///
-    /// 形状取自 DOM 仪器 `r158_probe.js` 的四条竞争修法（它那边已被 60 条腿拒绝）：
+    /// 形状取自仓外 DOM 仪器的四条竞争修法（它那边已被 60 条腿拒绝）：
     ///   defect           卡片自带拼写 + 导出写显示串（本轴）→ R1 R2 R3 红
     ///   fixed            卡片委派 + 导出写 `<…>Raw`           → 全绿
     ///   m1_partial_csv   只修合计列                           → 只 R3 红
@@ -11247,7 +11247,7 @@ function bind() {
     //
     // ⚠️ 射程（词法）：本门禁证明「派生集合里每个元素，各有一个**宣称要隐藏它**的关闭器落在
     // `resetSessionOverlays()` 的调用闭包内」，**不**证明运行期屏幕上真的隐藏了 —— 后者是
-    // `c2171-probe.js` 的射程（仓内 CI 无 JS 运行器）。已知盲区：① 只认顶行元素（缩进看不见）；
+    // 仓外仪器的射程（仓内 CI 无 JS 运行器）。已知盲区：① 只认顶行元素（缩进看不见）；
     // ② 只认字面量 `"#<id>"`（动态选择器看不见）；③ `classList.toggle("hidden", false)` 这种
     // 带第二布尔实参的隐藏不在判别式内。
 
@@ -11554,7 +11554,7 @@ function bind() {
 
 /// C2170：身份边界必须连**模块级**视图状态一起清 —— `Live` 之外的会话状态同样跨不过边界。
 ///
-/// 反例（实测，`c2170-probe.js`）：`resetSessionCaches()` 只清 `Object.keys(Live)`，而交易视图的
+/// 反例（实测，仓外仪器）：`resetSessionCaches()` 只清 `Object.keys(Live)`，而交易视图的
 /// 分页/筛选/时间段是模块级的 —— 尤其 `txTable.loaded*` 是**载荷的有效性证据**。载荷
 /// （`Live.transactions`）被清空而证据留下 ⇒ 下一位用户进入交易视图时守卫按 `txTable.page`
 /// （上一位用户的第 5 页）发请求；服务端 `offset=(page-1)*page_size` + `LIMIT ? OFFSET ?`
@@ -12449,7 +12449,7 @@ fn the_r155_rules_separate_the_variants() {
 //       只改文档也会触犯 R2 ⇒ R3 单独负责「两边都改了、但那条规则没人用」这种死分级。
 //
 // 射程（如实，并已写进 `ui/README.md`）：本门禁是**词法**的 —— 它证「词表的三个载体说的是同一
-// 组词」，**不**证屏幕上那一刻这条消息真的染上了成功色（那一半归 jsdom 探针 `r92_probe.js`
+// 组词」，**不**证屏幕上那一刻这条消息真的染上了成功色（那一半归仓外 jsdom 探针
 // 的 B1/B3/C3 腿）。扫描器跳过字符串／模板串／注释；**正则字面量不被识别**（当时的 75 个调用点
 // 里没有正则；自证测试把这一点钉在「每个调用点的括号都能配对、实参数都是 1..3」上）。
 
@@ -13272,8 +13272,8 @@ fn the_r92_rules_separate_the_variants() {
 //    文件最后一行 `}` 就是那个 test fn 的收尾 ⇒ 追加物与它们是兄弟，不缩进。）
 // ⚠️ `PathBuf` 在本文件里**没有** module-level import ⇒ 本 lane 一律写全路径
 //    `std::path::PathBuf`（别加 `use`，那样会动到 13268 行文件的中段）。
-// ⚠️ 状态：**已用等价的 Python 模拟在真语料上逐腿验证**（见 `r99-landing-kit.md` 的矩阵），
-//    并已由 `r99_probe.js`（jsdom，5 变体 × 12 腿）在**真 DOM** 上坐实另一半射程；
+// ⚠️ 状态：**已用等价的 Python 模拟在真语料上逐腿验证**（见落地轮施工单的矩阵），
+//    并已由仓外 jsdom 探针（5 变体 × 12 腿）在**真 DOM** 上坐实另一半射程；
 //    另已做静态自检（本 lane 的 28 个顶层标识符在 `state_gate.rs` 里各 0 次；依赖的
 //    `pack_region_strict`/`I18N_JS`/`ZH_PACK_START`/`EN_PACK_START`/`PACK_END`/`R164_WALLET`
 //    全部已在；`use std::collections::{BTreeMap, BTreeSet};` 覆盖全部用法）。
@@ -13313,7 +13313,7 @@ fn the_r92_rules_separate_the_variants() {
 // 受理 ← `TX_FILTER_TYPES` 数组字面量；名册 ← 两个包里具名过半写入类型的键。
 //
 // 射程（如实）：本门禁是**词法**的 —— 它证「名册里每处散文都写了那 5 个类型的名字」，
-// **不**证屏幕上那一刻真的显示这句话（那一半归 jsdom 探针 `r99_probe.js` 的 A/B 腿：
+// **不**证屏幕上那一刻真的显示这句话（那一半归仓外 jsdom 探针的 A/B 腿：
 // 5 变体 × 12 腿，`landed` 12/12 绿；`A1_*`/`A3_*` 读**真 DOM**、`A2_*` 经 `t()` ＋
 // 派生腿 `B3` 读〔该键没有 `[data-i18n]` 钩子，需活会话才渲染〕）。
 // 三个**故意**的盲区（已写进 `ui/README.md`）：
@@ -13560,7 +13560,7 @@ fn r99_accepted(wallet: &str) -> BTreeSet<String> {
     // ⚠️ `R99_ACCEPTED_ANCHOR` **自己以 `[` 结尾**，而声明里紧随其后的是长度标注
     // （`[&str; 6]`）⇒ 从 `at` 直接找下一个 `[` 会命中**长度标注**那个，切出 `[&str; 6`
     // ——  零个字面量、受理集合**静默变空**，于是 R4 在**修好的**树上必红（R102 实测，见
-    // `r102-landing-preflight-readonly.md` §7）。取值清单在 `=` 之后。
+    // 落地轮预检单 §7）。取值清单在 `=` 之后。
     let eq = at + wallet[at..].find('=').expect("常量声明缺 `=`");
     let open = eq + wallet[eq..].find('[').expect("数组字面量");
     let close = wallet[open..]
@@ -14173,7 +14173,7 @@ fn the_r99_rules_have_teeth() {
 //                下界 2）：每个成员都必须能在 `ui/js/app.js` 里**解出恰好一个**提交处理器
 //                （零个或两个以上＝响亮地红：解不出 ≠ 干净，#477），且不得以别人的键收尾。
 //   R3（反向）—— 那些会写标签的成员，处理器里对同一按钮的标签写必须**至少两次**（先忙碌态、再
-//                收尾）——「把忙碌态删掉」不能算合格。运行时证据是探针 `r169_probe.js` 的 `C4` 腿
+//                收尾）——「把忙碌态删掉」不能算合格。运行时证据是仓外探针的 `C4` 腿
 //                （它在**第一个 `await` 之前**采样，证明忙碌态真的发生过）。
 //
 // 射程（如实，并写进 `ui/README.md`）：
@@ -14874,7 +14874,7 @@ fn the_r169_rules_have_teeth() {
 //
 // 射程（如实）：本门禁是**静态词法**的 —— 它证「触发器点名的字段集合」与「行显示的集合」
 // 之间是夹逼关系，**不证**屏幕上那一刻渲染出来的数值（那一半归 jsdom 探针
-// `r171_peak_gate_probe.js` 的 A1/A2/A3/A4 腿）。**为什么不用「触发器 == 引擎那三个字段」**：
+// 仓外探针的 A1/A2/A3/A4 腿）。**为什么不用「触发器 == 引擎那三个字段」**：
 // `peak_cache_hit_input_per_m` 是引擎认的、却没有任何一列显示它，而 `mk.peak.badge` 总带
 // `{n}` 乘数 ⇒ 把它拉进触发器会让「只有高峰缓存价」的模型印出「高峰 ×0」（比漏标更糟的假话）。
 // 所以尺子必须是**夹逼**（displayed ⊆ trigger ⊆ engine），下界从**视图自己的构造**推导。
@@ -15314,7 +15314,7 @@ fn r171_variant_drop_slots(app: &str) -> String {
 //
 // 射程（如实）：本门禁是**静态词法**的 —— 它证「Enter 的目标必须由高亮决定」＋「切换视图会收起
 // 武装」这两件**形状**；**不证**屏幕上那一刻高亮是否真的消失了（`innerHTML` 替换会销毁
-// `.row-active` 是**浏览器事实**，只有 DOM 仪器能证）—— 那一半归 jsdom 探针 `r173_probe.js`
+// `.row-active` 是**浏览器事实**，只有 DOM 仪器能证）—— 那一半归仓外 jsdom 探针
 // 的 A1/A2/A3/A5/A4 腿。两台仪器各自能看见对方看不见的东西（C2148／R168 前例）。
 
 // ── 扫描器 ──────────────────────────────────────────────────────────────────────────────
@@ -15863,7 +15863,7 @@ fn r173_variant_guard_after_clear(app: &str) -> String {
 // 射程（如实）：本门禁是**静态词法**的 —— 它证「拒绝被报告」「调用方兜底」「兜底按身份取」
 // 三件**形状**；**不证**屏幕上真的渲染出了内容（那需要真 DOM），也不证 `#/ops` 对所有人恒真的
 // 前提（`ops` 角色的可达性是另一条在册轴，方向待裁定）。浏览器事实与症状归 jsdom 探针
-// `r163_probe.js` —— 两台仪器各自能看见对方看不见的东西（C2148／R168／R173 同款分工）。
+// 仓外 jsdom 探针 —— 两台仪器各自能看见对方看不见的东西（C2148／R168／R173 同款分工）。
 
 // ── 扫描器 ──────────────────────────────────────────────────────────────────────────────
 
@@ -16710,7 +16710,7 @@ fn r2174_variant_coherent_wrong_rename(pack: &str) -> String {
 //
 // 射程（如实）：本门禁是**静态词法**的 —— 它证「每个转发器在选 key 前取价」「兜底臂留痕」
 // 「取价结果确实决定分支」三件**形状**；**不证**运行期「目录行存在时那次调用真的 200」
-// （那一半归探针 `r156_model_price_invariant_probe.py` 的 L1/L8 腿与 A/B 腿）。两台仪器各自
+// （那一半归仓外探针的 L1/L8 腿与 A/B 腿）。两台仪器各自
 // 能看见对方看不见的东西（C2148／R168／R173 前例）。
 
 /// `src/gateway.rs`：路由、计价门与结算兜底的真源（R156）。
