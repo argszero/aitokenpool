@@ -160,7 +160,7 @@ ui/
 
 - **按压反馈**：`.btn:active:not(:disabled) { transform: scale(0.98) }`（配合 `.btn` 既有 `transition: all .15s`）；disabled 按钮不触发；
 - **统计卡 hover**：`.stat:hover` `translateY(-2px)` + 边框/阴影提升（与 `.card:hover` 语言一致，过渡 0.15–0.18s）；
-- **数字跳动**：`bump(el)` 助手（remove `.bump` → reflow → add，重放 `@keyframes numJump`：`translateY(-3px) scale(1.02)`，0.35s）；**接入 4 处余额变化点**——钱包充值（`#side-balance` + `#wallet-balance`）、聊天消费扣款、加额批准、运营者给自己充值（`isMe` 判断）；`#side-balance` 为 inline 元素需 `display:inline-block` 才可 transform；
+- **数字跳动**：`bump(el)` 助手（remove `.bump` → reflow → add，重放 `@keyframes numJump`：`translateY(-3px) scale(1.02)`，0.35s）；**接入 3 处余额变化点**（共 4 次 `bump()` 调用）——钱包充值（`#side-balance` + `#wallet-balance`）、运营者给自己充值（`u.email === D.USER.email` 行内判断）、聊天消费扣款；⚠️ 2026-08-19 零 mock 重构（`89963f3` / #94）更正：本条原写「4 处」，多出来的那处是**加额批准** —— 它当时在本地 mock 分支里就地改 `D.USER.balance` 之后跳动，改成真实 API（`approveRaise()` 成功后只 `loadAdmin()` 刷新列表）时随本地改动一并消失；同一次重构把「运营者给自己充值」的守卫从具名布尔变量改成上面的行内比较式。`#side-balance` 为 inline 元素需 `display:inline-block` 才可 transform；
 - **系统偏好**：`@media (prefers-reduced-motion: reduce)` 全局压 `animation-duration`/`transition-duration` 到 0.01ms、`animation-iteration-count: 1`、`scroll-behavior: auto`——**禁用过渡/动画但保留全部功能**；新增加动画时不得绕过此规则。
 
 ## 动态文档标题约定（v1.18，rant 2026-08-17T18:06:09 F）
@@ -233,7 +233,7 @@ ui/
 
 - **视觉 polish**：`.login-form .input:focus` 加 `0 0 0 3px var(--accent-soft)` 聚焦光晕（深/亮主题通用）；⚠️ 2026-09-11 全站 UI 重设计（`e33bf2e` / #153）更正：本条原先记录的 `.login-card .logo`（52px 渐变微光）与 `.login-brand h1`（22px）已随「单卡片 → 左右分栏」删除 —— logo 现为 `.logo-tile` 圆角方块（无 ring），标题现为 `h1.lb-headline`（`clamp(30px, min(4.4vw, 6.2vh), 54px)`）；
 - **行内校验**：空邮箱 →「请输入邮箱 / 账号」、空密码 →「请输入密码」（复用 `setFieldError`/`field-error` 组件：红边框 + 行内文案 + 聚焦首个错误 + 输入自动清除）；表单 `novalidate` 自管校验；输入框带 id（`#login-email` / `#login-pass`）；
-- **记住我**：`#login-remember` checkbox → localStorage `atp-remember`（登录提交时存，DOMContentLoaded 时还原）；`demo-hint` 小字显示演示账号；
+- **记住我**：`#login-remember` checkbox → localStorage `atp-remember`（登录提交时存，DOMContentLoaded 时还原）；⚠️ 2026-08-19 演示数据清理（`35291b3` / #90，v0.6.0）更正：本条原写「小字显示演示账号」，那行演示账号提示已随演示数据一并删除 —— 今天登录表单再无演示账号文案；`ui/css/style.css` 的 `.demo-hint` 规则成了**孤儿**（没有任何元素再带这个类），语言包键 `login.demo` 已进不可达日落清单；
 - 冒烟测试注意：stub 中 `setFieldError` 依赖 `input.parentNode.querySelector(".field-error")` —— stub 的 parentNode 需实现该查询；`insertAdjacentElement` 记录插入元素供断言。
 
 ## 接入端点卡片约定（v1.19，rant 2026-08-17T20:44:18）
@@ -399,7 +399,7 @@ ui/
 - **两列都是服务端筛选**：`txFilterParams()` 把「模型」列的文字发成 `model`、「Key」列发成 `key_name`，服务端 `tx_where` 用 LIKE 匹配库内值（`transactions.model` / `api_keys.name` → `key_label` 表达式）。**客户端 `filterRows` 只用于导出 CSV**（过滤当前页），表格本身的行由服务端全量过滤 + 分页。
 - **不变量**：**单元格里出现的每一段文字，都必须能被该列筛选命中**。因此无值行只能用**语言中性的占位符 `—`**（`user` 列与 Key 列消费分支早已如此），**不能**填本地化类型名 —— 服务端没有语言包，`txType(t.type)`（「赠送」「过期」）在 SQL 里永远匹配不到，按它筛选得 0 行（C2113 修前即此：文案看似可筛选，实际是**说谎的漏斗**）。
 - **两侧逐字对应**：`txsToView` 的 `t.model || "—"` / `t.key_name || t.key_label || "—"` ↔ `tx_where` 的 `COALESCE(NULLIF(…, ''), '—')`（Key 列是 `COALESCE(NULLIF(ak.name,''), NULLIF(<key_label 表达式>,''), '—')`，逐层 `NULLIF` 才能对齐 JS `||` 把空串当缺失的语义）。
-- **改文案就要同时改两侧**：这是「显示口径 = 筛选口径」类的第 4 处（前 3 处：点数有符号值 C2054、时间列 C2111、Key 列空名兜底 C2101）。`transactions_model_and_key_filters_match_the_displayed_placeholder`（`src/routes/wallet.rs`）钉住服务端半边；阴性对照断言「类型名不再是模型列的可筛值」，防止有人反向把中文标签硬编码进 SQL。
+- **改文案就要同时改两侧**：这是「显示口径 = 筛选口径」类的第 4 处（前 3 处：点数有符号值 C2054、时间列 C2111、Key 列空名兜底 C2101）。`tx_model_and_key_filters_match_the_displayed_placeholder`（`src/routes/wallet.rs`）钉住服务端半边（本条自 `dfa7318` / #231 起把名字多写了一个 `transactions_` 前缀，那个名字从未存在过）；阴性对照断言「类型名不再是模型列的可筛值」，防止有人反向把中文标签硬编码进 SQL。
 - **冒烟测试注意**：前端半边（单元格文本）用 jsdom 启真 `index.html` + 四脚本、stub `fetch` 喂各类行（consume / gift / topup 哨兵）后**读渲染文本**；服务端半边由 Rust 测试覆盖。两侧的期望值都要**从同一条规则推出**（「库内值，空则 `—`」），不要照抄另一侧的输出 —— 照抄会让两边一起错。
 
 ## 会话恢复：非 401 失败不得演成「已登出」（C2124）
