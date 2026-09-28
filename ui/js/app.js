@@ -407,13 +407,6 @@
   // 厂商展示名：zh 用中文标签（阿里云百炼…），en 用 provider id（English-friendly）
   const provLabel = (p) => (I18n.lang === "zh" ? (D.PROVIDER_LABELS[p] || p) : p);
 
-  // key 脱敏展示：仅显示前 3 后 4（如 sk-****1234）
-  function maskKey(key) {
-    if (!key) return "—";
-    if (key.length <= 8) return key.slice(0, 3) + "****" + key.slice(-4);
-    return key.slice(0, 3) + "****" + key.slice(-4);
-  }
-
   function showPriceHint(model) {
     const el = $("#sf-price-view");
     if (!el) return;
@@ -1106,7 +1099,12 @@
       const pct = s.quota > 0 ? Math.min(100, Math.round((s.used / s.quota) * 100)) : 0;
       return "<tr><td data-label='" + T('share.col.provider') + "'><strong>" + esc(provLabel(s.provider)) + " · " + esc(s.plan) +
       "</strong><div class='muted' style='font-size:12px'>" + esc(s.model) + "</div></td>" +
-      "<td data-label='" + T('share.col.key') + "' class='mono'>" + esc(maskKey(s.key)) + "</td>" +
+      // 这一格直接印**服务端**的脱敏串（`sharing.rs::mask_upstream_key`：前 2 位 + `-` + 后 4 位；
+      // 存着的 key ≤6 字符、或解密失败时＝整串掩码）。前端手里没有明文，自己再「脱敏」一遍只是
+      // 对**成品**的二次加工 —— 旧版 `maskKey` 的 `key.length <= 8` 分支（两个返回值逐字相同、
+      // 原型以来从未被数据走到）会把服务端那串整串掩码印成 11 个星号。设置页 API Key 表同规：
+      // 那一格也是原样印后端值（见 `renderSettings`）。
+      "<td data-label='" + T('share.col.key') + "' class='mono'>" + esc(s.key) + "</td>" +
       "<td data-label='" + T('share.col.used') + "' class='num'>" + D.fmt(s.used) + " / " + D.fmt(s.quota) +
       '<div class="bar-track" style="margin-top:5px"><div class="bar-fill' + (pct >= 100 ? " alt" : "") + '" style="width:' + pct + '%"></div></div></td>' +
       '<td class="num" data-label="' + T("share.col.price") + '">' + D.fmt(s.price) + " " + T("share.priceUnit") + "</td>" +
