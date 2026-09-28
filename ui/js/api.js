@@ -114,7 +114,8 @@ const api = (() => {
     }
     if (!resp.ok) {
       // 取后端 error.message 或 error 字段
-      // 后端文案是**未知散文**，只能过 mapErr 词表；本文件自己的兜底文案走 tr()，
+      // 后端文案是**未知散文**，只能过 mapErr 词表；本文件自己的文案（`err.network` /
+      // `login.session.expired` / `err.http`）一律经上面那个 `T()` 取、不进词表，
       // 因为 mapErr 以 `t(key)`（无 vars）收尾，带 `{n}` 的值经它只会原样输出花括号。
       const raw = (data && (data.error && (data.error.message || data.error))) || (data && data.message);
       const errMsg = raw ? (window.I18n ? window.I18n.mapErr(raw) : raw) : T("err.http", { n: resp.status });
