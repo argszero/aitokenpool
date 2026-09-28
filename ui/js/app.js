@@ -2372,7 +2372,9 @@
       pulseTbody($("#api-keys"));
       return;
     }
-    // P2-B：登录 → 后端 /api/api-keys（key 已脱敏；完整 key 仅生成时可得）
+    // P2-B：登录 → 后端 /api/api-keys（列表 `key` 是后端脱敏值 `atk_live_****xxxx`，属主的完整值
+    // 随行返回 `full_key` ⇒ 复制按钮**随时**可取。「完整 key 仅生成时可得」是 v1.22.1（#95）之前的
+    // 说法，见 copyKey 的注释
     let list;
     if (Live.apiKeys) {
       // idx = 定位符：行内按钮带的索引是**缓存数组里的下标**，不是搜索过滤后的行号
