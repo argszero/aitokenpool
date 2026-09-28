@@ -17530,3 +17530,495 @@ fn r68_variant_widen_card(app: &str) -> String {
     let new = format!("Live.wallet.month_{R68_INCOME_FIELD}");
     app.replacen(body, &body.replace(old.as_str(), new.as_str()), 1)
 }
+
+/// 上架/共享那条链的服务端源（R111）：脱敏成品的生产者与那个字段的组装者都在这里。
+const SHARING_RS: &str = include_str!("routes/sharing.rs");
+
+// ───────────────── R111：共享列表印的是**服务端**做的脱敏串 ─────────────────
+//
+// 轴：`#share-body` 的 Key 格曾经在前端**再脱敏一遍**（本地 `maskKey`），而它手里那个值
+// 已经是服务端（`sharing.rs::mask_upstream_key`）做好的成品 —— 同一事实的第二份实现。
+// 四条规则：① 那一格印的是**裸成员表达式**（不是又一次加工）② 它具名的字段正是行映射器
+// 原样透传的那个 ③ 服务端**确实**把掩码写进那个字段（值经绑定链走到产出整串掩码的那个
+// `fn`；服务端不再脱敏时这条红 —— 那一刻「原样印」就成了泄露）④ 前端**没有第二份实现**
+// （`app.js` 的**代码文本**里不得出现服务端那个掩码字面量）。掩码函数名与掩码字面量
+// **都从 `sharing.rs` 派生**，⛔ 不写快照。
+//
+// ⚠️ 射程＝**词法**：证「那一格印的是谁的值、值从哪来」，**不证**屏幕上的像素（仓内 CI
+// 无 JS 运行器，与本文档其余形状门禁同款）。
+
+/// `sharing.rs` 里产出**整串掩码**的那个 `fn`：名字与它返回的纯星号字面量，两样都派生。
+struct R111MaskMaker {
+    fn_name: String,
+    literal: String,
+}
+
+/// 一行里的双引号字符串字面量（不处理 `\"` 转义 —— 本轴语料里没有含转义的星号串）。
+fn r111_string_literals(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(open) = rest.find('"') {
+        let after = &rest[open + 1..];
+        match after.find('"') {
+            Some(close) => {
+                out.push(after[..close].to_string());
+                rest = &after[close + 1..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// 文件里**第一处**「纯星号串」字面量，连同它当时所属的那个顶层 `fn`。
+///
+/// 「整串掩码」的语义定义就是「一个全是 `*` 的字面量」——`format!("{prefix}-****{tail}")`
+/// 那个格式串**不是**（它混着别的字符），所以 `mask_upstream_key` 的**兜底**臂才是判据。
+fn r111_mask_maker(sharing: &str) -> Option<R111MaskMaker> {
+    let mut current: Option<String> = None;
+    for line in sharing.lines() {
+        if let Some(name) = r111_rust_fn_head(line) {
+            current = Some(name);
+        }
+        for lit in r111_string_literals(line) {
+            if lit.len() >= 2 && lit.chars().all(|c| c == '*') {
+                if let Some(f) = &current {
+                    return Some(R111MaskMaker {
+                        fn_name: f.clone(),
+                        literal: lit,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 列 0 处的 Rust 函数头（`fn` / `pub fn` / `async fn` / `pub async fn`）。
+///
+/// 只认**列 0**：`mod tests` 里的函数都缩进 4 格，本轴的语料是「服务端怎么造这个值」，
+/// 测试里那些 `"key":"sk-…"` 的载荷串不该被当成生产者。
+fn r111_rust_fn_head(line: &str) -> Option<String> {
+    let rest = line
+        .strip_prefix("pub async fn ")
+        .or_else(|| line.strip_prefix("pub fn "))
+        .or_else(|| line.strip_prefix("async fn "))
+        .or_else(|| line.strip_prefix("fn "))?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+struct R111RustFn {
+    name: String,
+    body: String,
+}
+
+/// 顶层函数的体：从列 0 的函数头起，到其后第一个**列 0** 的 `}`（rustfmt 的收尾约定）。
+fn r111_rust_fns(src: &str) -> Vec<R111RustFn> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some(name) = r111_rust_fn_head(lines[i]) {
+            let mut body = String::new();
+            let mut j = i;
+            while j < lines.len() {
+                body.push_str(lines[j]);
+                body.push('\n');
+                if j > i && lines[j] == "}" {
+                    break;
+                }
+                j += 1;
+            }
+            out.push(R111RustFn { name, body });
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// `renderSharing` 的表格行里，`share.col.key` 那一格的**值表达式**。
+///
+/// 单元格内容是拼接出来的（`… class='mono'>" + esc(s.key) + "</td>"`），所以先把两侧的
+/// 字符串引号与 `+` 剥掉 —— 留下的是**表达式**，供下面判「是不是又一次加工」。
+fn r111_key_cell(body: &str) -> Option<String> {
+    const MARK: &str = "T('share.col.key')";
+    let at = body.find(MARK)? + MARK.len();
+    let rest = &body[at..];
+    let open = rest.find('>')? + 1;
+    let tail = &rest[open..];
+    let close = tail.find("</td>")?;
+    let raw = tail[..close].trim();
+    let raw = raw.strip_prefix("\" + ").unwrap_or(raw);
+    let raw = raw.strip_suffix(" + \"").unwrap_or(raw);
+    Some(raw.trim().to_string())
+}
+
+fn r111_is_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// 一个**裸成员表达式** `<ident>.<ident>`：没有调用、没有运算符、没有字面量。
+fn r111_member_expr(expr: &str) -> Option<(String, String)> {
+    if expr.contains(['(', ')', '+', '"', '\'', '`', '?', ':']) {
+        return None;
+    }
+    let mut parts = expr.split('.');
+    let obj = parts.next()?;
+    let field = parts.next()?;
+    if parts.next().is_some() || !r111_is_ident(obj) || !r111_is_ident(field) {
+        return None;
+    }
+    Some((obj.to_string(), field.to_string()))
+}
+
+/// `esc(<裸成员表达式>)` —— 那一格印的是**行自己的字段**，不是又一次加工。
+fn r111_prints_bare_member(cell: &str) -> Option<(String, String)> {
+    let inner = cell.strip_prefix("esc(")?.strip_suffix(')')?;
+    r111_member_expr(inner)
+}
+
+/// 一段表达式里 `.` 之后的那些成员名（`esc(maskKey(s.key))` → {`key`}）。
+///
+/// 判据是「`.」后面跟标识符，且它前面是标识符」—— 这样「这一格印的是**哪个字段**」就与
+/// R1 的判定**解耦**：R1 变红（前端又加工一次）不会把 R2/R3 一起拖下水，每条规则的牙才是
+/// 独立的。本轴语料是行内小表达式，不做词法分析。
+fn r111_member_fields(expr: &str) -> BTreeSet<String> {
+    let b = expr.as_bytes();
+    let mut out = BTreeSet::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'.' {
+            let start = i + 1;
+            let mut end = start;
+            while end < b.len()
+                && (b[end].is_ascii_alphanumeric() || b[end] == b'_' || b[end] == b'$')
+            {
+                end += 1;
+            }
+            if end > start
+                && start >= 2
+                && (b[start - 2].is_ascii_alphanumeric() || b[start - 2] == b'_')
+            {
+                out.insert(expr[start..end].to_string());
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// `sharingsToView` 里 `<field>: <rhs>` 的右值（文本；调用方再判它是不是裸成员表达式）。
+fn r111_passthrough(fn_code: &str, field: &str) -> Option<String> {
+    let needle = format!("{field}: ");
+    fn_code
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with(&needle))
+        .map(|l| {
+            l[needle.len()..]
+                .trim()
+                .trim_end_matches(',')
+                .trim()
+                .to_string()
+        })
+}
+
+/// 体里 `"<field>": <value>` 那个 value 的文本。
+fn r111_member_value(body: &str, member: &str) -> Option<String> {
+    let line = body.lines().find(|l| l.contains(member))?;
+    let v = line.split(member).nth(1)?.trim();
+    Some(v.trim_end_matches(',').trim().to_string())
+}
+
+/// 体里 `let <ident> = … ;` 的右值（跨行取到语句结束）。
+fn r111_let_rhs(body: &str, ident: &str) -> Option<String> {
+    let needle = format!("let {ident} = ");
+    let at = body.find(&needle)? + needle.len();
+    let rest = &body[at..];
+    let end = rest.find(';')?;
+    Some(rest[..end].to_string())
+}
+
+struct R111Reading {
+    r1: bool,
+    r2: bool,
+    r3: bool,
+    r4: bool,
+    detail: String,
+}
+
+impl R111Reading {
+    fn verdicts(&self) -> (bool, bool, bool, bool) {
+        (self.r1, self.r2, self.r3, self.r4)
+    }
+    fn report(&self) -> String {
+        self.detail.clone()
+    }
+}
+
+fn r111_read(sharing: &str, app: &str) -> R111Reading {
+    let (mask_fn, mask_lit) = match r111_mask_maker(sharing) {
+        Some(m) => (m.fn_name, m.literal),
+        None => (String::new(), String::new()),
+    };
+
+    // 这一格印的**字段**：从格子里的成员表达式派生，与 R1 的判定**解耦**（R1 变红时
+    // R2/R3 仍按同一个字段各自作答）。
+    let cell = js_function_body(app, "renderSharing").and_then(r111_key_cell);
+    let fields = cell.as_deref().map(r111_member_fields).unwrap_or_default();
+    let field = if fields.len() == 1 {
+        fields.iter().next().cloned().unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // R1：那一格印的是**裸成员表达式**（不是又一次加工）。
+    let parsed = cell.as_deref().and_then(r111_prints_bare_member);
+    let r1 = matches!(&parsed, Some((_, f)) if !field.is_empty() && f == &field);
+
+    // R2：行映射器把该字段**原样透传**（右值也是同一个裸成员表达式）。
+    let mapper = js_function_body(app, "sharingsToView").map(code_only);
+    let rhs = mapper.as_deref().and_then(|b| r111_passthrough(b, &field));
+    let r2 = rhs
+        .as_deref()
+        .and_then(r111_member_expr)
+        .map(|(_, rf)| rf == field)
+        .unwrap_or(false);
+
+    // R3：服务端**确实**把掩码写进那个字段 —— 造这一行的那个 `fn` 里，值经**绑定链**
+    // 走到产出整串掩码的那个 `fn`，且兜底字面量就在同一个函数体里。
+    // 「造这一行」＝体里有 `<field>: ` 而值是**裸标识符**（先算好、再印）的那个 `fn`；
+    // 这样的生产者必须**唯一**（两处各自产一个值＝两个口径）。
+    let member = format!("\"{field}\": ");
+    let fns = r111_rust_fns(sharing);
+    let owners: Vec<&R111RustFn> = fns.iter().filter(|f| f.body.contains(&member)).collect();
+    let bare: Vec<&R111RustFn> = owners
+        .iter()
+        .copied()
+        .filter(|f| {
+            r111_member_value(&f.body, &member)
+                .map(|v| r111_is_ident(&v))
+                .unwrap_or(false)
+        })
+        .collect();
+    let mut owner_name = String::new();
+    let r3 = bare.len() == 1 && {
+        let f = bare[0];
+        owner_name = f.name.clone();
+        let v = r111_member_value(&f.body, &member).unwrap_or_default();
+        let bound = r111_let_rhs(&f.body, &v).unwrap_or_default();
+        !mask_fn.is_empty()
+            && bound.contains(&format!("{mask_fn}("))
+            && f.body.contains(&format!("\"{mask_lit}\""))
+    };
+
+    // R4：前端**没有第二份实现** —— `app.js` 的**代码文本**里不得出现那个掩码字面量。
+    let code = code_text_by_line(app).join("\n");
+    let r4 = !mask_lit.is_empty() && !code.contains(&mask_lit);
+
+    R111Reading {
+        r1,
+        r2,
+        r3,
+        r4,
+        detail: format!(
+            "r1={r1} r2={r2} r3={r3} r4={r4} | cell={cell:?} field={field:?} \
+             mapper_rhs={rhs:?} mask_fn={mask_fn:?} mask_lit={mask_lit:?} \
+             owners={} bare_owner={owner_name:?}",
+            owners.len()
+        ),
+    }
+}
+
+/// 共享列表的 Key 格印的是**服务端的成品**，前端不再自己动手 —— 一份事实一份实现。
+#[test]
+fn the_sharing_list_prints_the_mask_the_server_made() {
+    let rd = r111_read(SHARING_RS, APP_JS);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, true, true),
+        "共享列表的 Key 格印的不再是服务端那个脱敏成品：{}",
+        rd.report()
+    );
+}
+
+/// 阳性对照：三个提取器都**真的**落在了活树上的目标（不是空串恒真），且掩码函数**真的**被调用。
+#[test]
+fn the_r111_roster_is_derived() {
+    let maker = r111_mask_maker(SHARING_RS).expect("`sharing.rs` 里找不到产出整串掩码的那个 `fn`");
+    assert!(!maker.fn_name.is_empty(), "掩码函数名是空的");
+    assert!(
+        maker.literal.len() >= 2 && maker.literal.chars().all(|c| c == '*'),
+        "派生出来的不是纯星号串：{:?}",
+        maker.literal
+    );
+    assert!(
+        SHARING_RS.contains(&format!("{}(", maker.fn_name)) && r111_read(SHARING_RS, APP_JS).r3,
+        "派生出的掩码函数在服务端没有被走到 —— 提取器落在别的 `fn` 上了"
+    );
+
+    let body = js_function_body(APP_JS, "renderSharing").expect("`renderSharing` 未找到");
+    let cell = r111_key_cell(body).expect("`share.col.key` 那一格提不出来");
+    let (_, field) = r111_prints_bare_member(&cell).expect("那一格不是 `esc(<成员表达式>)`");
+    let mapper =
+        code_only(js_function_body(APP_JS, "sharingsToView").expect("`sharingsToView` 未找到"));
+    let rhs = r111_passthrough(&mapper, &field).expect("行映射器里找不到该字段");
+    assert!(
+        r111_member_expr(&rhs).is_some(),
+        "行映射器不是原样透传：{rhs:?}"
+    );
+
+    // R4 的语料真的读到了东西（否则「0 处出现」与「扫描器是瞎的」读数相同）。
+    assert!(
+        code_text_by_line(APP_JS)
+            .join("\n")
+            .contains("renderSharing"),
+        "`app.js` 的代码文本提取器没读到渲染器"
+    );
+}
+
+/// 每条规则**各有独立的牙**：每个合成变异体只打翻它针对的那一条（基线＝已知为绿的活树）。
+#[test]
+fn the_r111_rules_have_teeth() {
+    let live = r111_read(SHARING_RS, APP_JS);
+    assert_eq!(
+        live.verdicts(),
+        (true, true, true, true),
+        "基线不是绿的 —— 变异体的读数无从解释：{}",
+        live.report()
+    );
+
+    // ① 前端又加工一次（**修前的形状**：`esc(maskKey(s.key))`）⇒ 只翻 R1。
+    let app = r111_variant_local_mask(APP_JS);
+    let rd = r111_read(SHARING_RS, &app);
+    assert_eq!(rd.verdicts(), (false, true, true, true), "{}", rd.report());
+
+    // ② 行映射器自己动手（不再透传）⇒ 只翻 R2。
+    let app = r111_variant_mapper_masks(APP_JS);
+    let rd = r111_read(SHARING_RS, &app);
+    assert_eq!(rd.verdicts(), (true, false, true, true), "{}", rd.report());
+
+    // ③ 服务端不再脱敏（那一行的值改成密文）⇒ 只翻 R3。
+    let sharing = r111_variant_server_stops_masking(SHARING_RS);
+    let rd = r111_read(&sharing, APP_JS);
+    assert_eq!(rd.verdicts(), (true, true, false, true), "{}", rd.report());
+
+    // ④ 前端重新长出第二份实现 ⇒ 只翻 R4。
+    let app = r111_variant_second_impl(APP_JS);
+    let rd = r111_read(SHARING_RS, &app);
+    assert_eq!(rd.verdicts(), (true, true, true, false), "{}", rd.report());
+}
+
+/// 扫描器自证：提取器与配平在**合成输入**上按声明工作（与活树无关）。
+#[test]
+fn the_r111_scanners_have_teeth() {
+    // 单元格提取器：剥掉拼接的引号与 `+`，留下的才是**表达式**。
+    let row = "T('share.col.key') + \"' class='mono'>\" + esc(s.key) + \"</td>\"";
+    assert_eq!(r111_key_cell(row).as_deref(), Some("esc(s.key)"));
+    assert_eq!(
+        r111_key_cell("T('share.col.key') + \"'>\" + esc(s.key) + \"</td><td>x</td>\"").as_deref(),
+        Some("esc(s.key)"),
+        "单元格提取器越界吞掉了后面的兄弟格"
+    );
+    assert_eq!(
+        r111_key_cell("<td>esc(s.key)</td>"),
+        None,
+        "没有 `share.col.key` 判据的格子不该被认下"
+    );
+
+    // 字段扫描：加工过的表达式里**仍然**取得到那个成员名（R1 与 R2/R3 解耦的前提）。
+    assert_eq!(
+        r111_member_fields("esc(maskKey(s.key))")
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec!["key".to_string()]
+    );
+    assert_eq!(
+        r111_member_fields("esc(s.key.slice(0, 3))")
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec!["key".to_string(), "slice".to_string()]
+    );
+    assert!(r111_member_fields("esc(D.fmt(x))").len() == 1);
+
+    // 裸成员表达式的边界：调用 / 拼接 / 多级成员一律不算。
+    assert_eq!(r111_member_expr("s.key"), Some(("s".into(), "key".into())));
+    assert_eq!(r111_member_expr("maskKey(s.key)"), None);
+    assert_eq!(r111_member_expr("s.a.key"), None);
+    assert_eq!(r111_member_expr("Live.sharings[0].key"), None);
+    assert_eq!(r111_prints_bare_member("esc(maskKey(s.key))"), None);
+    assert_eq!(r111_prints_bare_member("esc(s.key.slice(0, 3))"), None);
+
+    // 映射器的透传行按 `字段名` 取，且要按**整字段名**匹配。
+    let mapper = "const x = 1;\n      key: s.key,\n      monkey: s.other,\n";
+    assert_eq!(r111_passthrough(mapper, "key").as_deref(), Some("s.key"));
+    assert_eq!(
+        r111_passthrough(mapper, "monkey").as_deref(),
+        Some("s.other")
+    );
+
+    // Rust 侧：纯星号字面量的生产者要落到**当时那个** `fn` 上（前后各有一个邻居）。
+    let rs = "fn before() {\n    1\n}\n\nfn masker(k: &str) -> String {\n    \"****\".to_string()\n}\n\nfn after() {\n    2\n}\n";
+    let m = r111_mask_maker(rs).expect("合成语料里找不到生产者");
+    assert_eq!(m.fn_name, "masker");
+    assert_eq!(m.literal, "****");
+    let fns = r111_rust_fns(rs);
+    assert_eq!(fns.len(), 3, "顶层函数清点错了：{}", fns.len());
+    assert!(fns
+        .iter()
+        .all(|f| f.name == "before" || f.name == "masker" || f.name == "after"));
+    // 绑定链：`let x = … masker( … );` 取到的是**右值**，不是整条语句。
+    let body = "    let masked = crypto.decrypt(&e).map(|k| masker(&k)).unwrap_or_else(|| \"****\".to_string());\n";
+    assert!(r111_let_rhs(body, "masked").unwrap().contains("masker("));
+}
+
+/// 变异体①：那一格又自己加工一次（**修前的形状**）—— 只翻 R1。
+fn r111_variant_local_mask(app: &str) -> String {
+    let old = "class='mono'>\" + esc(s.key) + \"</td>\"";
+    assert_eq!(app.matches(old).count(), 1, "Key 格的锚点不唯一");
+    app.replacen(old, "class='mono'>\" + esc(maskKey(s.key)) + \"</td>\"", 1)
+}
+
+/// 变异体②：行映射器自己动手（不再原样透传）—— 只翻 R2。
+fn r111_variant_mapper_masks(app: &str) -> String {
+    let old = "        key: s.key,";
+    assert_eq!(app.matches(old).count(), 1, "映射器的锚点不唯一");
+    app.replacen(old, "        key: maskKey(s.key),", 1)
+}
+
+/// 变异体③：服务端不再脱敏（那一行的值改成密文）—— 只翻 R3。
+fn r111_variant_server_stops_masking(sharing: &str) -> String {
+    let old = "mask_upstream_key(&k)";
+    assert_eq!(
+        sharing.matches(old).count(),
+        1,
+        "服务端掩码调用的锚点不唯一"
+    );
+    sharing.replacen(old, "k.clone()", 1)
+}
+
+/// 变异体④：前端重新长出第二份实现 —— 只翻 R4。
+fn r111_variant_second_impl(app: &str) -> String {
+    let old = "  function showPriceHint(model) {";
+    assert_eq!(app.matches(old).count(), 1, "第二个实现的插入点不唯一");
+    let impl_line =
+        "  function maskKey(key) { return key.slice(0, 3) + \"****\" + key.slice(-4); }\n";
+    app.replacen(old, &format!("{impl_line}{old}"), 1)
+}
