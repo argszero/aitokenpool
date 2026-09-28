@@ -2099,7 +2099,8 @@ mod tests {
 
         // ③ 本文件用到的每个键，其文案里的 `{name}` 都必须由调用点供给。
         //    `mapErr` 是反例：它以 `t(key)`（无 vars）收尾，带占位符的值经它只会原样
-        //    输出花括号 —— 所以兜底文案必须走 `tr("err.http", { n: … })`，不能进 ERR_MAP。
+        //    输出花括号 —— 所以兜底文案必须走 `T("err.http", { n: … })`（api.js 里那个提升的
+        //    函数声明），不能进 ERR_MAP。
         for key in &distinct {
             let mut needed = placeholders(zh.get(key).map(String::as_str).unwrap_or(""));
             needed.extend(placeholders(en.get(key).map(String::as_str).unwrap_or("")));
