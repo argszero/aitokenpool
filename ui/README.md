@@ -87,7 +87,7 @@ ui/
 
 ## 行内组件约定（v1.17，rant 2026-08-17T16:57:17 A 清除原生弹窗）
 
-- **禁用原生弹窗**：`grep ui/` 不得出现原生 confirm/prompt 调用；确认走 `confirmInline(btn, onConfirm, text)`（按钮变「确认删除？」红色态 `.confirming`，3 秒无操作或 Esc 还原，再次点击执行），输入走 `inlineForm(cell, opts)`（行内展开 input + 确认/取消，Enter 确认 / Esc 取消，`opts.validate` 返回错误文案时 toast + 重新聚焦）；
+- **禁用原生弹窗**：`grep ui/` 不得出现原生 confirm/prompt 调用；确认走 `confirmInline(btn, onConfirm, text)`（按钮变「确认删除？」红色态 `.confirming`，3 秒无操作或 Esc 还原，再次点击执行），输入走 `inlineForm(cell, opts)`（行内展开 input + 确认/取消，Enter 确认 / Esc 取消，`opts.validate` 失败走 `setFieldError`（红边框+行内文案），不使用 toast）；
   - **三条出口走同一件收尾（R117）**：`confirmInline` 上膛时挂三样东西 —— **覆盖按钮标签**的确认文案、`dataset.confirm` 标志、一条 **`document` 级 keydown** —— 外加一只 3 秒定时器；它有三条出口（再次点击 / 3 秒超时 / Esc），**每一条都得把上膛的东西收干净**：还原按钮**原来的**标签、撤下 `.confirming`、摘掉那条监听。修前收尾只挂在 Esc 那一条上（写的其实是 `revert()` ＋ 一句 `removeEventListener`，另一条出口够不着）⇒ 删除**失败**时（调用点不重绘）按钮一直念着确认文案、再点一次还把这句话记成「原标签」（此后连超时都还原不回来，**整会话不自愈**）；超时出口则每确认/超时一次攒一条监听，此后**任意一次 Esc** 让一串过期闭包按注册顺序逐个改写早已不是当初那个按钮的 `innerHTML`。上膛与确认是**两次独立调用**，后一次拿不到前一次的闭包 ⇒ 「原标签」与「那条监听」都记在**节点上**（与既有的 `_confirmT` 同址），收尾才能跨调用摘干净。静态门禁 `src/state_gate.rs::the_inline_confirm_disarms_on_every_exit` 钉六条规则（**全部从 `confirmInline` 自己的上膛写入派生**，零手写名册、零快照）：① 含收尾动作的块体闭包**恰好一个**，且它就是摘监听的那一个；②③④ 再次点击 / 超时 / Esc 三条出口**各自**都走到它；⑤ 撤下的那条就是挂上的那条；⑥ 还原的是按钮**自己的** markup（不是那句确认文案）。伴生四条：名册阳性对照、扫描器自证、六个变异体各只打翻它针对的那条规则、活树上给 ① 塞第二个收尾闭包必须变红。
   - ⚠️ **射程**：门禁是**词法**的 —— 它证「三条出口都走到同一个收尾、且收尾把该做的都做了」，**不证**屏幕上那一刻的标签与监听计数（那半归仓外 jsdom 探针：真 boot、真点删除按钮、包住 `addEventListener` 数 `document` 级 keydown）。也**不要**靠「在失败的调用点重新渲染」来消掉它 —— 屏幕当场变绿，而收尾仍只覆盖一条出口，门禁照样拒（修前树与四条竞争修法都实测）。
 - 已覆盖：key 删除、共享下架、部门删除（confirmInline）；API Key 新建/改名、运营者充值、成员充值（inlineForm）；新建 key 行内输入框在 `#ak-new-inline`（Enter/Esc 绑定）。
