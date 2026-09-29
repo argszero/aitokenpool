@@ -90,13 +90,13 @@ ui/
 - **禁用原生弹窗**：`grep ui/` 不得出现原生 confirm/prompt 调用；确认走 `confirmInline(btn, onConfirm, text)`（按钮变「确认删除？」红色态 `.confirming`，3 秒无操作或 Esc 还原，再次点击执行），输入走 `inlineForm(cell, opts)`（行内展开 input + 确认/取消，Enter 确认 / Esc 取消，`opts.validate` 失败走 `setFieldError`（红边框+行内文案），不使用 toast）；
   - **三条出口走同一件收尾（R117）**：`confirmInline` 上膛时挂三样东西 —— **覆盖按钮标签**的确认文案、`dataset.confirm` 标志、一条 **`document` 级 keydown** —— 外加一只 3 秒定时器；它有三条出口（再次点击 / 3 秒超时 / Esc），**每一条都得把上膛的东西收干净**：还原按钮**原来的**标签、撤下 `.confirming`、摘掉那条监听。修前收尾只挂在 Esc 那一条上（写的其实是 `revert()` ＋ 一句 `removeEventListener`，另一条出口够不着）⇒ 删除**失败**时（调用点不重绘）按钮一直念着确认文案、再点一次还把这句话记成「原标签」（此后连超时都还原不回来，**整会话不自愈**）；超时出口则每确认/超时一次攒一条监听，此后**任意一次 Esc** 让一串过期闭包按注册顺序逐个改写早已不是当初那个按钮的 `innerHTML`。上膛与确认是**两次独立调用**，后一次拿不到前一次的闭包 ⇒ 「原标签」与「那条监听」都记在**节点上**（与既有的 `_confirmT` 同址），收尾才能跨调用摘干净。静态门禁 `src/state_gate.rs::the_inline_confirm_disarms_on_every_exit` 钉六条规则（**全部从 `confirmInline` 自己的上膛写入派生**，零手写名册、零快照）：① 含收尾动作的块体闭包**恰好一个**，且它就是摘监听的那一个；②③④ 再次点击 / 超时 / Esc 三条出口**各自**都走到它；⑤ 撤下的那条就是挂上的那条；⑥ 还原的是按钮**自己的** markup（不是那句确认文案）。伴生四条：名册阳性对照、扫描器自证、六个变异体各只打翻它针对的那条规则、活树上给 ① 塞第二个收尾闭包必须变红。
   - ⚠️ **射程**：门禁是**词法**的 —— 它证「三条出口都走到同一个收尾、且收尾把该做的都做了」，**不证**屏幕上那一刻的标签与监听计数（那半归仓外 jsdom 探针：真 boot、真点删除按钮、包住 `addEventListener` 数 `document` 级 keydown）。也**不要**靠「在失败的调用点重新渲染」来消掉它 —— 屏幕当场变绿，而收尾仍只覆盖一条出口，门禁照样拒（修前树与四条竞争修法都实测）。
-- 已覆盖：key 删除、共享下架、部门删除（confirmInline）；API Key 新建/改名、运营者充值、成员充值（inlineForm）；新建 key 行内输入框在 `#ak-new-inline`（Enter/Esc 绑定）。
+- 已覆盖：key 删除、共享下架、部门删除、模型删除（confirmInline）；API Key 新建/改名、运营者充值、成员充值（inlineForm）；新建 key 行内输入框在 `#ak-new-inline`（Enter/Esc 绑定）。
 
 ## 时间显示约定（v1.17，rant 2026-08-17T16:57:17 B 相对时间）
 
 - **相对时间**：`timeAgo(s)` 支持 `MM-DD HH:mm`（默认今年）与 `YYYY-MM-DD[ HH:mm]`，输出 `刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD`，非标准格式原样返回；`timeCell(s)` 输出带 `title`（完整绝对时间）的 `.timeago` 单元格，hover 显示；
 - **统一使用**：交易列表（时间列）、加额申请列表、API Key 最近使用时间；数据新增 / 生成时间用 `nowTime()`（`MM-DD HH:mm`）写入即可自动相对化。
-  ⚠️ **不含共享列表**：本行原写「共享列表（上架时间列）」，但该列**从未存在**（原型 `docs/prototype/aitokenpool-console.html:574` 与实现 `ui/index.html:338` 的 thead 均无时间列，`timeCell` 也只有交易/API Key 两个调用点）。后端 `GET /api/sharings` 自 C2015 起才返回 `created_at`，前端把它收进视图行的 `time` 字段（备用），但**未加列**——若要加列，需同时补 `share.col.time` 键与 8 列表头的 `colspan` 对齐。
+  ⚠️ **不含共享列表**：本行原写「共享列表（上架时间列）」，但该列**从未存在**（原型 `docs/prototype/aitokenpool-console.html:574` 与实现 `ui/index.html:338` 的 thead 均无时间列，`timeCell` 也只有交易/API Key/加额申请三个调用点）。后端 `GET /api/sharings` 自 C2015 起才返回 `created_at`，前端把它收进视图行的 `time` 字段（备用），但**未加列**——若要加列，需同时补 `share.col.time` 键与 8 列表头的 `colspan` 对齐。
 
 ## 表格数字列约定（v1.17，rant 2026-08-17T16:57:17 C 数字列对齐）
 
@@ -149,7 +149,7 @@ ui/
 ## 移动端表格卡片化约定（v1.18，rant 2026-08-17T18:06:09 C）
 
 - **@media (max-width: 560px)**：`.table thead` 隐藏，行 → 卡片（border + radius + 间距），`td` 变 `label: value` 两栏（`td::before { content: attr(data-label) }`），操作按钮整行宽换行；
-- **所有表格 td 必须带 `data-label`**（市场/共享/交易/设置 API Key/成员/部门/运营者/加额申请）；`buildDataTable` 动态列自动用 `col.title` 作 label。
+- **所有表格 td 必须带 `data-label`**（市场/共享/交易/设置 API Key/成员/部门/模型/运营者/加额申请）；`buildDataTable` 动态列自动用 `col.title` 作 label。
 
 ## 搜索增强约定（v1.18，rant 2026-08-17T18:06:09 D）
 
@@ -226,7 +226,7 @@ ui/
 ## 市场行展开约定（v1.19，rant 2026-08-17T20:39:30 F）
 
 - 市场表格每行首列（厂商）加 **`+`/`−` 展开按钮** `.row-expand`（小号等宽，hover accent）；点击在 **tr 下追加详情行** `.mk-detail`（`colspan=7`，浅底 `--bg-soft`，`tbodyIn` 轻动画，**行内展开不弹窗**）；
-- 详情内容（`mkDetailHtml(m)`）：**Max tokens**（查 `D.MODELS` 同名模型的 `max`，未公布显示「未公布」）、**价格换算**（`1M tokens ≈ N 点` 按输出价 + 输入价/1M）、**上下文长度**（`D.ctxFmt`）、**可用性**（可用/繁忙；**有 `m.success` 才追加「· 成功率 N%」**，见下）、**多 key 自动故障转移**（仅 `m.multi` 显示，见 `docs/architecture.md` §3 模块表 `router.rs` 行）；
+- 详情内容（`mkDetailHtml(m)`）：**Max tokens**（查 `D.MODELS` 同名模型的 `max`，未公布显示「未公布」）、**价格换算**（`1M tokens ≈ N 点` 按输出价 + 输入价/1M）、**上下文长度**（`D.ctxFmt`）、**可用性**（可用/繁忙；**有 `m.success` 才追加「· 成功率 N%」**，见下）、**高峰时段价**（仅 `m.peak` 显示，高峰输入/输出价按 `peak_input_per_m`/`peak_output_per_m`）、**多 key 自动故障转移**（仅 `m.multi` 显示，见 `docs/architecture.md` §3 模块表 `router.rs` 行）；
 - **仅展开当前行**：`mkExpanded` 存展开模型 id（**数据态而非 DOM**，搜索/筛选 `renderMarketplace` 整表重建后仍保留）；点其它行自动收起，再点当前行收起；
 - 事件在 `#mk-body` 现有 click 委托里扩展 `[data-mk-expand]` 分支（先于 `[data-use-model]` 判断）；
 - 移动端卡片模式：详情 td 无 `data-label`（`td::before` 空）→ 整行仅展示详情内容，`mk-detail-grid` `auto-fit` 自适应列数。
