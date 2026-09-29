@@ -1,7 +1,7 @@
 //! HTTP 路由装配：healthz + 认证 + API Key 管理 + 网关/市场端点
 //!
 //! P0-A（rant 2026-08-17T22:21:52）：
-//! - GET /healthz → {"status":"ok","version":"0.2.0"}
+//! - GET /healthz → {"status":"ok","version":"<CARGO_PKG_VERSION>"}（取自 env!("CARGO_PKG_VERSION")，不得写死）
 //! - POST /api/auth/login → 200 {api_key} / 401
 //! - POST /api/api-keys / GET /api/api-keys（Bearer 认证）
 //!
