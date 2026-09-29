@@ -303,30 +303,37 @@
 
   /* --- 行内二次确认 / 行内编辑（rant 16:57:17 A：清除原生确认/输入弹窗） --- */
 
-  // 行内二次确认：首次点击按钮变「确认删除？」红色态，3 秒无操作或 Esc 还原，再次点击执行
+  // 行内二次确认：首次点击按钮变「确认删除？」红色态，3 秒无操作或 Esc 还原，再次点击执行。
+  // 三条出口（再次点击确认 / 3 秒超时 / Esc）走**同一件收尾** `disarm()`：还原标签、撤下
+  // `.confirming`、摘掉那条 document 级 keydown 监听。自诞生起（#41）收尾只挂在 Esc 那一条出口上：
+  //   - 确认出口只删 `dataset.confirm`、不动标签 ⇒ 删除**失败**时（调用点不重绘）按钮从此
+  //     一直读作「确认删除？」，而它并不在待确认态；此时再点一次，`_armLabel` 记下的是那句
+  //     确认文案 ⇒ 连超时都还原不回来，整会话不自愈。
+  //   - 超时出口还原标签却不摘监听 ⇒ 每确认/超时一次攒一个监听，此后**任意一次 Esc** 让这一串
+  //     过期闭包按注册顺序逐个改写早已不是当初那个按钮的 `innerHTML`。
+  // 上膛与确认是**两次独立调用**，后一次拿不到前一次的闭包 ⇒ 「上膛前的那串」与「那条监听」
+  // 都记在节点上（与既有的 `_confirmT` 同址），收尾才能跨调用把它摘干净。
   function confirmInline(btn, onConfirm, confirmText) {
     if (!btn) return;
-    if (btn.dataset.confirm === "1") {
+    const disarm = () => {
       clearTimeout(btn._confirmT);
       delete btn.dataset.confirm;
       btn.classList.remove("confirming");
+      if (btn._armEsc) { document.removeEventListener("keydown", btn._armEsc); delete btn._armEsc; }
+      if (btn._armLabel !== undefined) { btn.innerHTML = btn._armLabel; delete btn._armLabel; }
+    };
+    if (btn.dataset.confirm === "1") {
+      disarm(); // 确认出口与另外两条一样收尾：失败时不能把按钮留在上膛后的样子
       onConfirm();
       return;
     }
+    btn._armLabel = btn.innerHTML;
     btn.dataset.confirm = "1";
-    const orig = btn.innerHTML;
     btn.innerHTML = confirmText || T("common.confirmInline");
     btn.classList.add("confirming");
-    btn._confirmT = setTimeout(() => revert(), 3000);
-    const revert = () => {
-      clearTimeout(btn._confirmT);
-      if (btn.dataset.confirm === "1") delete btn.dataset.confirm;
-      btn.classList.remove("confirming");
-      btn.innerHTML = orig;
-    };
-    document.addEventListener("keydown", function esc(e) {
-      if (e.key === "Escape") { revert(); document.removeEventListener("keydown", esc); }
-    });
+    btn._confirmT = setTimeout(disarm, 3000);
+    btn._armEsc = function esc(e) { if (e.key === "Escape") disarm(); };
+    document.addEventListener("keydown", btn._armEsc);
   }
 
   // 行内编辑表单：把容器替换为 input + 确认/取消，Enter 确认 / Esc 取消

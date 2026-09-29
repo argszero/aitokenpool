@@ -18022,3 +18022,795 @@ fn r111_variant_second_impl(app: &str) -> String {
         "  function maskKey(key) { return key.slice(0, 3) + \"****\" + key.slice(-4); }\n";
     app.replacen(old, &format!("{impl_line}{old}"), 1)
 }
+
+// ─────────── R117：行内二次确认（`confirmInline`）在**每一条出口**上收起它上膛的东西 ───────────
+//
+// 轴：`confirmInline` 上膛时挂三样东西 —— 一句确认文案（**覆盖**按钮标签）、`dataset.<FLAG>`
+// 标志、以及一条 **`document` 级 `keydown`** 监听；另有一条 3 秒定时器。它有三条出口：
+// 再次点击（执行）、3 秒超时、Esc。自诞生起（#41）收尾只挂在 Esc 那一条出口上：
+//   - **执行出口**只删标志、不动标签 ⇒ 删除失败时（调用点不重绘）按钮从此念着确认文案，
+//     而它并不在待确认态；此后再点一次，存下来的「上膛前的那串」正是那句确认文案 ⇒
+//     连超时都还原不回来，整会话不自愈；
+//   - **超时出口**还原标签却不摘监听 ⇒ 每执行/超时一次攒一条监听，此后**任意一次 Esc**
+//     让这一串过期闭包按注册顺序逐个改写早已不是当初那个按钮的 `innerHTML`。
+//
+// 六条规则（上膛的标志名/类名、收尾闭包的名字，全部从 `confirmInline` 自己的**上膛写入**
+// 派生，⛔ 不写快照）：
+//   R1 收尾只有一处 —— 含收尾动作的**块体闭包**恰好一个，且它就是摘监听的那一个；
+//   R2 执行出口走收尾；R3 超时出口走收尾；R4 Esc 出口走收尾；
+//   R5 撤下的那条就是挂上的那条；
+//   R6 还原的是按钮**自己的**那串 markup（不是那句确认文案）。
+//
+// ⚠️ 射程＝**词法**：证「三条出口都走到同一个收尾、收尾把该做的都做了」，**不证**屏幕上的
+// 像素（仓内 CI 无 JS 运行器）。R6 只证「还原值的来源是按钮自己的 markup」，证不了「存下来
+// 发生在覆盖之前」—— 那半归真 DOM 仪器（本轮实测：修前标签停在确认文案、监听 1→2→3；修后
+// 三条出口都回到原标签、监听恒为 1）。
+
+/// 摘监听那一处（收尾的锚）：挂与摘用的是同一个字面协议名，两个方向都靠它定位。
+const R117_LISTENER: &str = "removeEventListener(\"keydown\"";
+/// 摘监听那个**调用**（带逗号，好把实参切出来）。
+const R117_REMOVE_CALL: &str = "removeEventListener(\"keydown\",";
+/// 挂监听那个调用。
+const R117_ADD_CALL: &str = "addEventListener(\"keydown\",";
+/// 超时出口。
+const R117_TIMER_CALL: &str = "setTimeout(";
+/// 标签被覆盖那一处（收尾要还原的就是它盖掉的那串）。
+const R117_INNERHTML: &str = ".innerHTML =";
+
+/// 上膛参数：三个名字都从源码读 —— 改名字不该让门禁失效，只该让它跟着走。
+/// 六条判词的形状 —— `r117_read(..).verdicts()` 的返回类型（每条出口各自要还原的东西
+/// 是否都还原了）。给类型起名，免得长元组在变异表里重复出现。
+type R117Verdicts = (bool, bool, bool, bool, bool, bool);
+
+struct R117Arm {
+    /// `dataset.<FLAG> = "1"` 里的标志名。
+    flag: String,
+    /// `classList.add("<CLASS>")` 里的类名。
+    class_name: String,
+}
+
+/// 收尾闭包：名字 + 体在**掩码**文本里的下标区间（掩码保长度 ⇒ 下标对原文同样成立）。
+struct R117Finisher {
+    name: String,
+    open: usize,
+    close: usize,
+}
+
+struct R117Reading {
+    arm: Option<R117Arm>,
+    finisher: Option<R117Finisher>,
+    /// 含收尾动作的块体闭包个数（R1 的分母；修前是 2：一个还原标签、另一个摘监听）。
+    teardown_closures: usize,
+    r1: bool,
+    r2: bool,
+    r3: bool,
+    r4: bool,
+    r5: bool,
+    r6: bool,
+    detail: String,
+}
+
+impl R117Reading {
+    fn verdicts(&self) -> (bool, bool, bool, bool, bool, bool) {
+        (self.r1, self.r2, self.r3, self.r4, self.r5, self.r6)
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} r4={} r5={} r6={} | {}",
+            self.r1, self.r2, self.r3, self.r4, self.r5, self.r6, self.detail
+        )
+    }
+}
+
+fn r117_is_ident_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'$'
+}
+
+/// 只把**注释**换成空格（字符串/正则原样跳过）：收尾动作的词表里有字符串
+/// （`classList.remove("<CLASS>")`、`dataset.<FLAG>` 的 `"1"`），整段掩码会把它们抹平。
+/// 与 `r169_code_mask` 同一个词法器、同一套跳过算子 ⇒ 两种形态的偏移完全一致。
+fn r117_comment_blank(src: &str) -> Vec<u8> {
+    let b = src.as_bytes();
+    let mut out = b.to_vec();
+    let mut i = 0usize;
+    while i < b.len() {
+        let c = b[i];
+        let (end, blank) = if c == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            (r92_skip_line_comment(b, i), true)
+        } else if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            (r92_skip_block_comment(b, i), true)
+        } else if c == b'/' && r92_regex_starts(b, i) {
+            (r92_skip_regex(b, i), false)
+        } else if c == b'"' || c == b'\'' || c == b'`' {
+            (r92_skip_string(b, i), false)
+        } else {
+            (i + 1, false)
+        };
+        if blank {
+            for k in i..end.min(out.len()) {
+                if out[k] != b'\n' && out[k] != b'\r' {
+                    out[k] = b' ';
+                }
+            }
+        }
+        i = end;
+    }
+    out
+}
+
+/// `open` 处的 `{` 到它配平的 `}`（在**掩码**文本上做：字符串/注释里的花括号已被抹平）。
+fn r117_match_brace(masked: &str, open: usize) -> Option<usize> {
+    let b = masked.as_bytes();
+    if b.get(open) != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0i32;
+    for (k, ch) in b.iter().enumerate().skip(open) {
+        match *ch {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 体内**块体**函数值（`function …{…}` 与 `=> {…}`）的下标区间。整函数那一层（签名之后
+/// 第一个 `{`）不算 —— 它必然含全部动作，留着会把 R1 永久压红。**表达式体**的箭头
+/// （`() => revert()`）不算「块体」：它没有体，收尾动作落不进去（推它的是实的正则）。
+fn r117_block_closures(masked: &str) -> Vec<(usize, usize)> {
+    let b = masked.as_bytes();
+    let body_open = masked.find('{').unwrap_or(usize::MAX);
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        let mut open = usize::MAX;
+        let is_fn = masked[i..].starts_with("function")
+            && (i == 0 || !r117_is_ident_byte(b[i - 1]))
+            && match b.get(i + 8) {
+                Some(c) => !r117_is_ident_byte(*c),
+                None => true,
+            };
+        if is_fn {
+            if let Some(p) = b[i + 8..].iter().position(|c| *c == b'{') {
+                open = i + 8 + p;
+            }
+        } else if masked[i..].starts_with("=>") {
+            if let Some(p) = b[i + 2..].iter().position(|c| !c.is_ascii_whitespace()) {
+                if b[i + 2 + p] == b'{' {
+                    open = i + 2 + p;
+                }
+            }
+        }
+        if open != usize::MAX && open > body_open {
+            if let Some(close) = r117_match_brace(masked, open) {
+                out.push((open, close));
+            }
+        }
+        i = if open != usize::MAX { open + 1 } else { i + 1 };
+    }
+    out
+}
+
+/// 签名里第一个形参的名字。
+fn r117_first_param(src: &str, fname: &str) -> Option<String> {
+    let head = format!("function {fname}(");
+    let at = src.find(&head)? + head.len();
+    let name: String = src[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+        .collect();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// 上膛写入：`dataset.<FLAG> = "1"` 与 `classList.add("<CLASS>")`。两个都**读**，不写死。
+fn r117_arm(blanked: &str) -> Option<R117Arm> {
+    let mut flag = String::new();
+    let mut from = 0usize;
+    while let Some(rel) = blanked[from..].find(".dataset.") {
+        let at = from + rel + ".dataset.".len();
+        from = at;
+        let name: String = blanked[at..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        let after = blanked[at + name.len()..].trim_start();
+        if after.starts_with("= \"1\"") {
+            flag = name;
+            break;
+        }
+    }
+    if flag.is_empty() {
+        return None;
+    }
+    let head = ".classList.add(\"";
+    let at = blanked.find(head)? + head.len();
+    let class_name: String = blanked[at..].chars().take_while(|c| *c != '"').collect();
+    if class_name.is_empty() {
+        return None;
+    }
+    Some(R117Arm { flag, class_name })
+}
+
+/// 收尾的**五种动作**。除「删标志」要在语句里认 `delete` 前缀（`dataset.` 还有两处：上膛
+/// 赋值与「已上膛」判据），其余四种都是逐字形态。
+fn r117_op_sites(blanked: &str, arm: &R117Arm) -> Vec<(&'static str, usize)> {
+    let mut out: Vec<(&'static str, usize)> = Vec::new();
+    let flag = format!(".dataset.{}", arm.flag);
+    let mut from = 0usize;
+    while let Some(rel) = blanked[from..].find(&flag) {
+        let at = from + rel;
+        from = at + 1;
+        // `delete <subject>.dataset.<FLAG>`：`delete` 与它之间只许有那个主语本身
+        // （另一处 `dataset.` 是上膛赋值、第三处是「已上膛」判据）。
+        let left = &blanked[..at];
+        if let Some(p) = left.rfind("delete") {
+            let between = &left[p..];
+            if !between.contains([';', '{', '}', '\n']) {
+                out.push(("delete-flag", at));
+            }
+        }
+    }
+    let needles: [(&'static str, String); 4] = [
+        (
+            "remove-class",
+            format!("classList.remove(\"{}\")", arm.class_name),
+        ),
+        ("remove-listener", R117_LISTENER.to_string()),
+        ("restore-label", R117_INNERHTML.to_string()),
+        ("clear-timer", "clearTimeout(".to_string()),
+    ];
+    for (label, needle) in needles {
+        let mut from = 0usize;
+        while let Some(rel) = blanked[from..].find(&needle) {
+            let at = from + rel;
+            out.push((label, at));
+            from = at + needle.len();
+        }
+    }
+    out.sort_by_key(|(_, at)| *at);
+    out
+}
+
+/// 摘监听那一处所在的**闭包**：名字从它前面最近的函数值声明读（`const NAME = … => {`
+/// 或 `function NAME(…`）。摘监听不止一处 ⇒ `None`（收尾散在多处，规则会响亮失败）。
+fn r117_finisher(sites_src: &str, masked: &str) -> Option<R117Finisher> {
+    let mut sites = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = sites_src[from..].find(R117_LISTENER) {
+        let at = from + rel;
+        sites.push(at);
+        from = at + R117_LISTENER.len();
+    }
+    if sites.len() != 1 {
+        return None;
+    }
+    let at = sites[0];
+    let mut best: Option<(usize, String, usize)> = None;
+    let mut f = 0usize;
+    while let Some(rel) = masked[f..at].find("const ") {
+        let d = f + rel;
+        f = d + "const ".len();
+        let name: String = masked[f..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        let n = name.len();
+        let after = &masked[f + n..];
+        let (Some(eq), Some(ob)) = (after.find('='), after.find('{')) else {
+            continue;
+        };
+        // `= el.innerHTML;` 这种普通常量后面也会遇到某个 `{` —— 要求 `=` 与 `{` 之间既有
+        // `=>`、又没有语句结束符，才认成函数值（否则会把上一个常量当收尾闭包）。
+        if eq > ob || !after[eq..ob].contains("=>") || after[eq..ob].contains(';') {
+            continue;
+        }
+        let open = f + n + ob;
+        if best.as_ref().map(|(d0, _, _)| d > *d0).unwrap_or(true) {
+            best = Some((d, name, open));
+        }
+    }
+    let mut f = 0usize;
+    while let Some(rel) = masked[f..at].find("function ") {
+        let d = f + rel;
+        f = d + "function ".len();
+        let name: String = masked[f..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        let n = name.len();
+        let Some(ob) = masked[f + n..].find('{') else {
+            continue;
+        };
+        let open = f + n + ob;
+        if best.as_ref().map(|(d0, _, _)| d > *d0).unwrap_or(true) {
+            best = Some((d, name, open));
+        }
+    }
+    let (_, name, open) = best?;
+    let close = r117_match_brace(masked, open)?;
+    if !(open < at && at < close) {
+        return None;
+    }
+    Some(R117Finisher { name, open, close })
+}
+
+/// 从 `from` 起切一段实参：到**顶层**的 `,` / `;` / `)` / `}` 为止（括号配对按掩码文本走，
+/// 字符串里的标点已被抹平 ⇒ 不会被骗）。
+fn r117_argument(masked: &str, from: usize) -> &str {
+    let b = masked.as_bytes();
+    let mut depth = 0i32;
+    let mut k = from;
+    while k < b.len() {
+        match b[k] {
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => {
+                if depth == 0 {
+                    return &masked[from..k];
+                }
+                depth -= 1;
+            }
+            b',' | b';' if depth == 0 => return &masked[from..k],
+            _ => {}
+        }
+        k += 1;
+    }
+    &masked[from..]
+}
+
+/// 某个**调用**的实参：表头在 `head_src` 里找（那里字符串还在），实参在 `masked` 里切
+/// （那里结构干净）。
+fn r117_call_arg(head_src: &str, masked: &str, head: &str) -> Option<String> {
+    let at = head_src.find(head)? + head.len();
+    Some(r117_argument(masked, at).trim().to_string())
+}
+
+/// 被「已上膛」判据守卫的那个分支的体（下标区间；判据的**首处**出现就是那个出口）。
+fn r117_armed_branch(masked: &str, blanked: &str, arm: &R117Arm) -> Option<(usize, usize)> {
+    let needle = format!(".dataset.{} === \"1\"", arm.flag);
+    let at = blanked.find(&needle)?;
+    let open = masked[at..].find('{')? + at;
+    let close = r117_match_brace(masked, open)?;
+    Some((open, close))
+}
+
+/// 监听器落到哪个体上：实参是函数值就用它自己；是**具名**的（`el._esc`）就去函数体里找
+/// 它的绑定 —— 注册点上只有一个名字，那名字的体在别处（不解析这一层，修好的树会因
+/// 「注册点没有体」而假红）。**函数头不算体**：`function esc(e) { … }` 的头里也有 `esc(`，
+/// 不切掉它，R4 会在「具名函数表达式」这种形状上假绿。
+fn r117_listener_body<'a>(masked: &'a str, arg: &'a str) -> &'a str {
+    let arg = arg.trim();
+    let body = if arg.starts_with("function") || arg.contains("=>") {
+        arg
+    } else {
+        let needle = format!("{arg} = ");
+        match masked.find(&needle) {
+            Some(at) => r117_argument(masked, at + needle.len()),
+            None => "",
+        }
+    };
+    let t = body.trim_start();
+    if t.starts_with("function") {
+        match t.find('{') {
+            Some(i) => &t[i + 1..],
+            None => t,
+        }
+    } else {
+        t
+    }
+}
+
+/// 读一棵树：六条规则 + 报告。
+fn r117_read(app: &str) -> R117Reading {
+    let mut rd = R117Reading {
+        arm: None,
+        finisher: None,
+        teardown_closures: 0,
+        r1: false,
+        r2: false,
+        r3: false,
+        r4: false,
+        r5: false,
+        r6: false,
+        detail: String::new(),
+    };
+    let Some(body) = js_function_body(app, "confirmInline") else {
+        rd.detail = "`confirmInline` 不在语料里".to_string();
+        return rd;
+    };
+    let masked = String::from_utf8_lossy(&r169_code_mask(body)).into_owned();
+    let blanked = String::from_utf8_lossy(&r117_comment_blank(body)).into_owned();
+    let Some(subject) = r117_first_param(body, "confirmInline") else {
+        rd.detail = "签名里的第一个形参读不出来".to_string();
+        return rd;
+    };
+    let Some(arm) = r117_arm(&blanked) else {
+        rd.detail = "上膛写入（`dataset.X = \"1\"` / `classList.add(\"X\")`）读不出来".to_string();
+        return rd;
+    };
+    let ops = r117_op_sites(&blanked, &arm);
+    let closures = r117_block_closures(&masked);
+    let holders: Vec<(usize, usize)> = closures
+        .iter()
+        .filter(|(o, c)| ops.iter().any(|(_, at)| *at > *o && *at < *c))
+        .copied()
+        .collect();
+    let finisher = r117_finisher(&blanked, &masked);
+
+    // R1：收尾只有一处 —— 含收尾动作的块体闭包恰好一个，且它就是摘监听的那一个。
+    rd.r1 = holders.len() == 1
+        && match finisher.as_ref() {
+            Some(f) => holders[0] == (f.open, f.close),
+            None => false,
+        };
+
+    // R2：执行出口（被「已上膛」判据守卫的那个分支）走收尾。
+    let branch = r117_armed_branch(&masked, &blanked, &arm);
+    rd.r2 = match (&branch, &finisher) {
+        (Some((o, c)), Some(f)) => masked[*o..*c].contains(&format!("{}(", f.name)),
+        _ => false,
+    };
+
+    // R3：超时出口走收尾。
+    let timer_arg = r117_call_arg(&masked, &masked, R117_TIMER_CALL).unwrap_or_default();
+    rd.r3 = match &finisher {
+        Some(f) => timer_arg.contains(&f.name),
+        None => false,
+    };
+
+    // R4：Esc 出口走收尾。
+    let esc_arg = r117_call_arg(&blanked, &masked, R117_ADD_CALL).unwrap_or_default();
+    rd.r4 = match &finisher {
+        Some(f) => {
+            !esc_arg.is_empty()
+                && r117_listener_body(&masked, &esc_arg).contains(&format!("{}(", f.name))
+        }
+        None => false,
+    };
+
+    // R5：撤下的那条就是挂上的那条。
+    let remove_arg = r117_call_arg(&blanked, &masked, R117_REMOVE_CALL).unwrap_or_default();
+    rd.r5 = !remove_arg.is_empty() && esc_arg.contains(&remove_arg);
+
+    // R6：还原的是按钮**自己的**那串 markup（不是那句确认文案）。
+    let restore = finisher.as_ref().and_then(|f| {
+        let span = &masked[f.open..f.close];
+        let at = span.find(R117_INNERHTML)? + R117_INNERHTML.len();
+        Some(r117_argument(span, at).trim().to_string())
+    });
+    rd.r6 = match &restore {
+        Some(rhs) => !rhs.is_empty() && masked.contains(&format!("{rhs} = {subject}.innerHTML")),
+        None => false,
+    };
+
+    rd.teardown_closures = holders.len();
+    let finisher_name = finisher.as_ref().map(|f| f.name.as_str());
+    rd.detail = format!(
+        "subject={subject:?} flag={:?} class={:?} finisher={finisher_name:?} \
+         teardown_closures={} ops={} timer_arg={timer_arg:?} esc_arg={esc_arg:?} \
+         remove_arg={remove_arg:?} restore={restore:?}",
+        arm.flag,
+        arm.class_name,
+        holders.len(),
+        ops.len(),
+    );
+    rd.arm = Some(arm);
+    rd.finisher = finisher;
+    rd
+}
+
+/// 合成基座（**改名**版：证明派生不靠活树里的那几个名字）：三条出口都走 `undo`。
+const R117_FIXTURE: &str = r#"function confirmInline(el, go, hint) {
+    if (!el) return;
+    const undo = () => {
+      clearTimeout(el._t);
+      delete el.dataset.armed;
+      el.classList.remove("pending");
+      if (el._esc) { document.removeEventListener("keydown", el._esc); delete el._esc; }
+      if (el._label !== undefined) { el.innerHTML = el._label; delete el._label; }
+    };
+    if (el.dataset.armed === "1") {
+      undo();
+      go();
+      return;
+    }
+    el._label = el.innerHTML;
+    el.dataset.armed = "1";
+    el.innerHTML = hint || T("common.confirmInline");
+    el.classList.add("pending");
+    el._t = setTimeout(undo, 3000);
+    el._esc = (e) => { if (e.key === "Escape") undo(); };
+    document.addEventListener("keydown", el._esc);
+  }
+"#;
+
+/// 缺陷形状（E1 的逆向，名字仍用合成版）：收尾只挂在 Esc 那条出口上。
+const R117_FIXTURE_BUGGY: &str = r#"function confirmInline(el, go, hint) {
+    if (!el) return;
+    if (el.dataset.armed === "1") {
+      clearTimeout(el._t);
+      delete el.dataset.armed;
+      el.classList.remove("pending");
+      go();
+      return;
+    }
+    el.dataset.armed = "1";
+    const orig = el.innerHTML;
+    el.innerHTML = hint || T("common.confirmInline");
+    el.classList.add("pending");
+    el._t = setTimeout(() => revert(), 3000);
+    const revert = () => {
+      clearTimeout(el._t);
+      if (el.dataset.armed === "1") delete el.dataset.armed;
+      el.classList.remove("pending");
+      el.innerHTML = orig;
+    };
+    document.addEventListener("keydown", function esc(e) {
+      if (e.key === "Escape") { revert(); document.removeEventListener("keydown", esc); }
+    });
+  }
+"#;
+
+/// 变异：锚点必须唯一，且必须真的换了字（否则「这条腿没红」无从解释）。
+fn r117_mutate(src: &str, old: &str, new: &str) -> String {
+    assert_eq!(
+        src.matches(old).count(),
+        1,
+        "变异锚点不唯一/不存在：{old:?}"
+    );
+    let out = src.replacen(old, new, 1);
+    assert_ne!(out, src, "变异没有改到东西：{old:?}");
+    out
+}
+
+/// 轴：`confirmInline` 的三条出口（执行 / 超时 / Esc）都走到**同一个**收尾，且收尾把该做的
+/// 都做了。修前：执行出口不还原标签、超时出口不摘监听 ⇒ 五条规则里四条同时红。
+#[test]
+fn the_inline_confirm_disarms_on_every_exit() {
+    let rd = r117_read(APP_JS);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, true, true, true, true),
+        "行内二次确认的收尾没有覆盖每一条出口：{}",
+        rd.report()
+    );
+}
+
+/// 阳性对照：三个名字（标志 / 类 / 形参）与五种收尾动作都**真的**落在活树上 —— 否则
+/// 「集合相等」是在空集上说的（坑 68），而 R1 的分母是个常数 0。
+#[test]
+fn the_r117_roster_is_derived() {
+    let body = js_function_body(APP_JS, "confirmInline").expect("`confirmInline` 没找到");
+    let blanked = String::from_utf8_lossy(&r117_comment_blank(body)).into_owned();
+    let subject = r117_first_param(body, "confirmInline").expect("第一个形参读不出来");
+    let arm = r117_arm(&blanked).expect("上膛写入读不出来");
+    assert!(!arm.flag.is_empty() && !arm.class_name.is_empty());
+    assert_eq!(
+        blanked.matches(R117_ADD_CALL).count(),
+        1,
+        "`keydown` 监听不是恰好挂一条"
+    );
+    assert_eq!(
+        blanked.matches(R117_LISTENER).count(),
+        1,
+        "摘监听不是恰好一处 —— 收尾散在了多处"
+    );
+    assert!(
+        APP_JS.matches("confirmInline(").count() >= 2,
+        "`confirmInline` 只有定义、没有调用点"
+    );
+    assert!(
+        blanked.contains(&format!("{subject}.innerHTML =")),
+        "上膛时没有覆盖标签 —— 这条轴的前提不成立"
+    );
+    let ops = r117_op_sites(&blanked, &arm);
+    for label in [
+        "delete-flag",
+        "remove-class",
+        "remove-listener",
+        "restore-label",
+        "clear-timer",
+    ] {
+        assert!(
+            ops.iter().any(|(l, _)| *l == label),
+            "收尾动作 `{label}` 一处都没有 —— 词表与语料脱节了"
+        );
+    }
+}
+
+/// 每条规则**各有独立的牙**：合成基座（改名版）全绿，缺陷形状按声明红，六个变异体各只
+/// 打翻它针对的那一条。合成语料与活树无关 ⇒ 两条腿读数相同（落地不会静默反转，坑 #314）。
+#[test]
+fn the_r117_rules_have_teeth() {
+    let green = r117_read(R117_FIXTURE);
+    assert_eq!(
+        green.verdicts(),
+        (true, true, true, true, true, true),
+        "合成基座不是绿的，变异体的读数无从解释：{}",
+        green.report()
+    );
+    let buggy = r117_read(R117_FIXTURE_BUGGY);
+    assert_eq!(
+        buggy.verdicts(),
+        (false, false, false, false, true, false),
+        "缺陷形状的判词与声明不符 —— 门禁不认识那条轴了：{}",
+        buggy.report()
+    );
+
+    let mutants: [(&str, String, R117Verdicts); 6] = [
+        (
+            "m1-second-closure",
+            r117_mutate(
+                R117_FIXTURE,
+                "    el._esc = (e) => { if (e.key === \"Escape\") undo(); };",
+                "    el._esc = (e) => { if (e.key === \"Escape\") { el.classList.remove(\"pending\"); undo(); } };",
+            ),
+            (false, true, true, true, true, true),
+        ),
+        (
+            "m2-execute-without-disarm",
+            r117_mutate(R117_FIXTURE, "      undo();\n", "      void 0;\n"),
+            (true, false, true, true, true, true),
+        ),
+        (
+            "m3-timeout-without-disarm",
+            r117_mutate(R117_FIXTURE, "setTimeout(undo, 3000)", "setTimeout(() => {}, 3000)"),
+            (true, true, false, true, true, true),
+        ),
+        (
+            "m4-esc-without-disarm",
+            r117_mutate(
+                R117_FIXTURE,
+                "    el._esc = (e) => { if (e.key === \"Escape\") undo(); };",
+                "    el._esc = (e) => { if (e.key === \"Escape\") void 0; };",
+            ),
+            (true, true, true, false, true, true),
+        ),
+        (
+            "m5-removes-another-listener",
+            r117_mutate(
+                R117_FIXTURE,
+                "document.removeEventListener(\"keydown\", el._esc);",
+                "document.removeEventListener(\"keydown\", el._esc2);",
+            ),
+            (true, true, true, true, false, true),
+        ),
+        (
+            "m6-restores-the-hint",
+            r117_mutate(R117_FIXTURE, "el.innerHTML = el._label;", "el.innerHTML = hint;"),
+            (true, true, true, true, true, false),
+        ),
+    ];
+    let mut reports = Vec::new();
+    for (name, text, expected) in mutants {
+        let rd = r117_read(&text);
+        reports.push(format!("{name}: {}", rd.report()));
+        assert_eq!(
+            rd.verdicts(),
+            expected,
+            "变体 `{name}` 的判词与声明不符（声明 {expected:?}）—— 规则没有独立的牙：{}",
+            rd.report()
+        );
+    }
+    println!("{}", reports.join("\n"));
+}
+
+/// R1 在**活树**上的牙：往 `confirmInline` 里塞进第二个持有收尾动作的块体闭包，R1 必须翻红，
+/// 而其余五条**一条都不许动**。判词相对基线写（本测试要在修前/修后两条腿上同读，坑 #314）。
+#[test]
+fn the_r117_teardown_closure_rule_has_teeth_on_the_live_tree() {
+    let body = js_function_body(APP_JS, "confirmInline")
+        .expect("`confirmInline` 没找到")
+        .to_string();
+    let blanked = String::from_utf8_lossy(&r117_comment_blank(&body)).into_owned();
+    let subject = r117_first_param(&body, "confirmInline").expect("第一个形参读不出来");
+    let arm = r117_arm(&blanked).expect("上膛写入读不出来");
+    // 锚＝签名那一行（`if (!btn) return;` 这种行全站有好几处，不能当锚）。
+    let head_end = body.find('\n').expect("签名行没有换行") + 1;
+    let anchor = &body[..head_end];
+    let injected = format!(
+        "{anchor}    const _r117_second = () => {{ {subject}.classList.remove(\"{}\"); }};\n",
+        arm.class_name
+    );
+    let tree = r117_mutate(&body, anchor, &injected);
+
+    let live = r117_read(&body);
+    let mutated = r117_read(&tree);
+    assert!(
+        !mutated.r1,
+        "塞进第二个收尾闭包之后 R1 仍然绿 —— 这条规则没有牙：{}",
+        mutated.report()
+    );
+    assert_eq!(
+        (mutated.r2, mutated.r3, mutated.r4, mutated.r5, mutated.r6),
+        (live.r2, live.r3, live.r4, live.r5, live.r6),
+        "这条变异体动了不止一条规则：{}",
+        mutated.report()
+    );
+}
+
+/// 扫描器自证：提取器与掩码在**合成输入**上按声明工作（与活树无关）。
+#[test]
+fn the_r117_scanners_have_teeth() {
+    // 花括号配平：字符串里的花括号已被掩码抹平，配平不会被骗。
+    assert_eq!(r117_match_brace("a{b{c}d}e", 1), Some(7));
+    assert_eq!(r117_match_brace("a{b", 1), None);
+    assert_eq!(r117_match_brace("a\"{\"}", 1), None);
+
+    // 注释掩码：动作词表要读**字符串**，所以字符串原样、注释抹平，长度不变。
+    let raw = "x(); // classList.remove(\"pending\")\ny(\"pending\");\n";
+    let blanked = String::from_utf8_lossy(&r117_comment_blank(raw)).into_owned();
+    assert!(!blanked.contains("//"), "行注释没被抹平");
+    assert_eq!(blanked.matches("pending").count(), 1, "字符串被一起抹平了");
+    assert_eq!(
+        blanked.len(),
+        raw.len(),
+        "掩码改了长度 ⇒ 下标不再是同一把尺子"
+    );
+    let block = String::from_utf8_lossy(&r117_comment_blank("a /* delete el.dataset.armed; */ b"))
+        .into_owned();
+    assert!(!block.contains("dataset"), "块注释没被抹平");
+    // 正则字面量里的引号不许被当成字符串起始（R92 就是被这一条咬过的）。
+    let re = String::from_utf8_lossy(&r117_comment_blank("const r = /[&<>\"']/g; el.foo();"))
+        .into_owned();
+    assert!(
+        re.contains("el.foo()"),
+        "正则字面量吞掉了后面的代码：{re:?}"
+    );
+
+    // 实参切分：顶层的逗号/分号/右括号停止，括号内的逗号不算。
+    assert_eq!(r117_argument("f(a, b), c)", 2), "a");
+    assert_eq!(r117_argument("g(() => h(), 3)", 2), "() => h()");
+    assert_eq!(r117_argument("k(() => { m(); })", 2), "() => { m(); }");
+    assert_eq!(r117_argument("s(disarm, 3000)", 2), "disarm");
+
+    // 第一个形参：从签名读，不从别处猜。
+    assert_eq!(
+        r117_first_param("function f(x, y) {", "f").as_deref(),
+        Some("x")
+    );
+    assert_eq!(r117_first_param("function g() {", "g"), None);
+
+    // 闭包枚举：整函数那一层不算（否则它会永久压红 R1），块体箭头与具名函数都算。
+    let src = "function f(a) { const g = () => { h(); }; document.addEventListener(\"keydown\", function k(e) { i(); }); }\n";
+    let m = String::from_utf8_lossy(&r169_code_mask(src)).into_owned();
+    assert_eq!(r117_block_closures(&m).len(), 2, "{m:?}");
+    // 表达式体的箭头不是「块体」：它没有体能装收尾动作。
+    let expr = String::from_utf8_lossy(&r169_code_mask(
+        "function f() { setTimeout(() => revert(), 3); }\n",
+    ))
+    .into_owned();
+    assert_eq!(r117_block_closures(&expr).len(), 0);
+
+    // 收尾闭包的名字：往回找**最近**的那个声明，认错了名字 R2–R4 会一起假红。
+    let fin_raw = "function f() {\n  const a = 1;\n  const fin = () => { document.removeEventListener(\"keydown\", x); };\n}\n";
+    let fin = String::from_utf8_lossy(&r169_code_mask(fin_raw)).into_owned();
+    let f = r117_finisher(fin_raw, &fin).expect("收尾闭包读不出来");
+    assert_eq!(f.name, "fin");
+    let two_raw =
+        "function f() { document.removeEventListener(\"keydown\", x); document.removeEventListener(\"keydown\", y); }\n";
+    let two = String::from_utf8_lossy(&r169_code_mask(two_raw)).into_owned();
+    assert!(
+        r117_finisher(two_raw, &two).is_none(),
+        "摘监听有两处，却认出了唯一收尾"
+    );
+}
