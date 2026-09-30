@@ -1,9 +1,9 @@
-# AITokenPool — multi-stage release image (v0.7.28)
+# AITokenPool — multi-stage release image (v0.7.29)
 #
-# Build: docker build -t aitokenpool:0.7.28 .
+# Build: docker build -t aitokenpool:0.7.29 .
 # Run:   docker run -p 8080:8080 -v "$PWD/atp-data:/data" \
 #          -e ATP_MASTER_KEY="$(openssl rand -hex 32)" \
-#          aitokenpool:0.7.28
+#          aitokenpool:0.7.29
 #
 # Notes:
 #   - unified data dir (rant 2026-08-19T20:53:23): ATP_DATA_DIR=/data holds
