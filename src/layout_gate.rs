@@ -1,5 +1,8 @@
-//! 外观门禁（R128 + R129）：**元素的外观由它自己的类声明** —— 泛化的「按元素名」规则
-//! 只服务**没有类**的元素。
+//! 样式表 ↔ 标记的门禁（R128 + R129 + R132）：**元素的外观由它自己的类声明**，
+//! **每一条选择器都必须落在某个元素上**。
+//!
+//! 两条相邻的不变量共用同一对载体（`ui/index.html` 与 `ui/css/style.css`）：R128/R129 问
+//! 「谁有权给这个元素定外观」，R132 问「这条选择器到底还有没有人」。下面按起因分述。
 //!
 //! # 起因（R128）：`.form label` 把盒子强加给带类的 label
 //!
@@ -24,6 +27,27 @@
 //! `<h3 class="muted" style="font-size:12px">`）。类里的 `margin-bottom:0`（让大数字贴住标签）
 //! 也因此从没用上。**「整个类一条都没生效」＝这个类在 markup 里的存在是一句没有兑现的声明。**
 //!
+//! # 起因（R132）：四条选择器谁都不带，而它们**今天仍然生效**
+//!
+//! 与 R128/R129 同一个家族，但受害者不是「外观被抢」而是**没有主人**：那四条规则的选择器
+//! 在应用里**匹配不到任何元素**，却一条也没被删掉 —— 写一个 `class="wallet-note"` 照样拿到
+//! 12px。它们服务的产品功能早已走掉（`git log -S` 逐条可复现）：
+//!
+//! | 选择器 | 症状 | 历来的主人 |
+//! |---|---|---|
+//! | `.demo-hint` | 登录页演示账号小字 | #61（`a5595c2`）加，元素随 #90（`35291b3`，v0.6.0 演示数据清理）删除；连它读的键 `login.demo` 都已进不可达日落清单 |
+//! | `.login-divider`（3 条） | 登录表单的「或」分隔线 | #7（`d70e032`）的历史名；#159（`f46882c`）把标记改用原型规范名 `.divider` 并给旧名留了句「历史别名」注释 ⇒ 从那一刻起旧名就落了空 |
+//! | `.wallet-note` | 钱包页余额下方的说明 | #156（`41bb6d1`）把那个元素改写成 `<p class="hint wallet-hero-note">`（同一 `data-i18n="wallet.note"`），**旧规则原地留下** |
+//! | `.sidebar #toggle-mode-btn` | 窄屏侧栏里被藏起来的按钮 | 原型那次提交（`d70e032`）就有这条 `display:none`，而它要藏的按钮**从来没有进过产品**（那是「切换 企业版/公共版」，提交前就被改写掉了）—— 同一段清单里的 `.sidebar #logout-btn` 却是活的，这条规则只做了一半的活 |
+//!
+//! `.delta`（3 条）**刻意保留**：原型 `statCard()` 真的会吐出 `<div class="delta ok">`，
+//! 它是设计基线的词汇而不是残留 —— 这正是 R4 把原型语料算进来的原因（实测：全表**只有**
+//! 它靠原型语料兜住）。
+//!
+//! 竞争修法为什么不够：「下次注意删掉」不是门禁；「把 `.login-divider` 重命名成 `.divider`」
+//! 是错的修法（`#toggle-mode-btn` 若改名成 `#theme-toggle` 会**改变行为** —— 窄屏将看不到
+//! 唯一的主题开关，那是另一个轴的事）。R4 直接把「有没有主人」变成可执行的不变量。
+//!
 //! # 守的是什么
 //!
 //! 不是那些具体类，而是它们共同的形状：
@@ -39,7 +63,12 @@
 //!
 //! R1/R2 说的是「谁有权给 label 定盒子」，R3 说的是「这个类到底有没有留下东西」—— 同一条
 //! 不变量的两面。R3 之所以**必须比 R2 更宽**（不限 `label`、不限 `display`），是因为 R129 的
-//! 受害者是 `h3` 上的字号/颜色/下边距：只盯排布会整片漏掉它。
+//! 受害者是 `h3` 上的字号/颜色/下边距：只盯排布会整片漏掉它。R4 换了个方向：不看元素，看
+//! **样式表**那一边 —— 每条选择器都得有个落点。
+//!
+//! * **R4（落点，名册从 `ui/css/style.css` 派生）** —— 样式表里每个 `.类` / `#id` token 都必须
+//!   以标识符边界出现在**应用语料**（`ui/index.html` ＋ `ui/js/*.js`）或**设计基线语料**
+//!   （`docs/prototype/aitokenpool-console.html`，`ui/css/style.css` 文件头自己声明的那个）里。
 //!
 //! 竞争修法为什么不够：在 `.check-line` 上补 `!important`、或给每个受害类补一条
 //! `.form label.X`，都只堵**当下这两个洞**；下一个组件类用在 `<label>` 上时同样的静默竖排会再来。
@@ -49,6 +78,9 @@
 //!
 //! 类名册来自 `ui/index.html`、规则来自 `ui/css/style.css`，两者都在编译期读入
 //! （仅测试期编译、零新依赖 —— 与 `i18n_pack` / `catalog_gate` / `deploy_gate` / `smtp_port_gate` 同型）。
+//! R4 的三份输入同样全是派生的：token 名册从样式表的**选择器文本**里取，应用语料＝
+//! `ui/index.html` ＋「`ui/js/*.js` 那份名册」（借用 `js_gate` 的，见 `app_corpus`），
+//! 设计基线语料＝原型 HTML 文件本身。全门禁里没有一处手写类名清单。
 //!
 //! # 射程（如实）
 //!
@@ -69,8 +101,19 @@
 //!   判据取**必要条件**（这个类的每一条声明都被压掉才算死）⇒ 宁可漏报，也不制造假红。
 //!   它**跳过 `@media` 里的规则**（只在某个断点生效的规则不足以让一个类「死掉」），
 //!   也**不**把 `[hidden]` 这类**状态**规则算作覆盖 —— 元素本来就不显示，不是组件样式之争。
+//!
+//! R4 的射程同样是词法的，而且刻意是**宽口径**（宁可漏报）：
+//!
+//! * 判据只有「这个名字在语料里**以标识符边界出现过一次**」—— **提到名字 ≠ 穿在身上**：
+//!   注释里、字符串里、别处的死代码里的一次同名出现都能让它变绿（与 `js_gate` 的
+//!   「第二次出现」同源）。实测今天本仓零处「只出现在注释里」的 token，但那不是保证。
+//! * 原型语料是**刻意的逃生口**：原型里出现过的任何词都放行。实测全表**只有 `.delta`**
+//!   是靠它过的（`leg_readings` 会把这份名单印出来）⇒ 逃生口是窄的，但它存在。
+//! * 它证「这个名字有落点」，**不证**那个落点真的是这个选择器要服务的东西（`.btn` 在原型里
+//!   出现一百次也救不了它自己的问题）。屏幕那一半归仓外的 jsdom 探针。
+//! * 伪元素（`::before`）、属性选择器里的值、`.5` 这类不成名字的写法都不入 token 名册。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// 编译期读入的两份载体：markup 给类名册，样式表给规则。
 const INDEX_HTML: &str = include_str!("../ui/index.html");
@@ -959,6 +1002,112 @@ fn guarded_field_label_rules(css: &str) -> Vec<String> {
         .collect()
 }
 
+// -------------------------------------------- R4：选择器必须落在元素上（R132） ---
+
+/// 设计基线语料（R4）：原型 HTML（连它自己的内联脚本一起）。
+///
+/// 这不是随手挑的第二份语料 —— `ui/css/style.css` 文件头自己写着「设计基线：
+/// `docs/prototype/aitokenpool-console.html`」。样式表**允许**服务原型里的词：那些类今天没有
+/// 元素带着，正是「按原型改写」时的预留（`.delta` 那一族就是 —— 原型 `statCard()` 会吐出
+/// `<div class="delta ok">`）。
+const PROTOTYPE_HTML: &str = include_str!("../docs/prototype/aitokenpool-console.html");
+
+/// 应用语料（R4）：标记 ＋ 脚本。**脚本必须算进来** —— 一半的类名是 JS 动态拼出来的 markup
+/// （实测：`.bar-top` / `.row-active` / `.toast` / `.trend-bar` 这类 token **只**在
+/// `ui/js/app.js` 里出现，`index.html` 一个字都没有）。
+///
+/// 脚本名册**借用** `js_gate` 那一份：一份语料一个拥有者，而且它自带
+/// 「`ui/js/*.js` 里有文件没登记」的兜底测试 ⇒ 新增脚本不会让 R4 静默窄化。
+fn app_corpus() -> String {
+    let mut corpus = String::from(INDEX_HTML);
+    for (_, source) in crate::js_gate::JS_SOURCES {
+        corpus.push('\n');
+        corpus.push_str(source);
+    }
+    corpus
+}
+
+/// 名字字符：ASCII 字母数字 ＋ `_` ＋ `-`（类名里 `-` 是名字的一部分，`#toggle-mode-btn`）。
+fn is_name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+/// `name` 是否在 `hay` 里以**标识符边界**出现过至少一次。
+///
+/// 判据刻意只有「出现过」：这是本门禁的宽口径，见模块文档的「射程」。
+fn occurs_on_boundary(hay: &str, name: &str) -> bool {
+    let (hay, name) = (hay.as_bytes(), name.as_bytes());
+    if name.is_empty() || hay.len() < name.len() {
+        return false;
+    }
+    (0..=hay.len() - name.len()).any(|i| {
+        hay[i..i + name.len()] == *name
+            && (i == 0 || !is_name_byte(hay[i - 1]))
+            && (i + name.len() == hay.len() || !is_name_byte(hay[i + name.len()]))
+    })
+}
+
+/// 一条选择器里的 `.类` / `#id` token（**含 sigil**，R4 的报错要能区分两者）。
+///
+/// 伪元素 `::before` 不是 id（它的第二个字节是 `:`，不构成名字）；`.5` 不是类名；
+/// 属性选择器里的值（`[class="x"]`）由 `mask_css` 掩成空格，读不到。
+fn selector_tokens_in(part: &str) -> Vec<(char, String)> {
+    let b = part.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        let sigil = b[i];
+        if (sigil == b'.' || sigil == b'#') && i + 1 < b.len() && b[i + 1].is_ascii_alphabetic() {
+            let start = i + 1;
+            let mut j = start;
+            while j < b.len() && is_name_byte(b[j]) {
+                j += 1;
+            }
+            out.push((sigil as char, part[start..j].to_string()));
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// R4 名册：样式表里每个 `.类` / `#id` token → 用到它的那些选择器（去重、有序）。
+///
+/// 名册走 `css_rules` ⇒ **`@media` 里的规则照常入册**（R132 的探针第一版只在顶层收字符，
+/// 于是整段 `@media` 静默失明、名册里一个 id token 都没有 —— 靠「这条路有 id 选择器」
+/// 这条外部常识才发现。`@keyframes` 里的 `0%` / `from` / `to` 不含 token，天然不入册）。
+fn selector_tokens(rules: &[Rule]) -> BTreeMap<(char, String), BTreeSet<String>> {
+    let mut roster: BTreeMap<(char, String), BTreeSet<String>> = BTreeMap::new();
+    for rule in rules {
+        for part in split_selector_list(&rule.selector) {
+            for token in selector_tokens_in(&part) {
+                roster.entry(token).or_default().insert(part.clone());
+            }
+        }
+    }
+    roster
+}
+
+/// R4 判决：样式表用了、而**两份语料都没有**的 token —— 这些选择器今天就落不到任何元素上。
+///
+/// 判据刻意只有「在语料里以标识符边界出现过一次」（见模块文档的「射程」）：它是**宽口径**，
+/// 宁可漏报（注释里提到这个名字也算数），也不制造假红。
+fn orphan_selector_tokens(rules: &[Rule], app: &str, prototype: &str) -> Vec<String> {
+    selector_tokens(rules)
+        .into_iter()
+        .filter(|((_, name), _)| {
+            !occurs_on_boundary(app, name) && !occurs_on_boundary(prototype, name)
+        })
+        .map(|((sigil, name), selectors)| {
+            format!(
+                "{sigil}{name} — {}",
+                selectors.into_iter().collect::<Vec<_>>().join(" / ")
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,6 +1344,162 @@ mod tests {
         );
     }
 
+    /// R4 轴：样式表里的每一个 `.类` / `#id` 都落在某个元素上。
+    #[test]
+    fn every_selector_lands_on_an_element() {
+        let orphans = orphan_selector_tokens(&css_rules(STYLE_CSS), &app_corpus(), PROTOTYPE_HTML);
+        assert!(
+            orphans.is_empty(),
+            "R4：这些选择器在应用代码（`ui/index.html` ＋ `ui/js/*.js`）与设计基线\
+             （`docs/prototype/aitokenpool-console.html`）里都找不到 —— 它们今天就落不到任何元素上：\
+             {orphans:#?}"
+        );
+    }
+
+    /// R4 阳性对照：名册与两份语料都必须**真的看到东西**（否则「零违规」是空集上的假绿）。
+    #[test]
+    fn the_selector_roster_and_both_corpora_see_something() {
+        let roster = selector_tokens(&css_rules(STYLE_CSS));
+        assert!(
+            roster.len() >= 200,
+            "名册只派生出 {} 个 token —— 扫描器坏了，R4 会在空集上假绿",
+            roster.len()
+        );
+        let ids = roster.keys().filter(|(sigil, _)| *sigil == '#').count();
+        assert!(
+            ids >= 5,
+            "名册里只有 {ids} 个 id token —— 这是「`@media` 里的规则没入册」的读数（R132 的探针\
+             第一版正是这样静默失明的）"
+        );
+        for expected in [('.', "toast"), ('#', "toast-wrap"), ('.', "row-active")] {
+            assert!(
+                roster
+                    .keys()
+                    .any(|(s, n)| *s == expected.0 && n == expected.1),
+                "名册里少了 `{}{}`（它本来就在 ui/css/style.css 里）：{:?}",
+                expected.0,
+                expected.1,
+                roster.keys().collect::<Vec<_>>()
+            );
+        }
+        // 语料非平凡：一边有 markup 与脚本各自**独有**的 token，另一边有原型独有的那些。
+        let app = app_corpus();
+        for (name, why) in [
+            ("check-line", "只在 ui/index.html 里（标记）"),
+            ("row-active", "只在 ui/js/app.js 里（脚本动态拼出来的）"),
+        ] {
+            assert!(
+                occurs_on_boundary(&app, name),
+                "应用语料里找不到 `{name}`：{why}"
+            );
+        }
+        assert!(
+            !occurs_on_boundary(&app, "delta") && occurs_on_boundary(PROTOTYPE_HTML, "delta"),
+            "`.delta` 应当只由原型语料兜住 —— 这正是「设计基线词汇」那条腿的证据"
+        );
+    }
+
+    /// R4 的机制：token 提取、两份语料各自算数、`@media` 里的规则入册（坑 #781）。
+    #[test]
+    fn the_orphan_rule_reads_nested_rules_and_both_corpora() {
+        // token 提取：伪元素不是 id，属性选择器里的值不是类名，`.5` 不是类名。
+        assert_eq!(
+            selector_tokens_in(".note::before"),
+            vec![('.', "note".to_string())],
+            "`::before` 是伪元素，不是 id"
+        );
+        assert_eq!(
+            selector_tokens(&css_rules("a[href=\"#top\"].link { color: red; }"))
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![('.', "link".to_string())],
+            "属性选择器里的值由 mask_css 掩掉 ⇒ 读不到 `#top`"
+        );
+        assert!(selector_tokens_in(".5x").is_empty(), "`.5` 不是类名");
+
+        // 两份语料各自算数：同一个 token 换一份语料就换一个判决。
+        let css = ".ghost { color: red; }\n";
+        assert_eq!(
+            orphan_selector_tokens(&css_rules(css), "", ""),
+            vec![".ghost — .ghost".to_string()],
+            "两份语料都没有 ⇒ 孤儿"
+        );
+        assert!(
+            orphan_selector_tokens(&css_rules(css), "class=\"ghost\"", "").is_empty(),
+            "应用语料里有 ⇒ 不是孤儿"
+        );
+        assert!(
+            orphan_selector_tokens(&css_rules(css), "", "<div class=\"ghost\">").is_empty(),
+            "只有原型语料有 ⇒ 也放行（设计基线词汇）"
+        );
+
+        // 边界：`my-ghost` / `ghost-name` 不算 `ghost` 的一次出现（类名里的 `-` 是名字的一部分）。
+        assert!(
+            orphan_selector_tokens(&css_rules(css), "class=\"my-ghost\"", "").len() == 1,
+            "`my-ghost` 不是 `ghost`"
+        );
+        assert!(
+            orphan_selector_tokens(&css_rules(css), "class=\"ghost-name\"", "").len() == 1,
+            "`ghost-name` 不是 `ghost`"
+        );
+
+        // `@media` 里的规则照常入册（坑 #781：只收顶层字符的提取器会让整段断点静默失明）。
+        let nested = "@media (max-width: 900px) { .sidebar #ghost-btn { display: none; } }\n";
+        assert_eq!(
+            orphan_selector_tokens(&css_rules(nested), "", ""),
+            vec![
+                "#ghost-btn — .sidebar #ghost-btn".to_string(),
+                ".sidebar — .sidebar #ghost-btn".to_string(),
+            ],
+            "媒体查询里的规则必须入册（两个 token 都在选择器里，谁都不在语料里）—— \
+             漏掉它就是 R132 探针第一版的失明"
+        );
+    }
+
+    /// R4 变异体：每条腿只翻它针对的那一条（在活树上改一处）。
+    #[test]
+    fn each_orphan_variant_flips_only_its_own_leg() {
+        let app = app_corpus();
+        let base = css_rules(STYLE_CSS);
+        assert!(
+            orphan_selector_tokens(&base, &app, PROTOTYPE_HTML).is_empty(),
+            "基线必须全绿"
+        );
+
+        // m1 —— 往样式表里加一条谁也不带的规则（模拟「元素被删、规则留下」这个原始缺陷）：
+        //      恰好那一个 token 翻红。
+        let mutated = format!("{STYLE_CSS}\n.legacy-widget {{ color: red; }}\n");
+        assert_eq!(
+            orphan_selector_tokens(&css_rules(&mutated), &app, PROTOTYPE_HTML),
+            vec![".legacy-widget — .legacy-widget".to_string()],
+            "注入一条孤儿规则应当恰好报它一条"
+        );
+
+        // m2 —— 把原型语料抽掉：`.delta` 那一族就没人兜了（证明「设计基线」这条腿是承重的）。
+        let without_proto = orphan_selector_tokens(&base, &app, "");
+        assert_eq!(
+            without_proto,
+            vec![
+                ".delta — .stat-card .delta / .stat-card .delta.danger / .stat-card .delta.ok"
+                    .to_string()
+            ],
+            "抽掉原型语料后应恰好剩 `.delta` 一族"
+        );
+
+        // m3 —— 把脚本那一半抽掉：只有 `app.js` 才有的 token 立刻变成孤儿
+        //       （证明「应用语料必须含脚本」这条腿是承重的）。
+        let markup_only = orphan_selector_tokens(&base, INDEX_HTML, PROTOTYPE_HTML);
+        assert!(
+            markup_only.iter().any(|o| o.starts_with(".row-active ")),
+            "抽掉脚本后 `.row-active`（只在 app.js 里）必须翻红：{markup_only:?}"
+        );
+        assert!(
+            markup_only.iter().all(|o| !o.starts_with(".check-line ")),
+            "`.check-line` 在 markup 里就有 ⇒ 不该被牵连：{markup_only:?}"
+        );
+    }
+
     /// 逐腿读数（门禁自己把看到的东西印出来，别让主张只能靠断言名来读）。
     #[test]
     fn leg_readings() {
@@ -1215,5 +1520,28 @@ mod tests {
         );
         println!("R3 违规 = {:?}", report.dead_class_sites);
         println!("样式表规则总数 = {}", css_rules(STYLE_CSS).len());
+        let roster = selector_tokens(&css_rules(STYLE_CSS));
+        let ids = roster
+            .keys()
+            .filter(|(sigil, _)| *sigil == '#')
+            .collect::<Vec<_>>();
+        println!(
+            "R4 token 名册（派生自 ui/css/style.css） = {} 个（其中 id {} 个：{:?}）",
+            roster.len(),
+            ids.len(),
+            ids
+        );
+        println!(
+            "R4 违规 = {:?}",
+            orphan_selector_tokens(&css_rules(STYLE_CSS), &app_corpus(), PROTOTYPE_HTML)
+        );
+        println!(
+            "R4 只由原型语料兜住的 token = {:?}",
+            roster
+                .iter()
+                .filter(|((_, name), _)| !occurs_on_boundary(&app_corpus(), name))
+                .map(|((sigil, name), _)| format!("{sigil}{name}"))
+                .collect::<Vec<_>>()
+        );
     }
 }

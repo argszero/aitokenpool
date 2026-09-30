@@ -751,12 +751,11 @@ mark {
 }
 .checkbox-line { display: flex; align-items: center; gap: 6px; flex-direction: row !important; color: var(--text-dim); cursor: pointer; }
 .checkbox-line input { accent-color: var(--accent); width: 14px; height: 14px; }
-.demo-hint { color: var(--text-mute); font-size: 11px; }
-/* 「或」分隔线（原型 .divider；.login-divider 为登录页历史别名，两者同规格）
-   bug 2026-09-11T22:01:43：原型类名 .divider 在实现中缺失（只有 .login-divider 别名）。 */
-.divider, .login-divider { display: flex; align-items: center; gap: 12px; margin: 16px 0; color: var(--muted); font-size: 11px; }
-.divider::before, .divider::after,
-.login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+/* 「或」分隔线（原型类名 .divider）。#159 曾把它与历史别名 .login-divider 并列成同规格的
+   一条规则，R132 删掉了那个别名 —— 它从 #159 起就不再匹配任何元素（登录页当时已改用
+   `.divider`），只留下「历史别名」这句注释在替它说话。 */
+.divider { display: flex; align-items: center; gap: 12px; margin: 16px 0; color: var(--muted); font-size: 11px; }
+.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .login-foot { margin-top: 16px; text-align: center; font-size: 13px; color: var(--text-dim); }
 .login-foot a { color: var(--accent-text); text-decoration: none; }
 .login-tip { margin-top: 14px; text-align: center; color: var(--text-mute); font-size: 11px; }
@@ -906,7 +905,6 @@ mark {
 .wallet-hero-hint b { color: var(--text); font-weight: 600; }
 .wallet-hero-note { display: block; margin-top: 10px; }
 .wallet-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.wallet-note { font-size: 12px; }
 .wallet-hint { color: var(--text-mute); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 /* 充值/加额表单动作行（原型 .row：横向按钮排布，不占满整行） */
 .form .row, .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -1239,7 +1237,7 @@ textarea.input:focus { border-color: var(--accent); }
 @media (max-width: 900px) {
   .sidebar { width: 64px; padding: 12px 8px; }
   .sidebar .brand-text, .sidebar .nav-item .label, .sidebar .user-chip .chip-text,
-  .sidebar #toggle-mode-btn, .sidebar #logout-btn { display: none; }
+  .sidebar #logout-btn { display: none; }
   .nav-item { justify-content: center; }
   .main { padding: 20px 16px 40px; }
   .form-row { grid-template-columns: 1fr; }

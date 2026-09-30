@@ -63,8 +63,9 @@ mod readme_gate;
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod smtp_port_gate;
-// 布局门禁（R128）：同样是仅测试期编译 —— ui/index.html 与 ui/css/style.css
-// 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
+// 布局门禁（R128 + R132）：同样是仅测试期编译 —— ui/index.html / ui/css/style.css /
+// docs/prototype/aitokenpool-console.html（设计基线）都在编译期读入，
+// 加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod layout_gate;
 // 前端声明门禁（R131）：同样是仅测试期编译 —— ui/index.html 与 ui/js/*.js
