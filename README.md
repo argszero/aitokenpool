@@ -68,6 +68,7 @@ OpenAI 兼容网关端点：`POST /v1/chat/completions`、`POST /v1/responses`�
 | [docs/architecture.md](docs/architecture.md) | 架构设计、API 一览、数据库结构 |
 | [docs/user-stories.md](docs/user-stories.md) | 用户故事与场景 |
 | [docs/plan-api-matrix.md](docs/plan-api-matrix.md) | 套餐与 API 矩阵 |
+| [docs/deployment.md](docs/deployment.md) | 部署与升级：停机窗口、上线与回滚清单 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本历史 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 |
 

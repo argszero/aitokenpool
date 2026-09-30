@@ -34,4 +34,9 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    # 停机窗口（rant 2026-09-30T16:25:29）：docker 先发 SIGTERM，应用随即停止接受新连接
+    # 并在 `DRAIN_LIMIT_SECS` 内把在途请求排完（src/main.rs）；这个上限到了 docker 就会
+    # 用 SIGKILL 直接打死还没排完的进程。所以此处必须**大于**应用那边的排水上限 ——
+    # 两个数的关系由 `src/shutdown_gate.rs` 守着，改一个忘了另一个会当场变红。
+    stop_grace_period: 12s
     restart: unless-stopped
