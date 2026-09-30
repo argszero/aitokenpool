@@ -979,9 +979,10 @@
 
   /* --- 可用时间段（rant 10:54:48：结构化字段，备注只作纯备注） --- */
 
-  const DAY_LABELS = [1, 2, 3, 4, 5, 6, 7];
-
   // 星期数字 → 展示文本：连续区间压缩为「周一~周五」，间断用 / 连接
+  // （R131：这里原有一枚「星期数字」模块级常量 —— #86 把唯一读点换成按 `share.day.`
+  //  前缀拼 key 的动态查找时把常量留下了，零调用，已删。星期名册的真载体是
+  //  `ui/index.html` 的七枚 chip 与语言包的 `share.day.1..7`，不是这里。）
   function fmtDays(nums) {
     const sorted = [...nums].sort((a, b) => a - b);
     const parts = [];
@@ -3124,11 +3125,10 @@
 
   let chatModel = null;
 
-  function nowTime() {
-    const n = new Date();
-    const p = (x) => String(x).padStart(2, "0");
-    return p(n.getMonth() + 1) + "-" + p(n.getDate()) + " " + p(n.getHours()) + ":" + p(n.getMinutes());
-  }
+  // R131：这里原有一枚「本地时间戳写作」函数（输出 `MM-DD HH:mm`）—— #94「零 mock 数据」
+  // 删掉了它的 5 个调用点（4 处 `D.TRANSACTIONS.unshift` ＋ 1 处 `D.RAISE_REQUESTS.unshift`），
+  // 函数体留下、零调用，已删。`timeAgo(s)` 仍然**吃**这个格式（默认今年），只是不再有
+  // 生产者 —— 本仓的时间戳一律由后端给。
 
   // 相对时间（rant 16:57:17 B）：刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD
   // 时区（rant 2026-08-19T20:45:32）：后端返回 UTC ISO 带 Z（'YYYY-MM-DDTHH:MM:SSZ'），

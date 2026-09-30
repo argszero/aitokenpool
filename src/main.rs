@@ -67,6 +67,10 @@ mod smtp_port_gate;
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod layout_gate;
+// 前端声明门禁（R131）：同样是仅测试期编译 —— ui/index.html 与 ui/js/*.js
+// 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod js_gate;
 
 use std::sync::Arc;
 
