@@ -1033,6 +1033,33 @@
   };
   const shareToggle = (status) => SHARE_TOGGLE[status] || SHARE_TOGGLE.off;
 
+  // 可用时段的星期列存的是 JSON 串（后端 `available_days`）⇒ 全仓**唯一**的解析点
+  //（列表渲染 `sharingsToView` 与编辑预填都读它）。两处各写一个 `JSON.parse` 就会重演
+  // 「同一份数据两种读法」——坏串在两处各自回落，界面与表单随后各说各话。
+  function parseShareDays(raw) {
+    try { return JSON.parse(raw || "[]"); } catch (e) { return []; }
+  }
+
+  // 上架与编辑**共用**的请求载荷（后端 `create`/`patch` 也是共用一份 `validate_listing`）。
+  //
+  // `key` 刻意**不随大流**：只有真的填了新明文才把字段带上 ⇒ 省略 = 后端保留原密文
+  //（PATCH 的三态：省略 / 空白都不动 `encrypted_key`）。服务端只回传掩码串，而掩码串
+  // 进过 `value` 就会被当成新 key 提交、原 key 永久失效 —— 因此本函数里 `key` 的**唯一**
+  // 入口是那个输入框，且必须走 `if (key)` 这道守卫。
+  function sharePayload(plan, model, quota, available, note) {
+    const key = $("#sf-key").value.trim();
+    const payload = {
+      provider: plan.provider,
+      plan: plan.id,
+      model,
+      quota,
+      available,
+      note,
+    };
+    if (key) payload.key = key;
+    return payload;
+  }
+
   function renderSharing() {
     // 零 mock（rant 2026-08-19T15:54:06）：登录态绝不 fallback D.SHARINGS；
     // 加载失败 → 空态 + 重试（loadErrorRow，tbody 内合法）
@@ -1119,7 +1146,11 @@
       '<td class="num" data-label="' + T("share.col.earn") + '">+' + D.fmt(s.earned) + " " + T("common.points") + "</td>" +
       "<td data-label='" + T('share.col.avail') + "'>" + esc(fmtAvailable(s)) + "</td>" +
       "<td data-label='" + T('share.col.status') + "'>" + badge(s.status, SHARE_STATUS) + "</td>" +
-      "<td data-label='" + T('share.col.action') + "'><button class='btn btn-ghost btn-sm' data-share-toggle='" + i + "'>" +
+      "<td data-label='" + T('share.col.action') + "'>" +
+      // 编辑入口：把该行当前值回填进**同一张**行内表单（rant 2026-09-30T13:12:07 第 1 条：
+      // 不新建第二张表单、不做「就地编辑整行」）。定位符与姊妹按钮一样是**列表下标**。
+      "<button class='btn btn-ghost btn-sm' data-share-edit='" + i + "'>" + T("common.edit") + "</button> " +
+      "<button class='btn btn-ghost btn-sm' data-share-toggle='" + i + "'>" +
       T(shareToggle(s.status).label) + "</button> " +
       "<button class='btn btn-danger btn-sm' data-share-delete='" + i + "'>" + T("common.delete") + "</button></td></tr>";
     }).join("") : emptyRow(8, T("share.empty"), T("share.empty.sub"),
@@ -3607,8 +3638,7 @@
 
   function sharingsToView(list) {
     return list.map((s) => {
-      let days = [];
-      try { days = JSON.parse(s.available_days || "[]"); } catch (e) { days = []; }
+      const days = parseShareDays(s.available_days);
       return {
         id: s.id,
         provider: s.provider,
@@ -4073,20 +4103,50 @@
 
     // 共享上架表单（默认收起；点添加展开，提交成功或取消后收起）
     const shareFormCard = () => $("#share-form-card");
+    // 编辑中的行 id（null = 上架新 key）。上架与编辑**共用同一张行内表单**，模式只由这一个变量决定
+    //（rant 2026-09-30T13:12:07 第 1 条：不新建第二张表单、不做「就地编辑整行」）。
+    let editingShareId = null;
     // 「每天」快捷勾选是用 property 式给单日 chip 打 disabled 的（`cb.disabled = allCb.checked`），
     // 而 `form.reset()` 只还原「值 / 勾选态」、**不清 property** ⇒ 成功上架后表单被回收，
     // 七个星期 chip 会保持「未勾选 + 禁用」直到重开 —— 必须在回收 / 重开路径上显式清一次。
     const resetShareAvail = () => {
       $$("#sf-days .chip input").forEach((cb) => { cb.disabled = false; });
     };
+    // 表单标题 / 提交按钮 / key 输入框的**钩子**随模式切换，然后走一次 `applyStatic()` 重渲染。
+    //
+    // 写的是 `data-i18n*` **属性**，不是 textContent / placeholder 的**成品**：切语言时
+    // `applyStatic()` 会按属性重渲染这一块，写死的文本会被它覆盖回「上架」（R94/R95 的同形问题）。
+    // 编辑态下 `#sf-key` **摘掉** `data-i18n-ph`，placeholder 换成服务端的掩码串 ——
+    // 掩码串**只进 placeholder、绝不进 `value`**：进了 `value` 就会被当成新 key 提交，
+    // 后端把掩码加密写回 `encrypted_key`，原 key 永久失效且界面无任何异常提示。
+    const syncShareFormMode = (mask) => {
+      const edit = editingShareId !== null;
+      // 卡片标题按**结构**取（卡片里只有这一个 `h3`）：`id` 一旦插在卡片与 `<form>` 之间，
+      // R139 门禁那条「`<form>` 之前那个 id 就是卡片」的派生就会静默指向别处（实测会红）。
+      $("#share-form-card h3").dataset.i18n = edit ? "share.form.editTitle" : "share.form.title";
+      $("#sf-submit").dataset.i18n = edit ? "common.save" : "share.form.list";
+      // `#sf-key` 的每个写点都按**字面选择器**写（不借本地别名）：`state_gate` 按行读
+      // 「谁在给这个可提交字段写 `value`」—— 别名会把写点藏起来，那条规则就会静默变空。
+      $("#sf-key").value = ""; // 明文一律清空（上一次输入 / 上一次编辑的残留都不许跟着提交）
+      if (edit) { delete $("#sf-key").dataset.i18nPh; $("#sf-key").placeholder = mask || ""; }
+      else { $("#sf-key").dataset.i18nPh = "share.form.key.ph"; }
+      I18n.applyStatic();
+    };
+    // 上架入口：把表单交回 HTML 的默认值（quota 5000 / note 空 / key 空 / 星期全不选），
+    // 否则上一次编辑留下的值会被当成新上架的设置提交。
     const showShareForm = () => {
+      editingShareId = null;
+      $("#share-form").reset();
+      resetShareAvail(); // property 式 `disabled` 不在 `reset()` 的还原范围内（见上）
+      $("#sf-quota").value = 5000;
+      const p = $("#sf-provider"); p.value = ""; p.dispatchEvent(new Event("change"));
       clearFieldError($("#sf-key"));
       clearFieldError($("#sf-quota"));
-      resetShareAvail();
+      syncShareFormMode();
       shareFormCard().hidden = false;
       $("#sf-key").focus();
     };
-    const hideShareForm = () => { shareFormCard().hidden = true; };
+    const hideShareForm = () => { editingShareId = null; shareFormCard().hidden = true; };
 
     $("#share-add-btn").addEventListener("click", showShareForm);
     $("#sf-cancel").addEventListener("click", hideShareForm);
@@ -4099,11 +4159,53 @@
       });
     });
 
-    // 共享上架表单（选 厂商 → Plan → 模型；单价由平台按模型定价自动计算）
+    // 编辑入口：把该行**当前值**回填进同一张表单。取的是**原始载荷**（`Live.sharings[i]`），
+    // 不是视图行 —— `sharingsToView` 已经把 plan 换成了显示名、key 换成了掩码成品。
+    const openShareEdit = (i) => {
+      const s = Live.sharings && Live.sharings[i];
+      if (!s || !s.id) return;
+      editingShareId = s.id;
+      clearFieldError($("#sf-key"));
+      clearFieldError($("#sf-quota"));
+      resetShareAvail();
+      // 厂商 → Plan → 模型 是**三级联动**：每一级都要 `change` 一次，下一级的选项才会被重建
+      // （`fillPlans` / `fillModels` 只挂在下拉自身的 change 上，直接赋 value 会留下一个空下拉）。
+      const p = $("#sf-provider");
+      const pl = $("#sf-plan");
+      const mo = $("#sf-model");
+      p.value = s.provider || "";
+      p.dispatchEvent(new Event("change"));
+      pl.value = s.plan || "";
+      pl.dispatchEvent(new Event("change"));
+      mo.value = s.model || "";
+      showPriceHint(mo.value);
+      // 可用时段：「每天」快捷勾选的互斥 property 与七个 chip 的勾选态一起还原
+      //（`resetShareAvail` 只清 disabled，勾选态由这里按行里的星期集合回填）。
+      const days = parseShareDays(s.available_days);
+      const chips = $$("#sf-days .chip input").filter((cb) => cb !== allCb);
+      chips.forEach((cb) => { cb.checked = days.indexOf(Number(cb.value)) >= 0; });
+      const wholeWeek = chips.length > 0 && chips.every((cb) => cb.checked);
+      if (allCb) {
+        allCb.checked = wholeWeek;
+        chips.forEach((cb) => { cb.disabled = wholeWeek; });
+      }
+      $("#sf-start").value = s.available_start || "";
+      $("#sf-end").value = s.available_end || "";
+      $("#sf-quota").value = s.quota;
+      $("#sf-note").value = s.note || "";
+      syncShareFormMode(s.key);
+      shareFormCard().hidden = false;
+      $("#sf-key").focus();
+    };
+
+    // 共享上架 / 编辑表单（选 厂商 → Plan → 模型；单价由平台按模型定价自动计算）
+    // 上架与编辑走**同一个**提交处理器，差别只有两处：目标端点/方法与 key 字段的可省略性 ——
+    // 校验、时段编码、载荷字段一律共用（后端 `create`/`patch` 也是共用一份 `validate_listing`）。
     $("#share-form").addEventListener("submit", (e) => {
       e.preventDefault();
       const submitBtn = e.target.querySelector('button[type="submit"]');
       const done = () => {
+        const editId = editingShareId; // 先取一份：`hideShareForm` 会把它清掉
         const model = $("#sf-model").value;
         const planId = $("#sf-plan").value;
         const plan = planById(planId);
@@ -4111,7 +4213,8 @@
         const key = $("#sf-key").value.trim();
         const note = $("#sf-note").value.trim();
         let firstErr = null;
-        if (!key) { setFieldError($("#sf-key"), T("share.err.key")); firstErr = firstErr || $("#sf-key"); }
+        // 上架必须给明文 key；编辑留空 = 保留原密文（后端三态：省略 / 空白都不动 `encrypted_key`）
+        if (!editId && !key) { setFieldError($("#sf-key"), T("share.err.key")); firstErr = firstErr || $("#sf-key"); }
         else clearFieldError($("#sf-key"));
         if (!plan || !model || quota <= 0) {
           setFieldError($("#sf-quota"), T("share.err.plan"));
@@ -4125,15 +4228,7 @@
         const end = $("#sf-end").value;
         const available = days.length ? { days, start: start || "", end: end || "" } : null;
         const price = autoPrice(model);
-        const payload = {
-          provider: plan.provider,
-          plan: plan.id,
-          model,
-          key,
-          quota,
-          available,
-          note,
-        };
+        const payload = sharePayload(plan, model, quota, available, note);
         const afterOk = () => {
           e.target.reset();
           resetShareAvail();
@@ -4141,10 +4236,22 @@
           $("#sf-quota").value = 5000;
           hideShareForm();
           const label = provLabel(plan.provider) + " · " + planLabelById(planId);
-          toast(T("share.list.ok", { label: label, model: model, price: D.fmt(price) }), "success");
+          if (editId) toast(T("share.edit.ok", { label: label, model: model }), "success");
+          else toast(T("share.list.ok", { label: label, model: model, price: D.fmt(price) }), "success");
         };
         if (!loggedIn()) {
           toast(T("chat.login.need"), "error");
+          return;
+        }
+        if (editId) {
+          // 编辑**原行**：同一条 `id`，上架时间与收益归属不动（后端 `UPDATE … WHERE id=? AND owner_id=?`）
+          api.patch("/api/sharings/" + editId, payload).then(async () => {
+            await loadSharing();
+            if (activeView === "dashboard") renderDashboard();
+            afterOk();
+          }).catch((err) => {
+            toast((err && err.message) ? I18n.mapErr(err.message) : T("share.edit.fail"), "error");
+          });
           return;
         }
         // P2-B：真实上架（共享管理仅登录可达，零 mock rant 15:54:06）
@@ -4159,8 +4266,10 @@
       withLoading(submitBtn, done);
     });
 
-    // 共享列表操作（事件委托：暂停/恢复/重新上架 + 删除[行内二次确认] + 空状态上架）
+    // 共享列表操作（事件委托：编辑 + 暂停/恢复/重新上架 + 删除[行内二次确认] + 空状态上架）
     $("#share-body").addEventListener("click", (e) => {
+      const ed = e.target.closest("[data-share-edit]");
+      if (ed) { openShareEdit(Number(ed.dataset.shareEdit)); return; }
       const b = e.target.closest("[data-share-toggle]");
       if (b) { toggleSharing(Number(b.dataset.shareToggle)); return; }
       const d = e.target.closest("[data-share-delete]");
