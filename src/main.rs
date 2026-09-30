@@ -59,6 +59,10 @@ mod citation_gate;
 // 加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod readme_gate;
+// SMTP 端口门禁（R127）：同样是仅测试期编译 —— config 示例 / config.rs / mail.rs
+// 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod smtp_port_gate;
 
 use std::sync::Arc;
 
