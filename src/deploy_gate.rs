@@ -499,10 +499,12 @@ fn the_version_scanners_actually_see_the_copies_they_guard() {
         "`rust-version` 应是 x.y：{msrv:?}"
     );
     // 同名字段按段收窄：依赖表里的 `version = "0.7"` 不得顶替 `[package]` 的版本。
+    // （产物里「依赖名 ＋ 发行版本号」这一组合不得出现 —— 取的是**派生**的 `ver`，不是当时
+    // 的发行号字面量：写死会让每次发行都留下一份陈旧副本，正是本门禁存在的理由。）
     assert!(
         !FILES
             .iter()
-            .any(|(_, s)| s.contains("axum") && s.contains("0.7.28")),
+            .any(|(_, s)| s.contains("axum") && s.contains(ver.as_str())),
         "依赖段不得被当成期望来源"
     );
 
