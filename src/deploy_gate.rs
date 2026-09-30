@@ -93,6 +93,32 @@
 //! 是否可达」—— 它**不**证明 `docker build` 真能跑（那要 Linux 容器，与 R76 同款缺口）、
 //! **不**校验 `COPY` 的目标路径写对没有、也**不**实现 `.dockerignore` 的 `**` 与取反（`!`）
 //! 语义（本仓现用的那 10 行里没有这两者）。实现与三条测试（轴 + 阳性对照 + 规则牙齿）在文件末尾。
+//!
+//! # 第五条规则（R73）：compose 要求主密钥时，**快速上手的首推命令**必须把它给出来
+//!
+//! 第一条规则关掉的是「不给合法默认值」，但它只管**载体**（compose / Dockerfile /
+//! `config.example.toml`）—— **文档不在它的射程里**。于是留下另一半：#235（`7852277`，
+//! 2026-09-14）把 `ATP_MASTER_KEY` 改成 `${ATP_MASTER_KEY:?…}` 时**只改了
+//! `docker-compose.yml` 一个文件**，而三份文档的快速上手仍写着 `docker compose up -d --build`、
+//! 不给 export ⇒ 照文档做的**第一条推荐命令保证失败**（compose 插值报错）。四行载体全部生于
+//! 2026-08-22（`80c53bfc` / `6d872137`）＝**漂移非取舍**：它们写下时 compose 确有一个（非法）
+//! 默认值，那句「未设置时使用随机 dev 密钥」当时对 compose 路径也为真。
+//!
+//! **断言**：当且仅当 compose 的那条设置是 **必填**（`Form::Required`，由第一条规则的
+//! `classify` 判）时，`README.md` / `README.en.md` 的**围栏代码块**里，凡调用
+//! `docker compose up` 的块，必须**在同一块内**给 shell 环境设过 `ATP_MASTER_KEY`
+//! —— 即有一行（去掉前导空白与可选的 `export ` 之后）以 `ATP_MASTER_KEY=` 开头。
+//! 触发条件**从 compose 派生**：把 compose 改成 `:-<64 位 hex>` ⇒ 本规则自动静默，
+//! 不必改这里。**只看围栏块**：正文散文（那条 ⚠️ 说明自己就提到这个变量名）不算数，
+//! 否则判据会被自己的说明文字满足。
+//!
+//! **为什么不是「块里出现过变量名」**：块里那条 `docker run … -e ATP_MASTER_KEY=$(…)`
+//! 本来就含这个字符串 ⇒ 那种判据在**未修**的树上就已通过，等于没有牙。`-e KEY=…` 是
+//! `docker run` 的**参数**，不是给 compose 进程准备环境；本规则要的正是后者。
+//!
+//! **射程（词法，如实记录）**：它判的是「这份文档有没有告诉读者先把变量交给 shell」，
+//! **不**证明用户真照着做；也**不**覆盖 `docs/architecture.md`（散文提及，不在 `FILES` 里，
+//! 且本仓既有的约定是「能不抄就不抄」）。实现与三条测试（轴 + 阳性对照 + 规则牙齿）在文件末尾。
 
 /// 编译期读入的部署/配置产物。
 const FILES: &[(&str, &str)] = &[
@@ -1376,5 +1402,189 @@ fn the_build_context_rule_flags_a_release_module_that_embeds_outside_the_context
         include_context_violations(&files(docs), &copies, &patterns, &[]).len(),
         1,
         "`docs/` 之下的目标必须报违规"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 第五条规则（R73）：compose 要求主密钥时，快速上手的首推命令必须把它给出来
+// ---------------------------------------------------------------------------
+
+/// 一份 Markdown 里的围栏代码块（``` … ```），按出现顺序返回其内容行。
+///
+/// 只认三反引号围栏（本仓的两份 README 都用它）；波浪号围栏与四反引号不在射程内
+/// ——射程写进模块文档，不假装通用。
+fn fenced_blocks(src: &str) -> Vec<Vec<&str>> {
+    let mut blocks = Vec::new();
+    let mut cur: Option<Vec<&str>> = None;
+    for line in src.lines() {
+        if line.trim_start().starts_with("```") {
+            match cur.take() {
+                // 已开块 ⇒ 这一行是收尾。
+                Some(b) => blocks.push(b),
+                // 未开块 ⇒ 这一行是开头。
+                None => cur = Some(Vec::new()),
+            }
+            continue;
+        }
+        if let Some(b) = cur.as_mut() {
+            b.push(line);
+        }
+    }
+    // 未闭合的块同样返回：漏掉一整块会让「块内没写 export」悄无声息地溜过。
+    if let Some(b) = cur {
+        blocks.push(b);
+    }
+    blocks
+}
+
+/// 该行是否**给 shell 环境**设了主密钥（`export ATP_MASTER_KEY=…` 或 `ATP_MASTER_KEY=…`）。
+///
+/// 刻意**不**接受 `-e ATP_MASTER_KEY=…`：那是 `docker run` 的参数，不是 compose 进程
+/// 读得到的 shell 环境（见模块文档——这条区分正是本规则的牙）。
+fn sets_env_for_shell(line: &str) -> bool {
+    let t = line.trim();
+    let t = t.strip_prefix("export ").unwrap_or(t);
+    t.starts_with(&format!("{ENV_KEY}="))
+}
+
+/// compose 里那条主密钥设置是否为「必填」（触发本规则的前提，**从 compose 派生**）。
+fn compose_requires_master_key() -> bool {
+    FILES
+        .iter()
+        .find(|(n, _)| *n == "docker-compose.yml")
+        .map(|(_, src)| {
+            env_assignments(src)
+                .iter()
+                .any(|(_, f)| *f == Form::Required)
+        })
+        .unwrap_or(false)
+}
+
+/// 在给定语料上求违规（合成输入与活树共用同一段逻辑，读数不互相污染）。
+///
+/// 返回人类可读的违规项；空 = 通过。
+fn quickstart_violations_of(files: &[(&str, &str)], compose_required: bool) -> Vec<String> {
+    if !compose_required {
+        return Vec::new(); // compose 不要求 ⇒ 本规则空转（派生，不写死）
+    }
+    let mut bad = Vec::new();
+    for name in ["README.md", "README.en.md"] {
+        let Some((_, src)) = files.iter().find(|(n, _)| *n == name) else {
+            continue;
+        };
+        for (i, block) in fenced_blocks(src).iter().enumerate() {
+            if !block.iter().any(|l| l.contains("docker compose up")) {
+                continue;
+            }
+            if !block.iter().any(|l| sets_env_for_shell(l)) {
+                bad.push(format!(
+                    "{name}: 第 {} 个围栏代码块调用了 `docker compose up`，但块内没有先把 \
+                     {ENV_KEY} 交给 shell（compose 缺失即报错退出）",
+                    i + 1
+                ));
+            }
+        }
+    }
+    bad
+}
+
+/// 活树读数。
+fn quickstart_violations() -> Vec<String> {
+    quickstart_violations_of(FILES, compose_requires_master_key())
+}
+
+#[test]
+fn the_quickstart_that_runs_compose_hands_it_the_master_key() {
+    let bad = quickstart_violations();
+    assert!(
+        bad.is_empty(),
+        "快速上手的首推命令必须先把 {ENV_KEY} 交给 shell：\n{}",
+        bad.join("\n")
+    );
+}
+
+#[test]
+fn the_quickstart_scanner_actually_sees_the_blocks_it_guards() {
+    // 阳性对照：扫描器若因改标题/换文件而返回空集，上面那条会在空集上「通过」。
+    for name in ["README.md", "README.en.md"] {
+        let src = FILES.iter().find(|(n, _)| *n == name).unwrap().1;
+        let blocks = fenced_blocks(src);
+        assert!(
+            blocks.len() >= 2,
+            "{name} 应至少扫到 2 个围栏块（Docker 与源码运行）：实得 {}",
+            blocks.len()
+        );
+        let compose_blocks: Vec<&Vec<&str>> = blocks
+            .iter()
+            .filter(|b| b.iter().any(|l| l.contains("docker compose up")))
+            .collect();
+        assert_eq!(
+            compose_blocks.len(),
+            1,
+            "{name} 应恰好有 1 个调用 `docker compose up` 的块：实得 {}",
+            compose_blocks.len()
+        );
+        // 那个块**确实**设了环境（否则「不可见」与「合规」无法区分）。
+        assert!(
+            compose_blocks[0].iter().any(|l| sets_env_for_shell(l)),
+            "{name} 的 compose 块里应能扫到设置 {ENV_KEY} 的那一行：{:?}",
+            compose_blocks[0]
+        );
+    }
+}
+
+#[test]
+fn the_quickstart_rule_flags_a_block_that_runs_compose_without_the_key() {
+    // 规则本身有牙：合成语料，与「活树此刻是否合规」两件事分开读。
+    let with_key = "```bash\nexport ATP_MASTER_KEY=$(openssl rand -hex 32)\ndocker compose up -d --build\n```\n";
+    let without_key = "```bash\ndocker compose up -d --build\n```\n";
+    // 反证：`-e ATP_MASTER_KEY=…` 是 `docker run` 的参数 —— 出现在块里**不算**给 compose 备好了环境。
+    let only_run_flag = "```bash\ndocker compose up -d --build\ndocker run -e ATP_MASTER_KEY=$(openssl rand -hex 32) img\n```\n";
+    // 正文散文里的变量名不算数（README 的 ⚠️ 那行自己就提到它）。
+    let prose_only =
+        "设置 `ATP_MASTER_KEY` 很重要。\n\n```bash\ndocker compose up -d --build\n```\n";
+    fn files(src: &str) -> Vec<(&str, &str)> {
+        vec![
+            ("README.md", src),
+            ("README.en.md", "```bash\ncompose up\n```\n"),
+        ]
+    }
+
+    assert!(quickstart_violations_of(&files(with_key), true).is_empty());
+    assert_eq!(
+        quickstart_violations_of(&files(without_key), true).len(),
+        1,
+        "块里调用 compose 却没设环境 ⇒ 必须报违规"
+    );
+    assert_eq!(
+        quickstart_violations_of(&files(only_run_flag), true).len(),
+        1,
+        "`-e ATP_MASTER_KEY=…` 不能顶替给 shell 设环境"
+    );
+    assert_eq!(
+        quickstart_violations_of(&files(prose_only), true).len(),
+        1,
+        "正文散文里的变量名不能顶替块内的 export"
+    );
+    // compose 不再要求 ⇒ 规则空转（触发条件确实是从 compose 派生的）。
+    assert!(
+        quickstart_violations_of(&files(without_key), false).is_empty(),
+        "compose 不要求主密钥时本规则不得报违规"
+    );
+    // 拼写容错：`ATP_MASTER_KEY=` 裸赋值（不带 export）同样算数。
+    let bare = "```bash\nATP_MASTER_KEY=$(openssl rand -hex 32)\ndocker compose up -d\n```\n";
+    assert!(quickstart_violations_of(&files(bare), true).is_empty());
+    // 围栏块切分：块外的 `docker compose up`（例如正文里的行内代码）不算块。
+    let outside_fence = "运行 `docker compose up -d --build` 即可。\n\n```bash\nls\n```\n";
+    assert!(quickstart_violations_of(&files(outside_fence), true).is_empty());
+}
+
+#[test]
+fn the_quickstart_rule_is_armed_on_the_live_compose() {
+    // 触发条件在活树上**确实是开着的** —— 否则上面那条轴测试是空转（vitiated）。
+    assert!(
+        compose_requires_master_key(),
+        "compose 的 {ENV_KEY} 此刻应是「必填」⇒ 快速上手规则必须武装；\
+         若 compose 改成带合法默认值，请连同本条断言一起重新评估"
     );
 }

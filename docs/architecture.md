@@ -83,7 +83,7 @@
 
 ## 7. 部署
 
-- Docker：`docker compose up -d --build`，或镜像 `ghcr.io/argszero/aitokenpool:<tag>`（**镜像随版本 tag 发布**，latest 指向最新发版）
+- Docker：先 `export ATP_MASTER_KEY=$(openssl rand -hex 32)`（compose 缺失即报错退出），再 `docker compose up -d --build`；或镜像 `ghcr.io/argszero/aitokenpool:<tag>`（**镜像随版本 tag 发布**，latest 指向最新发版）
 - 数据目录统一在 `ATP_DATA_DIR`（默认 `./data`：config.toml + db + logs/）
 - 生产必设 `ATP_MASTER_KEY`（上游 key 加密）；首次启动自动创建初始管理员（随机密码打印在日志）
 
