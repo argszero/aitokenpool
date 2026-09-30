@@ -102,7 +102,7 @@ struct Report {
 /// 判据＝前一个有意义字符是不是运算符 / 开括号一类：`( , = : [ ! & | ? { } ; + - * % ~ ^ < >`，
 /// 或者它前面什么都没有。除号前面的字符总是标识符字符 / `)` / `]` / 数字 / 引号，落不进这个集合。
 /// 必须做这一步的原因是 `esc()` 的 `/[&<>"']/g`（见模块文档的「掩码必须跳正则字面量」）。
-fn js_regex_starts(b: &[u8], i: usize) -> bool {
+pub(crate) fn js_regex_starts(b: &[u8], i: usize) -> bool {
     let mut k = i;
     while k > 0 {
         let c = b[k - 1];
@@ -138,7 +138,7 @@ fn js_regex_starts(b: &[u8], i: usize) -> bool {
 
 /// `i` 指向正则字面量的起始 `/`；返回到它之后（含 flags）。字符类 `[...]` 里的 `/` 不算收尾；
 /// 换行即放弃（正则不能跨行 ⇒ 那说明这里其实是除号，别吞代码）。
-fn js_skip_regex(b: &[u8], i: usize) -> usize {
+pub(crate) fn js_skip_regex(b: &[u8], i: usize) -> usize {
     let mut j = i + 1;
     let mut in_class = false;
     while j < b.len() {
@@ -175,7 +175,7 @@ fn blank(out: &mut [u8], from: usize, to: usize) {
 ///
 /// 为什么必须掩码：本仓的注释到处**逐字引用代码**（本轮就是这么被咬的 —— 一条写着
 /// `nowTime()` 的注释会把已删的函数重新种回语料）。掩码只服务于**提取**，计数仍在原始文本上。
-fn mask_js(src: &str) -> String {
+pub(crate) fn mask_js(src: &str) -> String {
     let b = src.as_bytes();
     let mut out = b.to_vec();
     let mut i = 0usize;
@@ -219,7 +219,7 @@ fn mask_js(src: &str) -> String {
 }
 
 /// 在 `b` 里从 `from` 起找 needle 的首个出现位置。
-fn find_from(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(crate) fn find_from(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || from >= b.len() || b.len() - from < needle.len() {
         return None;
     }

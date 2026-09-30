@@ -881,7 +881,7 @@
       provEl.dataset.provSource = provSrc;
       const cur = provEl.value;
       provEl.innerHTML = '<option value="">' + T("mk.provider.all") + "</option>" +
-        providers.map((p) => '<option value="' + p + '">' + p + "</option>").join("");
+        providers.map((p) => '<option value="' + esc(p) + '">' + esc(p) + "</option>").join("");
       if (cur && providers.includes(cur)) provEl.value = cur;
     }
 
@@ -1100,13 +1100,13 @@
       // 零 mock（rant 15:54:06）：模型下拉登录态用 /api/models（Live.models），游客/兜底 data.js
       const modelSrc = Live.models ? Live.models : D.MODELS;
       selM.innerHTML = '<option value="">' + T("share.select.model") + "</option>" + modelSrc.filter((m) => !p || m.provider === p)
-        .map((m) => '<option value="' + m.model + '">' + m.model + "</option>").join("");
+        .map((m) => '<option value="' + esc(m.model) + '">' + esc(m.model) + "</option>").join("");
       showPriceHint(selM.value);
     };
     const fillPlans = () => {
       const p = selP.value;
       selPlan.innerHTML = '<option value="">' + T("share.select.plan") + "</option>" + planList().filter((pl) => pl.provider === p)
-        .map((pl) => '<option value="' + pl.id + '">' + esc(planLabel(pl)) + "</option>").join("");
+        .map((pl) => '<option value="' + esc(pl.id) + '">' + esc(planLabel(pl)) + "</option>").join("");
       showPlanHint("");
       fillModels();
     };
@@ -1124,7 +1124,7 @@
     if (selP.dataset.plansSrc !== src) {
       selP.innerHTML = '<option value="">' + T("share.select.provider") + "</option>" +
         [...new Set(planList().map((pl) => pl.provider))]
-          .map((p) => '<option value="' + p + '">' + esc(provLabel(p)) + "</option>").join("");
+          .map((p) => '<option value="' + esc(p) + '">' + esc(provLabel(p)) + "</option>").join("");
       selP.dataset.plansSrc = src;
       fillPlans();
     }
@@ -2882,7 +2882,7 @@
     sel.style.cssText = "padding:4px 8px;font-size:12px;width:auto";
     const cur = emp.dept_id == null ? "" : emp.dept_id;
     sel.innerHTML = '<option value="">' + T("common.unassigned") + "</option>" +
-      depts.map((d) => '<option value="' + d.id + '"' + (String(cur) === String(d.id) ? " selected" : "") + ">" + esc(d.name) + "</option>").join("");
+      depts.map((d) => '<option value="' + esc(d.id) + '"' + (String(cur) === String(d.id) ? " selected" : "") + ">" + esc(d.name) + "</option>").join("");
     const ok = document.createElement("button");
     ok.className = "btn btn-primary";
     ok.style.cssText = "padding:4px 10px;font-size:12px";
