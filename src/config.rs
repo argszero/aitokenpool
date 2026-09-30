@@ -67,8 +67,13 @@ pub struct Mail {
     pub verify_subject: String,
 }
 
+/// SMTP 端口的缺省值：**由 `mail.rs` 选用的传输模式决定** ——
+/// `SmtpTransport::relay` = implicit TLS ⇒ 465（`lettre` 的 `SUBMISSIONS_PORT`）。
+/// 填 587（STARTTLS 口）会在连接后立即对 587 做 TLS 握手 ⇒ rustls `InvalidContentType`
+/// （2026-08-20 实测，详见 `src/mail.rs` 文件头）。
+/// `config.example.toml` 里的同一个值由 `smtp_port_gate.rs` 守着，两者必须一致。
 fn default_smtp_port() -> u16 {
-    587
+    465
 }
 
 impl Mail {
