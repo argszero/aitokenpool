@@ -68,6 +68,7 @@ OpenAI-compatible endpoints: `POST /v1/chat/completions`, `POST /v1/responses`, 
 | [docs/architecture.md](docs/architecture.md) | Architecture, API reference, database schema |
 | [docs/user-stories.md](docs/user-stories.md) | User stories & scenarios |
 | [docs/plan-api-matrix.md](docs/plan-api-matrix.md) | Plans & API matrix |
+| [docs/deployment.md](docs/deployment.md) | Deployment & upgrade: downtime window, rollout and rollback checklist |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guide |
 

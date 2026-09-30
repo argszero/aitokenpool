@@ -72,6 +72,11 @@ mod layout_gate;
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod js_gate;
+// 停机预算门禁（rant 2026-09-30T16:25:29）：同样是仅测试期编译 ——
+// 本文件（排水上限）与 docker-compose.yml（stop_grace_period）都在编译期读入，
+// 加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod shutdown_gate;
 
 use std::sync::Arc;
 
@@ -203,6 +208,69 @@ fn init_logging(data_dir: &std::path::Path, cfg: &config::Log) -> anyhow::Result
     Ok(())
 }
 
+/// 停机排水上限（秒）。
+///
+/// 收到 SIGTERM / SIGINT 后，进程**停止接受新连接**并等待在途请求自然完成；超过这个
+/// 上限仍未排完就强制退出。`docker-compose.yml` 的 `stop_grace_period` 必须**大于**
+/// 它，否则 docker 的计时器会先到、用 SIGKILL 把正在排水的进程直接打死
+/// —— 这两个数的关系由 `shutdown_gate.rs` 守着。
+///
+/// 已知边界（不假装无损）：SSE / 长连接请求可能被这个上限截断，
+/// `/v1/chat/completions` 的流式路径即属此类。
+pub const DRAIN_LIMIT_SECS: u64 = 8;
+
+/// 等待停机信号，返回信号名（仅用于日志）。
+///
+/// `docker stop` / Swarm 更新 / `docker compose up -d` 重建容器都发 **SIGTERM**；
+/// 前台 Ctrl-C 发 SIGINT。两者都当作停机信号。
+#[cfg(unix)]
+async fn shutdown_signal() -> &'static str {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = signal(SignalKind::terminate()).expect("注册 SIGTERM 处理器失败");
+    let mut intr = signal(SignalKind::interrupt()).expect("注册 SIGINT 处理器失败");
+    tokio::select! {
+        _ = term.recv() => "SIGTERM",
+        _ = intr.recv() => "SIGINT",
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() -> &'static str {
+    let _ = tokio::signal::ctrl_c().await;
+    "Ctrl-C"
+}
+
+/// 优雅排水：停止接受新连接，等待在途请求自然完成。
+///
+/// `shutdown` 解析为 `()`（axum 的约定）；**硬上限不在这里** —— 它由 `main()` 的
+/// `drain_deadline` 兜底，这样测试可以单独验证「排水本身」而不必触发「强制退出」。
+async fn serve_graceful(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
+    Ok(())
+}
+
+/// 硬上限计时器：`armed` 收到信号后开始计时，`limit` 内仍未排水完成就调用 `on_timeout`。
+///
+/// 生产传入「打日志 + `std::process::exit(0)`」；测试传入一个记录闭包 —— 于是
+///「超时强制退出」这条路径也有执行者，而不是只活在注释里。
+async fn drain_deadline(
+    armed: tokio::sync::oneshot::Receiver<()>,
+    limit: std::time::Duration,
+    on_timeout: impl FnOnce() + Send + 'static,
+) {
+    if armed.await.is_err() {
+        return; // 信号任务没跑成 ⇒ 永不触发
+    }
+    tokio::time::sleep(limit).await;
+    on_timeout();
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -267,7 +335,26 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     log::info!("AITokenPool 服务已启动: http://{addr}");
-    axum::serve(listener, app).await?;
+
+    // 停机（rant 2026-09-30T16:25:29）：收到 SIGTERM / SIGINT → 停止接受新连接、
+    // 等待在途请求完成；`DRAIN_LIMIT_SECS` 秒仍未排完则强制退出。容器侧的
+    // `stop_grace_period` 必须大于这个上限（`shutdown_gate.rs` 守着这对数）。
+    let (armed_tx, armed_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(drain_deadline(
+        armed_rx,
+        std::time::Duration::from_secs(DRAIN_LIMIT_SECS),
+        || {
+            log::warn!("排水超过上限 {DRAIN_LIMIT_SECS}s，强制退出（SSE/长连接可能被截断）");
+            std::process::exit(0);
+        },
+    ));
+    serve_graceful(listener, app, async move {
+        let sig = shutdown_signal().await;
+        log::info!("收到 {sig}：停止接受新连接，等待在途请求完成（上限 {DRAIN_LIMIT_SECS}s）");
+        let _ = armed_tx.send(());
+    })
+    .await?;
+    log::info!("在途请求已排水完成，正常退出");
     Ok(())
 }
 
@@ -317,5 +404,109 @@ mod tests {
         assert!(content.contains("[[plans]]"), "内嵌默认应含 plans");
         assert!(content.contains("[[models]]"), "内嵌默认应含 models");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- 停机排水（rant 2026-09-30T16:25:29）----
+
+    #[tokio::test]
+    async fn the_drain_deadline_force_stops_a_stuck_drain() {
+        use std::time::Duration;
+        let (armed_tx, armed_rx) = tokio::sync::oneshot::channel::<()>();
+        let (hit_tx, hit_rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(drain_deadline(
+            armed_rx,
+            Duration::from_millis(20),
+            move || {
+                let _ = hit_tx.send(());
+            },
+        ));
+        armed_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), hit_rx)
+            .await
+            .expect("收到停机信号后，上限内未排完应触发强制退出")
+            .expect("超时闭包应被调用");
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_drain_deadline_stays_silent_until_the_signal_arrives() {
+        use std::time::Duration;
+        let (armed_tx, armed_rx) = tokio::sync::oneshot::channel::<()>();
+        let (hit_tx, mut hit_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(drain_deadline(
+            armed_rx,
+            Duration::from_millis(10),
+            move || {
+                let _ = hit_tx.send(());
+            },
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut hit_rx)
+                .await
+                .is_err(),
+            "未收到停机信号时不得触发强制退出"
+        );
+        drop(armed_tx); // 取消计时任务
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serve_graceful_finishes_the_in_flight_request() {
+        use axum::routing::get;
+        use std::time::Duration;
+
+        // 处理器先回报「已进入」，睡 300ms 后应答 —— 停机发生在睡眠期间。
+        #[derive(Clone)]
+        struct Entered(std::sync::Arc<tokio::sync::Notify>);
+        async fn slow(
+            axum::extract::State(entered): axum::extract::State<Entered>,
+        ) -> impl axum::response::IntoResponse {
+            entered.0.notify_one();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            // 显式关连接：排水要等的是「在途请求」，不是空闲的 keep-alive 连接
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                axum::http::header::CONNECTION,
+                axum::http::HeaderValue::from_static("close"),
+            );
+            (headers, "done")
+        }
+
+        let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+        let app = axum::Router::new()
+            .route("/slow", get(slow))
+            .with_state(Entered(entered.clone()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_graceful(listener, app, async move {
+            let _ = stop_rx.await;
+        }));
+
+        let inflight = tokio::spawn(async move {
+            reqwest::Client::new()
+                .get(format!("http://{addr}/slow"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        });
+        // 请求真的进了处理器再触发停机 —— 不是靠 sleep 猜
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("在途请求应先进入处理器");
+        stop_tx.send(()).unwrap();
+
+        assert_eq!(
+            inflight.await.unwrap(),
+            "done",
+            "在途请求应在排水期内完成，而不是被停机掐断"
+        );
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("排水完成后 serve 应返回")
+            .unwrap()
+            .unwrap();
     }
 }
