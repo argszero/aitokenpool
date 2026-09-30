@@ -18814,3 +18814,574 @@ fn the_r117_scanners_have_teeth() {
         "摘监听有两处，却认出了唯一收尾"
     );
 }
+
+// ═══════════════ R134：编辑表单绝不把服务端的掩码写回可提交字段 ═══════════════
+//
+// 轴（rant 2026-09-30T13:12:07 第 5 条）：服务端只把**掩码成品**（`sk-****xxxx`）交给前端，
+// 编辑表单的语义是「留空 / 省略 = 保留原密文，填新值 = 加密替换」。掩码串一旦被当成新 key
+// 提交，后端会把它加密写回 `encrypted_key` ⇒ 原 key 永久失效（之后每次调用 401），而界面
+// **没有任何异常提示**：列表照旧印掩码、行照旧在架、用户只会看到调用开始失败。
+//
+// 本门禁证的是**形状**（射程＝词法；浏览器事实归 jsdom 探针，仓内 CI 无 JS 运行器）：
+//   R1  载荷里那个 key 成员只有一个入口 —— 可提交字段的 `value`，且**只在非空时**才带上
+//       （载荷字面量里不得出现该成员，否则它就是无条件带上的）。
+//   R2  可提交字段的**每一个**程序化写点都只写空串 ⇒ 没有任何代码路径能把掩码（或任何文本）
+//       放进那个框里；框里的内容只能来自用户键入。
+//   R3  反：掩码必须**真的**被显示 —— 该字段的 `placeholder` 写点唯一，且它的入参来自共享行
+//       的那个成员（掩码不许悄悄不再展示 —— 少了一句提示，用户就不知道框里为什么是空的）。
+//
+// 三条规则的输入**全部派生**：字段选择器取自 R1 那条链（守卫绑定 → 元素读），成员名取自载荷里
+// 那个赋值本身 —— `#sf-key` / `key` 一个都没写死在门禁里。
+
+/// 行语料：**纯注释行**置空（`//` 行与块注释形态都算），其余**原样保留缩进**。
+///
+/// 与 `code_text_by_line` 的区别：那个会 `trim`，而本门禁既要靠缩进认函数体收尾（恰为 `  }`），
+/// 又要让行号与 `lines()` 对齐。行尾注释仍留在行里 —— 取值一律**截到第一个 `;`** 为止，
+/// 所以 `… = ""; // 说明` 与 `… = "";` 读出同一个值（射程＝词法，见上）。
+fn r134_code_lines(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for line in src.lines() {
+        let mut rest = line;
+        if in_block {
+            match rest.find("*/") {
+                Some(i) => {
+                    rest = &rest[i + 2..];
+                    in_block = false;
+                }
+                None => {
+                    out.push(String::new());
+                    continue;
+                }
+            }
+        }
+        if is_comment_line(rest) {
+            out.push(String::new());
+            continue;
+        }
+        let (code, opened) = strip_inline_blocks(rest);
+        if opened {
+            in_block = true;
+        }
+        out.push(code);
+    }
+    out
+}
+
+/// 标识符（本门禁只认 `[A-Za-z0-9_$]`，且不以数字开头）。
+fn r134_is_ident(s: &str) -> bool {
+    !s.is_empty()
+        && !s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true)
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// 一行里的 `if (<cond>) <obj>.<member> = <rhs>;` —— 四段全取出来。
+///
+/// `cond` 必须是**裸标识符**（守卫绑定），否则不是本轴认的「非空才带上」的形状：
+/// `if (a && b)` / `if (!k)` 一律不算（那些条件的真值不直接等于「填了新 key」）。
+fn r134_guarded_assign(line: &str) -> Option<(String, String, String, String)> {
+    let t = line.trim();
+    let rest = t.strip_prefix("if (")?;
+    let close = rest.find(')')?;
+    let cond = rest[..close].trim();
+    let tail = rest[close + 1..].trim();
+    let tail = tail.split(';').next()?.trim();
+    let (lhs, rhs) = tail.split_once('=')?;
+    if rhs.starts_with('=') {
+        return None; // `==`
+    }
+    let lhs = lhs.trim();
+    let (obj, member) = lhs.rsplit_once('.')?;
+    let (obj, member) = (obj.trim(), member.trim());
+    if !r134_is_ident(obj) || !r134_is_ident(member) || !r134_is_ident(cond) {
+        return None;
+    }
+    Some((
+        cond.to_string(),
+        obj.to_string(),
+        member.to_string(),
+        rhs.trim().to_string(),
+    ))
+}
+
+/// 行语料里某一行的**直属具名函数**（往回找最近的 `function NAME(`）与它的体区间。
+///
+/// ⚠️ 不枚举全部函数：行语料上没有可靠的「函数体收尾」判据（嵌套函数与同缩进的外层体都收在
+/// `  }`），枚举会把外层函数的体一起圈进来（实测 15 个假命中）。往回找最近的那个头是稳的。
+fn r134_enclosing_span(lines: &[String], idx: usize) -> Option<(usize, usize, String)> {
+    let head = (0..idx)
+        .rev()
+        .find(|&i| function_name(&lines[i]).is_some())?;
+    let name = function_name(&lines[head])?.to_string();
+    let end = (head..lines.len()).find(|&i| lines[i] == "  }")?;
+    Some((head, end, name))
+}
+
+/// `const <name> = (<params>) => { … }` 的头部 —— 只认**块体**箭头（表达式体没有体能装收尾动作）。
+fn r134_arrow_head(line: &str) -> Option<(String, Vec<String>)> {
+    let t = line.trim();
+    let rest = t.strip_prefix("const ")?;
+    let (name, tail) = rest.split_once(" = (")?;
+    let name = name.trim();
+    if !r134_is_ident(name) {
+        return None;
+    }
+    let close = tail.find(") =>")?;
+    if !tail[close..]
+        .trim_start_matches(") =>")
+        .trim_start()
+        .starts_with('{')
+    {
+        return None;
+    }
+    let params = tail[..close]
+        .split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    Some((name.to_string(), params))
+}
+
+/// `$("<sel>").<member> = <rhs>;` 的全部写点：`(行号, rhs)`。rhs 截到第一个 `;`。
+fn r134_writes(lines: &[String], sel: &str, member: &str) -> Vec<(usize, String)> {
+    let needle = format!("$(\"{sel}\").{member}");
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find(&needle) {
+            let at = from + rel + needle.len();
+            let rest = line[at..].trim_start();
+            if let Some(after) = rest.strip_prefix('=') {
+                if !after.starts_with('=') {
+                    out.push((
+                        i + 1,
+                        after.split(';').next().unwrap_or(after).trim().to_string(),
+                    ));
+                }
+            }
+            from = at;
+            if from >= line.len() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// `const <guard> = <rhs>;` 的 rhs。
+fn r134_binding_rhs(lines: &[String], guard: &str) -> Option<String> {
+    let head = format!("const {guard} = ");
+    for l in lines {
+        if let Some(rest) = l.trim_start().strip_prefix(&head) {
+            return Some(rest.split(';').next().unwrap_or(rest).trim().to_string());
+        }
+    }
+    None
+}
+
+/// 从表达式里取 `$("<sel>")` 的选择器（元素读的左侧）。
+fn r134_element_sel(expr: &str) -> Option<String> {
+    let at = expr.find("$(\"")?;
+    let rest = &expr[at + 3..];
+    let close = rest.find('"')?;
+    Some(rest[..close].to_string())
+}
+
+/// `const <obj> = { … };` 的**成员名**（逐行取 `:` 或 `,` 之前那一段，缩写在列）。
+///
+/// 守卫要的是「这个成员是不是**无条件**在载荷里」—— 所以 `key: v,` 与 `key,` 必须一视同仁。
+fn r134_object_members(lines: &[String], obj: &str) -> Vec<String> {
+    let head = format!("const {obj} = {{");
+    let start = match lines.iter().position(|l| l.trim_start().starts_with(&head)) {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for l in &lines[start + 1..] {
+        let t = l.trim();
+        if t == "};" || t == "}" {
+            break;
+        }
+        if t.is_empty() {
+            continue;
+        }
+        let name = t.split([':', ',']).next().unwrap_or("").trim();
+        if r134_is_ident(name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// `f(args)` 的实参（顶层逗号切分；只认标识符边界前的 `f`）。
+fn r134_call_args(line: &str, fname: &str) -> Vec<String> {
+    let needle = format!("{fname}(");
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find(&needle) {
+        let at = from + rel;
+        let before_ok = at == 0
+            || !line.as_bytes()[at - 1].is_ascii_alphanumeric()
+                && line.as_bytes()[at - 1] != b'_'
+                && line.as_bytes()[at - 1] != b'$';
+        let open = at + needle.len();
+        let mut depth = 1usize;
+        let mut end = open;
+        for (k, c) in line[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + k;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if before_ok && end > open {
+            out.push(line[open..end].trim().to_string());
+        }
+        from = open;
+        if from >= line.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// 本轴的读数。
+struct R134Reading {
+    r1: bool,
+    r2: bool,
+    r3: bool,
+    sel: String,
+    member: String,
+    payload_fn: String,
+    detail: String,
+}
+
+impl R134Reading {
+    fn verdicts(&self) -> (bool, bool, bool) {
+        (self.r1, self.r2, self.r3)
+    }
+    fn report(&self) -> String {
+        format!(
+            "r1={} r2={} r3={} | sel={:?} member={:?} payload_fn={:?} {}",
+            self.r1, self.r2, self.r3, self.sel, self.member, self.payload_fn, self.detail
+        )
+    }
+}
+
+/// 一条也读不出来时的读数（**不是**「全绿」—— 派生失败就是红，见 `r134_read` 的文档）。
+fn r134_blank(detail: String) -> R134Reading {
+    R134Reading {
+        r1: false,
+        r2: false,
+        r3: false,
+        sel: String::new(),
+        member: String::new(),
+        payload_fn: String::new(),
+        detail,
+    }
+}
+
+/// 读 `ui/js/app.js` 的三条规则。
+///
+/// ⚠️ 派生链断了（找不到载荷构造器 / 守卫绑定 / 元素选择器）时返回**全红**，不是全绿：
+/// 门禁的主张是「这些形状**在**」，读不出来就意味着主张没有被证明，而不是被满足。
+fn r134_read(app: &str) -> R134Reading {
+    let lines = r134_code_lines(app);
+    // ① 载荷里那个「守卫赋值」必须**唯一** —— 两处各造一个 key 字段＝两个入口。
+    // 候选 = 「守卫赋值」且那个对象是**本函数里声明出来的对象字面量**（＝一份载荷）。
+    // 只要求形状 `if (k) o.m = …;` 太宽：全仓 19 处（`if (prev) prev.disabled = …` 也算），
+    // 而载荷是**建出来的**那个对象 —— 这条把「顺手改个字段」的语句排掉。
+    let mut sites: Vec<(usize, (String, String, String, String))> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        let a = match r134_guarded_assign(l) {
+            Some(a) => a,
+            None => continue,
+        };
+        let (_, obj, _, _) = a.clone();
+        let decl = format!("const {obj} = {{");
+        let in_fn = match r134_enclosing_span(&lines, i) {
+            Some((h, e, _)) => (h..=e).any(|k| lines[k].trim_start().starts_with(&decl)),
+            None => false,
+        };
+        if in_fn {
+            sites.push((i, a));
+        }
+    }
+    if sites.len() != 1 {
+        return r134_blank(format!(
+            "`if (…) <obj>.<member> = …;` 形状的载荷赋值有 {} 处，须恰 1 处",
+            sites.len()
+        ));
+    }
+    let (site, assign) = sites[0].clone();
+    // 只拆出前三段：`rhs` 由 `assign.3` 单独比对（R1 要求「带上的正好是那个守卫」）。
+    let (guard, obj, member, _rhs) = assign.clone();
+    // 载荷构造器 = 往回找**最近**的那个具名函数。
+    // ⚠️ 不枚举全部函数：行语料上没有可靠的「函数体收尾」判据（嵌套函数与同缩进的外层
+    // 体都收在 `  }`），枚举会把外层函数的体一起圈进来 —— 实测 15 个「命中」。
+    let (head, end, fn_name) = match r134_enclosing_span(&lines, site) {
+        Some((h, e, n)) => (h, e, n),
+        None => return r134_blank("载荷赋值不在任何具名函数体里".to_string()),
+    };
+    let body: Vec<String> = lines[head..=end].to_vec();
+    // ② 守卫绑定的初始化式 → 可提交字段的选择器。
+    let init = match r134_binding_rhs(&body, &guard) {
+        Some(r) => r,
+        None => {
+            return r134_blank(format!(
+                "`{fn_name}` 里找不到守卫绑定 `const {guard} = …;` 的初始化式"
+            ))
+        }
+    };
+    let sel = match r134_element_sel(&init) {
+        Some(s) => s,
+        None => return r134_blank(format!("守卫绑定 `{guard}` 的初始化式不是元素读：{init:?}")),
+    };
+    if !init.contains(&format!("\"{sel}\").value")) {
+        return r134_blank(format!(
+            "守卫绑定 `{guard}` 的初始化式读的不是 `\"{sel}\").value`：{init:?}"
+        ));
+    }
+
+    // R1：那个成员只有一个入口，且**只在非空时**才带上。
+    let members = r134_object_members(&lines, &obj);
+    let unconditional = members.iter().any(|m| m == &member);
+    let all_assigns = lines
+        .iter()
+        .filter(|l| l.contains(&format!("{obj}.{member} =")))
+        .count();
+    let r1 = !unconditional
+        && all_assigns == 1
+        && assign.0 == guard
+        && assign.1 == obj
+        && assign.2 == member
+        && assign.3 == guard;
+
+    // R2：可提交字段的每一个程序化写点都只写空串。
+    let writes = r134_writes(&lines, &sel, "value");
+    let r2 = !writes.is_empty() && writes.iter().all(|(_, v)| v == "\"\"" || v == "''");
+
+    // R3（反）：掩码必须真的被显示，且只经 `placeholder`。
+    let ph = r134_writes(&lines, &sel, "placeholder");
+    let mut r3 = false;
+    // 延后初始化（每个分支都赋值）：先给个初值只会被下面那句覆盖，`clippy` 会按
+    // `unused_assignments` 点名 —— 而这里的初值本来也不该存在（读不出来时的措辞由分支决定）。
+    let ph_detail: String;
+    if ph.len() == 1 {
+        let (line_no, ph_rhs) = &ph[0];
+        let idx = line_no - 1;
+        let arrow = (0..idx).rev().find_map(|i| {
+            let (n, p) = r134_arrow_head(&lines[i])?;
+            Some((i, n, p))
+        });
+        match arrow {
+            None => ph_detail = "占位符那个写点之前没有任何块体箭头声明".to_string(),
+            Some((_, arrow_name, params)) => {
+                let carrier = params
+                    .iter()
+                    .find(|p| mentions_identifier(ph_rhs, p))
+                    .cloned()
+                    .unwrap_or_default();
+                if carrier.is_empty() {
+                    ph_detail =
+                        format!("`{arrow_name}` 的形参 {params:?} 都没出现在 {ph_rhs:?} 里");
+                } else {
+                    let args: Vec<String> = lines
+                        .iter()
+                        .flat_map(|l| r134_call_args(l, &arrow_name))
+                        .collect();
+                    let from_row = args.iter().find(|a| {
+                        a.rsplit_once('.')
+                            .map(|(lhs, f)| r134_is_ident(lhs) && f == member)
+                            .unwrap_or(false)
+                    });
+                    r3 = from_row.is_some();
+                    ph_detail = format!(
+                        "placeholder={ph_rhs:?} carrier={carrier:?} arrow={arrow_name:?} \
+                         call_args={args:?} from_row={from_row:?}"
+                    );
+                }
+            }
+        }
+    } else {
+        ph_detail = format!("placeholder 写点 {} 个（须恰 1 个）：{ph:?}", ph.len());
+    }
+
+    R134Reading {
+        r1,
+        r2,
+        r3,
+        sel,
+        member,
+        payload_fn: fn_name,
+        detail: format!(
+            "guard={guard:?} obj={obj:?} members={members:?} assigns={all_assigns} \
+             writes={writes:?} {ph_detail}"
+        ),
+    }
+}
+
+/// 共享编辑表单绝不把服务端的掩码串写回可提交字段 —— 一份事实一份入口。
+#[test]
+fn the_share_edit_form_never_submits_the_stored_key_mask() {
+    let rd = r134_read(APP_JS);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, true),
+        "共享编辑表单不再保证「掩码只进 placeholder、绝不进可提交字段」：{}",
+        rd.report()
+    );
+}
+
+/// 阳性对照：抽取器真的落在活树的目标上（不是空串恒真），且派生出的字段真的被写 / 被显示。
+#[test]
+fn the_r134_roster_is_derived() {
+    let rd = r134_read(APP_JS);
+    assert_eq!(rd.verdicts(), (true, true, true), "{}", rd.report());
+    assert!(
+        rd.sel.starts_with('#') && rd.sel.len() > 1,
+        "派生出的不是 DOM 选择器：{:?}",
+        rd.sel
+    );
+    assert!(
+        r134_is_ident(&rd.member),
+        "派生出的成员名不是标识符：{:?}",
+        rd.member
+    );
+    assert!(
+        !rd.payload_fn.is_empty() && APP_JS.contains(&format!("function {}(", rd.payload_fn)),
+        "派生出的载荷构造器 {:?} 在源码里找不到",
+        rd.payload_fn
+    );
+    // 两项提取都**真的**读到了东西：写点非空（否则 R2 会靠空集恒真）。
+    let lines = r134_code_lines(APP_JS);
+    let writes = r134_writes(&lines, &rd.sel, "value");
+    assert!(
+        !writes.is_empty(),
+        "可提交字段 {:?} 一个 `value` 写点都没扫到 —— 扫描器落在空处",
+        rd.sel
+    );
+    assert!(
+        !r134_writes(&lines, &rd.sel, "placeholder").is_empty(),
+        "可提交字段 {:?} 的 placeholder 写点没扫到 —— 扫描器落在空处",
+        rd.sel
+    );
+}
+
+/// 每个变异体只打翻它针对的那一条（基线＝已知为绿的活树）。
+#[test]
+fn the_r134_rules_have_teeth() {
+    let live = r134_read(APP_JS);
+    assert_eq!(
+        live.verdicts(),
+        (true, true, true),
+        "基线不是绿的 —— 变异体的读数无从解释：{}",
+        live.report()
+    );
+
+    // ① 载荷的那个成员改从**显示出来的掩码**取（`payload.key = $("#sf-key").placeholder;`）
+    //    ⇒ 只翻 R1：字段本身没被动过，显示也还在。
+    let app = APP_JS.replacen(
+        "if (key) payload.key = key;",
+        "if (key) payload.key = $(\"#sf-key\").placeholder;",
+        1,
+    );
+    assert!(app != APP_JS, "变异体 ① 没改动任何字节 —— 锚点过期");
+    let rd = r134_read(&app);
+    assert_eq!(rd.verdicts(), (false, true, true), "{}", rd.report());
+
+    // ①b 该成员被搬进载荷**字面量**（无条件带上）⇒ 也只翻 R1。
+    let app = APP_JS.replacen(
+        "      note,\n    };\n    if (key)",
+        "      note,\n      key,\n    };\n    if (key)",
+        1,
+    );
+    assert!(app != APP_JS, "变异体 ①b 没改动任何字节 —— 锚点过期");
+    let rd = r134_read(&app);
+    assert_eq!(rd.verdicts(), (false, true, true), "{}", rd.report());
+
+    // ② 某个程序化写点不再只写空串（掩码进了那个框）⇒ 只翻 R2。
+    let app = APP_JS.replacen(
+        "$(\"#sf-key\").value = \"\";",
+        "$(\"#sf-key\").value = mask;",
+        1,
+    );
+    assert!(app != APP_JS, "变异体 ② 没改动任何字节 —— 锚点过期");
+    let rd = r134_read(&app);
+    assert_eq!(rd.verdicts(), (true, false, true), "{}", rd.report());
+
+    // ③ 掩码不再被交进表单（入参换成常量）⇒ 只翻 R3。
+    let app = APP_JS.replacen("syncShareFormMode(s.key);", "syncShareFormMode(\"\");", 1);
+    assert!(app != APP_JS, "变异体 ③ 没改动任何字节 —— 锚点过期");
+    let rd = r134_read(&app);
+    assert_eq!(rd.verdicts(), (true, true, false), "{}", rd.report());
+}
+
+/// 扫描器自证：判别式对**形状相近但语义相反**的输入必须给否，否则规则会因错误的原因变绿。
+#[test]
+fn the_r134_scanners_have_teeth() {
+    // 守卫条件必须是**裸标识符**：`if (k && t)` / `if (!k)` 的真值不直接等于「填了新 key」。
+    assert!(r134_guarded_assign("if (key) payload.key = key;").is_some());
+    assert!(r134_guarded_assign("if (k && t) payload.key = k;").is_none());
+    assert!(r134_guarded_assign("if (!key) payload.key = key;").is_none());
+    // 比较不是赋值。
+    assert!(r134_guarded_assign("if (key) payload.key == key;").is_none());
+    // 不是语句的话不算（`while` / 裸表达式）。
+    assert!(r134_guarded_assign("while (key) payload.key = key;").is_none());
+
+    // 元素选择器只从 `$("<sel>")` 取：别的东西读不出选择器。
+    assert_eq!(
+        r134_element_sel("$(\"#sf-key\").value.trim()").as_deref(),
+        Some("#sf-key")
+    );
+    assert!(r134_element_sel("document.querySelector(\"#sf-key\").value").is_none());
+
+    // 实参切分是**深度**感知的：内层逗号 / 括号不切。
+    assert_eq!(r134_call_args("f(a.b);", "f"), vec!["a.b".to_string()]);
+    assert_eq!(
+        r134_call_args("f(g(x.y), 2);", "f"),
+        vec!["g(x.y), 2".to_string()]
+    );
+    // 名字必须整词命中：`xf(` 不是 `f(`。
+    assert!(r134_call_args("xf(a.b);", "f").is_empty());
+
+    // 块体箭头 vs 表达式体箭头：只有前者有体能装收尾动作。
+    assert!(r134_arrow_head("  const a = (x) => {").is_some());
+    assert!(r134_arrow_head("  const a = () => $(\"#x\");").is_none());
+    assert_eq!(
+        r134_arrow_head("  const a = (x, y) => {").map(|(_, p)| p),
+        Some(vec!["x".to_string(), "y".to_string()])
+    );
+
+    // 载荷字面量的成员名：`key: v,` 与 `key,` 一视同仁（缩写在列）。
+    let lines: Vec<String> = [
+        "    const p = {",
+        "      a,",
+        "      b: c,",
+        "      key,",
+        "    };",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(
+        r134_object_members(&lines, "p"),
+        vec!["a".to_string(), "b".to_string(), "key".to_string()]
+    );
+
+    // 派生链断掉时是**全红**，不是全绿（把守卫赋值整段删掉）。
+    let app = APP_JS.replacen("if (key) payload.key = key;", "// gone", 1);
+    assert!(app != APP_JS);
+    assert_eq!(
+        r134_read(&app).verdicts(),
+        (false, false, false),
+        "派生失败必须是红"
+    );
+}

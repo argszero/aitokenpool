@@ -99,12 +99,12 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 796;
-const EN_KEY_COUNT: usize = 796;
+const ZH_KEY_COUNT: usize = 799;
+const EN_KEY_COUNT: usize = 799;
 const STATIC_ATTR_COUNT: usize = 335;
 const STATIC_ATTR_DISTINCT: usize = 309;
-const T_LITERAL_COUNT: usize = 546;
-const T_LITERAL_DISTINCT: usize = 435;
+const T_LITERAL_COUNT: usize = 549;
+const T_LITERAL_DISTINCT: usize = 437;
 
 /// 切出语言包区段（起点标记 → 终点标记，含起点）。
 fn pack_region<'a>(src: &'a str, start_mark: &str, end_mark: &str) -> &'a str {
@@ -1242,7 +1242,8 @@ const UNREACHABLE_PACK_KEYS: &[(&str, &str)] = &[
     ("common.close", "old-design"),
     ("common.none", "old-design"),
     ("common.ok", "old-design"),
-    ("common.save", "old-design"),
+    // ⚠️ `common.save` 曾在这张清单上（old-design）。rant 2026-09-30T13:12:07 的编辑表单把它接了线
+    // （编辑态的提交按钮改挂 `data-i18n="common.save"`）⇒ 按本清单的规矩**同时移出**（门禁会逐条点名）。
     ("common.search", "old-design"),
     ("login.demo", "old-design"),
     ("login.subtitle", "old-design"),
