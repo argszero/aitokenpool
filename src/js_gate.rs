@@ -61,7 +61,7 @@ use std::collections::BTreeSet;
 
 /// 声明语料：`ui/js/*.js` —— **只有这里**找声明。
 /// `include_str!` 在编译期读入 ⇒ 改任一 `ui/js/*.js` 都会重编并重跑本门禁。
-const JS_SOURCES: &[(&str, &str)] = &[
+pub(crate) const JS_SOURCES: &[(&str, &str)] = &[
     ("app.js", include_str!("../ui/js/app.js")),
     ("api.js", include_str!("../ui/js/api.js")),
     ("data.js", include_str!("../ui/js/data.js")),

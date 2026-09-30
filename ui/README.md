@@ -235,7 +235,7 @@ ui/
 
 - **视觉 polish**：`.login-form .input:focus` 加 `0 0 0 3px var(--accent-soft)` 聚焦光晕（深/亮主题通用）；⚠️ 2026-09-11 全站 UI 重设计（`e33bf2e` / #153）更正：本条原先记录的 `.login-card .logo`（52px 渐变微光）与 `.login-brand h1`（22px）已随「单卡片 → 左右分栏」删除 —— logo 现为 `.logo-tile` 圆角方块（无 ring），标题现为 `h1.lb-headline`（`clamp(30px, min(4.4vw, 6.2vh), 54px)`）；
 - **行内校验**：空邮箱 →「请输入邮箱 / 账号」、空密码 →「请输入密码」（复用 `setFieldError`/`field-error` 组件：红边框 + 行内文案 + 聚焦首个错误 + 输入自动清除）；表单 `novalidate` 自管校验；输入框带 id（`#login-email` / `#login-pass`）；
-- **记住我**：`#login-remember` checkbox → localStorage `atp-remember`（登录提交时存，DOMContentLoaded 时还原）；⚠️ 2026-08-19 演示数据清理（`35291b3` / #90，v0.6.0）更正：本条原写「小字显示演示账号」，那行演示账号提示已随演示数据一并删除 —— 今天登录表单再无演示账号文案；`ui/css/style.css` 的 `.demo-hint` 规则成了**孤儿**（没有任何元素再带这个类），语言包键 `login.demo` 已进不可达日落清单；
+- **记住我**：`#login-remember` checkbox → localStorage `atp-remember`（登录提交时存，DOMContentLoaded 时还原）；⚠️ 2026-08-19 演示数据清理（`35291b3` / #90，v0.6.0）更正：本条原写「小字显示演示账号」，那行演示账号提示已随演示数据一并删除 —— 今天登录表单再无演示账号文案；`ui/css/style.css` 的 `.demo-hint` 规则此后一直是**孤儿**（没有任何元素再带这个类），R132（2026-09-30）已把它连同 `.login-divider` / `.wallet-note` / `.sidebar #toggle-mode-btn` 一并删除；语言包键 `login.demo` 已进不可达日落清单；
 - 冒烟测试注意：stub 中 `setFieldError` 依赖 `input.parentNode.querySelector(".field-error")` —— stub 的 parentNode 需实现该查询；`insertAdjacentElement` 记录插入元素供断言。
 
 ## 接入端点卡片约定（v1.19，rant 2026-08-17T20:44:18）
@@ -1267,3 +1267,11 @@ key**（正常操作）于是让运营者看到红色故障警报，而屏幕上
   都从 `sharing.rs` **派生**，⛔ 不写快照。
 - ⚠️ **射程**：**词法** —— 证「那一格印的是谁的值、值从哪来」，**不证**屏幕上的像素（仓内 CI 无
   JS 运行器，与本文档其余形状门禁同款）。
+
+## 样式表的选择器必须落在元素上（R132，2026-09-30）
+
+- **不变量**：`ui/css/style.css` 里每一个 `.类` / `#id` 选择器都必须有主人 —— 那个名字得以**标识符边界**出现在**应用语料**（`ui/index.html` 标记 ＋ `ui/js/*.js` 脚本，类名有一半是 JS 动态拼出来的）或**设计基线语料**（`docs/prototype/aitokenpool-console.html`，`style.css` 文件头自己声明的那个）里。
+- **为什么单列一条**：一条谁都不带的规则**今天仍然生效**（写一个 `class="wallet-note"` 照样拿到 12px），所以它比一条已经删掉的规则更能骗人 —— 读者看到的是活着的组件规则，而它服务的元素早就没了。R132 一次删掉四条这样的规则：`.demo-hint`（元素随 #90 演示数据清理走掉）· `.login-divider`（#159 起标记改用原型规范名 `.divider`，旧名只留了一句「历史别名」注释）· `.wallet-note`（#156 把元素改写成 `.wallet-hero-note`，旧规则原地留下）· `.sidebar #toggle-mode-btn`（要藏的按钮从来没进过产品，同段清单里的 `#logout-btn` 却是活的）。
+- **`.delta` 刻意保留**：原型 `statCard()` 会真的吐出 `<div class="delta ok">`，它是设计基线词汇、不是残留 —— 这也是把原型语料算进来的原因（实测全表只有它靠这条腿过）。
+- **门禁** `src/layout_gate.rs::every_selector_lands_on_an_element`（R4；token 名册从选择器文本派生，脚本名册借用 `js_gate` 那份 ⇒ 新增 `ui/js/*.js` 不会被静默漏掉，⛔ 零手写类名清单）。
+- ⚠️ **射程**：**词法**且刻意**宽口径** —— 它证「这个名字有落点」，**不证**落点就是它要服务的东西（注释里、字符串里、别处的死代码里的一次同名出现都算数；提到名字 ≠ 穿在身上，与 `js_gate` 同源），也**不**证屏幕上的像素。原型语料是一个**刻意的逃生口**（原型里出现过的任何词都放行）。
