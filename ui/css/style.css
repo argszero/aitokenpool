@@ -431,7 +431,9 @@ select.input option { background: var(--bg-card); }
 .density-compact .table tbody td::before { font-size: 11px; }
 .density-compact .table .btn { padding: 2px 8px; font-size: 11px; }
 .density-options { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
-.density-options .check { display: flex; align-items: center; gap: 6px; flex-direction: row; color: var(--text-dim); font-size: 13px; cursor: pointer; }
+/* 这里原有一条 `.density-options .check`（#66 的密度档样式）—— #157 把两枚单选的 class
+   改成 `.check-line` 之后它**再无匹配元素**，已删：密度档的两个标签现在与其它整行复选一样，
+   取组件层 `.check-line` 自己的外观（组件层＝一个组件一种外观）。 */
 .density-options input { accent-color: var(--accent); }
 
 /* 状态徽标：规范类为原型 .pill-* / .tag（定义见「通用组件层」），
@@ -591,9 +593,18 @@ mark {
    而 markup 里 6 处 `class="row"`（共享上架 / 充值 / 申请加额的确认·取消按钮行）
    因此完全无样式，按钮贴在一起且不换行。补齐与原型逐条一致的规则。 */
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
-.form label.check { flex-direction: row; align-items: center; gap: 8px; }
-.form label.check input { accent-color: var(--accent); }
+/* 字段标签：**没有组件类**的 label 才吃这条列向排布（`:not([class])`）。
+   bug（R128）：这条原本是无条件的 `.form label`（0,1,1），于是它压过组件层自己的排布 ——
+   `.check-line`（0,1,0）与 `.chip`（0,1,0，声明 `display:inline-flex`）都低于它 ⇒
+   表单里的整行复选/单选被竖排（钮叠在文字上方并居中）、星期 chip 从药丸变成圆饼。
+   两处受害者的来历不同、根因同一个：
+     · `.check-line`：#157 把设置页 3 枚通知复选 + 2 枚密度单选从 `class="check"`
+       改成原型规范名（#154 引入的组件层），**只改了 markup、没改样式表** ——
+       旧的 `.form label.check`（0,2,1，唯一一条把复选掰回 row 的规则）因此失效；
+     · `.chip`：#32 把上架表单的星期 chip 从 `<button>` 换成 `<label>`，#154 给的
+       `display:inline-flex` 从此被 `display:flex` 覆盖。
+   正解＝让组件类自己说话：**带类的 label 由它的类声明盒子**，泛化规则只服务无类字段标签。 */
+.form label:not([class]) { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
 
 /* 可用时间段：星期多选 chips */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -722,7 +733,9 @@ mark {
 .auth-tabs button.active { background: var(--accent); color: var(--accent-ink); }
 
 .login-form { display: flex; flex-direction: column; gap: 12px; }
-.login-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
+/* 同上：登录表单的字段标签也只服务无类的 label（`#login-remember` 那枚 `.checkbox-line`
+   是带类的，由它自己的规则给盒子）。 */
+.login-form label:not([class]) { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
 /* 登录输入框聚焦光晕（rant 20:39:30 G） */
 .login-form .input:focus { box-shadow: 0 0 0 3px var(--accent-soft); }
 .login-remember {
@@ -1157,10 +1170,14 @@ table.dt td.num, table.dt th.num { text-align: right; font-family: var(--mono); 
 /* 文本域沿用输入框外观（原型 input.i/select.i/textarea.i） */
 textarea.input { resize: vertical; min-height: 76px; }
 textarea.input:focus { border-color: var(--accent); }
-/* check-line：整行复选（原型 .check-line）；.checkbox-line / .checkbox 为其线上历史别名 */
+/* check-line：整行复选（原型 .check-line）；.checkbox-line / .checkbox 为其线上历史别名。
+   ⚠️ 这几个类的 label 在 `.form` / `.login-form` 里**不再吃**那条泛化的字段标签规则
+   （`:not([class])`）⇒ 盒子必须由这里给全：`.checkbox-line` 的 `display:flex` 在登录页一节，
+   `.checkbox`（管理页「支持读图」）此前靠 `.form label` 的 `display:flex` 白拿 ——
+   那条规则现在不命中它了，所以补上 `display:flex`，`flex-direction:row` 依旧由 `!important` 压住。 */
 .check-line { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
 .check-line input { accent-color: var(--accent); width: 15px; height: 15px; }
-.checkbox, .checkbox-line { flex-direction: row !important; align-items: center; gap: 8px; }
+.checkbox, .checkbox-line { display: flex; flex-direction: row !important; align-items: center; gap: 8px; }
 .checkbox input, .checkbox-line input { accent-color: var(--accent); width: 14px; height: 14px; }
 /* 交易页自定义时间段的 datetime-local 输入：与 .input 同观感 */
 .tx-range-input {
