@@ -77,6 +77,10 @@ mod js_gate;
 // 加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod shutdown_gate;
+// 选项模板转义门禁（R71）：同样是仅测试期编译 —— ui/js/*.js 在编译期读入，
+// 加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod option_escape_gate;
 
 use std::sync::Arc;
 
