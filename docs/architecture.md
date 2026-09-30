@@ -74,7 +74,7 @@
 - `GET /api/models` — 模型列表（含可用 key 与价格）
 - `POST /v1/chat/completions` / `/v1/responses` / `/anthropic/v1/messages` — 网关（非流式 + SSE）
 - `GET /api/wallet` / `/api/transactions` / `/api/dashboard` — 钱包 / 交易（summary + 明细）/ 仪表盘
-- `POST/GET/PATCH /api/sharings` — key 上架 / 列表 / 暂停下线
+- `POST/GET/PATCH /api/sharings` — key 上架 / 列表 / 编辑（PATCH 部分更新：暂停 · 恢复 · 下线，以及上架时的全部设置）
 - `POST /api/admin/credits` / `GET /api/admin/users` / `usage` / `models` CRUD — 管理（role=admin）
 - `GET/POST /api/admin/departments` + `PATCH/DELETE /api/admin/departments/:id` — 部门管理（role=admin）
 - `POST/GET /api/raise-requests` + `POST /api/admin/raise-requests/:id/{approve,reject}` — 加额申请 / 审批

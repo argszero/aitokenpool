@@ -3,7 +3,9 @@
 //! P0-C（rant 2026-08-18T10:36:04）：
 //! - POST /api/sharings 上架（key 加密落库，DB 无明文）
 //! - GET  /api/sharings 我的共享列表（key 脱敏 sk-****xxxx）
-//! - PATCH /api/sharings/:id 暂停/恢复/删除（status: paused/on/off，软删）
+//! - PATCH /api/sharings/:id 编辑已上架的 key：暂停/恢复/删除（status: paused/on/off，软删）
+//!   ＋ 上架时的**全部设置**（provider / plan / model / key / quota / available / note，
+//!   部分更新：**省略的字段不修改**）。行 id、上架时间与收益归属保持不变。
 //! - 可用时间段字段：available_days + start/end（先存后展示，生效判定留 P1）
 
 use axum::extract::{Path, State};
@@ -44,11 +46,51 @@ pub struct Avail {
     pub end: String,
 }
 
-/// 状态变更请求
+/// 编辑请求（部分更新）：与 [`CreateSharingReq`] **同一字段集合**，外加 `status`。
+///
+/// 语义：**省略的字段不修改**（`None` = 沿用当前值），给出的字段整体替换。
+/// - `status`：paused / on / off（off = 软删），取值与语义与旧的「只改状态」完全一致；
+/// - `key`：⚠️ 前端手里只有**掩码串**（`mask_upstream_key` 的成品）。省略 / 留空 = **保留原密文**，
+///   填写新值 = 加密替换 —— 掩码串一旦被写回 `encrypted_key`，原 key 就永久失效且界面无异常提示
+///   （见 `patch` 里的注释与 `patch_keeps_the_stored_key_when_no_new_key_is_given` 测试）。
+/// - `available`：`Option<Option<Avail>>`，用 [`double_option`] 把「省略」与「显式 null」分开 ——
+///   省略 = 不改动时段；`null` = 全天不限（三个字段一并置空）；对象 = 三个字段一并替换。
 #[derive(Debug, Deserialize)]
 pub struct PatchSharingReq {
     /// paused / on / off（off = 软删除）
-    pub status: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub plan: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 新上游 key（明文）。省略 / 空串 = 保留原密文
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub quota: Option<f64>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub available: Option<Option<Avail>>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `Option<Option<T>>` 的 serde 垫片：把「字段**缺席**」与「字段显式为 `null`」区分开。
+///
+/// - 字段缺席 → 外层 `#[serde(default)]` 给 `None`（＝不修改）
+/// - 字段显式 `null` → 内层解出 `None`、本函数包成 `Some(None)`（＝置空）
+/// - 字段给出对象 → `Some(Some(a))`（＝替换）
+///
+/// 没有这层的话，`Option<Avail>` 会把「省略」和「null」都变成 `None`，于是编辑表单里
+/// `available: null`（用户清掉时段 = 全天不限）只能被当成「没提交这个字段」而保留旧时段。
+fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    serde::Deserialize::deserialize(de).map(Some)
 }
 
 /// key 脱敏：sk-****xxxx（保留前 2 位前缀 + 后 4 位，与原型一致）
@@ -64,6 +106,55 @@ fn mask_upstream_key(key: &str) -> String {
     } else {
         "****".to_string()
     }
+}
+
+/// 上架 / 编辑**共用**的落库前校验：`(provider, model)` 必须可计价、`plan` 必须可路由。
+///
+/// 为什么要提取成一个函数（而不是各写一遍）：C2052 的教训 —— 这个端点曾有一份手写的类型白名单
+/// 副本，于是同一个筛选值在列表端点 200、在趋势端点 400。上架与编辑是**同一条规则的两个入口**，
+/// 校验只允许有一份实现：`create` 传请求体的值，`patch` 传**合并后**的值。
+///
+/// 两道守卫各自防什么：
+/// ① 可计价：计费按 `keys.provider` + model 查 `models` 行的价（`dao::get_model_price`：
+///    `WHERE provider = ?1 AND model = ?2`），查不到的 (provider, model) 建出来的 key **调不通**
+///    —— 路由入口取不到价即拒（503「无法计价」，R156）。校验对象是 `models` 行而不是
+///    `[[providers]]` 表：openai / anthropic / google / xai 只有 `[[models]]` 行、没有 provider 行。
+/// ② 可路由：路由按 plan id 在 config `[[plans]]` 中解析端点（`gateway::resolve_outbound` /
+///    `resolve_endpoint`：`cfg.plans.iter().find(|p| p.id == plan_id)`），查不到即该 key
+///    **永远不可路由**（调用 503「暂无可用 key」），却仍以 `status='on'` 落库、被
+///    `dao::list_models_with_availability`（`k.status = 'on'`，不认识 plan）计入 `available_keys`
+///    ⇒ 市场/共享页会展示一个平台**交不出**的可用性。
+///    `create` 的 `plan` 是 `#[serde(default)]`：省略字段即空串，同样不是任何 plan 的 id，一并拒绝
+///    （前端上架表单本就必选 plan，`app.js` 提交 `plan: plan.id`，故合法客户端不受影响）。
+///    编辑路径传的是**合并后**的 plan：省略 plan 字段时沿用当前值（本就是合法 id），显式改成
+///    空串或未知 id 才会被这里拒掉。
+fn validate_listing(
+    cfg: &crate::config::Config,
+    conn: &rusqlite::Connection,
+    provider: &str,
+    model: &str,
+    plan: &str,
+) -> Result<(), ApiErr> {
+    if conn
+        .query_row(
+            "SELECT 1 FROM models WHERE provider = ?1 AND model = ?2",
+            params![provider, model],
+            |_| Ok(()),
+        )
+        .is_err()
+    {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "provider 与 model 不在模型目录中，无法计价" })),
+        ));
+    }
+    if !cfg.plans.iter().any(|p| p.id == plan) {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "plan 不在平台的套餐目录中，无法路由" })),
+        ));
+    }
+    Ok(())
 }
 
 /// POST /api/sharings：上架共享 key（加密落库）
@@ -91,36 +182,8 @@ pub async fn create(
         None => (String::new(), String::new(), String::new()),
     };
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-    // 只能上架平台**能计价**的 (provider, model)：计费按 `keys.provider` + model 查 `models` 行的价
-    // （`dao::get_model_price`：`WHERE provider = ?1 AND model = ?2`），查不到的 (provider, model) 建
-    // 出来的 key **调不通** —— 路由入口取不到价即拒（503「无法计价」，R156）。校验对象是 `models` 行
-    // 而不是 `[[providers]]` 表：openai / anthropic / google / xai 只有 `[[models]]` 行、没有 provider 行。
-    if conn
-        .query_row(
-            "SELECT 1 FROM models WHERE provider = ?1 AND model = ?2",
-            params![req.provider, req.model],
-            |_| Ok(()),
-        )
-        .is_err()
-    {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "provider 与 model 不在模型目录中，无法计价" })),
-        ));
-    }
-    // 只能上架平台**能路由**的 plan：路由按 plan id 在 config `[[plans]]` 中解析端点
-    // （`gateway::resolve_outbound` / `resolve_endpoint`：`cfg.plans.iter().find(|p| p.id == plan_id)`），
-    // 查不到即该 key **永远不可路由**（调用 503「暂无可用 key」），却仍以 `status='on'` 落库、被
-    // `dao::list_models_with_availability`（`k.status = 'on'`，不认识 plan）计入 `available_keys`
-    // ⇒ 市场/共享页会展示一个平台**交不出**的可用性。
-    // `plan` 是 `#[serde(default)]`：省略字段即空串，同样不是任何 plan 的 id，一并拒绝
-    // （前端上架表单本就必选 plan，`app.js` 提交 `plan: plan.id`，故合法客户端不受影响）。
-    if !st.cfg.plans.iter().any(|p| p.id == req.plan) {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "plan 不在平台的套餐目录中，无法路由" })),
-        ));
-    }
+    // 上架与编辑共用同一份校验（理由与两道守卫的出处见 `validate_listing`）
+    validate_listing(&st.cfg, &conn, &req.provider, &req.model, &req.plan)?;
     conn.execute(
         "INSERT INTO keys (provider, plan, model, status, owner_id, encrypted_key, quota, available_days, available_start, available_end, note) \
          VALUES (?1, ?2, ?3, 'on', ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -243,31 +306,113 @@ pub async fn list(
     Ok(Json(out))
 }
 
-/// PATCH /api/sharings/:id：暂停/恢复/删除（status: paused/on/off）
+/// PATCH /api/sharings/:id：编辑已上架的 key（部分更新）。
+///
+/// 旧行为（只改 status）是它的一个子集，取值与语义不变；现在同一入口也能改上架时的**全部设置**。
+/// 实现走「先取当前值 → 合并 → 校验 → 写回」（镜像 `admin_models::patch`）：避免逐列拼接 SQL，
+/// 也让「哪些字段没提交」这件事只剩一处判断。
+///
+/// ⚠️ **上游 key 的三态**（本函数最容易做错的一处）：前端手里只有**掩码串**（`sk-****xxxx`，
+/// 由 `mask_upstream_key` 产出）。所以 `key` 的正确语义是 —— 省略 / 留空 = **保留原密文**，
+/// 只有给出非空白新值才加密替换。掩码串一旦被当成「新值」写回 `encrypted_key`，原 key 就永久
+/// 失效（之后的调用全部 401），而界面不会有任何异常提示 —— 这条由
+/// `patch_keeps_the_stored_key_when_no_new_key_is_given` 的用例钉住（解密后必须仍等于原明文、
+/// 且不等于掩码串）。
 pub async fn patch(
     State(st): State<AppState>,
     auth: AuthUser,
     Path(id): Path<i64>,
     Json(req): Json<PatchSharingReq>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
-    if !matches!(req.status.as_str(), "paused" | "on" | "off") {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "status 必须为 paused / on / off" })),
-        ));
+    if let Some(status) = req.status.as_deref() {
+        if !matches!(status, "paused" | "on" | "off") {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "status 必须为 paused / on / off" })),
+            ));
+        }
     }
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    // 归属校验的两条出口（`SELECT` 查不到 / `UPDATE` 影响 0 行）给**同一个** 404：
+    // 「不是我的行」与「不存在的行」不区分，也就不泄露某个 id 是否存在。
+    // 错误值只在一个地方写（错误文案词表门禁按**站点**计数）。
+    let not_found = || {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "共享不存在或不属于当前用户" })),
+        )
+    };
+    // 取当前行（合并的底）。归属校验在这里就生效：不是我的行 → 当作不存在（404）。
+    let cur = match conn.query_row(
+        "SELECT provider, plan, model, status, quota, encrypted_key, available_days, available_start, available_end, note \
+         FROM keys WHERE id = ?1 AND owner_id = ?2",
+        params![id, auth.user_id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, f64>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+                r.get::<_, String>(8)?,
+                r.get::<_, String>(9)?,
+            ))
+        },
+    ) {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Err(not_found()),
+        Err(e) => return Err(internal(e)),
+    };
+    let provider = req.provider.unwrap_or(cur.0);
+    let plan = req.plan.unwrap_or(cur.1);
+    let model = req.model.unwrap_or(cur.2);
+    let status = req.status.unwrap_or(cur.3);
+    let quota = req.quota.unwrap_or(cur.4);
+    // 只有给出非空白新值才重新加密；其余一律沿用原密文（掩码串绝不写回，见本函数文档）
+    let encrypted = match req.key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        Some(k) => st.crypto.encrypt(k.as_bytes()).map_err(internal)?,
+        None => cur.5,
+    };
+    // 时段三态：省略 = 原样；null = 三字段一并置空（全天不限）；对象 = 三字段一并替换。
+    // 三个字段必须**一起**动 —— 只改一半会留下自相矛盾的时段（C2146 的同形问题）。
+    let (days, start, end) = match req.available {
+        Some(Some(a)) => (
+            serde_json::to_string(&a.days).unwrap_or_default(),
+            a.start,
+            a.end,
+        ),
+        Some(None) => (String::new(), String::new(), String::new()),
+        None => (cur.6, cur.7, cur.8),
+    };
+    let note = req.note.unwrap_or(cur.9);
+    // 与上架**同一条规则**（`validate_listing`）：合并后的 (provider, model, plan) 仍须可计价 / 可路由
+    validate_listing(&st.cfg, &conn, &provider, &model, &plan)?;
     let n = conn
         .execute(
-            "UPDATE keys SET status = ?1 WHERE id = ?2 AND owner_id = ?3",
-            params![req.status, id, auth.user_id],
+            "UPDATE keys SET provider = ?1, plan = ?2, model = ?3, status = ?4, quota = ?5, \
+             encrypted_key = ?6, available_days = ?7, available_start = ?8, available_end = ?9, note = ?10 \
+             WHERE id = ?11 AND owner_id = ?12",
+            params![
+                provider,
+                plan,
+                model,
+                status,
+                quota,
+                encrypted,
+                days,
+                start,
+                end,
+                note,
+                id,
+                auth.user_id
+            ],
         )
         .map_err(internal)?;
     if n == 0 {
-        return Err((
-            axum::http::StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "共享不存在或不属于当前用户" })),
-        ));
+        return Err(not_found());
     }
     let crypto = st.crypto.clone();
     let row = conn
@@ -903,5 +1048,361 @@ mod tests {
             avail_before + 1,
             "未知 plan 的遗留行仍被计入 available_keys —— 正是本条守卫要挡住的情形"
         );
+    }
+
+    /// 上架时的**全部设置**都能在页内改（rant 2026-09-30T13:12:07 第 2/3 条）：
+    /// `PATCH /api/sharings/:id` 接受与 `POST /api/sharings` 同一字段集合。
+    ///
+    /// 锁三件事：① 七组设置一次改完都生效；② **保持原行 id**（不是「删旧行再建新行」）；
+    /// ③ 三件不可改的事实不变 —— 行仍是**一行**、上架时间不动、账本归属（`key_id`）不动。
+    #[tokio::test]
+    async fn patch_edits_every_listing_field_in_place() {
+        let st = test_state("editall");
+        let key = login(st.clone()).await;
+        let (s, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-editable1234","quota":1000,"available":{"days":[1,2],"start":"09:00","end":"18:00"},"note":"原备注"}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let created_before: String = {
+            let conn = st.db.lock().unwrap();
+            conn.query_row("SELECT created_at FROM keys WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+
+        // 厂商 / Plan / 模型 / 额度 / 时段 / 备注 一次改（key 另有用例）——
+        // 换成 config 里另一组可计价 (provider, model) 与可路由 plan
+        let (s, body) = send(
+            st.clone(),
+            "PATCH",
+            &format!("/api/sharings/{id}"),
+            Some(r#"{"provider":"zhipu","plan":"zhipu-coding","model":"glm-5.3","quota":42,"available":{"days":[6,7],"start":"10:30","end":"11:45"},"note":"改过的备注"}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["id"], id, "编辑必须保持原行 id（不得删旧建新）");
+        assert_eq!(v["provider"], "zhipu");
+        assert_eq!(v["plan"], "zhipu-coding");
+        assert_eq!(v["model"], "glm-5.3");
+        assert_eq!(v["quota"], 42.0);
+        assert_eq!(v["note"], "改过的备注");
+        assert_eq!(v["available_start"], "10:30");
+        assert_eq!(v["available_end"], "11:45");
+        assert_eq!(
+            v["available_days"], "[6,7]",
+            "days 序列化成 JSON 串，与 create 逐字一致"
+        );
+
+        // 列表里仍是**同一行**；上架时间未被改动
+        let (_, body) = send(st.clone(), "GET", "/api/sharings", None, &key).await;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        let rows: Vec<&serde_json::Value> = arr.iter().filter(|r| r["id"] == id).collect();
+        assert_eq!(rows.len(), 1, "编辑后仍只有一行：{body}");
+        assert_eq!(rows[0]["model"], "glm-5.3");
+        let created_after: String = {
+            let conn = st.db.lock().unwrap();
+            conn.query_row("SELECT created_at FROM keys WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(created_after, created_before, "上架时间不得被编辑改动");
+    }
+
+    /// rant 2026-09-30T13:12:07 第 5 条（**硬约束**）：编辑表单手里只有**掩码串**，
+    /// 因此「省略 / 留空 = 保留原密文，填新值 = 加密替换」。
+    ///
+    /// 验收判据（rant 原文）：未填新值时保存后 `encrypted_key` 解密结果**仍等于原 key**，
+    /// 且**不等于掩码串**。反过来 —— 掩码串被写回 —— 原 key 就永久失效（之后的调用全部 401），
+    /// 而界面不会有任何异常提示。所以这条不能只靠前端自觉，后端必须钉住。
+    #[tokio::test]
+    async fn patch_keeps_the_stored_key_when_no_new_key_is_given() {
+        let st = test_state("editkey");
+        let key = login(st.clone()).await;
+        let (_, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-original9999","quota":10,"note":"n"}"#),
+            &key,
+        )
+        .await;
+        let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        // 掩码串 = 前端手里唯一的那个值（`sharing_row` → `mask_upstream_key`）
+        let mask = {
+            let (_, body) = send(st.clone(), "GET", "/api/sharings", None, &key).await;
+            let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+            arr.iter().find(|r| r["id"] == id).unwrap()["key"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(mask, "sk-****9999");
+
+        let decrypt = || -> String {
+            let conn = st.db.lock().unwrap();
+            let stored: String = conn
+                .query_row("SELECT encrypted_key FROM keys WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            String::from_utf8(st.crypto.decrypt(&stored).expect("密文应可解密")).unwrap()
+        };
+
+        // ① 省略 key / 空串 / 纯空白 —— 三种「没给新值」都保留原密文
+        for (label, payload) in [
+            ("省略 key", r#"{"note":"只改备注"}"#),
+            ("空串 key", r#"{"key":""}"#),
+            ("空白 key", r#"{"key":"   "}"#),
+        ] {
+            let (s, body) = send(
+                st.clone(),
+                "PATCH",
+                &format!("/api/sharings/{id}"),
+                Some(payload),
+                &key,
+            )
+            .await;
+            assert_eq!(s, axum::http::StatusCode::OK, "{label}: {body}");
+            let plain = decrypt();
+            assert_eq!(plain, "sk-original9999", "{label}: 原 key 必须原样保留");
+            assert_ne!(plain, mask, "{label}: 掩码串绝不能被写回 encrypted_key");
+        }
+
+        // ② 阳性对照：给出新值 → 加密替换（证明 ① 不是「压根没更新」而通过）
+        let (s, _) = send(
+            st.clone(),
+            "PATCH",
+            &format!("/api/sharings/{id}"),
+            Some(r#"{"key":"sk-brandnew7777"}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        assert_eq!(decrypt(), "sk-brandnew7777", "填新值应加密替换");
+    }
+
+    /// 部分更新语义（rant 第 3/7 条）：**省略的字段不修改**；`available: null` 明确表示
+    /// 「全天不限」⇒ 三个时段字段**一并**置空（不得半保留）。
+    ///
+    /// 后半截是 `double_option` 垫片的牙齿：没有它，`Option<Avail>` 无法把「省略」与「null」
+    /// 分开 —— `null` 会被当成「没提交这个字段」，于是用户清掉时段后 `days`/`start`/`end` 仍是旧值。
+    #[tokio::test]
+    async fn patch_only_touches_the_fields_it_is_given() {
+        let st = test_state("editpartial");
+        let key = login(st.clone()).await;
+        let (_, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-partial1234","quota":500,"available":{"days":[3],"start":"08:00","end":"20:00"},"note":"原备注"}"#),
+            &key,
+        )
+        .await;
+        let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+
+        // ① 只改备注 + 额度：其余字段（含时段三字段）原样
+        let (s, body) = send(
+            st.clone(),
+            "PATCH",
+            &format!("/api/sharings/{id}"),
+            Some(r#"{"note":"只改备注","quota":7,"status":"paused"}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["note"], "只改备注");
+        assert_eq!(v["quota"], 7.0);
+        assert_eq!(v["status"], "paused", "status 语义不变（仍是同一入口）");
+        assert_eq!(v["provider"], "deepseek", "省略的 provider 不修改");
+        assert_eq!(v["model"], "deepseek-flash", "省略的 model 不修改");
+        assert_eq!(v["plan"], "deepseek-paygo", "省略的 plan 不修改");
+        assert_eq!(v["available_days"], "[3]", "省略 available 不修改时段");
+        assert_eq!(v["available_start"], "08:00");
+        assert_eq!(v["available_end"], "20:00");
+
+        // ② available: null = 全天不限 ⇒ 三字段**一起**置空
+        let (s, body) = send(
+            st.clone(),
+            "PATCH",
+            &format!("/api/sharings/{id}"),
+            Some(r#"{"available":null}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["available_days"], "", "null 应清空 days");
+        assert_eq!(v["available_start"], "", "null 应清空 start（不得半保留）");
+        assert_eq!(v["available_end"], "", "null 应清空 end（不得半保留）");
+        assert_eq!(v["note"], "只改备注", "② 只动时段，其余不变");
+        assert_eq!(v["quota"], 7.0);
+    }
+
+    /// rant 第 4 条：编辑路径**复用**上架路径的校验，不是第二份实现（C2052 的教训）。
+    ///
+    /// 判据不只是「两边都 400」，而是两句报错**逐字相同** —— 各自实现两份规则时，措辞与
+    /// 判定条件都会分叉。另加「400 时不得落库」：校验必须在 `UPDATE` 之前。
+    #[tokio::test]
+    async fn patch_reuses_the_create_validation() {
+        let st = test_state("editvalidate");
+        let key = login(st.clone()).await;
+        let (_, body) = send(
+            st.clone(),
+            "POST",
+            "/api/sharings",
+            Some(r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"deepseek-flash","key":"sk-validate1234","quota":100}"#),
+            &key,
+        )
+        .await;
+        let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let snapshot = |field: &str| -> String {
+            let conn = st.db.lock().unwrap();
+            conn.query_row(
+                &format!("SELECT {field} FROM keys WHERE id = ?1"),
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let (provider_before, model_before, plan_before) =
+            (snapshot("provider"), snapshot("model"), snapshot("plan"));
+
+        // ① 不可计价的 (provider, model)：create 与 patch 给**同一句话**
+        let bad_model = r#"{"provider":"deepseek","plan":"deepseek-paygo","model":"no-such-model","key":"sk-x1234567"}"#;
+        let (s_create, body_create) =
+            send(st.clone(), "POST", "/api/sharings", Some(bad_model), &key).await;
+        assert_eq!(
+            s_create,
+            axum::http::StatusCode::BAD_REQUEST,
+            "{body_create}"
+        );
+        let (s, body_patch) = send(
+            st.clone(),
+            "PATCH",
+            &format!("/api/sharings/{id}"),
+            Some(r#"{"model":"no-such-model"}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::BAD_REQUEST, "{body_patch}");
+        assert_eq!(
+            body_patch, body_create,
+            "不可计价的报错必须来自同一份实现（逐字相同）"
+        );
+        assert_eq!(snapshot("model"), model_before, "400 时不得落库");
+
+        // ② 不可路由的 plan：同样逐字相同
+        let bad_plan = r#"{"provider":"deepseek","plan":"no-such-plan","model":"deepseek-flash","key":"sk-x1234567"}"#;
+        let (s_create, body_create) =
+            send(st.clone(), "POST", "/api/sharings", Some(bad_plan), &key).await;
+        assert_eq!(
+            s_create,
+            axum::http::StatusCode::BAD_REQUEST,
+            "{body_create}"
+        );
+        let (s, body_patch) = send(
+            st.clone(),
+            "PATCH",
+            &format!("/api/sharings/{id}"),
+            Some(r#"{"plan":"no-such-plan"}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::BAD_REQUEST, "{body_patch}");
+        assert_eq!(
+            body_patch, body_create,
+            "不可路由的报错必须来自同一份实现（逐字相同）"
+        );
+        assert_eq!(snapshot("plan"), plan_before, "400 时不得落库");
+        assert_eq!(snapshot("provider"), provider_before);
+    }
+
+    /// 归属校验保持 `WHERE id = ? AND owner_id = ?`（rant 第 6 条）：别人的行既改不动、也不
+    /// 因为「存在但不是我的」而与「不存在」区分开（两种都是 404）。
+    #[tokio::test]
+    async fn patch_cannot_edit_another_users_sharing() {
+        let st = test_state("editowner");
+        let key = login(st.clone()).await;
+        let (id, other_id) = {
+            let conn = st.db.lock().unwrap();
+            let uid: i64 = conn
+                .query_row(
+                    "SELECT id FROM users WHERE email = 'demo@aitokenpool.local'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            conn.execute(
+                "INSERT INTO users (email, password_hash, name, role) VALUES ('other2@x.local', 'x', 'o', 'user')",
+                [],
+            )
+            .unwrap();
+            let other_uid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO keys (owner_id, provider, plan, model, status, encrypted_key, quota, used, \
+                 available_days, available_start, available_end, note) \
+                 VALUES (?1, 'deepseek', 'deepseek-paygo', 'deepseek-flash', 'on', 'v1:x', 10, 0, '', '', '', '别人的')",
+                [other_uid],
+            )
+            .unwrap();
+            let other_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO keys (owner_id, provider, plan, model, status, encrypted_key, quota, used, \
+                 available_days, available_start, available_end, note) \
+                 VALUES (?1, 'deepseek', 'deepseek-paygo', 'deepseek-flash', 'on', 'v1:x', 10, 0, '', '', '', '我的')",
+                [uid],
+            )
+            .unwrap();
+            (conn.last_insert_rowid(), other_id)
+        };
+
+        // 别人的行：改任何字段都是 404（不是 403 —— 不透露该 id 是否存在）
+        let (s, _) = send(
+            st.clone(),
+            "PATCH",
+            &format!("/api/sharings/{other_id}"),
+            Some(r#"{"note":"偷改"}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(snapshot_note(&st, other_id), "别人的", "不得改动别人的行");
+
+        // 阳性对照：我自己的行改得动（证明 404 来自归属而不是「PATCH 全坏了」）
+        let (s, _) = send(
+            st.clone(),
+            "PATCH",
+            &format!("/api/sharings/{id}"),
+            Some(r#"{"note":"我的新备注"}"#),
+            &key,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        assert_eq!(snapshot_note(&st, id), "我的新备注");
+    }
+
+    fn snapshot_note(st: &AppState, id: i64) -> String {
+        let conn = st.db.lock().unwrap();
+        conn.query_row("SELECT note FROM keys WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap()
     }
 }
