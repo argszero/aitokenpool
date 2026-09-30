@@ -320,7 +320,14 @@ select.input option { background: var(--bg-card); }
   padding: 20px;
   transition: border-color .18s ease, box-shadow .18s ease;
 }
-.card h3 { font-size: 15px; margin-bottom: 14px; color: var(--text); }
+/* 卡片标题：**没有类**的 h3 才吃这条默认外观（`:not([class])`，与字段标签同一条不变量）。
+   bug（R129）：这条（0,1,1）压过带类的 h3 —— `.wallet-hero-label`（0,1,0）声明的
+   `font-size:12px / color:var(--text-mute) / margin-bottom:0`（原型第 588 行
+   `<h3 class="muted" style="font-size:12px">`）**一条都没生效**：钱包页那个「点数余额」
+   标签一直按普通卡片标题渲染（15px / --text / 14px 下边距），与紧邻的 `.balance-big`
+   抢视觉重心，而类里的 `margin-bottom:0`（让大数字贴住标签）从来没用上。
+   正解＝让类自己说话：带类的 h3 由它的类声明外观，泛化规则只服务无类标题。 */
+.card h3:not([class]) { font-size: 15px; margin-bottom: 14px; color: var(--text); }
 
 /* 卡片 hover 微交互（rant 15:50:05 A.3：阴影/边框轻提升） */
 .card:hover { border-color: var(--card-hover-border); box-shadow: var(--card-shadow); }
