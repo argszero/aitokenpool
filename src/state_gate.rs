@@ -11334,16 +11334,21 @@ function bind() {
             || body_code.contains(".classList.toggle(\"hidden\"")
     }
 
-    /// 从 `resetSessionOverlays()` 出发的传递调用闭包（函数名集合）。
+    /// 从 `resetSessionOverlays()` 出发的传递调用闭包。
+    fn overlay_closure(src: &str) -> BTreeSet<String> {
+        closure_from(src, "resetSessionOverlays")
+    }
+
+    /// 从 `root` 出发的传递调用闭包（函数名集合）。C2171 / C2176 共用。
     ///
     /// ⚠️ **自建**闭包，**不复用** `call_graph` / `reachable`：那两个的每条边都由 `js_function_body`
     /// 取体，而后者对**单行**函数会一路吞到下一个 `  }`。`ui/js/app.js` 里的 `markTourDone`
     /// 正是单行 ⇒ 旧写法会把紧随其后的 `startTour` / `renderTourStep` / `switchView` 拉进闭包，
     /// 于是 `C` 溢出成整份文件（22 个 view 元素 id）。这是「编译＋实跑」才逮到的真缺陷
     /// （坑 #319/#332：`function_source` 就是为这个坑写的）。射程局限记在本节顶部。
-    fn overlay_closure(src: &str) -> BTreeSet<String> {
+    fn closure_from(src: &str, root: &str) -> BTreeSet<String> {
         let mut seen: BTreeSet<String> = BTreeSet::new();
-        let mut queue: Vec<String> = vec!["resetSessionOverlays".to_string()];
+        let mut queue: Vec<String> = vec![root.to_string()];
         while let Some(f) = queue.pop() {
             if !seen.insert(f.clone()) {
                 continue;
@@ -11549,6 +11554,288 @@ function bind() {
             "闭包成员 `{f}` 有 {decls} 处 `function {f}(` 声明 —— 名字不是标识符的唯一载体，闭包可能窜到别处"
         );
         }
+    }
+
+    /// `ui/index.html` 里 **`#app` 内部**（`#app` 起始行之后、第一个**列 0** 行之前 ⇒ 全部缩进
+    /// 过的行）且**自带 `hidden` 属性**的**具名**元素 —— 就是那些「随页面 boot 收起、由用户展开」
+    /// 的卡片。
+    ///
+    /// 与 `overlays_outside_app` 刻意**对称**：那边收 `#app` **之后**的列 0 元素（C2171 的射程），
+    /// 这边收 `#app` **之内**的缩进行（C2176 的射程）—— 同一条边界，两种被遗留的东西。
+    ///
+    /// 三个条件缺一不可：
+    ///   * **在 `#app` 内部**：列 0 的行一出现就出界（`#app` 的闭合 `</div>`、以及它之后的兄弟
+    ///     浮层都在那里）。空白行跳过，不当作出界。
+    ///   * **具名**（`id="…"`）：无名元素不在本轴 —— 六枚 `.search-clear` 按钮也自带 `hidden`，
+    ///     它们由各自输入框的重绘负责。
+    ///   * **`hidden` 是裸属性**：判前先把 `class="…"` 整段摘掉再按 token 边界找，否则每个视图
+    ///     （`<section class="view hidden" id="view-x">`）与 `#app` 自己都会被算进来 —— 视图走的是
+    ///     `switchView` 的**类频道**，不是本轴的**属性频道**。
+    fn inline_panels_inside_app(html: &str) -> Vec<String> {
+        let clean = strip_html_comments(html);
+        let mut lines = clean.lines();
+        let mut found_app = false;
+        for l in lines.by_ref() {
+            if l.starts_with("<div id=\"app\"") {
+                found_app = true;
+                break;
+            }
+        }
+        if !found_app {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for line in lines {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                break; // 列 0 ⇒ 已经出了 `#app`
+            }
+            if let Some(id) = element_id(line) {
+                if has_bare_hidden_attr(line) {
+                    out.push(id);
+                }
+            }
+        }
+        out
+    }
+
+    /// 行内元素的 `id="…"` 值。只认**属性名左界是空白**的那种：`data-admin-pane="usage"` /
+    /// `data-i18n-id="…"` 里的 `id="` 不该被当成元素 id（`-` 是标识符字符，子串匹配会撞车，
+    /// 坑 #333 同族）。
+    fn element_id(line: &str) -> Option<String> {
+        let bytes = line.as_bytes();
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find("id=\"") {
+            let at = from + rel;
+            let left_ok = at == 0 || bytes[at - 1].is_ascii_whitespace();
+            let s = at + "id=\"".len();
+            let Some(end) = line[s..].find('"') else {
+                break;
+            };
+            if left_ok {
+                return Some(line[s..s + end].to_string());
+            }
+            from = s + end + 1;
+        }
+        None
+    }
+
+    /// 摘掉行里的 `class="…"` 整段（只第一处）—— 「裸 `hidden` 属性」的判定必须在它之外做。
+    fn strip_class_attr(line: &str) -> String {
+        let Some(at) = line.find("class=\"") else {
+            return line.to_string();
+        };
+        let s = at + "class=\"".len();
+        let Some(end) = line[s..].find('"') else {
+            return line.to_string();
+        };
+        let mut out = String::with_capacity(line.len());
+        out.push_str(&line[..at]);
+        out.push_str(&line[s + end + 1..]);
+        out
+    }
+
+    /// 行里是否出现**裸的** `hidden` 属性（token 边界把 `aria-hidden` / `data-hidden-x` 排除）。
+    fn has_bare_hidden_attr(line: &str) -> bool {
+        let rest = strip_class_attr(line);
+        let b = rest.as_bytes();
+        let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'$';
+        let mut from = 0usize;
+        while let Some(rel) = rest[from..].find("hidden") {
+            let at = from + rel;
+            let end = at + "hidden".len();
+            let left = at == 0 || !ident(b[at - 1]);
+            let right = end >= b.len() || !ident(b[end]);
+            if left && right {
+                return true;
+            }
+            from = end;
+        }
+        false
+    }
+
+    /// 代码体是否把 `#<id>` 按**属性频道**收起：某一行里字面量选择器 `"#<id>"` **紧接**着
+    /// `.hidden = true`（即 `$("#<id>").hidden = true`）。
+    ///
+    /// 频道必须与**打开**路径同频道：这些卡片由 `$("#topup-card").hidden = false` 打开，所以只写
+    /// `classList.add("hidden")` 的修法在屏幕上看不出问题 —— 直到用户再点一次：`.hidden` 仍是
+    /// `false`、class 却留着 ⇒ 卡片**此后再也打不开**。判别式因此**只认属性频道**（与 C2171 的
+    /// `hides_element` 刻意不同：那边三个浮层用的正是 `classList`）。
+    ///
+    /// 绑定刻意**紧**（选择器就在赋值左边）：松写成「同一行里既有 `"#<id>"` 又有 `.hidden = true`」
+    /// 会让 `$("#a"); other.hidden = true;` 这种把 id 只是**提到**的行也算成收起 —— 那正是 R139
+    /// 的「别名会把写点藏起来」的镜像（坑 #604 同族）。
+    fn hides_element_by_property(body_code: &str, id: &str) -> bool {
+        let needle = format!("\"#{id}\").hidden = true");
+        body_code.lines().any(|l| l.contains(&needle))
+    }
+
+    /// 面板复位闭包里各函数的代码体按**属性频道**收起、且用字面量 `"#<id>"` 指名的 id 集合。
+    fn closure_hidden_panels(src: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for f in closure_from(src, "resetSessionPanels") {
+            let Some(body) = function_source(src, &f) else {
+                continue;
+            };
+            let code = code_text(&body);
+            for id in quoted_hash_ids(&code) {
+                if hides_element_by_property(&code, &id) {
+                    out.insert(id);
+                }
+            }
+        }
+        out
+    }
+
+    /// C2176：身份边界必须把 `#app` **内部**那些「随 boot 收起、由用户展开」的卡片也收起。
+    ///
+    /// 反例（实测，仓外 jsdom 仪器）：用真 `ui/index.html` + 四个脚本、只 stub `fetch`，驱动真
+    /// 导航 / 真登出 / 真登录表单 —— 甲在共享 / 钱包 / 设置 / 管理各展开一张卡片，登出；乙登录后
+    /// 落回甲的那个视图，**甲的卡片全部还开着**（`hidden` 属性仍是 `false`），且不自愈（各视图的
+    /// 渲染函数都不碰卡片）。R74 的 `editingShareId` 是同一个根因的另一张脸：把卡片关回去之后，
+    /// 每条打开路径（`showShareForm` / `openShareEdit`）都会重设自己那一份编辑目标。
+    #[test]
+    fn the_identity_boundary_closes_the_panels_inside_the_app() {
+        // ── 规则 4：派生必须有阳性对照（非空、且不含常驻容器 / 视图 / `#app` 之外的浮层）────
+        let derived: BTreeSet<String> = inline_panels_inside_app(INDEX_HTML).into_iter().collect();
+        let expected: BTreeSet<String> = [
+            "mk-recent",
+            "share-form-card",
+            "topup-card",
+            "raise-card",
+            "ak-new-inline",
+            "dept-form-card",
+            "model-form-card",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        assert!(
+            !derived.is_empty()
+                && !derived.contains("app")
+                && !derived.contains("view-wallet")
+                && !derived.contains("mk-search")
+                && !derived.contains("help-panel"),
+            "派生集合的阳性对照失败（解析器坏了，还是 index.html 结构变了？）：{derived:?}"
+        );
+        assert_eq!(
+            derived, expected,
+            "`ui/index.html` 里 `#app` 内部「boot 收起」的具名元素集合变了 —— 若是有意新增，\
+             请一并让 resetSessionPanels 收它（或改用 class 频道）"
+        );
+
+        // ── 规则 1（主牙）：闭包按属性频道收起的集合 == 派生集合 ─────────────────────────────
+        let closed = closure_hidden_panels(APP_JS);
+        assert_eq!(
+            closed, derived,
+            "resetSessionPanels 的调用闭包没有恰好覆盖 `#app` 内部每个 boot 收起的元素\
+             （少收 ⇒ 上一位的卡片会开着传给下一位；用 class 收 ⇒ 卡片此后再也打不开）"
+        );
+
+        // ── 规则 2：身份边界必须调用该复位 ───────────────────────────────────────────────
+        let boundary = code_body(APP_JS, "exitGuest");
+        assert!(
+            !boundary.is_empty(),
+            "提取器没取到 exitGuest 的代码体（后面的断言会在空串上「通过」）"
+        );
+        assert!(
+            boundary.contains("resetSessionPanels()"),
+            "exitGuest（身份边界）没有收起 `#app` 内部的行内卡片"
+        );
+
+        // ── 规则 3（反向）：边界不许被掏空 ──────────────────────────────────────────────
+        assert!(
+            boundary.contains("resetSessionCaches()"),
+            "边界不再清空会话缓存"
+        );
+        assert!(
+            boundary.contains("resetSessionOverlays()"),
+            "边界不再收起 `#app` 之外的浮层"
+        );
+        assert!(
+            boundary.contains("(\"#app\").classList.add(\"hidden\")"),
+            "边界不再隐藏 `#app`"
+        );
+    }
+
+    /// 判别式的牙：派生要**逐条**认得出（内部 / 具名 / 裸属性），频道只认属性，闭包不许溢出。
+    #[test]
+    fn the_c2176_panel_extractors_have_teeth() {
+        // 1) `#app` 之内、裸 `hidden`、具名 ⇒ 入集；列 0 的 `</div>` 与它之后的浮层一起出界
+        let synth = concat!(
+            "<div id=\"login-view\"></div>\n",
+            "<div id=\"app\" class=\"app hidden\">\n",
+            "  <div class=\"card\" id=\"a-card\" hidden></div>\n",
+            "</div>\n",
+            "<div id=\"help-panel\" class=\"help-panel hidden\"></div>\n",
+        );
+        assert_eq!(
+            inline_panels_inside_app(synth),
+            vec!["a-card".to_string()],
+            "派生规则：只收 `#app` 之内、缩进过的行"
+        );
+        // 2) `class` 里的 `hidden` 不算（视图走 `switchView` 的类频道，不是本轴的属性频道）
+        let classified = concat!(
+            "<div id=\"app\" class=\"app hidden\">\n",
+            "  <section class=\"view hidden\" id=\"view-x\"></section>\n",
+            "</div>\n",
+        );
+        assert!(
+            inline_panels_inside_app(classified).is_empty(),
+            "类频道的 `hidden` 被当成了本轴的成员"
+        );
+        // 3) 不具名的（六枚 `.search-clear`）不算；`aria-hidden` 不算
+        let unnamed = concat!(
+            "<div id=\"app\" class=\"app hidden\">\n",
+            "  <button type=\"button\" class=\"search-clear\" hidden></button>\n",
+            "  <span id=\"x\" aria-hidden=\"true\"></span>\n",
+            "</div>\n",
+        );
+        assert!(
+            inline_panels_inside_app(unnamed).is_empty(),
+            "无名元素 / `aria-hidden` 被当成了本轴的成员"
+        );
+        // 4) 频道：属性算，类不算，`= false` 不算，指名别的元素也不算
+        assert!(hides_element_by_property(
+            "    $(\"#a-card\").hidden = true;",
+            "a-card"
+        ));
+        assert!(!hides_element_by_property(
+            "    $(\"#a-card\").classList.add(\"hidden\");",
+            "a-card"
+        ));
+        assert!(!hides_element_by_property(
+            "    $(\"#a-card\").hidden = false;",
+            "a-card"
+        ));
+        assert!(!hides_element_by_property(
+            "    $(\"#a-card\"); other.hidden = true;",
+            "a-card"
+        ));
+        // 5) 闭包层：真形状收得到；类频道 / 空体收不到（派生链断掉是**全红**，不是全绿）
+        let prop = "  function resetSessionPanels() {\n    $(\"#a-card\").hidden = true;\n  }\n";
+        assert_eq!(
+            closure_hidden_panels(prop),
+            ["a-card".to_string()].into_iter().collect::<BTreeSet<_>>()
+        );
+        let class_only =
+            "  function resetSessionPanels() {\n    $(\"#a-card\").classList.add(\"hidden\");\n  }\n";
+        assert!(
+            closure_hidden_panels(class_only).is_empty(),
+            "类频道被当成了属性频道（卡片会再也打不开，门禁必须挡住这种修法）"
+        );
+        let gone = "  function resetSessionPanels() {\n  }\n";
+        assert!(closure_hidden_panels(gone).is_empty());
+        // 6) 真实文件上的闭包不许溢出（`resetSessionPanels` 只写属性、不调用任何函数）
+        let real = closure_from(APP_JS, "resetSessionPanels");
+        assert!(
+            !real.contains("switchView")
+                && !real.contains("renderMarket")
+                && !real.contains("renderSharing"),
+            "闭包被单行函数带跑：{real:?}"
+        );
     }
 }
 
