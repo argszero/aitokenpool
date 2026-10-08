@@ -3379,12 +3379,36 @@
     closeTour();
   }
 
+  // 身份边界（C2176）：`#app` **内部**那些「随页面收起、由用户展开」的卡片也是这个会话留下的
+  // 东西。它们是 `#app` 的**后代** ⇒ `$("#app").classList.add("hidden")` 不会连带收起它们
+  // （`el.hidden` 是活的 DOM 属性，跨过边界照样是 `false`），而登出**不重载页面**、`enterApp()`
+  // 又按 `location.hash` 还原视图 ⇒ 下一个人登录后直接落在上一位的视图上、看着上一位半填的卡片
+  // 开着（充值金额 / 加额事由 / 上架表单 / key 名字 …）。各卡片的**打开**路径会重置自己的字段与
+  // 编辑模式，唯独「开着」这件事无人自愈（`renderSharing` / `renderWallet` / `renderSettings` /
+  // `renderAdmin` 都不碰卡片）。
+  //
+  // 元素集合由 state_gate 与 `ui/index.html` **派生比对**（不是手写名册）：`#app` 内部、自带
+  // `hidden` **属性**、且具名的元素。用**属性** `hidden = true` 收起，与各卡片的开合同频道
+  // （`$("#topup-card").hidden = false`）—— 只加 `classList.add("hidden")` 会让卡片此后再也
+  // 打不开（`.hidden` 仍是 `false`，下一次 `openTopup()` 的赋值成了空操作）。
+  function resetSessionPanels() {
+    $("#mk-recent").hidden = true;
+    $("#share-form-card").hidden = true;
+    $("#topup-card").hidden = true;
+    $("#raise-card").hidden = true;
+    $("#ak-new-inline").hidden = true;
+    $("#dept-form-card").hidden = true;
+    $("#model-form-card").hidden = true;
+  }
+
   function exitGuest() {
     isGuest = false;
     // 身份边界（C2132）：会话结束即清空上一位用户的缓存 —— 否则下一位登录者会先看到他的数据
     resetSessionCaches();
     // 身份边界（C2171）：`#app` 之外的浮层同样属于这个会话，随边界一起收起
     resetSessionOverlays();
+    // 身份边界（C2176）：`#app` **内部**展开着的卡片同样是这个会话留下的，随边界一起收起
+    resetSessionPanels();
     $("#app").classList.add("hidden");
     setGuestSidebar(false);
     $("#login-view").classList.remove("hidden");
