@@ -3495,7 +3495,35 @@
   // 缺省空串）；写点按**字面选择器**逐个写 —— 别名会把写点藏起来，门禁按行读。
   // ⚠️ 不整表 `form.reset()`：`#login-remember` 是**设备偏好**（boot 时从 `atp-remember` 还原），
   // 清它会造出「本地存着 1、屏幕显示未勾」的第二口径。
+  //
+  // 身份边界（C2183）：交回**值**还不够 —— 同一批表单上的**行内错误装饰**活在另三个载体上：
+  //   ① 字段自己身上的 `input-error` 类；② `setFieldError()` 注入的兄弟 `.field-error` span；
+  //   ③ 表单级横幅 `#reg-error` / `#verify-error` / `#forgot-error`（又是**另一个**元素）。
+  // 全站**其它每张表单**都在自己的回收路径上做这件事（`openTopup` / `openRaise` /
+  // `openModelForm` / `openDeptForm` / `showShareForm` 都调 `clearFieldError`），而登录视图的回收
+  // 路径就是身份边界。不清的话：上一位在注册页用一个已注册邮箱撞出「该邮箱已注册」的红框与那句
+  // 话，登出后它原样留给下一位 —— 一个**空**邮箱框上写着「该邮箱已注册」，横幅还印着上一位那条
+  // 服务端错误；且不自愈（只有用户自己去改那个字段才会清）。⚠️ 横幅走**属性频道** `hidden`
+  // （`showErr()` 写的就是它），不是 `.hidden` 类。
   function resetAuthForms() {
+    // ① + ② 字段级错误装饰：能带行内错误的字段 = `setFieldError` 的调用目标（类与注入的 span 同清）
+    clearFieldError($("#login-email"));
+    clearFieldError($("#login-pass"));
+    clearFieldError($("#reg-email"));
+    clearFieldError($("#reg-pass"));
+    clearFieldError($("#reg-pass2"));
+    clearFieldError($("#verify-code"));
+    clearFieldError($("#forgot-email"));
+    clearFieldError($("#forgot-code"));
+    clearFieldError($("#forgot-pass"));
+    clearFieldError($("#forgot-pass2"));
+    // ③ 表单级横幅（`showErr()` 的载体：`hidden` 属性 + 注入的句子）
+    $("#reg-error").hidden = true;
+    $("#reg-error").textContent = "";
+    $("#verify-error").hidden = true;
+    $("#verify-error").textContent = "";
+    $("#forgot-error").hidden = true;
+    $("#forgot-error").textContent = "";
     $("#login-email").value = "";
     $("#login-pass").value = "";
     $("#reg-name").value = "";
