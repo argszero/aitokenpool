@@ -21372,3 +21372,601 @@ fn the_r134_scanners_have_teeth() {
         "派生失败必须是红"
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// C2182：游客外壳必须**同时**保住「主题切换」与「回到登录页的路」，只收起账号身份
+// ══════════════════════════════════════════════════════════════════════════════════════════
+
+/// 侧边栏（`<aside class="sidebar">…</aside>`）里的一个元素：标签名 / id / 类名 / 父下标。
+///
+/// 只解析**结构**（标签配对 + `class`/`id`），不建 CSS 引擎 —— 本轴只需要回答两个问题：
+/// 「甲在不在乙里面」，以及「这条选择器**会不会**命中某个元素」。判据是纯词法的：格式良好的
+/// 标记里，`<a><b></b></a>` 的父子关系由标签配对唯一确定（这是 HTML 的规范，不是本门禁的约定）。
+struct GuestElem {
+    tag: String,
+    id: Option<String>,
+    classes: Vec<String>,
+    parent: Option<usize>,
+}
+
+/// 不参与配对的元素（空元素 / 自闭合）。`<path …/>` 这类靠行尾 `/` 认，不在此列。
+const GUEST_VOID: [&str; 6] = ["input", "br", "img", "hr", "meta", "link"];
+
+fn sidebar_elements(html: &str) -> Vec<GuestElem> {
+    let clean = strip_html_comments(html);
+    let Some(start) = clean.find("<aside") else {
+        return Vec::new();
+    };
+    let end = clean[start..]
+        .find("</aside>")
+        .map_or(clean.len(), |i| start + i);
+    let region = &clean[start..end];
+    let mut out: Vec<GuestElem> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut i = 0usize;
+    while let Some(rel) = region[i..].find('<') {
+        let at = i + rel;
+        let Some(gt) = region[at..].find('>') else {
+            break;
+        };
+        let inner = &region[at + 1..at + gt];
+        i = at + gt + 1;
+        if inner.is_empty() || inner.starts_with('!') {
+            continue;
+        }
+        if let Some(name) = inner.strip_prefix('/') {
+            let name = name.trim().to_ascii_lowercase();
+            if let Some(pos) = stack.iter().rposition(|k| out[*k].tag == name) {
+                stack.truncate(pos);
+            }
+            continue;
+        }
+        let self_closed = inner.trim_end().ends_with('/');
+        let body = inner.trim_end().trim_end_matches('/');
+        let raw_tag = body.split_whitespace().next().unwrap_or("");
+        let tag = raw_tag.to_ascii_lowercase();
+        if tag.is_empty() {
+            continue;
+        }
+        let attrs = &body[raw_tag.len()..];
+        let classes: Vec<String> = html_attr_value(attrs, "class")
+            .map(|v| v.split_whitespace().map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+        out.push(GuestElem {
+            tag: tag.clone(),
+            id: html_attr_value(attrs, "id"),
+            classes,
+            parent: stack.last().copied(),
+        });
+        if !self_closed && !GUEST_VOID.contains(&tag.as_str()) {
+            stack.push(out.len() - 1);
+        }
+    }
+    out
+}
+
+/// 元素在报错信息里的名字（`#id` / `.class` / 标签名）。
+fn guest_label(e: &GuestElem) -> String {
+    if let Some(id) = &e.id {
+        return format!("#{id}");
+    }
+    if let Some(c) = e.classes.first() {
+        return format!(".{c}");
+    }
+    e.tag.clone()
+}
+
+fn guest_chip(els: &[GuestElem]) -> Option<usize> {
+    els.iter()
+        .position(|e| e.classes.iter().any(|c| c == "user-chip"))
+}
+
+fn guest_children(els: &[GuestElem], parent: usize) -> Vec<usize> {
+    (0..els.len())
+        .filter(|i| els[*i].parent == Some(parent))
+        .collect()
+}
+
+fn guest_is_descendant(els: &[GuestElem], mut i: usize, root: usize) -> bool {
+    loop {
+        match els[i].parent {
+            Some(p) if p == root => return true,
+            Some(p) => i = p,
+            None => return false,
+        }
+    }
+}
+
+fn guest_descendants(els: &[GuestElem], root: usize) -> Vec<usize> {
+    (0..els.len())
+        .filter(|i| guest_is_descendant(els, *i, root))
+        .collect()
+}
+
+/// 「控件」：用户点得动的东西（`setGuestSidebar` 收起的是**账号身份**，不是可操作件）。
+fn guest_is_interactive(e: &GuestElem) -> bool {
+    matches!(
+        e.tag.as_str(),
+        "button" | "a" | "input" | "select" | "textarea"
+    )
+}
+
+fn guest_has_interactive(els: &[GuestElem], root: usize) -> bool {
+    guest_is_interactive(&els[root])
+        || guest_descendants(els, root)
+            .iter()
+            .any(|i| guest_is_interactive(&els[*i]))
+}
+
+/// `setGuestSidebar` 体内所有**收起用**的选择器字面量（注释已剥），逗号列表已切开。
+///
+/// 只认 `$(` / `querySelector(` / `querySelectorAll(` 后面**紧跟**的那个字符串：写成
+/// `const s = "…"; document.querySelectorAll(s)` 就扫不到 —— 与兄弟门禁一样，本门禁钉的是
+/// **静态调用点**，不是运行期别名（射程写进 `ui/README.md`）。
+fn guest_hide_selectors(src: &str) -> Vec<String> {
+    let body = code_body(src, "setGuestSidebar");
+    let mut out: Vec<String> = Vec::new();
+    for call in ["querySelectorAll(", "querySelector(", "$("] {
+        let mut from = 0usize;
+        while let Some(rel) = body[from..].find(call) {
+            let at = from + rel + call.len();
+            let tail = &body[at..];
+            let Some(q1) = tail.find('"') else { break };
+            let rest = &tail[q1 + 1..];
+            let Some(q2) = rest.find('"') else { break };
+            for s in rest[..q2].split(',') {
+                let s = s.trim();
+                if !s.is_empty() {
+                    out.push(s.to_string());
+                }
+            }
+            from = at + q1 + 1 + q2 + 1;
+        }
+    }
+    out
+}
+
+/// 选择器有没有可能命中该元素。
+///
+/// 只认本轴会出现的形态：`.类`、`#id`、裸标签，以空白分隔的**后代**链。刻意不做 CSS 引擎 ——
+/// `>` / `+` / `~` 一律当后代分隔符（比真实语义**更宽**：对「必须保住」的判据从严、对「必须
+/// 收起」的判据从宽），`[…]` / `:伪类` 这类词元无法识别 ⇒ 该条选择器不算命中。**这是形状的
+/// 射程**：屏幕那一刻真的可不可达归仓外 jsdom 探针（仓内 CI 没有 JS 运行器）。
+fn guest_sel_matches(els: &[GuestElem], sel: &str, idx: usize) -> bool {
+    sel.split(',').any(|alt| guest_chain_matches(els, alt, idx))
+}
+
+/// 一条选择（逗号已切开）能否命中该元素。
+fn guest_chain_matches(els: &[GuestElem], sel: &str, idx: usize) -> bool {
+    let parts: Vec<String> = sel
+        .split(|c: char| c.is_whitespace() || matches!(c, '>' | '+' | '~'))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() || !guest_compound_matches(&els[idx], &parts[parts.len() - 1]) {
+        return false;
+    }
+    let mut want = parts.len() as isize - 2;
+    let mut cur = els[idx].parent;
+    while want >= 0 {
+        let Some(p) = cur else { return false };
+        if guest_compound_matches(&els[p], &parts[want as usize]) {
+            want -= 1;
+        }
+        cur = els[p].parent;
+    }
+    true
+}
+
+fn guest_sel_ident(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_'
+}
+
+fn guest_compound_matches(e: &GuestElem, compound: &str) -> bool {
+    let mut rest = compound;
+    let mut seen = false;
+    while !rest.is_empty() {
+        let head = rest.chars().next().unwrap_or(' ');
+        let (kind, tail) = match head {
+            '.' => ('c', &rest[1..]),
+            '#' => ('i', &rest[1..]),
+            c if c.is_ascii_alphabetic() => ('t', rest),
+            _ => return false,
+        };
+        let name: String = tail.chars().take_while(|c| guest_sel_ident(*c)).collect();
+        if name.is_empty() {
+            return false;
+        }
+        let ok = match kind {
+            'c' => e.classes.iter().any(|c| c == &name),
+            'i' => e.id.as_deref() == Some(name.as_str()),
+            _ => e.tag == name.to_ascii_lowercase(),
+        };
+        if !ok {
+            return false;
+        }
+        rest = &tail[name.len()..];
+        seen = true;
+    }
+    seen
+}
+
+/// 这条元素（或它的**任一祖先**）会不会被这些选择器收起 —— `hidden` 打在祖先上同样会藏掉它
+/// （`.hidden { display: none !important }`）。
+fn guest_reached(els: &[GuestElem], sels: &[String], idx: usize) -> bool {
+    let mut cur = Some(idx);
+    while let Some(k) = cur {
+        if sels.iter().any(|s| guest_sel_matches(els, s, k)) {
+            return true;
+        }
+        cur = els[k].parent;
+    }
+    false
+}
+
+/// 登录视图的**出口**：`app.js` 里体内调用 `exitGuest()` 的监听器所绑定的句柄。
+///
+/// 派生自 `app.js`（`exitGuest` 是**唯一的**离开游客模式的入口；401 那条路对访客不可达），
+/// 不手抄：出口若哪天换到别的按钮上，本轴跟着走。
+fn guest_exit_handles(src: &str) -> Vec<String> {
+    let code = code_only(src);
+    let mut out: Vec<String> = Vec::new();
+    for (at, _) in code.match_indices("exitGuest(") {
+        // **定义**不是**接线**：`function exitGuest() {` 前面最近的那个 `#id` 是函数体里别的
+        // 语句留下的（今天就是 `resetAuthForms()` 的 `#forgot-pass2`），把它当控件会造出
+        // 一枚不存在的出口 —— 于是「出口的唯一性」这条断言会在一条假名册上失败/空转。
+        if code[..at].trim_end().ends_with("function") {
+            continue;
+        }
+        let from = code[..at].len().saturating_sub(300);
+        let head = &code[from..at];
+        let bytes = head.as_bytes();
+        let mut i = 0usize;
+        let mut last: Option<String> = None;
+        while i < bytes.len() {
+            if bytes[i] == b'"' {
+                if let Some(rel) = head[i + 1..].find('"') {
+                    let lit = &head[i + 1..i + 1 + rel];
+                    if let Some(id) = lit.strip_prefix('#') {
+                        last = Some(id.to_string());
+                    }
+                    i = i + rel + 2;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        if let Some(id) = last {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// 本轴的四个判定（供主测试与「牙」测试共用）。
+struct GuestReading {
+    keeps_toggle: bool,
+    keeps_way_back: bool,
+    conceals_identity: bool,
+    wired: bool,
+}
+
+impl GuestReading {
+    fn verdicts(&self) -> (bool, bool, bool, bool) {
+        (
+            self.keeps_toggle,
+            self.keeps_way_back,
+            self.conceals_identity,
+            self.wired,
+        )
+    }
+}
+
+fn guest_read(app: &str, html: &str) -> GuestReading {
+    let src = code_only(app);
+    let els = sidebar_elements(html);
+    let hidden = guest_hide_selectors(&src);
+    let exits = guest_exit_handles(&src);
+    let exit_idx: Vec<usize> = exits
+        .iter()
+        .filter_map(|id| {
+            els.iter()
+                .position(|e| e.id.as_deref() == Some(id.as_str()))
+        })
+        .collect();
+
+    let mut keeps_toggle = false;
+    let mut conceals_identity = false;
+    if let Some(chip) = guest_chip(&els) {
+        let controls: Vec<usize> = guest_descendants(&els, chip)
+            .into_iter()
+            .filter(|i| guest_is_interactive(&els[*i]))
+            .collect();
+        keeps_toggle = !controls.is_empty()
+            && !hidden.is_empty()
+            && controls.iter().all(|i| !guest_reached(&els, &hidden, *i));
+        let identity: Vec<usize> = guest_children(&els, chip)
+            .into_iter()
+            .filter(|i| !guest_has_interactive(&els, *i))
+            .collect();
+        conceals_identity = !identity.is_empty()
+            && !hidden.is_empty()
+            && identity.iter().all(|i| guest_reached(&els, &hidden, *i));
+    }
+    let keeps_way_back = !exit_idx.is_empty()
+        && exit_idx.len() == exits.len()
+        && !hidden.is_empty()
+        && exit_idx.iter().all(|i| !guest_reached(&els, &hidden, *i));
+    let enter = code_body(&src, "enterGuest");
+    let exit = code_body(&src, "exitGuest");
+    let wired = enter.contains("setGuestSidebar(true)") && exit.contains("setGuestSidebar(false)");
+    GuestReading {
+        keeps_toggle,
+        keeps_way_back,
+        conceals_identity,
+        wired,
+    }
+}
+
+/// C2182：游客外壳只收起**账号身份**（头像 + 名字 / 余额），「主题切换」与「回到登录页的路」
+/// 都必须留在屏幕上。
+///
+/// 反例（实测，仓外 jsdom 仪器）：`setGuestSidebar(true)` 收起的**容器**正好吞掉了两件东西。
+/// ① `#theme-toggle` 是 `.user-chip` 的**后代**，而 `.hidden` 是 `display: none !important`
+/// ⇒ 藏 chip 就把开关一起藏了；`setGuestSidebar` **自己的注释**却写着「主题切换保持可用」
+/// （#153 `e33bf2e` 把它从 `.sidebar-top` 搬进用户卡时，注释被改成了记录搬迁、没人验过它）。
+/// ② `#logout-btn` 是**唯一**接到 `exitGuest()` 的控件（另一条路是 401，访客不会有）⇒ 收掉它，
+/// 访客撞进「使用 / 消费需登录」却无处可登：实测游客外壳 16 枚可达控件里没有一个能把登录
+/// 视图带回来，此后零请求、也不自愈（登出不重载页面）。溯源＝**回归不是取舍**：#153 之前
+/// `enterGuest()` 只藏 `.user-chip`，退出按钮对访客本来可见，同一提交顺手把它加进了隐藏集。
+///
+/// 名册**全部派生**，零硬编码语义：①「控件」= `.user-chip` 之内的可操作元素（今天恰一枚：
+/// `#theme-toggle`）；②「身份」= `.user-chip` 的**直接子元素**里不含可操作件的那些（今天恰
+/// `.avatar` / `.chip-text`）；③「出口」= `app.js` 里体内调用 `exitGuest()` 的监听器句柄。
+#[test]
+fn the_guest_shell_keeps_the_toggle_and_the_way_back() {
+    let src = code_only(APP_JS);
+    let els = sidebar_elements(INDEX_HTML);
+    let chip = guest_chip(&els).expect(
+        "`ui/index.html` 的侧边栏里找不到 `.user-chip` —— 派生地基没了（空集上的断言会假绿）",
+    );
+    let hidden = guest_hide_selectors(&src);
+    assert!(
+        !hidden.is_empty(),
+        "`setGuestSidebar` 里一条收起用的选择器都没扫到 —— 下面的断言会在空集上空转"
+    );
+
+    // ── 规则 4（阳性对照）：三个名册都要非空，且逐条对上今天的事实 ─────────────────────
+    // 名册**钉死**在这里是刻意的：派生一旦被静默收窄（例如 `.user-chip` 的类名改了、或卡片里
+    // 多出一枚按钮），下面的主牙就会在最少的成员上空转 —— 阳性对照是那道闸。
+    let controls: Vec<String> = guest_descendants(&els, chip)
+        .into_iter()
+        .filter(|i| guest_is_interactive(&els[*i]))
+        .map(|i| guest_label(&els[i]))
+        .collect();
+    assert_eq!(
+        controls,
+        vec!["#theme-toggle".to_string()],
+        "「游客模式下必须保住的可操作件」的派生集合变了 —— 它是 `.user-chip` 之内的可操作元素"
+    );
+    let identity: Vec<String> = guest_children(&els, chip)
+        .into_iter()
+        .filter(|i| !guest_has_interactive(&els, *i))
+        .map(|i| guest_label(&els[i]))
+        .collect();
+    assert_eq!(
+        identity,
+        vec!["#side-avatar".to_string(), ".chip-text".to_string()],
+        "「账号身份」的派生集合变了 —— 它是 `.user-chip` 的直接子元素里不含可操作件的那几个"
+    );
+    let exits = guest_exit_handles(&src);
+    assert_eq!(
+        exits,
+        vec!["logout-btn".to_string()],
+        "「离开游客模式的出口」的派生集合变了 —— 今天只有 `#logout-btn` 接到 `exitGuest()`"
+    );
+    assert!(
+        exits
+            .iter()
+            .all(|id| els.iter().any(|e| e.id.as_deref() == Some(id.as_str()))),
+        "出口控件不在侧边栏模型里 —— 「它没被收起」会在空集上空转：{exits:?}"
+    );
+
+    // ── 规则 1（主牙）：游客模式下**没有任何**可操作件被收起 ──────────────────────────
+    let swallowed: Vec<String> = guest_descendants(&els, chip)
+        .into_iter()
+        .filter(|i| guest_is_interactive(&els[*i]) && guest_reached(&els, &hidden, *i))
+        .map(|i| guest_label(&els[i]))
+        .collect();
+    assert!(
+        swallowed.is_empty(),
+        "游客模式把 `{swallowed:?}` 收起了 —— 主题切换属于**设备偏好**，与账号无关\
+     （`setGuestSidebar` 的注释与 #153 的提交正文都写着「主题切换保持可用」）"
+    );
+
+    // ── 规则 2（主牙）：出口控件必须留着 —— 送走的是账号身份，不是**回登录页的路** ────
+    let stranded: Vec<String> = exits
+        .iter()
+        .filter(|id| {
+            els.iter()
+                .position(|e| e.id.as_deref() == Some(id.as_str()))
+                .is_some_and(|i| guest_reached(&els, &hidden, i))
+        })
+        .cloned()
+        .collect();
+    assert!(
+        stranded.is_empty(),
+        "游客模式把 `{stranded:?}` 收起了 —— 它是访客**唯一**能回到登录视图的控件：\
+     藏掉它，访客此后零请求、也不自愈"
+    );
+
+    // ── 规则 3（反向）：账号身份**必须**被收起 ─────────────────────────────────────────
+    let leaked: Vec<String> = guest_children(&els, chip)
+        .into_iter()
+        .filter(|i| !guest_has_interactive(&els, *i) && !guest_reached(&els, &hidden, *i))
+        .map(|i| guest_label(&els[i]))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "游客模式把账号身份 `{leaked:?}` 留在了屏幕上 —— 该收起的是账号身份（头像 + 名字 / 余额），\
+     而 `#side-balance` / `#side-name` 在访客会话里从不被重写（登出**不重载页面**）"
+    );
+
+    // ── 规则 5：一处声明，两处引用 —— 进出游客模式都得走这个函数 ──────────────────────
+    let r = guest_read(APP_JS, INDEX_HTML);
+    assert_eq!(
+        r.verdicts(),
+        (true, true, true, true),
+        "四条判定必须同时成立：①保住可操作件 ②保住出口 ③收起身份 ④两侧都接了线"
+    );
+    assert!(
+        src.contains("setGuestSidebar(true)") && src.contains("setGuestSidebar(false)"),
+        "`setGuestSidebar` 的调用点变了 —— 它必须同时被 `enterGuest` 与 `exitGuest` 调用"
+    );
+}
+
+/// C2182 判别式的牙：结构解析、选择器匹配、出口名册各有一条自证，五个变异体各只翻自己那条
+/// 规则（`(保住可操作件, 保住出口, 收起身份, 两侧接线)`）。
+#[test]
+fn the_c2182_guest_shell_extractors_have_teeth() {
+    // ── 结构解析：父子关系由标签配对推定 ────────────────────────────────────────────────
+    let els = sidebar_elements(INDEX_HTML);
+    assert!(
+        els.len() > 8,
+        "侧边栏模型只有 {} 个元素 —— 解析器没读到东西：{}",
+        els.len(),
+        els.iter().map(guest_label).collect::<Vec<_>>().join(" ")
+    );
+    let chip = guest_chip(&els).expect("找不到 `.user-chip`");
+    let kids: Vec<String> = guest_children(&els, chip)
+        .iter()
+        .map(|i| guest_label(&els[*i]))
+        .collect();
+    assert_eq!(
+        kids,
+        vec![
+            "#side-avatar".to_string(),
+            ".chip-text".to_string(),
+            "#theme-toggle".to_string()
+        ],
+        "`.user-chip` 的直接子元素解析错了"
+    );
+    let toggle = els
+        .iter()
+        .position(|e| e.id.as_deref() == Some("theme-toggle"))
+        .unwrap();
+    assert!(
+        guest_is_descendant(&els, toggle, chip),
+        "`#theme-toggle` 不是 `.user-chip` 的后代 —— 本轴的前提没了"
+    );
+    let out = els
+        .iter()
+        .position(|e| e.id.as_deref() == Some("logout-btn"))
+        .unwrap();
+    assert!(
+        !guest_is_descendant(&els, out, chip),
+        "`#logout-btn` 跑进了 `.user-chip` 里 —— 收起身份就会连带收起出口"
+    );
+    // 嵌套元素也要认得出（`.chip-text` 里的 `<strong>` / `<span>` 是它的孩子，不是兄弟）
+    let text = els
+        .iter()
+        .position(|e| e.classes.iter().any(|c| c == "chip-text"))
+        .unwrap();
+    assert!(
+        guest_descendants(&els, text).len() >= 2,
+        "`.chip-text` 的后代每个都没解析出来 —— 配对器只会认平铺标记"
+    );
+
+    // ── 选择器匹配 ─────────────────────────────────────────────────────────────────────
+    assert!(guest_sel_matches(&els, ".user-chip .chip-text", text));
+    assert!(guest_sel_matches(
+        &els,
+        ".chip-text strong",
+        guest_descendants(&els, text)[0]
+    ));
+    assert!(!guest_sel_matches(&els, ".user-chip", toggle));
+    assert!(guest_sel_matches(&els, ".user-chip, #logout-btn", out));
+    assert!(guest_sel_matches(&els, "#logout-btn", out));
+    assert!(!guest_sel_matches(&els, "#logout", out));
+    assert!(!guest_sel_matches(&els, "button:disabled", toggle));
+    // 祖先被命中 = 它被收起（`.hidden` 是 `display: none !important`）
+    assert!(guest_reached(&els, &[".user-chip".to_string()], toggle));
+    assert!(!guest_reached(
+        &els,
+        &[".user-chip .chip-text".to_string()],
+        toggle
+    ));
+
+    // ── 选择器名册：注释里的选择器不算 ──────────────────────────────────────────────────
+    let synth = "  function setGuestSidebar(on) {\n    // document.querySelectorAll(\".nope\")\n    document.querySelectorAll(\".a, .b\").forEach((el) => {\n      el.classList.toggle(\"hidden\", on);\n    });\n  }\n";
+    assert_eq!(
+        guest_hide_selectors(synth),
+        vec![".a".to_string(), ".b".to_string()]
+    );
+    let empty = "  function setGuestSidebar(on) {\n  }\n";
+    assert!(guest_hide_selectors(empty).is_empty());
+
+    // ── 出口名册 ───────────────────────────────────────────────────────────────────────
+    assert_eq!(guest_exit_handles(APP_JS), vec!["logout-btn".to_string()]);
+    let nowire = APP_JS.replacen("      exitGuest();\n", "", 1);
+    assert!(nowire != APP_JS, "接线锚点变了");
+    assert!(
+        guest_exit_handles(&nowire).is_empty(),
+        "出口名册不是从 `exitGuest()` 的调用点派生的"
+    );
+
+    // ── 五个变异体，各只翻自己那条规则 ─────────────────────────────────────────────────
+    let sel = "\".user-chip .avatar, .user-chip .chip-text\"";
+    assert!(APP_JS.contains(sel), "选择器锚点变了");
+    let variant = |lit: &str| APP_JS.replacen(sel, lit, 1);
+    // ① 整张卡被收起（#153 那次改动的形状：开关与身份一起没）
+    let no_hide = variant("\".user-chip\"");
+    assert!(no_hide != APP_JS);
+    assert_eq!(
+        guest_read(&no_hide, INDEX_HTML).verdicts(),
+        (false, true, true, true),
+        "「收起整张用户卡」应当只翻掉「保住可操作件」"
+    );
+    // ② #153 之后的原始形状：卡 + 出口一起收起（回归）
+    let revert = variant("\".user-chip, #logout-btn\"");
+    assert!(revert != APP_JS);
+    assert_eq!(
+        guest_read(&revert, INDEX_HTML).verdicts(),
+        (false, false, true, true),
+        "回归形状必须同时翻掉「保住可操作件」与「保住出口」"
+    );
+    // ③ 只收起头像：身份泄漏一半
+    let half = variant("\".user-chip .avatar\"");
+    assert!(half != APP_JS);
+    assert_eq!(
+        guest_read(&half, INDEX_HTML).verdicts(),
+        (true, true, false, true),
+        "「只收起头像」应当只翻掉「收起身份」"
+    );
+    // ④ 只收起出口：访客走投无路且身份还印在屏幕上
+    let back_only = variant("\"#logout-btn\"");
+    assert!(back_only != APP_JS);
+    assert_eq!(
+        guest_read(&back_only, INDEX_HTML).verdicts(),
+        (true, false, false, true),
+        "「只收起出口」应当翻掉「保住出口」与「收起身份」"
+    );
+    // ⑤ 收起整条底栏：两件该留的一起没
+    let foot = variant("\".sb-foot\"");
+    assert!(foot != APP_JS);
+    assert_eq!(
+        guest_read(&foot, INDEX_HTML).verdicts(),
+        (false, false, true, true),
+        "「收起整条底栏」必须同时翻掉两件该留的"
+    );
+    // ⑥ 断了接线：四条判定只剩接线那条红
+    let unwired = APP_JS.replacen("    setGuestSidebar(true);\n", "", 1);
+    assert!(unwired != APP_JS, "接线锚点变了");
+    assert_eq!(
+        guest_read(&unwired, INDEX_HTML).verdicts(),
+        (true, true, true, false),
+        "「进了游客模式却不收身份」应当只翻掉接线那条"
+    );
+}

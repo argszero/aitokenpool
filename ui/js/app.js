@@ -3393,12 +3393,20 @@
 
   /* ---------------- 游客模式（US-1：未登录浏览市场） ---------------- */
 
-  // 游客模式：只隐藏账号相关控件（用户 chip + 退出登录），主题切换保持可用（原位于顶栏，PR2 迁入底栏）
+  // 游客模式：只收起**账号身份**（头像 + 「名字 / 余额」两半），主题切换与返回登录保持可用。
+  //
+  // ⚠️ 不要藏整个 `.user-chip`：#153（`e33bf2e`）把主题切换从 `.sidebar-top` 搬进了这张用户卡，
+  // 而 `.hidden` 是 `display:none !important` ⇒ 藏 chip 会把它一起藏掉。主题切换属于**设备偏好**、
+  // 与账号无关，本函数旧注释与 #153 的提交正文都写着「主题切换保持可用」—— 那句话从写下起就没人验过。
+  // ⚠️ 也不要藏 `#logout-btn`：它是游客**唯一**能回到登录视图的控件（`docs/user-stories.md` 把
+  // 「登录注册」列为访客的能力；#153 之前它本来对游客可见）。藏掉它，游客撞进「使用 / 消费需登录」
+  // 却无处可登，此后零请求、也不自愈（仓外 jsdom 探针实测：游客外壳 16 个可达控件里没有一个能回登录页）。
+  // 形状由 `src/state_gate.rs::the_guest_shell_keeps_the_toggle_and_the_way_back` 钉住：名册派生自
+  // `ui/index.html`（两枚必须保持可达的控件 + 用户卡里除它们以外的直接子元素 = 账号身份）。
   function setGuestSidebar(on) {
-    const chip = document.querySelector(".user-chip");
-    const out = $("#logout-btn");
-    if (chip) chip.classList.toggle("hidden", on);
-    if (out) out.classList.toggle("hidden", on);
+    document.querySelectorAll(".user-chip .avatar, .user-chip .chip-text").forEach((el) => {
+      el.classList.toggle("hidden", on);
+    });
   }
 
   function enterGuest() {

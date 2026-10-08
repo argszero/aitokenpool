@@ -885,6 +885,9 @@ mark {
 .user-chip strong { font-size: 13px; display: block; }
 .user-chip span { color: var(--muted); font-size: 11.5px; }
 .user-chip b { color: var(--accent); }
+/* 游客模式（C2182）：用户卡里只剩下主题切换（头像与名字/余额被 `setGuestSidebar` 收起），
+   它自己推到右边，别贴着栏沿。有 `.chip-text`（flex: 1）在时这条不改变任何东西。 */
+.user-chip > .theme-toggle { margin-left: auto; }
 
 .main { flex: 1; overflow-y: auto; padding: 28px 32px 48px; }
 
