@@ -3627,12 +3627,28 @@
     resetTxView();
   }
 
+  // C2180：交易时间范围控件的**唯一投影点**。状态（`txRange` / `txCustomStart` / `txCustomEnd`）
+  // 是真相，控件是它的投影 —— 与 `setTxTypeFilter()` 同步那枚列筛选 select 同规。
+  // 身份边界（`resetTxView()`）复位状态之后必须调它一次：登出**不重载页面**，控件不跟着投影
+  // 就会把上一位用户的时间窗留在下拉上（数据却按复位后的 24h 取 ⇒ 控件在说谎），
+  // 选过「自定义」时那两个 datetime 输入连他的日期一起留给下一位。
+  function syncTxRangeControls() {
+    $("#tx-range").value = txRange;
+    $("#tx-range-start").value = txCustomStart;
+    $("#tx-range-end").value = txCustomEnd;
+    const custom = txRange === "custom";
+    $("#tx-range-start").style.display = custom ? "" : "none";
+    $("#tx-range-end").style.display = custom ? "" : "none";
+  }
+
   // C2170：身份边界要清的不只是 `Live` —— 交易视图的状态是**模块级**的。前四项是载荷的**输入**
   // （`txQuerySig()` 的签名 + 页码 / 每页行数），后三项是载荷的**有效性证据**：证据属于载荷，
   // 载荷被清空而证据留下，守卫就会认一份**不存在**的载荷为「已加载」，下一位用户的首帧因此是
   // 空表（服务端按 `offset=(page-1)*page_size` 返回 `items: []`）且不自愈。复位取**声明处的默认
   // 值**，不能一键清空 —— `loadTransactions()` 用 `Math.max(1, txTable.pageSize || 10)` 兜底，
   // 清成 `undefined` 只会让每页退化到 1 行。
+  // C2180：状态复位完还要把**控件**投影回去（`syncTxRangeControls()`）—— 模块级状态是真相，
+  // 屏幕上的下拉/日期输入只是它的投影；只复位一半的话，下一位用户读到的控件说的是上一位的时间窗。
   function resetTxView() {
     txTable.sort = [];
     txTable.filters = {};
@@ -3644,6 +3660,7 @@
     txRange = "24h";
     txCustomStart = "";
     txCustomEnd = "";
+    syncTxRangeControls();
   }
 
   function loggedIn() { return !!api.getToken() && !isGuest; }
@@ -4428,19 +4445,16 @@
     const txStartEl = $("#tx-range-start");
     const txEndEl = $("#tx-range-end");
     if (txRangeEl && txStartEl && txEndEl) {
-      const showCustom = () => {
-        const custom = txRangeEl.value === "custom";
-        txStartEl.style.display = custom ? "" : "none";
-        txEndEl.style.display = custom ? "" : "none";
-      };
       txRangeEl.addEventListener("change", () => {
         txRange = txRangeEl.value;
-        showCustom();
+        // C2180：状态一改就重新投影控件（含「自定义」那两个输入的可见性）。投影只有一处声明
+        // （`syncTxRangeControls()`）—— 身份边界复位状态后调的就是同一个它。
+        syncTxRangeControls();
         reloadTransactions();
       });
       txStartEl.addEventListener("change", () => { txCustomStart = txStartEl.value; reloadTransactions(); });
       txEndEl.addEventListener("change", () => { txCustomEnd = txEndEl.value; reloadTransactions(); });
-      showCustom();
+      syncTxRangeControls();
     }
 
     // 趋势图：原型 .trend 双色柱状（消费/收益）为纯 CSS 柱 + title 原生 tooltip，
