@@ -3401,6 +3401,35 @@
     $("#model-form-card").hidden = true;
   }
 
+  // 身份边界（C2177）：视图的**查询状态**也一样。多数视图的查询状态根本不在 JS 里 —— 它就是
+  // 那枚静态控件的 `.value`（搜索框 / 筛选下拉），`render*` 时 `$("#x").value` 直接读回来。
+  // 登出**不重载页面**、`enterApp()` 又按 `location.hash` 还原视图 ⇒ 下一位登录者落回上一位的
+  // 视图时，上一位的搜索词与筛选**原样还在**：`#mk-count` 于是把「被收窄的一行」当成目录规模念
+  // 出来（`cnt.models` 拿的是**筛后**行数），而侧边栏角标用的是未过滤的行数 ⇒ 屏幕上两个数互相
+  // 打脸。C2176 收的是「卡片开着」这件事、C2170 收的是交易视图的模块级状态 —— 控件自身的**值**
+  // 两边都不覆盖：markup 里既没有 `hidden` 属性、也没有 JS 变量承载它（状态就是 DOM 本身）。
+  // 复位值取**声明处的默认值**：各下拉的首个选项值、搜索框空串；与市场「清除筛选」
+  // 按钮那四行（早于本轴就存在）逐字同值 —— 抽出来共用，避免同一事实有两个载体。
+  function resetMarketFilters() {
+    resetSearch($("#mk-search"));
+    $("#mk-provider").value = "";
+    $("#mk-sort").value = "default";
+    if ($("#mk-avail")) $("#mk-avail").value = "all";
+  }
+
+  function resetSessionQueryState() {
+    // 市场：搜索框 + 三枚筛选下拉（与「清除筛选」按钮同源）
+    resetMarketFilters();
+    // 其余五个视图各自的搜索框（值 + × 按钮态一起，走 `wireSearch` 自己的清除器）
+    resetSearch($("#ak-search"));
+    resetSearch($("#emp-search"));
+    resetSearch($("#model-search"));
+    resetSearch($("#od-search"));
+    resetSearch($("#ops-search"));
+    // 展开中的市场行同样是这个会话留下的（`renderMarketplace` 按它渲染详情行）
+    mkExpanded = null;
+  }
+
   function exitGuest() {
     isGuest = false;
     // 身份边界（C2132）：会话结束即清空上一位用户的缓存 —— 否则下一位登录者会先看到他的数据
@@ -3409,6 +3438,8 @@
     resetSessionOverlays();
     // 身份边界（C2176）：`#app` **内部**展开着的卡片同样是这个会话留下的，随边界一起收起
     resetSessionPanels();
+    // 身份边界（C2177）：上一位用户的搜索词 / 筛选 / 展开行同样不属于下一位
+    resetSessionQueryState();
     $("#app").classList.add("hidden");
     setGuestSidebar(false);
     $("#login-view").classList.remove("hidden");
@@ -4080,12 +4111,9 @@
         consumeModel(b.dataset.useModel);
         return;
       }
-      // 空状态：清除筛选
+      // 空状态：清除筛选（与身份边界的市场复位同源，C2177）
       if (e.target.closest("[data-mk-clear-filters]")) {
-        resetSearch($("#mk-search"));
-        $("#mk-provider").value = "";
-        $("#mk-sort").value = "default";
-        if ($("#mk-avail")) $("#mk-avail").value = "all";
+        resetMarketFilters();
         renderMarketplace();
       }
     });
