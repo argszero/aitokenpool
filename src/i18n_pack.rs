@@ -103,8 +103,8 @@ const ZH_KEY_COUNT: usize = 799;
 const EN_KEY_COUNT: usize = 799;
 const STATIC_ATTR_COUNT: usize = 335;
 const STATIC_ATTR_DISTINCT: usize = 309;
-const T_LITERAL_COUNT: usize = 549;
-const T_LITERAL_DISTINCT: usize = 437;
+const T_LITERAL_COUNT: usize = 546;
+const T_LITERAL_DISTINCT: usize = 433;
 
 /// 切出语言包区段（起点标记 → 终点标记，含起点）。
 fn pack_region<'a>(src: &'a str, start_mark: &str, end_mark: &str) -> &'a str {
@@ -3951,27 +3951,151 @@ mod tests { fn t() { json!({ "x": "测试中文" }) } }
         );
     }
 
-    /// 「标签来自**语言包感知**的解析器」的判别式（C2157）。
+    /// Plan 显示名的**语言包键前缀** —— 解析器契约的判据：谁最终读到它，谁就是解析器。
     ///
-    /// 判别式必须覆盖**全部**解析器，不能锚在单个函数名上：`planLabelById(id)` 是同一个解析器
-    /// 的第二个入口（按 plan id 进来），单锚 `planLabel(` 会把它合法的调用判成红 —— 同族坑
-    /// #347「名字不是唯一载体」。⚠️ 射程：它证明派生**走了**解析器，不证明分支/算术全对。
-    fn resolver_renders_the_label(stmt: &str) -> bool {
-        stmt.contains("planLabel(") || stmt.contains("planLabelById(")
+    /// 键在 `ui/js/i18n.js` 的两包各三条（`share.planName.paygo|token|coding`），所以三种 type
+    /// 用同一个前缀即可覆盖；写全三个键只会让这条判据多三份重复（一处声明，多处引用）。
+    const PLAN_NAME_KEY_PREFIX: &str = "T(\"share.planName.";
+
+    /// 一段 JS 代码里**被调用**的标识符（`name(` 形态）。
+    ///
+    /// 左界必须是标识符之外（`o.renderHelp(` 里的 `renderHelp` 也算被调用 —— 方法的接收者是谁
+    /// 在这里无关紧要；我们要的是「这个名字在本文件里有没有定义体」）。
+    fn called_idents(code: &str) -> BTreeSet<String> {
+        let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+        let bytes = code.as_bytes();
+        let mut out = BTreeSet::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if !is_word(bytes[i]) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < bytes.len() && is_word(bytes[i]) {
+                i += 1;
+            }
+            let left_ok = start == 0 || !is_word(bytes[start - 1]);
+            let mut k = i;
+            while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') {
+                k += 1;
+            }
+            if left_ok && k < bytes.len() && bytes[k] == b'(' {
+                out.insert(code[start..i].to_string());
+            }
+        }
+        out
     }
 
-    /// 判别式自证：两个合法入口各判一次、一个裸字段形态必须判负（否则放宽是无牙的）。
+    /// 名字 `name` 在 `app.js` 里的**定义体**：`function name(` 的函数体，或 `const name = …`
+    /// 的初始化式。两种都不是 ⇒ `None`（不是本文件的函数，闭包到此为止）。
+    fn js_named_body(app: &str, name: &str) -> Option<String> {
+        if let Some(body) = js_function_body(app, &format!("function {name}(")) {
+            return Some(body.to_string());
+        }
+        for kw in ["const", "let", "var"] {
+            let sig = format!("{kw} {name} = ");
+            let Some(at) = app.find(&sig) else { continue };
+            let rest = &app[at + sig.len()..];
+            if let Some(open) = rest.find('{') {
+                // **块体箭头**（`= (…) => { … }`）：这个 `{` 与声明头之间不得出现 `;`／换行 ——
+                // 否则它是**后面**某条声明的体，`js_function_body` 会从那里一路配对过去，
+                // 于是把邻居的调用读成这个函数的调用（假阳性，比漏读更危险）。
+                if !rest[..open].contains(';') && !rest[..open].contains('\n') {
+                    if let Some(body) = js_function_body(app, &sig) {
+                        return Some(body.to_string());
+                    }
+                }
+            }
+        }
+        // **单表达式箭头**（`= (…) => …`）：初始化式（`declaration_initializers` 到 `;` 或行尾）。
+        let inits = declaration_initializers(app, name);
+        if inits.is_empty() {
+            None
+        } else {
+            Some(inits.join("\n"))
+        }
+    }
+
+    /// 「标签来自**语言包感知**的解析器」的判别式（C2157）——**派生**版（C2178）。
+    ///
+    /// 从这条语句调用的每个名字出发，沿**调用关系**找下去，看有没有谁能最终读到
+    /// `PLAN_NAME_KEY_PREFIX`；读到即「走了语言包感知的解析器」。
+    ///
+    /// 为什么必须是派生而不是一张名字清单：解析器有**多个入口**，`planLabelById(id)`（按 plan id
+    /// 进来）、`planOptionLabel(v)`（下拉选项文案，C2178）都只是 `planLabel` 的入口 —— 单锚
+    /// `planLabel(` 会把它们合法的调用判成红（同族坑 #347「名字不是唯一载体」），而把它们逐个手抄
+    /// 进清单，则下一次新增入口又会静默失准（C2178 实测：手抄清单在同一个 PR 里就过期了）。
+    ///
+    /// ⚠️ 射程：它证明派生**最终读到**了语言包键，**不**证明分支/算术全对（`planLabel` 内部
+    /// 三选一选错 type 它看不见）。判据失败的方向是**红**（读不到键 ⇒ 判负），不会静默放宽。
+    fn resolver_renders_the_label(app: &str, stmt: &str) -> bool {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut queue: Vec<String> = called_idents(stmt).into_iter().collect();
+        while let Some(name) = queue.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some(body) = js_named_body(app, &name) else {
+                continue;
+            };
+            let code = strip_js_comments(&body);
+            if code.contains(PLAN_NAME_KEY_PREFIX) {
+                return true;
+            }
+            for callee in called_idents(&code) {
+                if !seen.contains(&callee) {
+                    queue.push(callee);
+                }
+            }
+        }
+        false
+    }
+
+    /// 判别式自证：**每个**合法入口判正（集合是派生的 ⇒ 新增入口自动跟上）、裸字段与非解析器
+    /// 调用一律判负（否则放宽是无牙的）。
+    ///
+    /// ⚠️ 正例只取**两棵树都有**的名字（解析器本身 + 它的第二个入口），第三条取语料里**现成**的
+    /// 真实语句 —— 写死某个只在修复树上存在的入口名，会让这条腿在另一棵树上因「名字不存在」而红
+    /// （#612：为树 A 写的断言表对树 B 无效）。
     #[test]
     fn the_plan_label_resolver_discriminant_covers_every_resolver() {
-        assert!(resolver_renders_the_label(
-            "const label = provLabel(plan.provider) + \" · \" + planLabel(plan);"
-        ));
-        assert!(resolver_renders_the_label(
-            "const label = provLabel(plan.provider) + \" · \" + planLabelById(planId);"
-        ));
-        assert!(!resolver_renders_the_label(
-            "const label = provLabel(plan.provider) + \" · \" + plan.name;"
-        ));
+        let app = strip_js_comments(APP_JS);
+        // ① 入口判正：直接调用，以及 `planLabelById` —— 它**自己不读**语言包键、只转交给 `planLabel`，
+        //    正是「派生」要覆盖的那一格（名字清单挡不住这一类）。
+        for site in [
+            "const label = provLabel(plan.provider) + \" · \" + planLabel(plan);",
+            "const label = provLabel(plan.provider) + \" · \" + planLabelById(planId);",
+        ] {
+            assert!(
+                resolver_renders_the_label(&app, site),
+                "解析器的合法入口被判成红：{site}"
+            );
+        }
+        // ①' 语料里那条真实语句（入口随代码演进；判据是派生的，所以这条腿不需要跟着改）。
+        let real = statement_containing(&app, "selPlan.innerHTML")
+            .expect("找不到上架表单 Plan 下拉那条语句");
+        assert!(
+            resolver_renders_the_label(&app, real),
+            "上架表单 Plan 下拉那条语句被判成红（入口变了而判据没跟上）：{real}"
+        );
+        // ② 派生确实是从**这个文件里的**定义出发的（否则上面的判正可能只是碰巧）。
+        assert!(
+            app.contains("function planLabel(") && app.contains("function planLabelById("),
+            "解析器定义不在语料里 —— 派生链没有起点"
+        );
+        // ③ 反例：裸字段、同族的**非 plan** 标签助手、以及链上的邻居（`planById` 返回对象，
+        //    并不读语言包键）—— 一律判负。
+        for site in [
+            "const label = provLabel(plan.provider) + \" · \" + plan.name;",
+            "o.textContent = provLabel(o.value);",
+            "o.textContent = planById(o.value);",
+        ] {
+            assert!(
+                !resolver_renders_the_label(&app, site),
+                "非解析器被判成绿：{site}"
+            );
+        }
     }
 
     /// 另一半（C2133）：后端只回传语言中性标记之后，标签必须由客户端补上。
@@ -4012,7 +4136,7 @@ mod tests { fn t() { json!({ "x": "测试中文" }) } }
             let stmt = statement_containing(&app, needle)
                 .unwrap_or_else(|| panic!("找不到 {site} 的渲染语句（`{needle}`）"));
             assert!(
-                resolver_renders_the_label(stmt),
+                resolver_renders_the_label(&app, stmt),
                 "{site} 必须经**语言包感知**的解析器渲染（`planLabel(` 或 `planLabelById(`）——\
                  锚在单个函数名上会把合法的第二个入口判成红；直接读 `plan.name` 则会让 config \
                  未配置时显示空标签：{stmt:?}"

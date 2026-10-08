@@ -5436,7 +5436,10 @@ impl R93Reading {
 //   R1  每个「**非模态**（按 CSS 推导：该元素的类规则里都没有 `inset: 0`）＋ 内容由 **JS 写**
 //       （某函数体里同时出现该浮层的后代 id 与 `T(`）」的浮层，其**每一个**这样的写者都必须从
 //       处理器体内被调用。
-//   R2  处理器不得把刷新清空（挡「把名册删掉」式假修）：派生出来的 `render*` 刷新名 ≥ 3。
+//   R2  名册不得被**削到只剩浮层写者**（挡「把名册删干净」式假修）：派生出来的 `render*` 刷新名
+//       里必须至少有一个**不是**射程内浮层的写者。判据从写者集合派生，不写阈值 —— C2178 实测：
+//       同一段处理器新增一个刷新名（`renderShareFormCopy`）之后，原来的「≥ 3 个」代理量就再也
+//       分不出「削过的名册」与「完整名册」。
 //   R3  **分界为真**：派生集合里确实既有模态（类规则含 `inset: 0`）又有非模态 —— 否则 R1 的
 //       「非模态」这一半恒真/恒假，规则就退化成空集上的关系式（坑 68 家族）。
 //
@@ -5481,10 +5484,6 @@ const R94_MODAL_RULE: &str = "inset: 0";
 /// 通用工具类（`display: none` 的开关）：它说的是「现在藏着」，不是「这个浮层长什么样」，
 /// 所以不参与模态/非模态的推导。
 const R94_GENERIC_CLASS: &str = "hidden";
-
-/// R2 的下界：处理器里派生出来的 `render*` 刷新名的个数。阈值只承担「不许清空」这一件事，
-/// 真正承重的是 R1 的逐浮层关系。
-const R94_MIN_REFRESHES: usize = 3;
 
 /// 一个浮层：`ui/index.html` 里 `<body>` 顶层的元素（`#app` 之后、带 `hidden` 类）。
 #[derive(Debug, Clone)]
@@ -5714,6 +5713,16 @@ impl R94Reading {
         (self.r1, self.r2, self.r3)
     }
 
+    /// 射程内浮层的**写者名集合** —— R2 与「削名册」变体共用的判据。
+    fn in_scope_writers(&self) -> BTreeSet<String> {
+        self.scope
+            .iter()
+            .filter_map(|id| self.writers.get(id))
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
     /// 把已经读到的证据折成三条判词。
     ///
     /// R1 的**空集保护**在同一条判词里：射程为空（没有非模态浮层，或没有 JS 写者）时必须红，
@@ -5721,7 +5730,10 @@ impl R94Reading {
     fn finish(mut self) -> R94Reading {
         let in_scope = !self.scope.is_empty();
         self.r1 = self.missing.is_empty() && in_scope;
-        self.r2 = self.refreshes.len() >= R94_MIN_REFRESHES;
+        // R2：名册不得被**削到只剩浮层写者** —— 判据从写者集合**派生**（见模块头 R2 的注释：
+        // 写死的「≥ N 个刷新名」是个代理量，C2178 新增一个刷新名之后它就不再能分辨削没削过）。
+        let writers = self.in_scope_writers();
+        self.r2 = self.refreshes.iter().any(|r| !writers.contains(r));
         self.r3 = !self.modal.is_empty() && !self.non_modal.is_empty();
         self
     }
@@ -5840,9 +5852,16 @@ fn r94_variant_unfixed(app: &str) -> String {
 }
 
 /// 假修：把刷新名册**削到恰好满足 R1 的最小集** —— 只留浮层写者（`renderHelp` / `renderTourStep`），
-/// 把导航与当前视图那两次刷新删掉。R1 仍绿（浮层写者都在），而 R2 的下界必须红 —— 挡住
-/// 「名册越删越干净」这条路径。
+/// 其余刷新名整行删掉。R1 仍绿（浮层写者都在），而 R2 必须红 —— 挡住「名册越删越干净」这条路径。
+///
+/// 要删哪几行是**派生**的（由 `r94_writers` 给出的写者名册决定），不是手抄一份调用清单：
+/// 手抄清单会在处理器新增一个刷新名时静默失效 —— C2178 实测，加了 `renderShareFormCopy()` 之后
+/// 「削掉导航与当前视图那两行」就不再是「削到写者为止」，R2 于是对一条已经削过的名册判绿。
 fn r94_variant_minimal_roster(app: &str) -> String {
+    let writers: BTreeSet<String> = r94_writers(app, &r94_overlays(INDEX_HTML))
+        .into_values()
+        .flatten()
+        .collect();
     let mut out = Vec::new();
     let mut inside = false;
     let mut dropped = 0usize;
@@ -5850,8 +5869,11 @@ fn r94_variant_minimal_roster(app: &str) -> String {
         if line.contains(R94_HANDLER_START) {
             inside = true;
         }
-        let trims = line.trim_start();
-        if inside && (trims.contains("renderNav()") || trims.contains("renderView(activeView)")) {
+        let refreshed: Vec<String> = r94_calls(line)
+            .into_iter()
+            .filter(|c| c.starts_with("render"))
+            .collect();
+        if inside && !refreshed.is_empty() && refreshed.iter().all(|c| !writers.contains(c)) {
             dropped += 1;
             continue;
         }
@@ -5860,9 +5882,9 @@ fn r94_variant_minimal_roster(app: &str) -> String {
         }
         out.push(line.to_string());
     }
-    assert_eq!(
-        dropped, 2,
-        "刷新名册的锚点漂了（摘掉 {dropped} 行，期望 2）"
+    assert!(
+        dropped >= 1,
+        "一行刷新都没摘掉 —— 处理器里的刷新名锚点漂了，本变体已不是「削名册」"
     );
     out.join("\n") + "\n"
 }
@@ -6306,8 +6328,10 @@ mod tests {
             read.report()
         );
         assert!(
-            read.refreshes.len() >= R94_MIN_REFRESHES,
-            "处理器派生出来的 `render*` 刷新名少于 {R94_MIN_REFRESHES} 个 —— R2 的下界不成立：{}",
+            read.refreshes
+                .iter()
+                .any(|r| !read.in_scope_writers().contains(r)),
+            "处理器里的刷新名全被浮层写者占满 —— R2「名册没被削到只剩写者」不成立：{}",
             read.report()
         );
         assert!(
@@ -6471,11 +6495,16 @@ mod tests {
             new_overlay.report()
         );
 
-        // R2 的第二半：**刷新的名字少于下界**也必须响亮失败（不许把「名册越删越干净」当成功）。
+        // R2 的第二半：名册被削到**只剩浮层写者**之后必须响亮失败（不许把「名册越删越干净」当成功）。
         let numpty = r94_live(&r94_variant_minimal_roster(&fixed_tree));
         assert!(
-            !numpty.r2 && numpty.refreshes.len() < R94_MIN_REFRESHES,
-            "刷新名册被削到最小集后 R2 仍绿 —— 那条规则可以静默失明：{}",
+            !numpty.r2,
+            "刷新名册被削到只剩浮层写者后 R2 仍绿 —— 那条规则可以静默失明：{}",
+            numpty.report()
+        );
+        assert!(
+            numpty.refreshes.is_subset(&numpty.in_scope_writers()),
+            "削名册之后名册里还剩非写者的刷新名 —— 变体构造器没削干净：{}",
             numpty.report()
         );
         assert!(
@@ -12178,6 +12207,881 @@ function bind() {
                 && !real.contains("renderSharing"),
             "闭包被单行函数带跑：{real:?}"
         );
+    }
+    // ═════════════ C2178：语言切换必须够到 `#app` **内部**的卡片 ═════════════
+    //
+    // R94（#288 / `5e67055`）的刷新名册按构造只取 `ui/index.html` 里 `#app` **之后**的顶行浮层
+    // （`r94_overlays`），加上「当前视图」。但**卡片是 `#app` 的后代** —— 用户把它们开在共享 /
+    // 管理 / 设置视图里，而语言下拉只长在设置视图里，且 `switchView` / `renderView` 都不关卡片。
+    // 于是真实路径是：打开卡片 → 走到设置 → 切语言 → 走回来，卡片仍开着。卡片里由 JS 写死的那部分
+    // 文案就停在旧语言，**且整会话不自愈**（各视图的渲染函数不碰卡片：上架卡片的下拉只在**数据源**
+    // 变化时重建，model/dept 表单的标题只在打开时写一次）。
+    //
+    // 与 C2176 是同一个盲区换了边界（那边是**身份边界**、这边是**语言切换**），因此名册共用同一处
+    // 声明 `inline_panels_inside_app`。
+    //
+    // ## 三条规则（全部**派生**，无手写豁免清单）
+    //
+    // 名词：**节点**＝具名函数或箭头常量（含嵌在别处的），体内注释已剥、嵌套节点的体已**挖空**
+    // （否则子节点的写点会被算到父节点头上、把守卫的路径抹平）；**写点**＝对某个元素 id 的
+    // `textContent =` / `innerHTML =`；**口语文案**＝写点所在节点的体内出现 `T(`；
+    // **种子**＝语言切换处理器的直接被调者 ∪ `renderView` 体里调用的那些渲染器；
+    // **够得着**＝沿**不被 `.dataset.` 守卫拦住**的调用边从种子可达。
+    //
+    // 1. **不许留下陈旧文案**：面板内每个被「口语文案」写过的元素，都必须存在一个**够得着**的
+    //    节点**无条件地**（写点本身也不在 `.dataset.` 块里）重写它。
+    //    `renderSharing` 的三级下拉就是这样落选的：它写 `<option>` 文本的那几行都在
+    //    `if (selP.dataset.plansSrc !== src)` 里 ⇒ 数据源不变就永不重跑；而 `renderMarketplace`
+    //    末尾那句 `renderRecent()` 不在任何守卫里 ⇒ 「最近使用」的芯片每次进市场视图都会重写，
+    //    它不是缺陷（用户回到市场视图时看到的一定是新语言）。
+    // 2. **不许假刷新**：处理器（够得着的那部分）碰到的面板必须真有口语文案要刷 —— 给一个只有
+    //    属性通道的卡片补一次 `render*` 是多余的，本规则把它判红。
+    // 3. **判「开没开」要读打开/关闭写者用的那个频道**：卡片用 `.hidden` **属性**开合，处理器里
+    //    就必须读 `.hidden`（读 `classList` 会恒假，R94 在 `#help-panel` 上吃过这一口）。
+    //
+    // ## 射程（如实，不是承诺）
+    //
+    // 词法：证「声明上的覆盖关系」，**不证**屏幕上真的换了文案（那半归仓外 jsdom 探针）。
+    // 只认**局部**绑定的元素（`const x = $("#id")` 在同一个节点体内）与 `$("#id")` 直写、
+    // `$$("#id …")` 循环 —— 把元素藏在参数里传进来的写点看不见（`withLoading(btn, …)` 型）。
+    // 「口语文案」用「体内出现 `T(`」近似，是**过报**方向的近似（宁可多报一个写者，也不漏）。
+
+    /// 一个 JS「节点」：具名函数、或箭头常量（含嵌在别的函数体里的那些）。
+    #[derive(Debug, Clone, Default)]
+    struct R78Node {
+        /// 注释已剥、嵌套节点的体已挖空。
+        body: String,
+        /// 调用点：`(被调者, 调用点是否落在以 `.dataset.` 为条件的块里)`。
+        calls: Vec<(String, bool)>,
+        /// 文本写点。
+        writes: Vec<R78Write>,
+        /// 体内 `const x = $("#id")` / `const x = () => $("#id")` 形式的局部绑定。
+        locals: BTreeMap<String, String>,
+    }
+
+    /// 一个文本写点：往哪个元素 id 写、写点是否在 `.dataset.` 守卫块里。
+    #[derive(Debug, Clone, PartialEq)]
+    struct R78Write {
+        target: String,
+        guarded: bool,
+        line: String,
+    }
+
+    /// 一行的缩进宽度（空白行返回 0）。
+    fn r78_indent(line: &str) -> usize {
+        line.len() - line.trim_start().len()
+    }
+
+    /// 行里的标识符 token：`(文本, 起始, 结束)`。用于「后面跟不跟 `(`」与「后面跟不跟 `.textContent`」。
+    fn r78_ident_tokens(s: &str) -> Vec<(String, usize, usize)> {
+        let b = s.as_bytes();
+        let is_id = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i < b.len() {
+            if (b[i].is_ascii_alphabetic() || b[i] == b'_' || b[i] == b'$')
+                && (i == 0 || !is_id(b[i - 1]))
+            {
+                let start = i;
+                while i < b.len() && is_id(b[i]) {
+                    i += 1;
+                }
+                out.push((s[start..i].to_string(), start, i));
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// 这一行是不是节点的表头（`function NAME(` / `const NAME = (…) => {`），是则给出名字。
+    fn r78_node_name(line: &str) -> Option<String> {
+        let t = line.trim_start();
+        for pre in ["async function ", "function "] {
+            if let Some(rest) = t.strip_prefix(pre) {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                    .collect();
+                return if !name.is_empty() && rest[name.len()..].starts_with('(') {
+                    Some(name)
+                } else {
+                    None
+                };
+            }
+        }
+        for pre in ["const ", "let ", "var "] {
+            if let Some(rest) = t.strip_prefix(pre) {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                    .collect();
+                if name.is_empty() {
+                    return None;
+                }
+                let after = rest[name.len()..].trim_start();
+                let rhs = after.strip_prefix('=')?.trim_start();
+                let mut rhs = rhs
+                    .strip_prefix("async")
+                    .map(str::trim_start)
+                    .unwrap_or(rhs);
+                if rhs.starts_with('(') {
+                    let close = rhs.find(')')?;
+                    rhs = rhs[close + 1..].trim_start();
+                } else {
+                    let n = rhs
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                        .count();
+                    if n == 0 {
+                        return None;
+                    }
+                    rhs = rhs[n..].trim_start();
+                }
+                return if rhs.starts_with("=>") && rhs[2..].trim_start().starts_with('{') {
+                    Some(name)
+                } else {
+                    None
+                };
+            }
+        }
+        None
+    }
+
+    /// 行里的元素绑定：`const x = $("#id")` / `const x = () => $("#id")` / `= document.getElementById("id")`。
+    fn r78_binding(line: &str) -> Option<(String, String)> {
+        let t = line.trim_start();
+        for pre in ["const ", "let ", "var "] {
+            let Some(rest) = t.strip_prefix(pre) else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            let Some(rhs) = rest[name.len()..].trim_start().strip_prefix('=') else {
+                continue;
+            };
+            let rhs = rhs.trim_start();
+            // 允许 `() => $("#id")` 这种零参别名
+            let rhs = match rhs.find("=>") {
+                Some(k) if !rhs[..k].contains('(') || rhs[..k].trim_start().starts_with('(') => {
+                    rhs[k + 2..].trim_start()
+                }
+                _ => rhs,
+            };
+            if let Some(id) = r78_dollar_selector(rhs) {
+                return Some((name, id));
+            }
+            if let Some(rest) = rhs.strip_prefix("document.getElementById(") {
+                if let Some(end) = rest.find(')') {
+                    let inner = rest[..end].trim().trim_matches('"').trim_matches('\'');
+                    if !inner.is_empty() {
+                        return Some((name, inner.to_string()));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// 形如 `$("#id")…` 的选择器取 id（`$('#id')` 同样认）。
+    fn r78_dollar_selector(s: &str) -> Option<String> {
+        let rest = s.strip_prefix("$(")?;
+        let rest = rest.trim_start();
+        let quote = rest.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let inner = &rest[1..];
+        if !inner.starts_with('#') {
+            return None;
+        }
+        let end = inner.find(quote)?;
+        let id = &inner[1..end];
+        if id.is_empty()
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return None;
+        }
+        Some(id.to_string())
+    }
+
+    /// 选择器串 `"#id …"` / `'#id …'` 里的**头一个** id（`#` 之后到第一个非标识符字符）。
+    fn r78_head_selector_id(s: &str) -> Option<String> {
+        let s = s.trim_start();
+        let q = s.chars().next()?;
+        if q != '"' && q != '\'' {
+            return None;
+        }
+        let body = s[1..].strip_prefix('#')?;
+        let id: String = body
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        if id.is_empty() {
+            None
+        } else {
+            Some(id)
+        }
+    }
+
+    /// 这一行的文本写点写在哪个元素上（**只认赋值**；`==` 与 `.replace(` 都不算）：
+    ///   1. `$("#id").innerHTML = …` / `$("#id").textContent = …`（直写）
+    ///   2. `<loc>.innerHTML = …`，`loc` 是同一节点体内的 `const loc = $("#id")` / `= () => $("#id")`
+    ///   3. `$$("#id …").forEach((o) => { o.textContent = … })`（接收者是回调形参 ⇒ 退回整行里的 `$$`）
+    ///
+    /// 形参里传进来的元素（`withLoading(btn, …)` 型）解析不出来 —— 那是**如实的射程**：宁可漏一个
+    /// 写点（该写点的面板落进规则 1 的「没有够得着的重写者」而**误红**），也不把无关行算成写点。
+    fn r78_write_target(line: &str, locals: &BTreeMap<String, String>) -> Option<String> {
+        let at = match (line.find(".innerHTML"), line.find(".textContent")) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => return None,
+        };
+        let prop_len = if line[at..].starts_with(".innerHTML") {
+            ".innerHTML".len()
+        } else {
+            ".textContent".len()
+        };
+        let tail = line[at + prop_len..].trim_start();
+        if !(tail.starts_with('=') && !tail.starts_with("==")) {
+            return None;
+        }
+        let head = line[..at].trim_end();
+        if head.ends_with(')') {
+            let b = head.as_bytes();
+            let mut depth = 0i32;
+            for k in (0..b.len()).rev() {
+                match b[k] {
+                    b')' => depth += 1,
+                    b'(' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            let callee = head[..k].trim_end();
+                            if callee.ends_with("$$") || callee.ends_with('$') {
+                                return r78_head_selector_id(&head[k + 1..]);
+                            }
+                            return None;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let ident: String = head
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        if !ident.is_empty() {
+            let before = &head[..head.len() - ident.len()];
+            if !before.ends_with('.') {
+                if let Some(id) = locals.get(&ident) {
+                    return Some(id.clone());
+                }
+            }
+        }
+        if let Some(p) = line.find("$$(") {
+            return r78_head_selector_id(&line[p + 3..]);
+        }
+        None
+    }
+
+    /// 逐行分析一个节点体：局部绑定、调用点（含守卫标记）、文本写点。
+    ///
+    /// 每行是 `(原始缩进, 剥注释后的代码)` —— 缩进必须来自**原文**：`code_text_by_line` 会
+    /// `trim()` 掉缩进，拿它做块识别会把所有行都当成同一层（守卫块整个消失、规则 1 假绿）。
+    fn r78_analyse(lines: &[(usize, String)]) -> R78Node {
+        let body = lines
+            .iter()
+            .map(|(_, c)| c.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut locals: BTreeMap<String, String> = BTreeMap::new();
+        for (_, l) in lines {
+            if let Some((k, v)) = r78_binding(l) {
+                locals.insert(k, v);
+            }
+        }
+        let mut node = R78Node {
+            body,
+            locals,
+            ..R78Node::default()
+        };
+        let mut stack: Vec<(usize, String)> = Vec::new();
+        for (ind, l) in lines {
+            if l.trim().is_empty() {
+                continue;
+            }
+            let my = *ind;
+            while let Some((ind, _)) = stack.last() {
+                if *ind >= my {
+                    stack.pop();
+                } else {
+                    break;
+                }
+            }
+            // 守卫：所在块由 `.dataset.` 条件控制 —— **也**算当前这一行（单行 `if (x.dataset.a) f();`
+            // 没有独立的块头行，只看 stack 会漏）。
+            let guarded =
+                stack.iter().any(|(_, h)| h.contains(".dataset.")) || l.contains(".dataset.");
+            for (tok, _, end) in r78_ident_tokens(l) {
+                if l[end..].trim_start().starts_with('(') {
+                    node.calls.push((tok, guarded));
+                }
+            }
+            if l.contains(".innerHTML") || l.contains(".textContent") {
+                if let Some(target) = r78_write_target(l, &node.locals) {
+                    node.writes.push(R78Write {
+                        target,
+                        guarded,
+                        line: l.trim().to_string(),
+                    });
+                }
+            }
+            if l.trim_end().ends_with('{') {
+                stack.push((my, l.to_string()));
+            }
+        }
+        node
+    }
+
+    /// 全文件的节点表：具名函数与箭头常量，体已剥注释、嵌套节点的体已挖空。
+    fn r78_nodes(src: &str) -> BTreeMap<String, R78Node> {
+        let code = code_text_by_line(src);
+        let raw: Vec<&str> = src.lines().collect();
+        let mut spans: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for (i, l) in raw.iter().enumerate() {
+            let Some(name) = r78_node_name(l) else {
+                continue;
+            };
+            let base = r78_indent(l);
+            let mut end = raw.len() - 1;
+            for (j, s) in raw.iter().enumerate().skip(i + 1) {
+                if s.trim().is_empty() {
+                    continue;
+                }
+                if r78_indent(s) <= base {
+                    let t = s.trim();
+                    if t == "}" || t == "};" || t == "}," {
+                        end = j;
+                        break;
+                    }
+                    if t.starts_with(')') || t.starts_with(']') || t.starts_with(',') {
+                        continue;
+                    }
+                    end = j - 1;
+                    break;
+                }
+            }
+            spans.entry(name).or_insert((i, end));
+        }
+        let mut out = BTreeMap::new();
+        for (name, (i, end)) in &spans {
+            let inner: Vec<(usize, usize)> = spans
+                .iter()
+                .filter(|(o, (oi, oe))| *o != name && *oi > *i && *oe <= *end)
+                .map(|(_, (oi, oe))| (*oi, *oe))
+                .collect();
+            let lines: Vec<(usize, String)> = (*i..=*end)
+                .map(|j| {
+                    let ind = r78_indent(raw[j]);
+                    let c = if inner.iter().any(|(oi, oe)| j > *oi && j <= *oe) {
+                        String::new()
+                    } else {
+                        code.get(j).cloned().unwrap_or_default()
+                    };
+                    (ind, c)
+                })
+                .collect();
+            out.insert(name.clone(), r78_analyse(&lines));
+        }
+        out
+    }
+
+    /// `atp:langchange` 处理器的体（剥注释后按花括号配对）。
+    fn r78_handler_span(src: &str) -> Option<String> {
+        let text = code_text_by_line(src).join("\n");
+        let key = "addEventListener(\"atp:langchange\"";
+        let at = text.find(key)?;
+        let open = text[at..].find('{')? + at;
+        let mut depth = 0usize;
+        for (i, ch) in text[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(text[open..open + i + 1].to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// 沿**不被 `.dataset.` 守卫拦住**的调用边，从种子出发的可达节点集。
+    fn r78_reach(nodes: &BTreeMap<String, R78Node>, seeds: &BTreeSet<String>) -> BTreeSet<String> {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut queue: Vec<String> = seeds
+            .iter()
+            .filter(|s| nodes.contains_key(*s))
+            .cloned()
+            .collect();
+        while let Some(f) = queue.pop() {
+            if !seen.insert(f.clone()) {
+                continue;
+            }
+            for (callee, guarded) in &nodes[&f].calls {
+                if *guarded || !nodes.contains_key(callee) || seen.contains(callee) {
+                    continue;
+                }
+                queue.push(callee.clone());
+            }
+        }
+        seen
+    }
+
+    /// 面板在标记里的身体：从它的表头行起，到第一行**缩进不大于**它的非空行为止。
+    fn r78_panel_span(html: &str, id: &str) -> Option<String> {
+        let lines: Vec<&str> = html.lines().collect();
+        let head = lines
+            .iter()
+            .position(|l| element_id(l).as_deref() == Some(id))?;
+        let base = r78_indent(lines[head]);
+        let mut out = vec![lines[head].to_string()];
+        for l in &lines[head + 1..] {
+            if l.trim().is_empty() {
+                continue;
+            }
+            if r78_indent(l) <= base {
+                break;
+            }
+            out.push((*l).to_string());
+        }
+        Some(out.join("\n"))
+    }
+
+    /// 面板自己 ＋ 它内部每个 `id="…"`。
+    fn r78_panel_ids(html: &str, id: &str) -> BTreeSet<String> {
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        out.insert(id.to_string());
+        if let Some(span) = r78_panel_span(html, id) {
+            for d in r94_ids_in(&span) {
+                out.insert(d);
+            }
+        }
+        out
+    }
+
+    /// 面板的开合**频道**：属性（`.hidden =`）还是类（`classList` + `hidden`）。
+    fn r78_channel(nodes: &BTreeMap<String, R78Node>, id: &str) -> (bool, bool) {
+        let needle = format!("\"#{id}\"");
+        let mut prop = false;
+        let mut class = false;
+        for n in nodes.values() {
+            let aliases: Vec<String> = n
+                .locals
+                .iter()
+                .filter(|(_, v)| v.as_str() == id)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for l in n.body.lines() {
+                let names_it = l.contains(&needle)
+                    || aliases.iter().any(|a| {
+                        l.contains(&format!("{a}().hidden")) || l.contains(&format!("{a}.hidden"))
+                    });
+                if !names_it {
+                    continue;
+                }
+                if has_assignment_after(l, ".hidden") {
+                    prop = true;
+                }
+                if l.contains("classList") && l.contains("hidden") {
+                    class = true;
+                }
+            }
+        }
+        (prop, class)
+    }
+
+    /// 一行里 `needle` 之后是否跟着赋值号（不是 `==`）—— 复用 `=` 与 `==` 的判别（坑见 `has_tx_read`）。
+    fn has_assignment_after(line: &str, needle: &str) -> bool {
+        let Some(at) = line.find(needle) else {
+            return false;
+        };
+        let rest = line[at + needle.len()..].trim_start();
+        rest.starts_with('=') && !rest.starts_with("==")
+    }
+
+    /// C2178 的读数：三条规则各自的违规项 ＋ 供阳性对照用的名册。
+    #[derive(Debug, Clone, PartialEq)]
+    struct R78Reading {
+        /// 面板名册（派生）。
+        panels: Vec<String>,
+        /// 规则 1：`(面板, 元素 id, 写它的节点)`。
+        r1: Vec<(String, String, Vec<String>)>,
+        /// 规则 2：处理器在多刷的面板。
+        r2: Vec<String>,
+        /// 规则 3：`(面板, 判词)`。
+        r3: Vec<(String, String)>,
+        /// 处理器够得着的那些面板（阳性对照／规则 2 的分母）。
+        touched: Vec<String>,
+    }
+
+    impl R78Reading {
+        fn clean(&self) -> bool {
+            self.r1.is_empty() && self.r2.is_empty() && self.r3.is_empty()
+        }
+    }
+
+    /// 读一棵 `ui/index.html` + `ui/js/app.js`。
+    fn r78_read(html: &str, src: &str) -> R78Reading {
+        let panels = inline_panels_inside_app(html);
+        let nodes = r78_nodes(src);
+        let handler = r78_handler_span(src).unwrap_or_default();
+        let seeds: BTreeSet<String> = {
+            let mut s: BTreeSet<String> = r78_ident_tokens(&handler)
+                .into_iter()
+                .filter(|(_, _, end)| handler[*end..].trim_start().starts_with('('))
+                .map(|(t, _, _)| t)
+                .collect();
+            if let Some(rv) = nodes.get("renderView") {
+                for (tok, _, end) in r78_ident_tokens(&rv.body) {
+                    if rv.body[end..].trim_start().starts_with('(') {
+                        s.insert(tok);
+                    }
+                }
+            }
+            s
+        };
+        let reach = r78_reach(&nodes, &seeds);
+        let handler_reach = r78_reach(
+            &nodes,
+            &r78_ident_tokens(&handler)
+                .into_iter()
+                .filter(|(_, _, end)| handler[*end..].trim_start().starts_with('('))
+                .map(|(t, _, _)| t)
+                .collect(),
+        );
+
+        let ids: BTreeMap<String, BTreeSet<String>> = panels
+            .iter()
+            .map(|p| (p.clone(), r78_panel_ids(html, p)))
+            .collect();
+
+        // ── 规则 1 ──────────────────────────────────────────────────────────────
+        let mut r1 = Vec::new();
+        for p in &panels {
+            for target in &ids[p] {
+                let sensitive: Vec<String> = nodes
+                    .iter()
+                    .filter(|(_, n)| {
+                        n.body.contains("T(") && n.writes.iter().any(|w| w.target == *target)
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                if sensitive.is_empty() {
+                    continue;
+                }
+                let covered = reach.iter().any(|f| {
+                    nodes[f]
+                        .writes
+                        .iter()
+                        .any(|w| w.target == *target && !w.guarded)
+                });
+                if !covered {
+                    r1.push((p.clone(), target.clone(), sensitive));
+                }
+            }
+        }
+
+        // ── 规则 2 / 3 ─────────────────────────────────────────────────────────
+        let mut touched: BTreeSet<String> = BTreeSet::new();
+        let mut handler_written: BTreeSet<String> = BTreeSet::new();
+        for f in &handler_reach {
+            for w in &nodes[f].writes {
+                handler_written.insert(w.target.clone());
+            }
+        }
+        for p in &panels {
+            if ids[p].iter().any(|t| handler_written.contains(t))
+                || handler.contains(&format!("\"#{p}\""))
+            {
+                touched.insert(p.clone());
+            }
+        }
+        let has_copy = |p: &str| {
+            nodes.values().any(|n| {
+                n.body.contains("T(") && n.writes.iter().any(|w| ids[p].contains(&w.target))
+            })
+        };
+        let r2: Vec<String> = touched.iter().filter(|p| !has_copy(p)).cloned().collect();
+        let mut r3 = Vec::new();
+        for p in &touched {
+            let needle = format!("\"#{p}\")");
+            let mut used: Option<&str> = None;
+            for l in handler.lines() {
+                if !l.contains(&needle) {
+                    continue;
+                }
+                if l.contains(".classList") {
+                    used = Some("class");
+                } else if l.contains(".hidden") {
+                    used = Some("property");
+                }
+            }
+            let Some(used) = used else { continue };
+            let (prop, class) = r78_channel(&nodes, p);
+            if used == "property" && !prop {
+                r3.push((
+                    p.clone(),
+                    format!(
+                        "处理器读 .hidden，写者用的是 {}",
+                        if class { "classList" } else { "无" }
+                    ),
+                ));
+            }
+            if used == "class" && prop {
+                r3.push((
+                    p.clone(),
+                    "处理器读 classList，写者用的是 .hidden".to_string(),
+                ));
+            }
+        }
+        R78Reading {
+            panels,
+            r1,
+            r2,
+            r3,
+            touched: touched.into_iter().collect(),
+        }
+    }
+
+    /// C2178：**语言切换必须够到 `#app` 内部的卡片**（R94 的名册按构造只取 `#app` **之后**
+    /// 的浮层；卡片是它的**后代**）。
+    ///
+    /// 实测的脸（仓外 jsdom 探针，真 boot ＋ 真 `<select>` ＋ 来回走视图）：修前树里
+    /// `#model-form-title` / `#dept-form-title` 停在中文、上架卡片的单价提示与厂商 `<option>`
+    /// 停在中文，而同一次切换里它们的 `[data-i18n]` 兄弟节点已经是英文（`P3` 腿排除了
+    /// stale-DOM）—— 即「同一张卡片上，属性通道跟、命令式通道不跟」，与 R94 的题眼同形。
+    ///
+    /// 门禁钉的是**覆盖关系**（谁重写了谁、有没有守卫拦在中间），不是屏幕上的文案（那归探针）。
+    #[test]
+    fn the_language_switch_refreshes_the_panels_inside_the_app() {
+        // ── 阳性对照 1：名册**派生**自 `ui/index.html`，且覆盖本轴那几张卡片 ────────────
+        let reading = r78_read(INDEX_HTML, APP_JS);
+        let derived = inline_panels_inside_app(INDEX_HTML);
+        assert_eq!(
+            reading.panels, derived,
+            "面板名册必须与 C2176 的同一处声明一致"
+        );
+        assert!(
+            !derived.is_empty(),
+            "名册为空 ⇒ 下面的集合断言会假绿（坑 68）"
+        );
+        for must in ["share-form-card", "model-form-card", "dept-form-card"] {
+            assert!(
+                derived.iter().any(|p| p == must),
+                "阳性对照（下限）：本轴的卡片 {must} 必须在派生名册里，实际 {derived:?}"
+            );
+        }
+
+        // ── 阳性对照 2：处理器的确够得着某张卡片（否则规则 2/3 是空集上的断言）────────
+        assert!(
+            !reading.touched.is_empty(),
+            "处理器够得着的面板不该为空：{:?}",
+            reading.touched
+        );
+
+        // ── 主断言：三条规则全绿 ───────────────────────────────────────────────────
+        assert!(
+            reading.clean(),
+            "语言切换够不到 `#app` 内部的开着的卡片：{reading:#?}"
+        );
+
+        // ── A/B 腿：把修法一处一处拆掉，各条规则必须点名 ────────────────────────────
+        // (1) 拆掉处理器里那次重绘 ⇒ 规则 1 必须点名上架卡片的命令式文案。
+        let no_call = APP_JS.replacen(
+            r##"      if (!$("#share-form-card").hidden) renderShareFormCopy();"##,
+            "      // gone",
+            1,
+        );
+        assert!(no_call != APP_JS);
+        let r = r78_read(INDEX_HTML, &no_call);
+        assert!(
+            r.r1.iter()
+                .any(|(p, t, _)| p == "share-form-card" && t == "sf-provider"),
+            "上架卡片的厂商下拉文本必须被判红：{:#?}",
+            r.r1
+        );
+
+        // (2) 标题从**属性通道**退回命令式写 ⇒ 规则 1 点名 model / dept 表单标题（修前形态）。
+        let title = APP_JS.replacen(
+            r##"$("#model-form-title").dataset.i18n = m ? "admin.models.form.title.edit" : "admin.models.form.title.add";"##,
+            r##"$("#model-form-title").innerHTML = m ? T("admin.models.form.title.edit") : T("admin.models.form.title.add");"##,
+            1,
+        );
+        assert!(title != APP_JS);
+        let r = r78_read(INDEX_HTML, &title);
+        assert!(
+            r.r1.iter()
+                .any(|(p, t, _)| p == "model-form-card" && t == "model-form-title"),
+            "模型表单标题必须被判红：{:#?}",
+            r.r1
+        );
+        let dept = APP_JS.replacen(
+            r##"$("#dept-form-title").dataset.i18n = d ? "admin.org.edit.title" : "admin.org.add.title";"##,
+            r##"$("#dept-form-title").innerHTML = d ? T("admin.org.edit.title") : T("admin.org.add.title");"##,
+            1,
+        );
+        assert!(dept != APP_JS);
+        let r = r78_read(INDEX_HTML, &dept);
+        assert!(
+            r.r1.iter()
+                .any(|(p, t, _)| p == "dept-form-card" && t == "dept-form-title"),
+            "部门表单标题必须被判红：{:#?}",
+            r.r1
+        );
+
+        // (3) 给一张**只有属性通道**的卡片也补一次重绘 ⇒ 规则 2（不许假刷新）点名它。
+        let dead = APP_JS.replacen(
+            r##"      if (!$("#share-form-card").hidden) renderShareFormCopy();"##,
+            "      if (!$(\"#topup-card\").hidden) renderShareFormCopy();\n      if (!$(\"#share-form-card\").hidden) renderShareFormCopy();",
+            1,
+        );
+        assert!(dead != APP_JS);
+        let r = r78_read(INDEX_HTML, &dead);
+        assert_eq!(
+            r.r2,
+            vec!["topup-card".to_string()],
+            "规则 2 必须点名充点卡：{:#?}",
+            r.r2
+        );
+        assert!(r.r1.is_empty() && r.r3.is_empty());
+
+        // (4) 判「开没开」改读**类**频道（写者用的是属性）⇒ 规则 3 点名。
+        let chan = APP_JS.replacen(
+            r##"if (!$("#share-form-card").hidden) renderShareFormCopy();"##,
+            r##"if (!$("#share-form-card").classList.contains("hidden")) renderShareFormCopy();"##,
+            1,
+        );
+        assert!(chan != APP_JS);
+        let r = r78_read(INDEX_HTML, &chan);
+        assert!(
+            r.r3.iter().any(|(p, _)| p == "share-form-card"),
+            "频道错配必须被判红：{:#?}",
+            r.r3
+        );
+    }
+
+    /// 抽取器自证（合成输入）：节点表要**挖掉**嵌在父节点里的子节点体、`.dataset.` 守卫要能
+    /// 拦住路径、局部绑定与 `$$` 循环要能解析出目标、藏在形参里的元素**不许**被认出来
+    /// （那是如实的射程，不是缺陷）。
+    #[test]
+    fn the_panel_copy_scanner_has_teeth() {
+        let html = r##"<div id="app">
+      <div class="card" id="p1" hidden>
+        <span id="c1">x</span>
+        <select id="s1"></select>
+      </div>
+    </div>"##;
+        // 修前形态：写点全在 `.dataset.` 守卫里。
+        let before = r##"function renderView() { renderP1(); }
+  function renderP1() {
+    if (el.dataset.src !== src) {
+      $("#c1").innerHTML = T("k");
+    }
+  }
+  document.addEventListener("atp:langchange", () => {
+    renderView(activeView);
+  });
+"##;
+        let r = r78_read(html, before);
+        assert_eq!(r.panels, vec!["p1".to_string()]);
+        assert!(
+            r.r1.iter().any(|(p, t, _)| p == "p1" && t == "c1"),
+            "守卫里的写点必须判红：{:#?}",
+            r.r1
+        );
+
+        // 修后形态 A：补一次**无条件**重绘（处理器够得着）。
+        let after = r##"function renderView() { renderP1(); }
+  function renderP1() {
+    if (el.dataset.src !== src) {
+      $("#c1").innerHTML = T("k");
+    }
+  }
+  function refreshP1() {
+    $("#c1").innerHTML = T("k");
+  }
+  function showP1() { $("#p1").hidden = false; }
+  document.addEventListener("atp:langchange", () => {
+    if (!$("#p1").hidden) refreshP1();
+  });
+"##;
+        let r = r78_read(html, after);
+        assert!(r.clean(), "补了无条件重绘就该全绿：{r:#?}");
+        assert!(r.touched.contains(&"p1".to_string()));
+
+        // 修后形态 B：**不**补重绘，但让渲染路径无条件重写（与 `renderRecent` 同形）。
+        let after_b = r##"function renderView() { renderP1(); }
+  function renderP1() {
+    $("#c1").innerHTML = T("k");
+  }
+  function showP1() { $("#p1").hidden = false; }
+  document.addEventListener("atp:langchange", () => {
+    renderView(activeView);
+  });
+"##;
+        assert!(r78_read(html, after_b).clean());
+
+        // 挖空：父节点的体里**不许**残留子节点的写点（否则守卫标记会被抹平）。
+        let nested = r##"function outer() {
+    const inner = () => {
+      $("#c1").innerHTML = T("k");
+    };
+    if (el.dataset.a !== b) { inner(); }
+  }
+"##;
+        let nodes = r78_nodes(nested);
+        assert!(
+            !nodes["outer"].body.contains("innerHTML = T"),
+            "子节点的体必须被挖空：{:?}",
+            nodes["outer"].body
+        );
+        assert!(nodes["inner"].writes.iter().any(|w| w.target == "c1"));
+        assert!(
+            nodes["outer"].calls.iter().any(|(c, g)| c == "inner" && *g),
+            "守卫块里的调用必须带守卫标记：{:?}",
+            nodes["outer"].calls
+        );
+
+        // 局部绑定与 `$$` 循环都要解析出目标；形参里的元素不解析（射程）。
+        let shapes = r##"function a() {
+    const el = $("#c1");
+    el.textContent = T("k");
+  }
+  function b() {
+    $$("#s1 option").forEach((o) => { o.textContent = T("k"); });
+  }
+  function c(btn) { btn.innerHTML = T("k"); }
+"##;
+        let nodes = r78_nodes(shapes);
+        assert!(nodes["a"].writes.iter().any(|w| w.target == "c1"));
+        assert!(nodes["b"].writes.iter().any(|w| w.target == "s1"));
+        assert!(nodes["c"].writes.is_empty(), "形参里的元素是射程外");
     }
 }
 

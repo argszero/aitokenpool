@@ -414,6 +414,13 @@
   // 厂商展示名：zh 用中文标签（阿里云百炼…），en 用 provider id（English-friendly）
   const provLabel = (p) => (I18n.lang === "zh" ? (D.PROVIDER_LABELS[p] || p) : p);
 
+  // 上架卡片三个下拉的**选项文案**（含空值那一项）—— 初始构建（`renderSharing` 里的
+  // `fillPlans` / `fillModels` / 厂商清单）与切语言时的就地重绘（`renderShareFormCopy`）
+  // 共用这三个入口：写两份就等着它们各自漂移（C2133 的 `planLabelById` 就是为同一件事生的）。
+  const providerOptionLabel = (p) => (p ? provLabel(p) : T("share.select.provider"));
+  const planOptionLabel = (id) => { const pl = id ? planById(id) : null; return pl ? planLabel(pl) : T("share.select.plan"); };
+  const modelOptionLabel = (m) => m || T("share.select.model");
+
   function showPriceHint(model) {
     const el = $("#sf-price-view");
     if (!el) return;
@@ -437,6 +444,33 @@
     const pl = planById(planId);
     if (!pl) { el.textContent = ""; return; }
     el.textContent = pl.type === "paygo" ? T("share.plan.paygo") : T("share.plan.sub");
+  }
+
+  // 上架卡片里**命令式**写的那部分文案：单价提示（带 `{n}` 插值）、Plan 提示、三个下拉的
+  // 选项清单。它们表达不了属性通道（插值 / 选项集合不是一枚 key），所以切语言时必须有个人
+  // 重绘 —— 与 `#model-form-title` 那种「押 key 给 `applyStatic()`」的写点分工不同。
+  //
+  // 就地改每个选项的**文本**，不重建列表：重建（`selP.innerHTML = …`）会把已选中的值一起
+  // 重置回第一项 —— 用户填到一半时切语言不该丢选择。显示名一律借上面那三个入口，
+  // 与初始构建同源。
+  //
+  // 它全仓唯一的调用点是 `atp:langchange` 处理器（C2178）：卡片开着时切语言，这一块不会
+  // 经过 `renderSharing`（下拉只在数据源变化时重建），不补一次就停在旧语言且整会话不自愈。
+  function renderShareFormCopy() {
+    const selP = $("#sf-provider");
+    const selPlan = $("#sf-plan");
+    const selM = $("#sf-model");
+    if (selP) {
+      $$("#sf-provider option").forEach((o) => { o.textContent = providerOptionLabel(o.value); });
+    }
+    if (selPlan) {
+      $$("#sf-plan option").forEach((o) => { o.textContent = planOptionLabel(o.value); });
+    }
+    if (selM) {
+      $$("#sf-model option").forEach((o) => { o.textContent = modelOptionLabel(o.value); });
+    }
+    showPlanHint(selPlan ? selPlan.value : "");
+    showPriceHint(selM ? selM.value : "");
   }
 
   // Plan 显示名（C2133）：config 写了 name 就用它的原文，否则按 type 取语言包。
@@ -876,9 +910,15 @@
     // 目录缺席时下拉里只有「全部」（放一个本部署没有的厂商，只会筛出 0 行）
     const provEl = $("#mk-provider");
     const provSrc = Live.models ? "live" : (loggedIn() ? "none" : "mock");
-    if (provEl && provEl.dataset.provSource !== provSrc) {
+    // 缓存键必须带语言（C2178）：这一块重建出来的第一项文案来自 `T("mk.provider.all")`，
+    // 而只按数据源计价的键（live/none/mock）与语言无关 ⇒ 切语言时 `renderView` 照常跑，
+    // 守卫却认定「值没变过」→ 下拉框停在旧语言。这个下拉**不在**任何行内卡片里，是常驻控件。
+    // 与 `renderSharing` 三级下拉的分工：那边重建会清掉用户已选的三级（`fillPlans` 从零重填），
+    // 所以那边走**就地重绘**（`renderShareFormCopy`）；这里重建本就会恢复已选（见下面的 `cur`）。
+    const provKey = provSrc + ":" + I18n.lang;
+    if (provEl && provEl.dataset.provSource !== provKey) {
       const providers = marketProviders();
-      provEl.dataset.provSource = provSrc;
+      provEl.dataset.provSource = provKey;
       const cur = provEl.value;
       provEl.innerHTML = '<option value="">' + T("mk.provider.all") + "</option>" +
         providers.map((p) => '<option value="' + esc(p) + '">' + esc(p) + "</option>").join("");
@@ -1099,14 +1139,14 @@
       const p = plan ? plan.provider : selP.value;
       // 零 mock（rant 15:54:06）：模型下拉登录态用 /api/models（Live.models），游客/兜底 data.js
       const modelSrc = Live.models ? Live.models : D.MODELS;
-      selM.innerHTML = '<option value="">' + T("share.select.model") + "</option>" + modelSrc.filter((m) => !p || m.provider === p)
-        .map((m) => '<option value="' + esc(m.model) + '">' + esc(m.model) + "</option>").join("");
+      selM.innerHTML = '<option value="">' + modelOptionLabel("") + "</option>" + modelSrc.filter((m) => !p || m.provider === p)
+        .map((m) => '<option value="' + esc(m.model) + '">' + esc(modelOptionLabel(m.model)) + "</option>").join("");
       showPriceHint(selM.value);
     };
     const fillPlans = () => {
       const p = selP.value;
-      selPlan.innerHTML = '<option value="">' + T("share.select.plan") + "</option>" + planList().filter((pl) => pl.provider === p)
-        .map((pl) => '<option value="' + esc(pl.id) + '">' + esc(planLabel(pl)) + "</option>").join("");
+      selPlan.innerHTML = '<option value="">' + planOptionLabel("") + "</option>" + planList().filter((pl) => pl.provider === p)
+        .map((pl) => '<option value="' + esc(pl.id) + '">' + esc(planOptionLabel(pl.id)) + "</option>").join("");
       showPlanHint("");
       fillModels();
     };
@@ -1122,9 +1162,9 @@
     // 守卫等于让兜底表赢到底，`planLabel` 也就永远没机会生效（en 界面上就是兜底表里的中文名）。
     const src = Live.plans ? "live" : "fallback";
     if (selP.dataset.plansSrc !== src) {
-      selP.innerHTML = '<option value="">' + T("share.select.provider") + "</option>" +
+      selP.innerHTML = '<option value="">' + providerOptionLabel("") + "</option>" +
         [...new Set(planList().map((pl) => pl.provider))]
-          .map((p) => '<option value="' + esc(p) + '">' + esc(provLabel(p)) + "</option>").join("");
+          .map((p) => '<option value="' + esc(p) + '">' + esc(providerOptionLabel(p)) + "</option>").join("");
       selP.dataset.plansSrc = src;
       fillPlans();
     }
@@ -2771,7 +2811,11 @@
   function openModelForm(i) {
     _editingModelId = (i === null) ? null : (Live.adminModels && Live.adminModels[i] ? Live.adminModels[i].id : null);
     const m = (i === null || !Live.adminModels) ? null : Live.adminModels[i];
-    $("#model-form-title").innerHTML = m ? T("admin.models.form.title.edit") : T("admin.models.form.title.add");
+    // 标题走**属性通道**（写 key、不写成品文案）：切语言时 `applyStatic()` 按属性重渲染它。
+    // 标题是 add/edit **两态**，但两态表达的是一枚 key 的选择 —— 与 `syncShareFormMode` 的
+    // `#share-form-card h3`（R134）同形。写成 `innerHTML = T(...)` 的话，卡片开着时切语言
+    // 会停在旧语言且整会话不自愈（C2178）。
+    $("#model-form-title").dataset.i18n = m ? "admin.models.form.title.edit" : "admin.models.form.title.add";
     $("#model-form-provider").value = m ? m.provider : "";
     $("#model-form-model").value = m ? m.model : "";
     $("#model-form-currency").value = m ? m.currency : "USD";
@@ -2787,6 +2831,8 @@
     clearFieldError($("#model-form-provider"));
     clearFieldError($("#model-form-model"));
     $("#model-form-card").hidden = false;
+    // 标题已改押 key：`applyStatic()` 是把它变成当前语言的那一步（与 `syncShareFormMode` 同规）。
+    I18n.applyStatic();
     $("#model-form-provider").focus();
   }
 
@@ -2969,14 +3015,14 @@
     deptEditIndex = (i == null ? null : i);
     const src = Live.departments || [];
     const d = (i == null ? null : src[i]);
-    $("#dept-form-title").innerHTML = d
-      ? T("admin.org.edit.title")
-      : T("admin.org.add.title");
+    // 与 `#model-form-title` 同规：押 key，交 `applyStatic()` 重渲染（C2178）。
+    $("#dept-form-title").dataset.i18n = d ? "admin.org.edit.title" : "admin.org.add.title";
     $("#dept-form-name").value = d ? d.name : "";
     $("#dept-form-quota").value = d ? String(d.quota) : "";
     clearFieldError($("#dept-form-name"));
     clearFieldError($("#dept-form-quota"));
     $("#dept-form-card").hidden = false;
+    I18n.applyStatic();
     $("#dept-form-name").focus();
   }
 
@@ -4607,6 +4653,14 @@
       // 是 `toggleHelp` 的**打开**分支 ⇒ 不在这里补一次，同一块面板就是两种语言，且整会话不自愈（R94）。
       // 判「开没开」必须读 `classList`（`toggleHelp` 用 class 隐藏）；写成 `.hidden` 会让守卫恒真。
       if (!$("#help-panel").classList.contains("hidden")) renderHelp();
+      // `#app` **内部**的行内卡片（C2178）：R94 之上那条名册按构造只取 `#app` **之后**的浮层，
+      // 而卡片是 `#app` 的后代 —— 它们同样「用户此刻可能正开着」。上架卡片的下拉选项与
+      // 单价/Plan 提示是命令式写的（插值与选项集合表达不了属性通道），`renderSharing` 的下拉
+      // 只在**数据源**变化时重建 ⇒ 不在这里补一次，卡片开着时切语言那一块就停在旧语言。
+      // 判「开没开」必须读 `.hidden` **属性**（`showShareForm` / `hideShareForm` 用的正是它）。
+      // 模型/部门表单的标题也是卡片里的 JS 文案，但它们押的是 **key**（`dataset.i18n`）⇒
+      // `applyStatic()` 已经换掉了，不需要在这里再重绘一次。
+      if (!$("#share-form-card").hidden) renderShareFormCopy();
     });
 
     // 主题切换（rant 18:06:09 B）：登录页右上角 + 侧边栏底部两处共用同一逻辑
