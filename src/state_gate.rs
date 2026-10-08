@@ -5928,6 +5928,348 @@ fn r94_variant_no_overlays(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// C2177：身份边界必须连**视图的查询状态**一起复位 —— 搜索框 / 筛选下拉的**值**，以及市场的
+    /// 展开行。
+    ///
+    /// 反例（实测，仓外仪器）：`exitGuest()` 已经清了 `Live` 缓存（C2132）、交易视图的模块级状态
+    /// （C2170）、`#app` 之外的浮层（C2171）、`#app` 之内的卡片（C2176），但**控件自己的值**没人管
+    /// —— 而多数视图的查询状态根本不在 JS 里：它就是那枚静态控件的 `.value`，`render*` 时直接读
+    /// 回来（`renderMarketplace` 读 `#mk-search` / `#mk-provider` / `#mk-sort` / `#mk-avail`）。
+    /// 登出**不重载页面**、`enterApp()` 又按 `location.hash` 还原视图 ⇒ 下一位登录者落回上一位的
+    /// 视图时，上一位的搜索词与筛选原样还在（实测：`mk-search="glm"`、`mk-provider="zhipu"`、
+    /// `mk-avail="yes"`、`mk-sort="price-asc"`，六个搜索框全带字，展开行仍渲染 `tr.mk-detail`），
+    /// 于是 `#mk-count` 把「被收窄的一行」当成目录规模念出来（`1 个模型`），而侧边栏角标用的是
+    /// **未过滤**的行数 3 —— 屏幕上两个数互相打脸。它**不自愈**：唯一会清这些值的两条路径（市场
+    /// 「清除筛选」按钮、订单搜索复位）都是用户驱动的。
+    ///
+    /// 为什么前四条轴都看不见它：C2176 的派生只认「markup 里带**裸 `hidden` 属性**的具名元素」，
+    /// C2170 的派生只认「行前缀恰为 `"  let "` 的模块级 `let`」—— 查询状态两者都不是，它的载体是
+    /// **静态控件的属性值**（DOM 本身就是状态）。C2176 自己的阳性对照甚至显式断言
+    /// `!derived.contains("mk-search")`，把这一族划到了轴外；C2176 的记忆也把 `mkExpanded` 记为
+    /// 已知残留 —— 本条轴正是那个残留的**类**（查询态 + 展开态），不是它的重开。
+    ///
+    /// 名册与默认值**全部从 `ui/index.html` 读出**（派生，不手抄）：① 搜索框 = `class="search"`
+    /// 包裹块里的 `<input>`（默认值 = 它自己的 `value` 属性，缺省空串）；② 市场的筛选下拉 =
+    /// `#view-marketplace` **之内**的 `<select>`（默认值 = 它第一枚 `<option>` 的 `value`）。
+    fn query_state_controls(html: &str) -> Vec<(String, String)> {
+        let clean = strip_html_comments(html);
+        let mut out: Vec<(String, String)> = Vec::new();
+
+        // ① 搜索框：`class="search"` 包裹块里的 `<input>`。左锚带右引号 —— 六枚「×」按钮的
+        //    `class="search-clear"` 是**兄弟**、不是包裹块，它们的 `hidden` 不是查询状态。
+        let mut rest = clean.as_str();
+        while let Some(at) = rest.find("class=\"search\"") {
+            let after = &rest[at..];
+            let Some(close) = after.find("</span>") else {
+                break;
+            };
+            let block = &after[..close];
+            if let Some(tag_at) = block.find("<input") {
+                // 标签只取到第一个 `>`：否则紧跟其后的兄弟元素的 `value="…"` 会被读成这个
+                // input 的默认值（同一行里两者都在），把「无 value ⇒ 空串」判成别的默认值。
+                let end = block[tag_at..]
+                    .find('>')
+                    .map_or(block.len(), |i| tag_at + i + 1);
+                let tag = &block[tag_at..end];
+                if let Some(id) = attr_value(tag, "id") {
+                    let v = attr_value(tag, "value").unwrap_or_default();
+                    out.push((id, js_string_literal(&v)));
+                }
+            }
+            rest = &after[close + "</span>".len()..];
+        }
+
+        // ② 市场筛选下拉：**只在** `#view-marketplace` 之内。刻意的射程 —— `#sf-*` 在上架表单、
+        //    `#tx-range` 在交易视图、`#prefs-*` 在设置视图（`#prefs-theme` 是用户**偏好**、
+        //    不是查询），各自是别的关切。
+        if let Some(vs) = clean.find("id=\"view-marketplace\"") {
+            let tail = &clean[vs..];
+            let region = match tail.find("</section>") {
+                Some(end) => &tail[..end],
+                None => tail,
+            };
+            let mut r = region;
+            while let Some(at) = r.find("<select") {
+                let after = &r[at..];
+                let Some(end) = after.find("</select>") else {
+                    break;
+                };
+                let block = &after[..end];
+                let open_end = block.find('>').map_or(block.len(), |i| i + 1);
+                if let Some(id) = attr_value(&block[..open_end], "id") {
+                    if let Some(d) = first_option_value(block) {
+                        out.push((id, js_string_literal(&d)));
+                    }
+                }
+                r = &after[end + "</select>".len()..];
+            }
+        }
+
+        out
+    }
+
+    /// 元素标签里属性 `attr` 的引号值（只认**左界不是标识符字符**的那种出现）。
+    ///
+    /// 子串匹配会撞车：`id="…"` 也会出现在 `data-i18n-id="…"` 里（`-` 是标识符字符，坑 #333
+    /// 同族），所以左界必须是空白或标签起点。
+    fn attr_value(tag: &str, attr: &str) -> Option<String> {
+        let needle = format!("{attr}=\"");
+        let bytes = tag.as_bytes();
+        let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'-' || c == b'_' || c == b'$';
+        let mut from = 0usize;
+        while let Some(rel) = tag[from..].find(&needle) {
+            let at = from + rel;
+            let left_ok = at == 0 || !ident(bytes[at - 1]);
+            let s = at + needle.len();
+            let end = tag[s..].find('"')?;
+            if left_ok {
+                return Some(tag[s..s + end].to_string());
+            }
+            from = s + end + 1;
+        }
+        None
+    }
+
+    /// 一个属性值在 JS 源码里的**字面量**写法 —— 复位点都写 `$("#x").value = "…";`，
+    /// 所以名册里的默认值也以这个形态参与比对（空串是 `""`，不是「空」）。
+    fn js_string_literal(v: &str) -> String {
+        format!("\"{v}\"")
+    }
+
+    /// `<select>…</select>` 块里**第一枚** `<option>` 的 `value`（= 该下拉声明处的默认值）。
+    fn first_option_value(select_block: &str) -> Option<String> {
+        let at = select_block.find("<option")?;
+        let after = &select_block[at..];
+        let end = after.find('>').map_or(after.len(), |i| i + 1);
+        attr_value(&after[..end], "value")
+    }
+
+    /// 从 `root` 出发的传递调用闭包：可达函数**代码体**（注释已剥）拼成的文本。
+    ///
+    /// 自己走一遍而**不复用** C2171/C2176 的同名助手（`closure_from`）：那个在 `mod tests` 内，
+    /// 本文件顶层够不到，而把它挪出去会动到另外两条轴的既有断言。遍历口径与它一致 —— 函数体由
+    /// `function_source` 取（`js_function_body` 对**单行**函数会吞到下一个 `  }`，`function_source`
+    /// 正是为那个坑写的），被调函数由 `callee_names` 认（行尾跟 `(` 的标识符）。
+    fn query_reset_closure(src: &str, root: &str) -> String {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut queue: Vec<String> = vec![root.to_string()];
+        let mut text = String::new();
+        while let Some(f) = queue.pop() {
+            if !seen.insert(f.clone()) {
+                continue;
+            }
+            let Some(body) = function_source(src, &f) else {
+                continue;
+            };
+            let code = code_lines(&body);
+            text.push_str(&code);
+            text.push('\n');
+            for c in callee_names(&code) {
+                if !seen.contains(&c) {
+                    queue.push(c);
+                }
+            }
+        }
+        text
+    }
+
+    /// 复位闭包里是否有一处把 `#<id>` 写回**它声明的默认值**。
+    ///
+    /// 两种合法形态：直接赋值（`$("#mk-sort").value = "default";`）与走程序化清除器
+    /// （`resetSearch($("#mk-search"))` —— 它自己知道搜索框的默认值就是空串）。判别式钉的是
+    /// 「写回**声明的那个值**」，所以 `resetSearch` 只对默认值为空串的搜索框成立：把这句当自选
+    /// 下拉的复位（默认值不是空串）必须判红。
+    fn resets_control(closure: &str, id: &str, default: &str) -> bool {
+        let needle = format!("\"#{id}\"");
+        closure.lines().any(|l| {
+            if !l.contains(&needle) {
+                return false;
+            }
+            if l.contains(&format!(".value = {default};"))
+                || l.contains(&format!(".value = {default})"))
+            {
+                return true;
+            }
+            default == "\"\"" && l.contains("resetSearch(")
+        })
+    }
+
+    /// C2177：身份边界必须把**视图的查询状态**复位 —— 名册与默认值全部派生自 `ui/index.html`。
+    #[test]
+    fn the_identity_boundary_resets_the_view_query_state() {
+        let src = code_only(APP_JS);
+        let derived = query_state_controls(INDEX_HTML);
+
+        // ── 规则 5（阳性对照）：派生非空、逐条对上名册、且不含轴外元素 ──────────────────────
+        // 名册**钉死**在这里是刻意的：派生的射程一旦被静默收窄（例如 `class="search"` 的写法变了
+        // 导致只剩一个块被解析出来），下面的主牙就会在最少的成员上空转 —— 阳性对照是那道闸。
+        let got: BTreeSet<String> = derived.iter().map(|(id, _)| id.clone()).collect();
+        let expected: BTreeSet<String> = [
+            "mk-search",
+            "ak-search",
+            "emp-search",
+            "model-search",
+            "od-search",
+            "ops-search",
+            "mk-provider",
+            "mk-sort",
+            "mk-avail",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        assert_eq!(
+            got, expected,
+            "`ui/index.html` 里查询状态控件的派生集合变了 —— 若是有意新增/删除一枚，\
+         请一并让它随身份边界复位（或确认它不属于本轴）"
+        );
+        for outside in [
+            "prefs-theme",
+            "prefs-model",
+            "tx-range",
+            "sf-provider",
+            "sf-model",
+            "sf-plan",
+            "login-email",
+            "topup-card",
+            "model-form-currency",
+        ] {
+            assert!(
+                !got.contains(outside),
+                "轴外元素 `#{outside}` 被当成了查询状态控件：{got:?}"
+            );
+        }
+
+        // ── 规则 1（主牙）：复位闭包把每一枚控件写回**它声明的默认值** ─────────────────────
+        let closure = query_reset_closure(&src, "resetSessionQueryState");
+        assert!(
+            closure.contains("function resetSessionQueryState"),
+            "取不到 `resetSessionQueryState` 的闭包（空集上的断言会假绿）"
+        );
+        let missing: Vec<String> = derived
+            .iter()
+            .filter(|(id, default)| !resets_control(&closure, id, default))
+            .map(|(id, default)| format!("{id}(default={default})"))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "身份边界没有把视图的查询状态复位到它声明的默认值：{missing:?}\
+         （`exitGuest` 会把上一位用户的收窄留给下一位）"
+        );
+
+        // ── 规则 2：身份边界必须调用该复位 ─────────────────────────────────────────────
+        let boundary = code_body(&src, "exitGuest");
+        assert!(
+            !boundary.is_empty(),
+            "提取器没取到 `exitGuest` 的代码体（后面的断言会在空串上「通过」）"
+        );
+        assert!(
+            boundary.contains("resetSessionQueryState()"),
+            "exitGuest（身份边界）没有复位视图的查询状态"
+        );
+
+        // ── 规则 4：展开行回到**声明处的字面量**（`mkExpanded = null`）────────────────────
+        let declared =
+            declared_let_literal(&src, "mkExpanded").expect("找不到 `mkExpanded` 的声明");
+        assert!(
+            closure.contains(&format!("mkExpanded = {declared}")),
+            "复位闭包没有把 `mkExpanded` 写回声明处的默认值 `{declared}`"
+        );
+
+        // ── 规则 3（反向）：边界不许被掏空 ──────────────────────────────────────────────
+        for prior in [
+            "resetSessionCaches()",
+            "resetSessionOverlays()",
+            "resetSessionPanels()",
+            "(\"#app\").classList.add(\"hidden\")",
+        ] {
+            assert!(boundary.contains(prior), "边界不再包含 `{prior}`");
+        }
+    }
+
+    /// C2177 判别式的牙：派生三类形态各认得出，写回两种形态各认得出，默认值/频道写错要红。
+    #[test]
+    fn the_c2177_query_state_extractors_have_teeth() {
+        // 1) 派生：`class="search"` 包裹块的 `<input>` 入集（全文档）；「×」按钮、块外的 input、
+        //    市场视图**之外**的 `<select>` 都不入集；块内 `<select>` 的默认值 = 第一枚 `<option>`
+        let synth = concat!(
+            "<section class=\"view hidden\" id=\"view-marketplace\">\n",
+            "  <span class=\"search\"><input id=\"a-search\" class=\"input\">",
+            "<button type=\"button\" class=\"search-clear\" hidden></button></span>\n",
+            "  <select id=\"a-sort\" class=\"input\">",
+            "<option value=\"default\">d</option><option value=\"asc\">a</option></select>\n",
+            "</section>\n",
+            "<section class=\"view hidden\" id=\"view-other\">\n",
+            "  <span class=\"search\"><input id=\"b-search\" class=\"input\"></span>\n",
+            "  <select id=\"b-sort\" class=\"input\"><option value=\"x\">x</option></select>\n",
+            "</section>\n",
+            "<input id=\"loose\" class=\"input\">\n",
+        );
+        assert_eq!(
+            query_state_controls(synth),
+            vec![
+                ("a-search".to_string(), "\"\"".to_string()),
+                ("b-search".to_string(), "\"\"".to_string()),
+                ("a-sort".to_string(), "\"default\"".to_string()),
+            ],
+            "派生规则：搜索框取 `class=\"search\"` 块内的 input（全文档）、下拉只在市场视图内"
+        );
+
+        // 2) 写回形态：直接赋值 / 走 `resetSearch` 都算；默认值写错、频道写错、少写都不算
+        assert!(resets_control(
+            "    $(\"#a-sort\").value = \"default\";\n",
+            "a-sort",
+            "\"default\""
+        ));
+        assert!(resets_control(
+            "    resetSearch($(\"#a-search\"));\n",
+            "a-search",
+            "\"\""
+        ));
+        assert!(!resets_control(
+            "    $(\"#a-sort\").value = \"asc\";\n",
+            "a-sort",
+            "\"default\""
+        ));
+        assert!(!resets_control(
+            "    $(\"#a-sort\").classList.add(\"hidden\");\n",
+            "a-sort",
+            "\"default\""
+        ));
+        assert!(!resets_control(
+            "    $(\"#b-sort\").value = \"default\";\n",
+            "a-sort",
+            "\"default\""
+        ));
+        // `resetSearch` 只对「默认值是空串」的搜索框成立 —— 拿它给下拉复位必须判红
+        assert!(!resets_control(
+            "    resetSearch($(\"#a-sort\"));\n",
+            "a-sort",
+            "\"default\""
+        ));
+
+        // 3) 闭包：递进一层收得到（被调函数在闭包里），空体收不到（断链是**全红**，不是全绿）
+        let nested = concat!(
+            "  function resetMarketFilters() {\n",
+            "    resetSearch($(\"#mk-search\"));\n",
+            "  }\n",
+            "  function resetSessionQueryState() {\n",
+            "    resetMarketFilters();\n",
+            "  }\n",
+        );
+        let c = query_reset_closure(nested, "resetSessionQueryState");
+        assert!(
+            c.contains("function resetMarketFilters"),
+            "闭包没跟到被调函数：{c:?}"
+        );
+        assert!(resets_control(&c, "mk-search", "\"\""));
+        let empty = "  function resetSessionQueryState() {\n  }\n";
+        assert!(!resets_control(
+            &query_reset_closure(empty, "resetSessionQueryState"),
+            "mk-search",
+            "\"\""
+        ));
+    }
 
     /// 本轴的读取入口：浮层名册与模态判据永远取自 live 的 `ui/index.html` / `ui/css/style.css`，
     /// 只有被测的 `app.js` 由调用方给（两条腿喂不同的树）。
