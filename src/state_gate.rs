@@ -13343,6 +13343,313 @@ function bind() {
         assert!(nodes["b"].writes.iter().any(|w| w.target == "s1"));
         assert!(nodes["c"].writes.is_empty(), "形参里的元素是射程外");
     }
+
+    // ===================== C2183：身份边界要清的不只是「值」，还有错误装饰 =====================
+
+    /// `#login-view` 的 markup 区块（与 `auth_form_controls` 同一对锚点：`id="login-view"` → `#app`）。
+    fn login_view_region(html: &str) -> String {
+        let clean = strip_html_comments(html);
+        let Some(start) = clean.find("id=\"login-view\"") else {
+            return String::new();
+        };
+        let end = clean[start..]
+            .find("<div id=\"app\"")
+            .map_or(clean.len(), |i| start + i);
+        clean[start..end].to_string()
+    }
+
+    /// `app.js` 里 `setFieldError(<第一实参>, …)` 的**调用点**名册：只认字面选择器 `$("#id")`。
+    ///
+    /// 两种形态必须被挡住（坑 #818）：**声明位**（`function setFieldError(input, msg) {`）不是调用点；
+    /// **裸标识符**实参（内联编辑器的动态 input：`setFieldError(input, err)`）没有 id 可读。
+    fn field_error_call_sites(src: &str) -> Vec<String> {
+        let code = code_only(src);
+        let mut out: Vec<String> = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find("setFieldError(") {
+            let at = from + rel;
+            from = at + "setFieldError(".len();
+            if code[..at].trim_end().ends_with("function") {
+                continue;
+            }
+            let rest = code[from..].trim_start();
+            let Some(r) = rest.strip_prefix("$(\"#") else {
+                continue;
+            };
+            let Some(end) = r.find('"') else { continue };
+            out.push(r[..end].to_string());
+        }
+        out
+    }
+
+    /// 登录视图里**静态**的表单级横幅：`class="field-error"` 且带 **`hidden` 属性**的具名元素。
+    ///
+    /// 注入的兄弟 span 是运行期建的（`app.js` 里 `err.className = "field-error"`），markup 里没有；
+    /// 判据里的 `hidden` 是**属性频道**（`showErr()` 写的就是它），不是 `.hidden` 类。
+    fn auth_form_banners(html: &str) -> Vec<String> {
+        let region = login_view_region(html);
+        let mut out: Vec<String> = Vec::new();
+        let mut r = region.as_str();
+        while let Some(at) = r.find("<div") {
+            let after = &r[at..];
+            let Some(end) = after.find('>') else { break };
+            let tag = &after[..end + 1];
+            r = &after[end + 1..];
+            if tag.contains("class=\"field-error\"") && tag.contains("hidden") {
+                if let Some(id) = attr_value(tag, "id") {
+                    out.push(id);
+                }
+            }
+        }
+        out
+    }
+
+    /// 复位闭包里是否有一处 `clearFieldError($("#<id>"))`（字段级的两个载体同清）。
+    fn clears_field_error(closure: &str, id: &str) -> bool {
+        closure.contains(&format!("clearFieldError($(\"#{id}\"))"))
+    }
+
+    /// 复位闭包里是否有一处用**属性频道**把该横幅收回去。
+    fn hides_banner(closure: &str, id: &str) -> bool {
+        closure
+            .lines()
+            .any(|l| l.contains(&format!("\"#{id}\"")) && l.contains(".hidden = true;"))
+    }
+
+    /// 复位闭包里是否（错）用 **class 频道**去收该横幅 —— 竞争修法的形态，必须判红。
+    fn hides_banner_by_class(closure: &str, id: &str) -> bool {
+        closure
+            .lines()
+            .any(|l| l.contains(&format!("\"#{id}\"")) && l.contains(".classList.add(\"hidden\")"))
+    }
+
+    /// C2183 的读数：两侧名册都从制品派生，主牙＝每个**载体**在边界闭包里都有写点。
+    ///
+    /// 返回 `(字段名册, 横幅名册, 复位闭包, 缺清写的字段, 缺收起的横幅)`。
+    fn c2183_reading(
+        src: &str,
+        html: &str,
+    ) -> (Vec<String>, Vec<String>, String, Vec<String>, Vec<String>) {
+        let region = login_view_region(html);
+        let mut fields: Vec<String> = field_error_call_sites(src)
+            .into_iter()
+            .filter(|id| region.contains(&format!("id=\"{id}\"")))
+            .collect();
+        fields.sort();
+        fields.dedup();
+        let mut banners = auth_form_banners(html);
+        banners.sort();
+        banners.dedup();
+        let closure = query_reset_closure(src, "resetAuthForms");
+        let missing_clears: Vec<String> = fields
+            .iter()
+            .filter(|id| !clears_field_error(&closure, id))
+            .cloned()
+            .collect();
+        let missing_hides: Vec<String> = banners
+            .iter()
+            .filter(|id| !hides_banner(&closure, id) || hides_banner_by_class(&closure, id))
+            .cloned()
+            .collect();
+        (fields, banners, closure, missing_clears, missing_hides)
+    }
+
+    /// C2183：身份边界必须把登录视图表单的**行内错误装饰**也清掉。
+    ///
+    /// C2181 交错回的是表单的**值**；同一批字段上还活着两个载体（`input-error` 类 + 注入的兄弟
+    /// `.field-error` span），第三枚在**另一个**元素上（表单级横幅）。三者都不在「值」这个判据的
+    /// 射程里 —— 一条按**元素**派生的复位门禁守不住同一元素上的第二个载体（坑 #819）。
+    ///
+    /// 反例（实测，仓外仪器）：注册页用已注册邮箱提交（服务端 409）⇒ `#reg-email` 红框 +「该邮箱
+    /// 已注册」；登出后 `resetAuthForms()` 把 `value` 清成 `""`，而红框与那句话**原样留下** ——
+    /// 下一位看到一个**空**邮箱框上写着「该邮箱已注册」，横幅还印着上一位那条服务端错误。
+    /// 全站其它每一张表单都在自己的回收路径上清它（`openTopup` / `openRaise` / `openModelForm` /
+    /// `openDeptForm` / `showShareForm` 都调 `clearFieldError`），登录视图的回收路径就是身份边界。
+    #[test]
+    fn the_identity_boundary_clears_the_auth_forms_error_decoration() {
+        let src = code_only(APP_JS);
+        let (fields, banners, closure, missing_clears, missing_hides) =
+            c2183_reading(&src, INDEX_HTML);
+
+        // ── 阳性对照（名册钉死）：派生射程被静默收窄时，下面的主牙会在空集上空转 ────────────
+        let got_fields: BTreeSet<String> = fields.iter().cloned().collect();
+        let want_fields: BTreeSet<String> = [
+            "login-email",
+            "login-pass",
+            "reg-email",
+            "reg-pass",
+            "reg-pass2",
+            "verify-code",
+            "forgot-email",
+            "forgot-code",
+            "forgot-pass",
+            "forgot-pass2",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        assert_eq!(
+            got_fields, want_fields,
+            "`app.js` 里登录视图的**字段错误**名册变了 —— 若是有意新增/删除一枚，\
+         请一并让它随身份边界复位（或确认它不属于本轴）"
+        );
+        let got_banners: BTreeSet<String> = banners.iter().cloned().collect();
+        let want_banners: BTreeSet<String> = ["reg-error", "verify-error", "forgot-error"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(
+            got_banners, want_banners,
+            "`ui/index.html` 里登录视图的**表单级横幅**名册变了"
+        );
+
+        // ── 名册自证：字段名册 ⊆ C2181 的自由文本输入名册，且必须是**真**子集 ──────────────
+        let auth_inputs: BTreeSet<String> = auth_form_controls(INDEX_HTML)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let extra: Vec<&String> = got_fields.difference(&auth_inputs).collect();
+        assert!(
+            extra.is_empty(),
+            "字段错误名册里出现了登录视图自由文本输入之外的元素：{extra:?}"
+        );
+        assert!(
+            got_fields.len() < auth_inputs.len(),
+            "字段错误名册与自由文本输入名册**相等** —— `#reg-name` / `#verify-email` 从不带头错误，\
+         两份名册重合说明有一次派生失效了（空集上的断言会假绿）"
+        );
+
+        // ── 规则 1（主牙）：每个能带行内错误的字段都要在边界闭包里被清 ────────────────────
+        assert!(
+            missing_clears.is_empty(),
+            "身份边界没有清这些字段的行内错误装饰：{missing_clears:?}\
+         （`exitGuest` 会把上一位的红框与那句话留给下一位）"
+        );
+
+        // ── 规则 2（主牙）：每枚横幅都要按 `hidden` **属性频道**收回 ─────────────────────
+        assert!(
+            missing_hides.is_empty(),
+            "身份边界没有（用属性频道 `hidden`）收起这些表单横幅：{missing_hides:?}"
+        );
+
+        // ── 规则 3（反向）：边界必须调复位；复位不许碰设备偏好 ───────────────────────────
+        let boundary = code_body(&src, "exitGuest");
+        assert!(
+            !boundary.is_empty(),
+            "提取器没取到 `exitGuest` 的代码体（后面的断言会在空串上「通过」）"
+        );
+        assert!(
+            boundary.contains("resetAuthForms()"),
+            "exitGuest（身份边界）没有调 `resetAuthForms()`"
+        );
+        assert!(
+            !closure.contains("#login-remember"),
+            "复位闭包碰了 `#login-remember`（设备偏好，清它会造出「本地存着 1、屏幕显示未勾」的第二口径）"
+        );
+    }
+
+    /// C2183 判别式的牙：提取器认调用点、挡声明位与裸标识符实参；写回认两种载体、认对频道；
+    /// 真实语料上的变异体各只翻它自己那条规则。
+    #[test]
+    fn the_c2183_auth_error_extractors_have_teeth() {
+        // (a) 调用点提取器：声明位 / 裸标识符实参 / 注释行都不产 id
+        let js = concat!(
+            "function setFieldError(input, msg) {\n",
+            "  input.classList.add(\"input-error\");\n",
+            "  err.className = \"field-error\";\n",
+            "}\n",
+            "function binds() {\n",
+            "  setFieldError($(\"#a\"), T(\"k\"));\n",
+            "  setFieldError(input, err);\n",
+            "  // setFieldError($(\"#commented\"), T(\"k\"));\n",
+            "  if (x) { setFieldError($(\"#b\"), T(\"k2\")); }\n",
+            "}\n",
+        );
+        assert_eq!(
+            field_error_call_sites(js),
+            vec!["a".to_string(), "b".to_string()],
+            "只认字面选择器的调用点 —— 声明位（坑 #818）、裸标识符实参、注释行都不算"
+        );
+
+        // (b) 横幅提取器：markup 里**带 `hidden`** 的才算；注入的 span（无 hidden）与视图外的同款元素在外
+        let html = concat!(
+            "<div id=\"login-view\" class=\"login-view\">\n",
+            "  <div id=\"b-inside\" class=\"field-error\" hidden></div>\n",
+            "  <span class=\"field-error\"></span>\n",
+            "</div>\n",
+            "<div id=\"app\" class=\"app hidden\">\n",
+            "  <div id=\"b-outside\" class=\"field-error\" hidden></div>\n",
+            "</div>\n",
+        );
+        assert_eq!(
+            auth_form_banners(html),
+            vec!["b-inside".to_string()],
+            "只认登录视图之内、带 `hidden` 属性的**静态**横幅"
+        );
+
+        // (c) 写回判别式：对形态、对频道、对元素边界
+        let ok = "\n    clearFieldError($(\"#a\"));\n    $(\"#b\").hidden = true;\n";
+        assert!(clears_field_error(ok, "a"));
+        assert!(
+            !clears_field_error(ok, "ab"),
+            "标识符边界：`#ab` 不该被 `#a` 的写点判真"
+        );
+        assert!(hides_banner(ok, "b"));
+        assert!(!hides_banner_by_class(ok, "b"));
+        let by_class = "\n    $(\"#b\").classList.add(\"hidden\");\n";
+        assert!(
+            !hides_banner(by_class, "b"),
+            "class 频道不是属性频道（`showErr()` 写的是 `hidden` 属性）"
+        );
+        assert!(hides_banner_by_class(by_class, "b"));
+        assert!(!hides_banner("\n    $(\"#b\").hidden = false;\n", "b"));
+
+        // (d) 真实语料的变异：删掉全部字段写点 ⇒ 规则 1 逐条开口、规则 2 不动
+        let defect = APP_JS
+            .lines()
+            .filter(|l| !l.contains("clearFieldError($(\"#"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            defect != APP_JS,
+            "变异锚点漂移：语料里根本没有 `clearFieldError($(\"#…` 形态的写点"
+        );
+        let (f1, b1, _c1, miss_clear1, miss_hide1) = c2183_reading(&code_only(&defect), INDEX_HTML);
+        assert_eq!(
+            (f1.len(), b1.len()),
+            (10, 3),
+            "名册是派生的：删写点不该动名册"
+        );
+        assert_eq!(
+            miss_clear1.len(),
+            10,
+            "删掉全部字段写点后，规则 1 应当对 10 枚字段逐条开口（实测 {miss_clear1:?}）"
+        );
+        assert!(
+            miss_hide1.is_empty(),
+            "删字段写点不该影响横幅那条规则：{miss_hide1:?}"
+        );
+
+        // (e) 真实语料的变异：把三枚横幅换成 **class 频道** ⇒ 规则 2 逐条开口、规则 1 不动
+        let mut by_class_src = APP_JS.to_string();
+        for id in ["reg-error", "verify-error", "forgot-error"] {
+            let from = format!("\"#{id}\").hidden = true;");
+            let to = format!("\"#{id}\").classList.add(\"hidden\");");
+            assert!(by_class_src.contains(&from), "变异锚点漂移：{from}");
+            by_class_src = by_class_src.replace(&from, &to);
+        }
+        let (_f2, _b2, _c2, miss_clear2, miss_hide2) =
+            c2183_reading(&code_only(&by_class_src), INDEX_HTML);
+        assert!(
+            miss_clear2.is_empty(),
+            "换频道不该影响字段那条规则：{miss_clear2:?}"
+        );
+        assert_eq!(
+            miss_hide2.len(),
+            3,
+            "换成 class 频道后，三枚横幅都该被判红（实测 {miss_hide2:?}）"
+        );
+    }
 }
 
 /// C2180：交易时间范围控件的名册 —— `ui/index.html` 里 `id` 以 `tx-range` 开头的元素。
