@@ -3476,6 +3476,32 @@
     mkExpanded = null;
   }
 
+  // 身份边界（C2181）：登录视图的**四张表单**（登录 / 注册 / 邮箱验证 / 找回密码）也是这个会话
+  // 留下的东西。`exitGuest()` 会把 `#login-view` 重新露出来，而登录框里的**邮箱与口令**没人清 ——
+  // 登出**不重载页面** ⇒ 上一位敲下的凭据原样留在 DOM 里，下一位在这台浏览器上**只按一下
+  // 「进入平台」就以他的身份登录**（无需知道密码）。它是全站**唯一没有「打开路径复位」**的表单：
+  // 上架表单由 `showShareForm()` 整表 `reset()`、模型 / 部门表单由 `open*Form()` 填（R139 那条
+  // 「每张表单都必须在其**回收路径**上交回声明的默认值」的约定），而 `showAuthForm()` 只切四个
+  // 表单的 `hidden` ⇒ 登录表单的回收路径**就是身份边界**，边界不管它，就没人管它。
+  // 名册与默认值**派生自** `ui/index.html` 的 `#login-view`（自由文本输入，默认值 = `value` 属性，
+  // 缺省空串）；写点按**字面选择器**逐个写 —— 别名会把写点藏起来，门禁按行读。
+  // ⚠️ 不整表 `form.reset()`：`#login-remember` 是**设备偏好**（boot 时从 `atp-remember` 还原），
+  // 清它会造出「本地存着 1、屏幕显示未勾」的第二口径。
+  function resetAuthForms() {
+    $("#login-email").value = "";
+    $("#login-pass").value = "";
+    $("#reg-name").value = "";
+    $("#reg-email").value = "";
+    $("#reg-pass").value = "";
+    $("#reg-pass2").value = "";
+    $("#verify-email").value = "";
+    $("#verify-code").value = "";
+    $("#forgot-email").value = "";
+    $("#forgot-code").value = "";
+    $("#forgot-pass").value = "";
+    $("#forgot-pass2").value = "";
+  }
+
   function exitGuest() {
     isGuest = false;
     // 身份边界（C2132）：会话结束即清空上一位用户的缓存 —— 否则下一位登录者会先看到他的数据
@@ -3486,6 +3512,8 @@
     resetSessionPanels();
     // 身份边界（C2177）：上一位用户的搜索词 / 筛选 / 展开行同样不属于下一位
     resetSessionQueryState();
+    // 身份边界（C2181）：登录视图四张表单里残留的凭据（邮箱 / 口令）也不属于下一位
+    resetAuthForms();
     $("#app").classList.add("hidden");
     setGuestSidebar(false);
     $("#login-view").classList.remove("hidden");

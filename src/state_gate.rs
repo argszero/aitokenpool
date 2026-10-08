@@ -6312,6 +6312,228 @@ mod tests {
         ));
     }
 
+    /// C2181：身份边界必须把**登录视图的表单**交回它们声明的默认值 —— 名册与默认值全部派生自
+    /// `ui/index.html`。
+    ///
+    /// 反例（实测，仓外仪器）：`exitGuest()` 已经收拾了 `Live` 缓存（C2132）、`#app` 之外的浮层
+    /// （C2171）、交易视图的模块级状态（C2170）、`#app` 之内的卡片（C2176）、视图的查询控件
+    /// （C2177）、交易窗口控件的投影（C2180）—— 唯独**登录视图里的凭据**没人管。`#login-pass`
+    /// 全仓**只被读**（`const pass = $("#login-pass").value`），`#login-email` 的唯一写点是把注册
+    /// 流程验过的邮箱交回登录表单。登出**不重载页面** ⇒ 上一位敲下的邮箱与口令原样留在 DOM 里，
+    /// 下一位在这台浏览器上**只按一下「进入平台」就以他的身份登录**（无需知道密码）。
+    ///
+    /// 它是全站**唯一没有「打开路径复位」**的表单：上架表单由 `showShareForm()` 整表 `reset()`、
+    /// 模型 / 部门表单由 `open*Form()` 填（R139 那条「每张表单都必须在其**回收路径**上交回声明的
+    /// 默认值」的约定），而 `showAuthForm()` 只切四个表单的 `hidden` ⇒ 登录表单的回收路径**就是
+    /// 身份边界**。
+    ///
+    /// 名册派生：`#login-view`（`ui/index.html`）之内、`type` 为**自由文本**（缺省 / `text` /
+    /// `email` / `password`）的 `<input>`；默认值 = 它自己的 `value` 属性（缺省空串）。
+    /// `type="checkbox"`（`#login-remember`）是**设备偏好**（boot 时从 `atp-remember` 还原），
+    /// 不在本轴 —— 排除的那句宣称由主测试**验证**掉（坑 #812）。
+    fn auth_form_controls(html: &str) -> Vec<(String, String)> {
+        let clean = strip_html_comments(html);
+        let Some(start) = clean.find("id=\"login-view\"") else {
+            return Vec::new();
+        };
+        // 右锚：`#app` 外壳（登录视图的**兄弟**）。刻意用结构而不是 `</div>` 配对 —— 登录视图
+        // 内部还有嵌套的 `</div>`，配对会把射程切错。
+        let end = clean[start..]
+            .find("<div id=\"app\"")
+            .map_or(clean.len(), |i| start + i);
+        let region = &clean[start..end];
+
+        let mut out: Vec<(String, String)> = Vec::new();
+        let mut r = region;
+        while let Some(at) = r.find("<input") {
+            let after = &r[at..];
+            let tag_end = after.find('>').map_or(after.len(), |i| i + 1);
+            let tag = &after[..tag_end];
+            // `<input>` 缺省 `type` 就是 `text`；checkbox / radio 是**偏好开关**、不是自由文本。
+            let ty = attr_value(tag, "type").unwrap_or_else(|| "text".to_string());
+            if matches!(ty.as_str(), "text" | "email" | "password") {
+                if let Some(id) = attr_value(tag, "id") {
+                    let v = attr_value(tag, "value").unwrap_or_default();
+                    out.push((id, js_string_literal(&v)));
+                }
+            }
+            r = &after[tag_end..];
+        }
+        out
+    }
+
+    /// C2181：身份边界必须把登录视图的**自由文本输入**交回它们声明的默认值。
+    #[test]
+    fn the_identity_boundary_returns_the_auth_forms_to_their_defaults() {
+        let src = code_only(APP_JS);
+        let derived = auth_form_controls(INDEX_HTML);
+
+        // ── 规则 4（阳性对照）：派生非空、逐条对上名册 ──────────────────────────────────
+        // 名册**钉死**在这里是刻意的：派生的射程一旦被静默收窄（例如登录视图的右锚 `#app` 换了
+        // 写法、只剩一个块被解析出来），下面的主牙就会在最少的成员上空转 —— 阳性对照是那道闸。
+        let got: BTreeSet<String> = derived.iter().map(|(id, _)| id.clone()).collect();
+        let expected: BTreeSet<String> = [
+            "login-email",
+            "login-pass",
+            "reg-name",
+            "reg-email",
+            "reg-pass",
+            "reg-pass2",
+            "verify-email",
+            "verify-code",
+            "forgot-email",
+            "forgot-code",
+            "forgot-pass",
+            "forgot-pass2",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        assert_eq!(
+            got, expected,
+            "`ui/index.html` 里登录视图的自由文本输入的派生集合变了 —— 若是有意新增/删除一枚，\
+         请一并让它随身份边界复位（或确认它不属于本轴）"
+        );
+
+        // ── 排除清单的**验证**（坑 #812）──────────────────────────────────────────────
+        // `#login-remember` 是 checkbox：**设备偏好**（boot 时从 `atp-remember` 还原），清它会造出
+        // 「本地存着 1、屏幕显示未勾」的第二口径 ⇒ 刻意排除。排除是一句关于**覆盖**的断言，
+        // 所以这里把它验掉：元素确实存在，且确实有 boot 时的还原点。
+        assert!(
+            !got.contains("login-remember"),
+            "`#login-remember` 是设备偏好，不该进本轴的名册"
+        );
+        assert!(
+            INDEX_HTML.contains("id=\"login-remember\""),
+            "`ui/index.html` 里没有 `#login-remember` —— 排除清单描述的元素消失了"
+        );
+        assert!(
+            src.contains("#login-remember") && src.contains("atp-remember"),
+            "`#login-remember` 被本轴排除，却没有 `atp-remember` 的还原点 —— \
+         排除清单又变回一句无人验证的宣称"
+        );
+        // C2177 的门禁把 `#login-email` 列进「轴外」推给别的关切 —— 这里把那句宣称验掉。
+        assert!(
+            got.contains("login-email"),
+            "`#login-email` 被 C2177 排除，却没被本轴的名册接住 —— \
+         排除清单又变回一句无人验证的宣称"
+        );
+
+        // ── 规则 1（主牙）：复位闭包把每一枚输入写回**它声明的默认值** ─────────────────
+        let closure = query_reset_closure(&src, "resetAuthForms");
+        assert!(
+            closure.contains("function resetAuthForms"),
+            "取不到 `resetAuthForms` 的闭包（空集上的断言会假绿）"
+        );
+        let missing: Vec<String> = derived
+            .iter()
+            .filter(|(id, default)| !resets_control(&closure, id, default))
+            .map(|(id, default)| format!("{id}(default={default})"))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "身份边界没有把登录视图的输入交回它声明的默认值：{missing:?}\
+         （`exitGuest` 会把上一位用户的凭据留给下一位）"
+        );
+
+        // ── 规则 2（反向）：排除的那枚设备偏好不得被复位闭包碰 ─────────────────────────
+        assert!(
+            !closure.contains("\"#login-remember\""),
+            "复位闭包碰了 `#login-remember` —— 它是设备偏好（boot 时从 `atp-remember` 还原），\
+         清它会造出「本地存着 1、屏幕显示未勾」的第二口径"
+        );
+
+        // ── 规则 3：身份边界必须调用该复位 ─────────────────────────────────────────────
+        let boundary = code_body(&src, "exitGuest");
+        assert!(
+            !boundary.is_empty(),
+            "提取器没取到 `exitGuest` 的代码体（后面的断言会在空串上「通过」）"
+        );
+        assert!(
+            boundary.contains("resetAuthForms()"),
+            "exitGuest（身份边界）没有把登录视图的表单交回默认值"
+        );
+
+        // ── 规则 5（反向）：边界不许被掏空 ─────────────────────────────────────────────
+        for prior in [
+            "resetSessionCaches()",
+            "resetSessionOverlays()",
+            "resetSessionPanels()",
+            "resetSessionQueryState()",
+            "(\"#app\").classList.add(\"hidden\")",
+        ] {
+            assert!(boundary.contains(prior), "边界不再包含 `{prior}`");
+        }
+    }
+
+    /// C2181 判别式的牙：派生认得自由文本输入、把 checkbox 与视图外的输入挡在外面，
+    /// 写回认得出，默认值 / 频道写错要红。
+    #[test]
+    fn the_c2181_auth_form_extractors_have_teeth() {
+        let synth = concat!(
+            "<div id=\"login-view\" class=\"login-view\">\n",
+            "  <form id=\"login-form\">\n",
+            "    <input class=\"input\" type=\"email\" id=\"l-email\">\n",
+            "    <input class=\"input\" type=\"password\" id=\"l-pass\">\n",
+            "    <input type=\"checkbox\" id=\"l-remember\">\n",
+            "    <input type=\"text\" id=\"l-name\" value=\"pre\">\n",
+            "    <input id=\"l-bare\">\n",
+            "  </form>\n",
+            "</div>\n",
+            "<div id=\"app\" class=\"app hidden\">\n",
+            "  <input type=\"email\" id=\"outside\">\n",
+            "</div>\n",
+        );
+        assert_eq!(
+            auth_form_controls(synth),
+            vec![
+                ("l-email".to_string(), "\"\"".to_string()),
+                ("l-pass".to_string(), "\"\"".to_string()),
+                ("l-name".to_string(), "\"pre\"".to_string()),
+                ("l-bare".to_string(), "\"\"".to_string()),
+            ],
+            "派生规则：登录视图内的自由文本 input（checkbox 除外、`value` 属性即默认值、\
+             `#app` 之内的输入不入集）"
+        );
+
+        // 写回形态：默认值写对算；写错值、写错频道、少写都不算
+        assert!(resets_control(
+            "    $(\"#l-email\").value = \"\";\n",
+            "l-email",
+            "\"\""
+        ));
+        assert!(!resets_control(
+            "    $(\"#l-email\").value = \"x\";\n",
+            "l-email",
+            "\"\""
+        ));
+        assert!(!resets_control(
+            "    $(\"#l-email\").classList.add(\"hidden\");\n",
+            "l-email",
+            "\"\""
+        ));
+        assert!(!resets_control(
+            "    $(\"#l-pass\").value = \"\";\n",
+            "l-email",
+            "\"\""
+        ));
+        // 有 `value` 属性的输入：默认值就是它，写成空串必须判红
+        assert!(resets_control(
+            "    $(\"#l-name\").value = \"pre\";\n",
+            "l-name",
+            "\"pre\""
+        ));
+        assert!(!resets_control(
+            "    $(\"#l-name\").value = \"\";\n",
+            "l-name",
+            "\"pre\""
+        ));
+
+        // 派生链断掉时是**空集**，不是「全绿」—— 主测试的阳性对照是那道闸。
+        let broken = synth.replace("id=\"login-view\"", "id=\"login-view-gone\"");
+        assert!(auth_form_controls(&broken).is_empty());
+    }
+
     /// 本轴的读取入口：浮层名册与模态判据永远取自 live 的 `ui/index.html` / `ui/css/style.css`，
     /// 只有被测的 `app.js` 由调用方给（两条腿喂不同的树）。
     fn r94_live(app: &str) -> R94Reading {
