@@ -43,6 +43,11 @@
 下面的命令用占位符：把 `<service>` / `<stack>` 换成本环境的服务名，`<image>` 换成
 `ghcr.io/<owner>/aitokenpool:<tag>`。
 
+> **谁执行哪几步**：dev 的四步已由部署仓库的 CI 流水线自动执行（预拉 → 更新 → 健康校验 →
+> 失败回滚），无需人工介入；下面的命令是 **prod 手工部署**时照做的，也是 dev 出问题时要
+> 手动复现同一步时的参照。改完本节的判据，两边的做法应保持一致 —— 否则「手工部署」与
+> 「CI 部署」会走成两套动作。
+
 ### 第 1 步 · 预拉（把拉取移出停机窗口）
 
 镜像**必须在服务实际运行的那个节点上**先拉好 —— 只在 CI 所在机器上拉没有意义。
@@ -54,6 +59,10 @@ docker pull <image>
 - Swarm：在**约束命中的 worker 节点**上执行；之后 `docker stack deploy` 仍带
   `--with-registry-auth`（预拉只是省掉任务启动时那一步，不替代鉴权）。
 - 判据：`docker images | grep <image>` 能在该节点上看到目标 tag。
+- ⚠️ **能 ssh 到 worker 才能这么拉**。dev 的 CI 用户只到得了 manager、ssh 不到 worker，
+  所以它借 manager 的 Docker API 拉：一个 `--mode global` 的一次性 service 会把镜像拉到
+  每个 worker 上（拉完即退，随后删除）。两者目的一样，只是「谁有权限做什么」不同 ——
+  别把 CI 那套改成 ssh 循环，也别反过来以为手工部署必须先开一个 service。
 
 ### 第 2 步 · 更新
 
