@@ -621,12 +621,17 @@ fn query_sig_name(body: &str) -> Option<String> {
     None
 }
 
-/// 交易控件（`#tx-range` 的绑定）所在的函数名 —— 由**文件顺序**派生，不写名册。
+/// 交易控件（`#tx-range` 的**绑定**）所在的函数名 —— 由**文件顺序**派生，不写名册。
 ///
 /// 不能用「命中行之前最近声明的那个函数」：`bindEvents` 内部还声明了嵌套函数
 /// （`showAuthForm`），位置启发式会把归属判给**最后**那个嵌套函数，而控件绑定写在它**之外**、
-/// 外层函数体内。改为：取**文件里第一个**「函数体含该控件字面量」的函数 —— 外层函数总在嵌套
-/// 函数之前声明，因此拿到的就是属主。
+/// 外层函数体内。改为：取**文件里第一个**「函数体既含该控件字面量、又给它注册了监听」的函数 ——
+/// 外层函数总在嵌套函数之前声明，因此拿到的就是属主。
+///
+/// C2180 收窄判据：只认「**提到**控件字面量」是不够的 —— 控件的**投影函数**
+///（`syncTxRangeControls()`）为了写 `.value` 也必须提到 `#tx-range`，而它声明在 `bindEvents`
+/// 之前 ⇒ 旧的「第一个提到者」会顶替真正的绑定者，规则 2/3 于是静静测到了另一个函数
+///（「出现 ≠ 身份」，坑 #347）。绑定者与投影者的分别在于**谁注册监听**，判据因此收到那一侧。
 fn tx_control_owner(src: &str) -> Option<String> {
     let mut names: Vec<String> = Vec::new();
     for line in src.lines() {
@@ -634,9 +639,13 @@ fn tx_control_owner(src: &str) -> Option<String> {
             names.push(n.to_string());
         }
     }
-    names
-        .into_iter()
-        .find(|n| code_body(src, n).contains(TX_RANGE_CONTROL))
+    names.into_iter().find(|n| binds_tx_range_control(src, n))
+}
+
+/// `f` 是否**绑定**了交易时间范围控件：体内既提到该控件字面量、又给它注册了监听。
+fn binds_tx_range_control(src: &str, f: &str) -> bool {
+    let body = code_body(src, f);
+    body.contains(TX_RANGE_CONTROL) && body.contains("addEventListener")
 }
 
 /// 函数体的**代码文本**（注释已剥离，含 `/* … */` 块）—— 逐行与 [`code_text_by_line`] 对齐。
@@ -6161,6 +6170,16 @@ mod tests {
                 "轴外元素 `#{outside}` 被当成了查询状态控件：{got:?}"
             );
         }
+        // ⚠️ 坑 #812：上面那份「轴外」清单是一句关于**覆盖**的断言 —— 排除一枚元素，等于宣称
+        //    别的轴在守它，而没有任何东西验证这句宣称。`#tx-range` 就漏在两轴之间（本轴把它推给
+        //    C2170，而 C2170 当时只认 state、不认控件）。C2180 把它接进 C2170 的控件投影（规则 4）
+        //    ⇒ 这里把那句宣称**验证**掉：被排除的 `#tx-range` 必须真的落在 C2180 的控件名册里。
+        assert!(
+            tx_range_controls(INDEX_HTML)
+                .iter()
+                .any(|(id, _)| id == "tx-range"),
+            "`#tx-range` 被本轴排除，却没被 C2180 的控件名册接住 —— 排除清单又变回一句无人验证的宣称"
+        );
 
         // ── 规则 1（主牙）：复位闭包把每一枚控件写回**它声明的默认值** ─────────────────────
         let closure = query_reset_closure(&src, "resetSessionQueryState");
@@ -10476,6 +10495,25 @@ function bind() {
             Some("outer"),
             "归属被判给了后声明的嵌套函数（位置启发式的老毛病）"
         );
+        // C2180 收窄判据的牙：**投影**函数（只提控件、不注册监听）声明在绑定函数之前时，
+        // 不得被当成属主 —— 否则规则 2/3 会静静测到另一个函数（「出现 ≠ 身份」，坑 #347）。
+        assert_eq!(
+            tx_control_owner(concat!(
+                "  function project() {\n    $(\"#tx-range\").value = txRange;\n  }\n",
+                "  function wire() {\n    const el = $(\"#tx-range\");\n",
+                "    el.addEventListener(\"change\", () => {});\n  }\n",
+            ))
+            .as_deref(),
+            Some("wire"),
+            "只「提到」控件的投影函数顶替了真正的绑定者"
+        );
+        assert_eq!(
+            tx_control_owner(
+                "  function project() {\n    $(\"#tx-range\").value = txRange;\n  }\n"
+            ),
+            None,
+            "没有任何函数注册监听时不该凭空造出一个属主（空集上的断言会假绿）"
+        );
 
         let guard = code_body(APP_JS, "renderTransactions");
         assert!(
@@ -13085,6 +13123,86 @@ function bind() {
     }
 }
 
+/// C2180：交易时间范围控件的名册 —— `ui/index.html` 里 `id` 以 `tx-range` 开头的元素。
+///
+/// **派生自标记、不手抄**：新增/改名一枚控件而不同步身份边界，规则 4 会响亮失败。返回 `(id, 标签名)`
+/// 以便区分「下拉」（只投影 `.value`）与「datetime 输入」（还要投影可见性）。左侧要求空白 ——
+/// 免得撞上 `data-i18n-id="tx-range…"` 这类（`attr_value` 的同一顾虑，坑 #333 同族）。
+fn tx_range_controls(html: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = html[from..].find("id=\"tx-range") {
+        let at = from + rel;
+        let left_ok = at == 0 || matches!(html.as_bytes()[at - 1], b' ' | b'\t' | b'\n' | b'\r');
+        let v_at = at + "id=\"".len();
+        let Some(q) = html[v_at..].find('"') else {
+            break;
+        };
+        if left_ok {
+            let id = html[v_at..v_at + q].to_string();
+            // 元素起始标签 = `id="…"` 之前最近的那个 `<`（与 `r165_options` 同一判据）。
+            let open = html[..at].rfind('<').unwrap_or(at);
+            let tag: String = html[open + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            out.push((id, tag));
+        }
+        from = v_at + q + 1;
+    }
+    out
+}
+
+/// C2180 规则 4 的读数：交易时间范围控件的**投影**关系。
+struct C2180Reading {
+    /// 控件 id → 它从哪个模块级窗口状态投影而来（`.value = <状态名>;`，恰好一处）。
+    pairs: Vec<(String, String)>,
+    /// 没被投影的控件 —— 写了字符串字面量、漏写、或写了不止一次都算。
+    unprojected: Vec<String>,
+    /// 没有任何控件投影到它的窗口状态名（状态有控件、控件却读不到它）。
+    unused: Vec<String>,
+    /// 漏了可见性投影的 datetime 输入（只有 `custom` 窗口下才该露出来）。
+    no_visibility: Vec<String>,
+}
+
+/// C2180 规则 4 的判别式：在**边界复位闭包**里，每枚交易时间范围控件都必须从某个模块级窗口状态
+/// 投影而来，且两个 datetime 输入还要投影可见性。
+///
+/// 两侧都由调用方**派生**传入（控件名册 ← `ui/index.html`；状态名 ← `txQuerySig()` 的读点）⇒
+/// 「每个控件从某个状态投影、且每个状态都有控件」是一次**双射**判定，不手抄配对表。
+fn c2180_read(html: &str, boundary: &str, ranges: &[String]) -> C2180Reading {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut unprojected: Vec<String> = Vec::new();
+    let mut no_visibility: Vec<String> = Vec::new();
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    for (id, tag) in tx_range_controls(html) {
+        let sources: Vec<&String> = ranges
+            .iter()
+            .filter(|n| boundary.contains(&format!("$(\"#{id}\").value = {n};")))
+            .collect();
+        if sources.len() != 1 {
+            unprojected.push(id);
+            continue;
+        }
+        used.insert(sources[0].clone());
+        pairs.push((id.clone(), sources[0].clone()));
+        if tag == "input" && !boundary.contains(&format!("$(\"#{id}\").style.display")) {
+            no_visibility.push(id);
+        }
+    }
+    let unused: Vec<String> = ranges
+        .iter()
+        .filter(|n| !used.contains(*n))
+        .cloned()
+        .collect();
+    C2180Reading {
+        pairs,
+        unprojected,
+        unused,
+        no_visibility,
+    }
+}
+
 /// C2170：身份边界必须连**模块级**视图状态一起清 —— `Live` 之外的会话状态同样跨不过边界。
 ///
 /// 反例（实测，仓外仪器）：`resetSessionCaches()` 只清 `Object.keys(Live)`，而交易视图的
@@ -13095,6 +13213,12 @@ function bind() {
 /// 「共 3 条」，且**不自愈**（`buildDataTable` 把 `state.page` 夹到 1 发生在渲染**内部**，守卫
 /// 不会因此重跑；实测 2.5s 内零次纠正请求）。同一跳里 `type=consume` + 7 天 `start=` 也从
 /// 上一位用户手里带过来，新用户的视图被静默收窄。
+///
+/// **C2180（规则 4）**：这些名字在屏幕上还有一个**载体** —— `#tx-range` 下拉与两个 datetime 输入。
+/// 驱动请求的是模块级状态，用户读的是控件；只复位一半（state 归位、控件一字不写）⇒ 下一位用户
+/// 落回交易视图时，下拉印着上一位的时间窗而数据按 24h 取（**控件在说谎**）。C2177 把 `#tx-range`
+/// 判为「轴外」，而本轴当时只认 state ⇒ 控件两轴之间**无人认领**（「『不属于本轴』的排除清单是
+/// 一句无人验证的覆盖断言」，坑 #812）。
 #[test]
 fn the_identity_boundary_resets_the_transaction_view_state() {
     let src = code_only(APP_JS);
@@ -13189,6 +13313,114 @@ fn the_identity_boundary_resets_the_transaction_view_state() {
         "`txTable.loaded*` 被 {strays:?} 写 —— 除装载器与身份边界外谁都不许写它：在 \
          `renderTransactions()` 里清会把守卫每次渲染都重新武装 ⇒ 请求风暴（C2146 同形）"
     );
+
+    // ── 规则 4（C2180）：复位状态之后，控件必须跟着**投影** ────────────────────────
+    // `#tx-range`（下拉）与 `#tx-range-start` / `#tx-range-end`（两个 datetime 输入）是查询窗口的
+    // **第二个载体**：驱动请求的是 `txRange` 等模块级状态，屏幕上用户读的却是控件。控件的名册由
+    // `ui/index.html` **派生**（id 以 `tx-range` 开头），窗口状态名由上文的 `ranges` **派生** ⇒
+    // 「每个控件从某个状态投影、且每个状态都有控件」是一次**双射**判定 —— 不手抄配对表，也不把
+    // 默认值写成第二份字面量（写字符串字面量也算没投影，那正是本轴要消的东西）。
+    let controls = tx_range_controls(INDEX_HTML);
+    assert_eq!(
+        controls
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec!["tx-range", "tx-range-start", "tx-range-end"],
+        "交易时间范围控件的派生集合变了 —— 若是有意新增/改名一枚，请一并让它随身份边界复位"
+    );
+    let c2180 = c2180_read(INDEX_HTML, &boundary, &ranges);
+    assert!(
+        c2180.unprojected.is_empty(),
+        "身份边界没有把控件从窗口状态投影回来：{:?}（写字符串字面量也算没投影 —— \
+         那会把默认值抄成第二份）",
+        c2180.unprojected
+    );
+    assert!(
+        c2180.unused.is_empty(),
+        "有窗口状态没有被投影到任何控件：{:?}",
+        c2180.unused
+    );
+    assert!(
+        c2180.no_visibility.is_empty(),
+        "datetime 输入没有投影可见性：{:?}（上一位用户选过「自定义」时，\
+         这两个输入会带着他的日期留在屏幕上）",
+        c2180.no_visibility
+    );
+    assert_eq!(c2180.pairs.len(), ranges.len());
+}
+
+/// C2180 规则 4 的牙：派生器认得 id 前缀与标签名、判别式认得「从状态写」「写字面量」「漏一枚
+/// 控件」「漏一个状态」「datetime 漏可见性」，都要在**合成输入**上有牙齿。
+#[test]
+fn the_c2180_control_projection_has_teeth() {
+    let html = concat!(
+        "<select id=\"tx-range\"><option value=\"24h\">a</option></select>\n",
+        "<input id=\"tx-range-start\">\n",
+        "<input id=\"tx-range-end\">\n",
+        "<span data-i18n-id=\"tx-range-ghost\"></span>\n",
+    );
+    // 派生器：按 id 前缀取元素、顺带读出标签名；`data-i18n-id="tx-range…"` 的**左界不是空白** ⇒ 不算
+    assert_eq!(
+        tx_range_controls(html),
+        vec![
+            ("tx-range".to_string(), "select".to_string()),
+            ("tx-range-start".to_string(), "input".to_string()),
+            ("tx-range-end".to_string(), "input".to_string()),
+        ],
+        "派生器：id 前缀 + 标签名；`data-i18n-id` 不算（坑 #333 同族）"
+    );
+    assert!(tx_range_controls("<select id=\"other\">").is_empty());
+
+    let ranges = vec![
+        "txCustomEnd".to_string(),
+        "txCustomStart".to_string(),
+        "txRange".to_string(),
+    ];
+
+    // 修后形状：三枚各从自己的状态投影，datetime 还写可见性
+    let fixed = concat!(
+        "  function syncTxRangeControls() {\n",
+        "    $(\"#tx-range\").value = txRange;\n",
+        "    $(\"#tx-range-start\").value = txCustomStart;\n",
+        "    $(\"#tx-range-end\").value = txCustomEnd;\n",
+        "    const custom = txRange === \"custom\";\n",
+        "    $(\"#tx-range-start\").style.display = custom ? \"\" : \"none\";\n",
+        "    $(\"#tx-range-end\").style.display = custom ? \"\" : \"none\";\n",
+        "  }\n",
+    );
+    let r = c2180_read(html, fixed, &ranges);
+    assert_eq!(r.pairs.len(), 3);
+    assert!(r.unprojected.is_empty(), "{:?}", r.unprojected);
+    assert!(r.unused.is_empty(), "{:?}", r.unused);
+    assert!(r.no_visibility.is_empty(), "{:?}", r.no_visibility);
+
+    // 变异 1：把 `txRange` 写死成字面量 ⇒ 该控件判「没投影」，且 `txRange` 无主（双射的另一半）
+    let literal = fixed.replace(
+        "$(\"#tx-range\").value = txRange;",
+        "$(\"#tx-range\").value = \"24h\";",
+    );
+    let r = c2180_read(html, &literal, &ranges);
+    assert_eq!(r.pairs.len(), 2);
+    assert_eq!(r.unprojected, vec!["tx-range".to_string()]);
+    assert_eq!(r.unused, vec!["txRange".to_string()]);
+
+    // 变异 2：datetime 只写值、不写可见性 ⇒ 单独报在 `no_visibility`（值那边仍然配对）
+    let no_vis = fixed.replace(
+        "    $(\"#tx-range-start\").style.display = custom ? \"\" : \"none\";\n",
+        "",
+    );
+    let r = c2180_read(html, &no_vis, &ranges);
+    assert_eq!(r.pairs.len(), 3);
+    assert!(r.unprojected.is_empty(), "{:?}", r.unprojected);
+    assert!(r.unused.is_empty(), "{:?}", r.unused);
+    assert_eq!(r.no_visibility, vec!["tx-range-start".to_string()]);
+
+    // 变异 3：漏一枚控件 ⇒ 它判「没投影」，它对应的状态判「无主」
+    let missing = fixed.replace("    $(\"#tx-range-end\").value = txCustomEnd;\n", "");
+    let r = c2180_read(html, &missing, &ranges);
+    assert_eq!(r.unprojected, vec!["tx-range-end".to_string()]);
+    assert_eq!(r.unused, vec!["txCustomEnd".to_string()]);
 }
 
 /// C2170 提取器自证：两侧锚定、注释剥离、闭包跨函数，都要在**合成输入**上有牙齿。
