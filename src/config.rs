@@ -133,6 +133,67 @@ impl Default for Log {
     }
 }
 
+// ---- 交易明细归档（rant 2026-10-09T12:28:58：明细写可滚动、有保留期的 JSONL）----
+
+fn default_archive_enabled() -> bool {
+    true
+}
+fn default_archive_dir() -> String {
+    "archive".to_string()
+}
+fn default_archive_max_file_size() -> u64 {
+    50_000_000
+}
+fn default_archive_max_files() -> u32 {
+    10
+}
+fn default_archive_batch() -> i64 {
+    2_000
+}
+fn default_archive_interval_secs() -> u64 {
+    60
+}
+
+/// 交易明细归档（[archive] 段，rant 2026-10-09T12:28:58 验收项 2）。
+///
+/// `transactions` 表只增不减会让 SQLite 无限膨胀（dev 实测 97.3 万行、`COUNT(*)` 23.7s）。
+/// 明细落到 `TxArchive` 管理的可滚动 JSONL（保留期 = `max_files` × `max_file_size`），
+/// SQLite 只留汇总 —— 汇总行是后续改动，本段先保证明细有落处。
+#[derive(Debug, Clone, Deserialize)]
+pub struct Archive {
+    /// 是否启用（默认 true）
+    #[serde(default = "default_archive_enabled")]
+    pub enabled: bool,
+    /// 归档目录（相对数据目录，默认 "archive"）
+    #[serde(default = "default_archive_dir")]
+    pub dir: String,
+    /// 单文件滚动阈值（bytes，默认 50MB）
+    #[serde(default = "default_archive_max_file_size")]
+    pub max_file_size: u64,
+    /// 保留的归档文件数（更旧的删除，默认 10）
+    #[serde(default = "default_archive_max_files")]
+    pub max_files: u32,
+    /// 每轮最多归档多少行（越小 → 单次持库时间越短，默认 2000）
+    #[serde(default = "default_archive_batch")]
+    pub batch: i64,
+    /// 归档扫描间隔（秒，默认 60；最小 1）
+    #[serde(default = "default_archive_interval_secs")]
+    pub interval_secs: u64,
+}
+
+impl Default for Archive {
+    fn default() -> Self {
+        Archive {
+            enabled: default_archive_enabled(),
+            dir: default_archive_dir(),
+            max_file_size: default_archive_max_file_size(),
+            max_files: default_archive_max_files(),
+            batch: default_archive_batch(),
+            interval_secs: default_archive_interval_secs(),
+        }
+    }
+}
+
 /// 顶层配置
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -144,6 +205,9 @@ pub struct Config {
     /// 日志（rant 2026-08-19T20:54:26：文件输出 + 滚动 + 清理）
     #[serde(default)]
     pub log: Log,
+    /// 交易明细归档（rant 2026-10-09T12:28:58：明细写可滚动、有保留期的 JSONL）
+    #[serde(default)]
+    pub archive: Archive,
     pub points: Points,
     pub providers: Vec<Provider>,
     pub plans: Vec<Plan>,
@@ -393,6 +457,31 @@ mod tests {
         assert_eq!(d.level, "info");
         assert_eq!(d.max_file_size, 10_000_000);
         assert_eq!(d.max_backups, 7);
+    }
+
+    #[test]
+    fn archive_defaults_when_section_absent() {
+        // 未配置 [archive] 段 → 全默认值（rant 2026-10-09T12:28:58）
+        let d = Archive::default();
+        assert!(d.enabled, "默认启用 —— 缺省即守护明细保留期");
+        assert_eq!(d.dir, "archive");
+        assert_eq!(d.max_file_size, 50_000_000);
+        assert_eq!(d.max_files, 10);
+        assert_eq!(d.batch, 2_000);
+        assert_eq!(d.interval_secs, 60);
+    }
+
+    #[test]
+    fn archive_example_section_matches_defaults() {
+        // config.example.toml 的 [archive] 段必须解析出与缺省一致的样例值
+        // （CONTRIBUTING：涉及配置的改动同步示例文件）
+        let cfg = Config::load("config/config.example.toml").unwrap();
+        assert!(cfg.archive.enabled);
+        assert_eq!(cfg.archive.dir, "archive");
+        assert_eq!(cfg.archive.max_file_size, 50_000_000);
+        assert_eq!(cfg.archive.max_files, 10);
+        assert_eq!(cfg.archive.batch, 2_000);
+        assert_eq!(cfg.archive.interval_secs, 60);
     }
 
     #[test]

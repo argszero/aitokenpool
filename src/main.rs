@@ -31,6 +31,7 @@ mod protocol;
 mod router;
 mod routes;
 mod sse;
+mod tx_archive;
 // 表格结构门禁（C2108）：同样是仅测试期编译 —— ui/index.html 与 ui/js/app.js
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
@@ -279,6 +280,68 @@ async fn drain_deadline(
     on_timeout();
 }
 
+/// 一轮交易明细归档：拿到库就写，拿不到（库正忙）就跳过。返回本轮写入的行数。
+///
+/// `try_lock` 是**刻意**的：`db` 是全站唯一的 `Mutex<Connection>`，一次宽窗聚合可以在
+/// NFS 上占用数秒（rant 2026-10-09T12:28:58 的背景）。归档是**后台维护**，绝不能与请求
+/// 抢锁 —— 库正忙时安静跳过，下一轮再来。
+fn tx_archive_tick(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    ar: &tx_archive::TxArchive,
+    batch: i64,
+) -> usize {
+    match db.try_lock() {
+        Ok(conn) => match tx_archive::archive_pending(&conn, ar, batch) {
+            Ok(n) => n,
+            Err(e) => {
+                log::warn!("交易明细归档失败: {e}");
+                0
+            }
+        },
+        Err(_) => 0,
+    }
+}
+
+/// 启动交易明细归档任务：每 `interval_secs` 秒把新事务行追加到可滚动、有保留期的 JSONL。
+///
+/// rant 2026-10-09T12:28:58 验收项 2（详细记录写入可滚动、有保留期的 JSONL 文件）的调度点；
+/// 验收项 1（明细只留汇总）是后续改动，届时「已归档」的水位就是「可安全删除」的分界。
+fn spawn_tx_archive(
+    db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    data_dir: &std::path::Path,
+    cfg: &config::Archive,
+) -> anyhow::Result<()> {
+    let ar = tx_archive::TxArchive::new(
+        data_dir.join(&cfg.dir),
+        cfg.max_file_size,
+        cfg.max_files as usize,
+    )?;
+    let batch = cfg.batch;
+    let every = std::time::Duration::from_secs(cfg.interval_secs.max(1));
+    log::info!(
+        "交易明细归档已启用: {}（每 {}s 一批 ≤ {} 行）",
+        ar.dir().display(),
+        every.as_secs(),
+        batch
+    );
+    let ar = std::sync::Arc::new(ar);
+    tokio::spawn(async move {
+        loop {
+            // 归档是**同步 DB I/O**（库在 NAS 上，见 rant 2026-10-09T12:28:58 的背景）：
+            // 放到 blocking 线程执行，别占住 tokio worker —— worker 是 `/healthz` 的命脉。
+            let (db, ar) = (db.clone(), ar.clone());
+            let n = tokio::task::spawn_blocking(move || tx_archive_tick(&db, &ar, batch))
+                .await
+                .unwrap_or(0);
+            if n > 0 {
+                log::debug!("交易明细归档: +{n} 行");
+            }
+            tokio::time::sleep(every).await;
+        }
+    });
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -332,7 +395,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let cfg = Arc::new(cfg);
+    // 归档配置必须在 AppState::new 之前取出 —— cfg 随后被移动到 state 里
+    let archive_cfg = cfg.archive.clone();
     let state = routes::AppState::new(conn, cfg, crypto);
+    // 交易明细归档（rant 2026-10-09T12:28:58 验收项 2）：明细写可滚动、有保留期的 JSONL
+    if archive_cfg.enabled {
+        spawn_tx_archive(state.db.clone(), &data_dir, &archive_cfg)?;
+    }
     let app = routes::router()
         .with_state(state)
         // 请求体上限（连同外层粗闸）在 `routes::router()` 里与 `routes::GATEWAY_BODY_LIMIT`
@@ -411,6 +480,50 @@ mod tests {
         assert!(content.contains("[[providers]]"), "内嵌默认应含 providers");
         assert!(content.contains("[[plans]]"), "内嵌默认应含 plans");
         assert!(content.contains("[[models]]"), "内嵌默认应含 models");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- 交易明细归档（rant 2026-10-09T12:28:58 验收项 2）----
+
+    #[test]
+    fn tx_archive_tick_writes_then_idles_and_never_blocks_on_a_busy_db() {
+        let dir = std::env::temp_dir().join(format!("atp_main_txarchive_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = std::sync::Mutex::new(crate::db::open(":memory:").unwrap());
+        {
+            let conn = db.lock().unwrap();
+            // transactions.user_id 有外键 ⇒ 先种用户
+            conn.execute(
+                "INSERT INTO users (id, email, password_hash) VALUES (1, 'u1@test', 'h')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status) \
+                 VALUES (1, '', NULL, 'm', 1, 1, 'consume', '成功')",
+                [],
+            )
+            .unwrap();
+        }
+        let ar = crate::tx_archive::TxArchive::new(&dir, 1_000_000, 5).unwrap();
+
+        assert_eq!(tx_archive_tick(&db, &ar, 100), 1, "首轮应写入那 1 行");
+        assert_eq!(
+            tx_archive_tick(&db, &ar, 100),
+            0,
+            "追平后应为 0（不重复写）"
+        );
+        assert_eq!(ar.load_watermark(), 1, "水位应停在那行 id");
+
+        // 库被占住 ⇒ 本轮安静跳过（0），而不是阻塞等在锁上
+        let guard = db.lock().unwrap();
+        assert_eq!(
+            tx_archive_tick(&db, &ar, 100),
+            0,
+            "库正忙时必须跳过，不得抢锁"
+        );
+        drop(guard);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
