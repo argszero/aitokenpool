@@ -444,6 +444,9 @@
         <span class="grow"></span>
         <span class="num muted tx-count" id="tx-count"></span>
       </div>
+      <!-- 明细缺口的常驻说明（R104）：`summary.entries > total` 时出现 —— **有行也在**，不是零行态
+           专属；内容由 renderTxArchivedNote() 每次渲染重算，无缺口时为空（属性频道收起）。 -->
+      <p class="card-sub" id="tx-archived-note"></p>
       <!-- 汇总卡（.stat-grid）：消费 / 收益 / 点数变化 / Token 合计 / 记录数 -->
       <div class="card">
         <div class="stat-grid" id="tx-summary"></div>
@@ -862,6 +865,6 @@
 <script src="js/api.js?v=20260929-1"></script>
 <script src="js/data.js?v=20260914-11"></script>
 <script src="js/i18n.js?v=20261009-1"></script>
-<script src="js/app.js?v=20261009-7"></script>
+<script src="js/app.js?v=20261009-8"></script>
 </body>
 </html>
