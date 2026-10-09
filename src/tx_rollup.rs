@@ -42,7 +42,7 @@ pub const TABLE: &str = "transactions_rollup";
 /// 两个 `key` 列用 `IFNULL(..., 0)` 归一：rowid 从 1 起 ⇒ `0` 就是「没有 key」的哨兵。
 /// 这一步不是为了好看 —— SQLite 里 NULL 互不相等，若让它们以 NULL 进唯一索引，同一桶的第二批
 /// 会**再插一行**而不是原地累加（`a_bucket_row_is_updated_in_place_...` 钉住这条）。
-const DIMENSION: &[(&str, &str)] = &[
+pub(crate) const DIMENSION: &[(&str, &str)] = &[
     ("user_id", "user_id"),
     ("model", "model"),
     ("key_id", "IFNULL(key_id, 0)"),
@@ -53,7 +53,7 @@ const DIMENSION: &[(&str, &str)] = &[
 ];
 
 /// 可加量：列名 → 从明细聚合的表达式。与维度分开是因为它们的合并方式不同（累加 vs 冲突即原地加）。
-const ADDITIVE: &[(&str, &str)] = &[
+pub(crate) const ADDITIVE: &[(&str, &str)] = &[
     ("row_count", "COUNT(*)"),
     ("pts", "SUM(pts)"),
     ("tokens", "SUM(tokens)"),
@@ -62,7 +62,7 @@ const ADDITIVE: &[(&str, &str)] = &[
 ];
 
 /// 水位列：本行已折叠到的最大 `transactions.id`。合并方式取**较大者**。
-const UP_TO: &str = "up_to_id";
+pub(crate) const UP_TO: &str = "up_to_id";
 
 /// 折叠 SQL：从一批明细聚合后 UPSERT 进汇总表。
 ///

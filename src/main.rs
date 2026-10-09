@@ -32,6 +32,7 @@ mod router;
 mod routes;
 mod sse;
 mod tx_archive;
+mod tx_facts;
 mod tx_rollup;
 // 表格结构门禁（C2108）：同样是仅测试期编译 —— ui/index.html 与 ui/js/app.js
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
@@ -87,6 +88,10 @@ mod option_escape_gate;
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod tx_type_roster_gate;
+// 交易事实读模型门禁（rant 2026-10-09T12:28:58 验收项 1 读侧）：同样是仅测试期编译 ——
+// src/ 的 SQL 语料在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod tx_facts_gate;
 
 use std::sync::Arc;
 

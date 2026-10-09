@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use crate::dao;
 use crate::routes::{internal, ApiErr, AppState, AuthUser};
+use crate::tx_facts;
 
 /// 交易 `type` 过滤器的**唯一真源** —— 凡是受理 `type` 查询参数的端点都用它校验。
 ///
@@ -206,18 +207,24 @@ pub async fn wallet(
     let (balance, gift_balance) = dao::get_balances(&conn, auth.user_id);
     let month_use: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(pts), 0) FROM transactions \
-             WHERE user_id = ?1 AND type = 'consume' \
-               AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
+            &format!(
+                "SELECT COALESCE(SUM(pts), 0) FROM {} \
+                 WHERE user_id = ?1 AND type = 'consume' \
+                   AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
+                tx_facts::source("")
+            ),
             [auth.user_id],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
     let month_earn: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(pts), 0) FROM transactions \
-             WHERE user_id = ?1 AND type = 'earn' \
-               AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
+            &format!(
+                "SELECT COALESCE(SUM(pts), 0) FROM {} \
+                 WHERE user_id = ?1 AND type = 'earn' \
+                   AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
+                tx_facts::source("")
+            ),
             [auth.user_id],
             |r| r.get(0),
         )
@@ -303,11 +310,14 @@ fn tx_where(
     }
     // 库内 time 为 datetime('now')（UTC "YYYY-MM-DD HH:MM:SS"），
     // 前端传 ISO 8601（RFC3339）由 handler 用 chrono 规范化为同格式后再比较（字符串序 = 时间序）。
+    // ⚠️ 界一律**截到分钟**（`tx_facts::minute_aligned`，唯一的截断点）：时间窗的读侧
+    // 走 `tx_facts`，它的汇总臂时间列是 16 字符的分钟桶 —— 带秒的界会让两条臂的比较结果
+    // 不一致（短前缀更小），折叠前后读数就会不同。详见 `src/tx_facts.rs`「分钟对齐」。
     for (c, v) in [(start, ">="), (end, "<")] {
         if let Some(s) = c {
             if !s.trim().is_empty() {
                 conds.push(format!("{} {v} ?{}", col("time"), binds.len() + 1));
-                binds.push(rusqlite::types::Value::Text(s.trim().to_string()));
+                binds.push(rusqlite::types::Value::Text(tx_facts::minute_aligned(s)));
             }
         }
     }
@@ -469,7 +479,8 @@ pub async fn transactions(
             COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
             COALESCE(SUM(t.cached_tokens), 0), \
             COALESCE(SUM(t.output_tokens), 0) \
-            FROM transactions t {} WHERE {where_sql}",
+            FROM {} {} WHERE {where_sql}",
+        tx_facts::source("t"),
         tx_joins_if(join_needed)
     );
     let summary: serde_json::Value = conn
@@ -485,6 +496,10 @@ pub async fn transactions(
             }))
         })
         .map_err(internal)?;
+    // ⚠️ 分页列表**不走** `tx_facts`（明细才是它要的东西）：汇总行是**聚合**，
+    // 没有 `id`、没有 `counterpart`，一行代表 N 条调用 ⇒ 视图答不出「第 N 页的第 K 条」。
+    // `total` 因此必须与列表**同一个载体**（都读明细），否则页码数与实际能翻出来的行数不一致。
+    // 后果如实记录：删除已折叠明细的切片必须等列表的归属定下来（视图 vs 合成分钟行）再动。
     let total: i64 = conn
         .query_row(
             &format!(
@@ -642,8 +657,9 @@ pub async fn transactions_trend(
             COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
             COALESCE(SUM(t.cached_tokens), 0), \
             COALESCE(SUM(t.output_tokens), 0), \
-            COUNT(*) \
-         FROM transactions t {} WHERE {where_sql} GROUP BY b ORDER BY b",
+            COALESCE(SUM(t.row_count), 0) \
+         FROM {} {} WHERE {where_sql} GROUP BY b ORDER BY b",
+        tx_facts::source("t"),
         tx_joins_if(needs_joins(&q.filters))
     );
     let mut stmt = conn.prepare(&trend_sql).map_err(internal)?;
@@ -689,12 +705,13 @@ pub async fn dashboard(
     let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
     // 本月按类型聚合
     let mut stmt = conn
-        .prepare(
-            "SELECT type, COALESCE(SUM(pts), 0) FROM transactions \
+        .prepare(&format!(
+            "SELECT type, COALESCE(SUM(pts), 0) FROM {} \
              WHERE user_id = ?1 \
                AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month') \
              GROUP BY type",
-        )
+            tx_facts::source("")
+        ))
         .map_err(internal)?;
     let month = stmt
         .query_map([auth.user_id], |r| {
@@ -725,10 +742,11 @@ pub async fn dashboard(
              ) \
              SELECT days.day, COALESCE(SUM({}), 0) \
              FROM days \
-             LEFT JOIN transactions t ON t.time >= days.day AND t.time < date(days.day, '+1 day') \
+             LEFT JOIN {} ON t.time >= days.day AND t.time < date(days.day, '+1 day') \
                AND t.user_id = ?1 \
              GROUP BY days.day ORDER BY days.day",
-            signed_pts_expr("t")
+            signed_pts_expr("t"),
+            tx_facts::source("t")
         ))
         .map_err(internal)?;
     let series = stmt

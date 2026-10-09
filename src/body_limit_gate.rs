@@ -116,7 +116,10 @@ fn limit_names(src: &str) -> Vec<String> {
 }
 
 /// 走一遍 `src/`，返回 `(相对路径, 文本)`；跳过门禁模块自身。
-fn source_files() -> Vec<(String, String)> {
+///
+/// `pub(crate)`：`tx_facts_gate` 的语料同源（同一个「生产区」的定义 —— 门禁模块把别的源码
+/// 当语料内嵌，扫它们会误报）。两处共用一份走盘机械，各自只加自己的判据。
+pub(crate) fn source_files() -> Vec<(String, String)> {
     fn walk(dir: &PathBuf, root: &PathBuf, out: &mut Vec<(String, String)>) {
         let Ok(rd) = std::fs::read_dir(dir) else {
             return;
