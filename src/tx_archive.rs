@@ -114,10 +114,7 @@ impl TxArchive {
 
     /// 已归档到的最大 `transactions.id`（无进度文件 ⇒ 0，即从头归档）。
     pub fn load_watermark(&self) -> i64 {
-        fs::read_to_string(self.dir.join(WATERMARK))
-            .ok()
-            .and_then(|s| s.trim().parse::<i64>().ok())
-            .unwrap_or(0)
+        watermark_at(&self.dir)
     }
 
     /// 记进度。**必须在 `append` 成功之后调用**（见模块头「至多一次重复」）。
@@ -165,6 +162,17 @@ impl TxArchive {
     fn path_for(&self, seq: u64) -> PathBuf {
         self.dir.join(format!("{PREFIX}{seq:06}{SUFFIX}"))
     }
+}
+
+/// 归档目录里已归档到的最大 `transactions.id`（无进度文件 ⇒ 0，即从头归档）。
+///
+/// 独立成自由函数是给**汇总**用的：`tx_rollup` 只折叠已归档的明细，而它不该为了读一个数字
+/// 去构造一个 `TxArchive`（那要连带决定单文件大小与保留文件数）。水位文件的名字只有这一个载体。
+pub fn watermark_at(dir: &Path) -> i64 {
+    fs::read_to_string(dir.join(WATERMARK))
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(0)
 }
 
 /// `SELECT` 的列清单**从 `COLUMNS` 渲染** —— 于是「列清单」只有一个载体。
