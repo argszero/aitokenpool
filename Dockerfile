@@ -7,7 +7,7 @@
 #
 # Notes:
 #   - unified data dir (rant 2026-08-19T20:53:23): ATP_DATA_DIR=/data holds
-#     config.toml + aitokenpool.db + logs/ — mount ONE volume.
+#     config.toml + aitokenpool.db + logs/ + archive/ — mount ONE volume.
 #   - first start copies /config/config.example.toml → /data/config.toml
 #     if missing (main.rs ensure_config).
 #   - master_key comes from env ATP_MASTER_KEY (32-byte hex), crypto reads env first.

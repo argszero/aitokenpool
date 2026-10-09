@@ -4,7 +4,7 @@
 # macOS
 .DS_Store
 
-# 统一数据目录（rant 2026-08-19T20:53:23）：config.toml + aitokenpool.db + logs/
+# 统一数据目录（rant 2026-08-19T20:53:23）：config.toml + aitokenpool.db + logs/ + archive/
 /atp-data
 # 旧版数据目录（v0.6.6 前：db 在 data/）
 /data

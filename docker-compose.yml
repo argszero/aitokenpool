@@ -12,7 +12,7 @@
 #   已加密的上游 key 全部不可解密（全量 503）。本地试用同样请先执行上面的 export。
 #
 # 统一数据目录（rant 2026-08-19T20:53:23）：只挂载一个 /data 卷，
-# config.toml（首次启动自动从内置示例复制）+ aitokenpool.db + logs/ 全在 ./atp-data/ 下。
+# config.toml（首次启动自动从内置示例复制）+ aitokenpool.db + logs/ + archive/ 全在 ./atp-data/ 下。
 services:
   aitokenpool:
     build: .
@@ -20,7 +20,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      # 统一数据目录：config / db / logs 全在这里（服务端 --data-dir /data）
+      # 统一数据目录：config / db / logs / archive 全在这里（服务端 --data-dir /data）
       - ./atp-data:/data
     environment:
       # 主密钥（32 字节 hex；env 优先于 config [server].master_key）
