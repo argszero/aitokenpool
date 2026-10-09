@@ -32,6 +32,7 @@ mod router;
 mod routes;
 mod sse;
 mod tx_archive;
+mod tx_rollup;
 // 表格结构门禁（C2108）：同样是仅测试期编译 —— ui/index.html 与 ui/js/app.js
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
@@ -342,6 +343,63 @@ fn spawn_tx_archive(
     Ok(())
 }
 
+/// 一轮交易明细汇总：拿到库就折，拿不到（库正忙）就跳过。返回本批折叠的明细行数。
+///
+/// 与归档同一条纪律：`try_lock` + 有界批次 —— 后台维护绝不与请求抢锁。
+/// `archive_dir` 只用来读归档水位：汇总**只允许折叠已归档的明细**，所以归档没跟上的部分
+/// 本轮折不动（下一轮再看）。这只会让汇总**落后**于归档，绝不会超前 —— 落后是安全的。
+fn tx_rollup_tick(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    archive_dir: &std::path::Path,
+    batch: i64,
+) -> usize {
+    match db.try_lock() {
+        Ok(conn) => {
+            let archived = tx_archive::watermark_at(archive_dir);
+            match tx_rollup::fold_pending(&conn, archived, batch) {
+                Ok(n) => n,
+                Err(e) => {
+                    log::warn!("交易明细汇总失败: {e}");
+                    0
+                }
+            }
+        }
+        Err(_) => 0,
+    }
+}
+
+/// 启动交易明细汇总任务：每 `interval_secs` 秒把新明细折叠成可加汇总行。
+///
+/// rant 2026-10-09T12:28:58 验收项 1（明细只留汇总）的调度点。它只写 `transactions_rollup`；
+/// 明细的删除与读路径的改接是后续切片 —— 先得让汇总行存在，并且能对明细逐条对账。
+fn spawn_tx_rollup(
+    db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    archive_dir: std::path::PathBuf,
+    cfg: &config::Rollup,
+) -> anyhow::Result<()> {
+    let batch = cfg.batch;
+    let every = std::time::Duration::from_secs(cfg.interval_secs.max(1));
+    log::info!(
+        "交易明细汇总已启用: {}（每 {}s 一批 ≤ {batch} 行）",
+        archive_dir.display(),
+        every.as_secs(),
+    );
+    tokio::spawn(async move {
+        loop {
+            // 同归档：同步 DB I/O 走 blocking 线程，不占 tokio worker（worker 是 `/healthz` 的命脉）。
+            let (db, dir) = (db.clone(), archive_dir.clone());
+            let n = tokio::task::spawn_blocking(move || tx_rollup_tick(&db, &dir, batch))
+                .await
+                .unwrap_or(0);
+            if n > 0 {
+                log::debug!("交易明细汇总: 折叠 +{n} 行");
+            }
+            tokio::time::sleep(every).await;
+        }
+    });
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -397,10 +455,20 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Arc::new(cfg);
     // 归档配置必须在 AppState::new 之前取出 —— cfg 随后被移动到 state 里
     let archive_cfg = cfg.archive.clone();
+    let rollup_cfg = cfg.rollup.clone();
     let state = routes::AppState::new(conn, cfg, crypto);
     // 交易明细归档（rant 2026-10-09T12:28:58 验收项 2）：明细写可滚动、有保留期的 JSONL
     if archive_cfg.enabled {
         spawn_tx_archive(state.db.clone(), &data_dir, &archive_cfg)?;
+    }
+    // 交易明细汇总（同 rant 验收项 1）：明细折叠成可加汇总行。它读**归档水位**作为折叠上界
+    // （只折已归档的明细 ⇒ 将来删明细不丢原件），所以要拿到同一个归档目录。
+    if rollup_cfg.enabled {
+        spawn_tx_rollup(
+            state.db.clone(),
+            data_dir.join(&archive_cfg.dir),
+            &rollup_cfg,
+        )?;
     }
     let app = routes::router()
         .with_state(state)
@@ -522,6 +590,58 @@ mod tests {
             0,
             "库正忙时必须跳过，不得抢锁"
         );
+        drop(guard);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- 交易明细汇总（rant 2026-10-09T12:28:58 验收项 1）----
+
+    #[test]
+    fn tx_rollup_tick_folds_only_archived_rows_and_never_blocks_on_a_busy_db() {
+        let dir = std::env::temp_dir().join(format!("atp_main_txrollup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = std::sync::Mutex::new(crate::db::open(":memory:").unwrap());
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO users (id, email, password_hash) VALUES (1, 'u1@test', 'h')",
+                [],
+            )
+            .unwrap();
+            for i in 0..2 {
+                conn.execute(
+                    "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                     VALUES (1, '', NULL, 'm', 1, 1, 'consume', '成功', ?1)",
+                    [format!("2026-10-09 12:34:0{i}")],
+                )
+                .unwrap();
+            }
+        }
+        let archive_dir = dir.join("archive");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+
+        // 归档水位 0（归档还没跟到任何一行）⇒ 一行都不折
+        assert_eq!(tx_rollup_tick(&db, &archive_dir, 100), 0, "未归档不得折叠");
+        // 归档追到第 2 行 ⇒ 折叠 2 条（同一分钟 ⇒ 一行汇总）
+        std::fs::write(archive_dir.join("watermark"), "2").unwrap();
+        assert_eq!(tx_rollup_tick(&db, &archive_dir, 100), 2);
+        assert_eq!(tx_rollup_tick(&db, &archive_dir, 100), 0, "追平后为 0");
+        {
+            let conn = db.lock().unwrap();
+            let (rows, n): (i64, i64) = conn
+                .query_row(
+                    "SELECT COUNT(*), COALESCE(SUM(row_count), 0) FROM transactions_rollup",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!((rows, n), (1, 2), "同一分钟两条明细 ⇒ 一行汇总、行数 2");
+        }
+
+        // 库被占住 ⇒ 本轮安静跳过（0），而不是阻塞等在锁上
+        let guard = db.lock().unwrap();
+        assert_eq!(tx_rollup_tick(&db, &archive_dir, 100), 0, "库正忙必须跳过");
         drop(guard);
 
         let _ = std::fs::remove_dir_all(&dir);

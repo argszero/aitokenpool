@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -359,6 +359,37 @@ pub fn migrate(conn: &Connection) -> Result<()> {
              ON transactions(user_id, time, type, pts, tokens, cached_tokens, output_tokens);
          CREATE INDEX IF NOT EXISTS idx_transactions_key_id_type_pts
              ON transactions(key_id, type, pts);",
+    )?;
+    // v16（rant 2026-10-09T12:28:58 验收项 1）：交易明细的**可加汇总表** —— 维度 = 类型 + 用户 +
+    // 模型 + key（两个身份都进维度，见 `tx_rollup` 模块头）+ 状态 + 时间（分钟级）；可加量 =
+    // `pts` 与各 token 的 `SUM` + 行数 `COUNT`。折叠逻辑在 `src/tx_rollup.rs`；本步只建表。
+    //
+    // 两点是承重的，不是风格：
+    //   (1) 唯一索引 = 汇总结算的**定义**：同一桶的后续批次走 `ON CONFLICT` 原地累加 ⇒
+    //       一个桶恰好一行，读侧不需要二次聚合。两个 key 列用 `IFNULL(...,0)` 归一后再进索引
+    //       —— rowid 从 1 起，0 即「没有 key」；若让 NULL 进索引，SQLite 视其为互不相等，
+    //       同桶第二批会**再插一行**。
+    //   (2) `up_to_id` = 汇总水位（本行已折叠到的最大 `transactions.id`）。不另立进度文件：
+    //       水位与数据同一次事务落盘，不存在「数据进了、水位没进」的中间态。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS transactions_rollup (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            bucket        TEXT NOT NULL,
+            user_id       INTEGER NOT NULL,
+            model         TEXT NOT NULL DEFAULT '',
+            key_id        INTEGER NOT NULL DEFAULT 0,
+            api_key_id    INTEGER NOT NULL DEFAULT 0,
+            type          TEXT NOT NULL DEFAULT '',
+            status        TEXT NOT NULL DEFAULT '',
+            row_count     INTEGER NOT NULL DEFAULT 0,
+            pts           REAL NOT NULL DEFAULT 0,
+            tokens        REAL NOT NULL DEFAULT 0,
+            cached_tokens REAL NOT NULL DEFAULT 0,
+            output_tokens REAL NOT NULL DEFAULT 0,
+            up_to_id      INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_rollup_bucket
+            ON transactions_rollup(user_id, model, key_id, api_key_id, type, status, bucket);",
     )?;
     // schema_version 记录**最高的**已迁移版本。⚠️ 必须用 MAX 读：该表没有唯一约束，
     // 而 `INSERT OR REPLACE` 在无冲突时就是普通 INSERT —— 只读第一行的话
@@ -794,9 +825,12 @@ mod tests {
         // v15（rant 2026-09-14T21:15:02）：补两条事故应急索引（summary 的 7 列覆盖索引 +
         // sharing 的 (key_id, type, pts)）
         let (conn, p) = tmp_db("txidx");
+        // 按**表**取索引，不按名字前缀：v16 的汇总表另有一枚 `idx_transactions_rollup_bucket`，
+        // 前缀判据会把它当成 transactions 的索引拉进来（名字只是巧合，不是归属）。
         let names: Vec<String> = conn
             .prepare(
-                "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_transactions_%' ORDER BY name",
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'transactions' \
+                 AND name LIKE 'idx_%' ORDER BY name",
             )
             .unwrap()
             .query_map([], |r| r.get(0))
