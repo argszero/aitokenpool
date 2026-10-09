@@ -205,14 +205,22 @@ fn default_rollup_batch() -> i64 {
 fn default_rollup_interval_secs() -> u64 {
     60
 }
+fn default_rollup_retain_days() -> i64 {
+    30
+}
 
 /// 交易明细汇总（[rollup] 段，rant 2026-10-09T12:28:58 验收项 1）。
 ///
 /// `transactions` 只增不减会让 SQLite 无限膨胀（dev 实测 97.3 万行、`COUNT(*)` 23.7s）。
-/// 本段驱动「把明细折叠成可加汇总行」（`src/tx_rollup.rs`：维度 = 类型+用户+模型+key+状态+
-/// 分钟，可加量 = 点数/各 token 的 SUM + 行数）。汇总只折叠**已归档**的明细
-/// （`id ≤ [archive] 的水位`），所以将来删掉已折叠的明细永远不丢原件 ⇒ `[archive]`
-/// 关掉时汇总不前进（fail-closed），这是刻意的。
+/// 本段驱动两件合成一件事的动作：**把明细折叠成可加汇总行**（`src/tx_rollup.rs`：维度 =
+/// 类型+用户+模型+key+状态+分钟，可加量 = 点数/各 token 的 SUM + 行数），**再删掉**已经折叠且
+/// 已归档、又落在保留窗口之外的明细。汇总只折叠**已归档**的明细（`id ≤ [archive] 的水位`），
+/// 删除只删**已折叠且已归档**的 —— 于是删掉的行永远有原件（JSONL）与聚合（汇总表）两个落脚处；
+/// `[archive]` 关掉时水位 0 ⇒ 不折也不删（fail-closed），这是刻意的。
+///
+/// `retain_days` 是**明细**的保留窗口（不是汇总的）：窗口内的明细仍逐条留在 `transactions` 里，
+/// 交易页照常翻页；窗口外的只剩汇总行（与 JSONL 里的原件）。取 0 即「明细只留汇总」的极值
+/// —— 折叠追平后 `transactions` 会被清空，交易页只答得出最近一分钟，**这是刻意的取舍，不是缺陷**。
 #[derive(Debug, Clone, Deserialize)]
 pub struct Rollup {
     /// 是否启用（默认 true；折叠是「明细只留汇总」的前置，回填 97 万行需要很长时间）
@@ -224,6 +232,10 @@ pub struct Rollup {
     /// 折叠扫描间隔（秒，默认 60；最小 1）
     #[serde(default = "default_rollup_interval_secs")]
     pub interval_secs: u64,
+    /// 明细的保留窗口（天，默认 30）：早于 `now - retain_days` 的**已折叠**明细每轮删一批。
+    /// 0 = 不留明细（只留汇总），负数按 0 计。
+    #[serde(default = "default_rollup_retain_days")]
+    pub retain_days: i64,
 }
 
 impl Default for Rollup {
@@ -232,6 +244,7 @@ impl Default for Rollup {
             enabled: default_rollup_enabled(),
             batch: default_rollup_batch(),
             interval_secs: default_rollup_interval_secs(),
+            retain_days: default_rollup_retain_days(),
         }
     }
 }
@@ -536,6 +549,7 @@ mod tests {
         assert!(d.enabled, "默认启用 —— 折叠是「明细只留汇总」的前置");
         assert_eq!(d.batch, 2_000);
         assert_eq!(d.interval_secs, 60);
+        assert_eq!(d.retain_days, 30, "明细默认保留 30 天");
     }
 
     #[test]
@@ -546,6 +560,7 @@ mod tests {
         assert!(cfg.rollup.enabled);
         assert_eq!(cfg.rollup.batch, 2_000);
         assert_eq!(cfg.rollup.interval_secs, 60);
+        assert_eq!(cfg.rollup.retain_days, Rollup::default().retain_days);
     }
 
     #[test]

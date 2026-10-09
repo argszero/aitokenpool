@@ -219,23 +219,36 @@ pub async fn create(
 ///
 /// 收益（`earn`）用**一次批量聚合**左连进来，而不是每行再跑一次
 /// `SELECT SUM(pts) … WHERE key_id = ?1 AND type = 'earn'`（rant 2026-09-14T21:15:02 第 2 条）：
-/// 共享页 N 行 ⇒ N 次子查询（每次 prepare + 索引查找），批量版只读一遍覆盖索引
-/// `idx_transactions_key_id_type_pts`。200,000 行 / 8 个 key 本机实测：8 次子查询 1.54 ms，
-/// 批量 0.02 ms；NAS 上每次子查询还要多摸若干页，差距随 N 放大。
+/// 共享页 N 行 ⇒ N 次子查询（每次 prepare + 索引查找），批量版只读一遍索引。
+/// 200,000 行 / 8 个 key 本机实测：8 次子查询 1.54 ms，批量 0.02 ms；NAS 上每次子查询还要多摸
+/// 若干页，差距随 N 放大。
+///
+/// ⚠️ 这个聚合读**读模型** `tx_facts`，不读裸 `transactions`（rant 2026-10-09T12:28:58 的删除切片）：
+/// 明细一旦超过保留窗口就会被删掉，而收益是**分成**——少算一段历史等于发错钱。读模型把
+/// 「已折叠的汇总行 ∪ 尚未折叠的明细」合成一个可加视图，于是这里**无论明细删到哪一步都同值**
+/// （`the_earn_aggregate_is_the_same_across_the_deletion` 用真库钉住这条）。
 ///
 /// 列顺序决定 [`sharing_row`] 的下标读取，且两个调用点必须**逐字相同** —— 只改一处会让所有字段
-/// 静默错位（不报错、类型也往往恰好兼容）。提取成常量就是为了让这件事只剩下一个地方可改
+/// 静默错位（不报错、类型也往往恰好兼容）。提取成函数就是为了让这件事只剩下一个地方可改
 /// （镜像 `admin_models.rs::ROW_SELECT` 的写法）。新增列一律**追加在末尾**。
-const ROW_SELECT: &str = "SELECT k.id, k.provider, k.plan, k.model, k.status, k.encrypted_key, \
+///
+/// 从 `const` 改成 `fn` 的唯一理由：视图名只能经 [`crate::tx_facts::source`] 插入
+/// （`tx_facts_gate` 盯着「名字只在一处字面量里写下」），而 `const` 里调不了函数。
+fn row_select() -> String {
+    format!(
+        "SELECT k.id, k.provider, k.plan, k.model, k.status, k.encrypted_key, \
                 k.quota, k.used, k.available_days, k.available_start, k.available_end, k.note, \
                 k.created_at, COALESCE(e.earn, 0) \
          FROM keys k \
-         LEFT JOIN (SELECT key_id, SUM(pts) AS earn FROM transactions WHERE type = 'earn' \
-                    GROUP BY key_id) e ON e.key_id = k.id ";
+         LEFT JOIN (SELECT key_id, SUM(pts) AS earn FROM {} WHERE type = 'earn' \
+                    GROUP BY key_id) e ON e.key_id = k.id ",
+        crate::tx_facts::source("")
+    )
+}
 
 /// 单条共享（含收益汇总）；key 先解密再脱敏展示。
 ///
-/// ⚠️ 本函数**只读列、不发 SQL**（收益来自 `ROW_SELECT` 的批量聚合；`perf_gate` 有断言守着）——
+/// ⚠️ 本函数**只读列、不发 SQL**（收益来自 `row_select()` 的批量聚合；`perf_gate` 有断言守着）——
 /// 一旦在这里补一次 `query_row`，列表端点就退回 N+1。
 fn sharing_row(
     crypto: &crate::crypto::Crypto,
@@ -256,7 +269,7 @@ fn sharing_row(
     let end: String = r.get(10)?;
     let note: String = r.get(11)?;
     let created_at: String = r.get(12)?;
-    // 收益：该 key 的 earn 交易累计 —— 由 `ROW_SELECT` 的批量聚合给出（不是每行一次子查询）
+    // 收益：该 key 的 earn 交易累计 —— 由 `row_select()` 的批量聚合给出（不是每行一次子查询）
     let earn: f64 = r.get(13)?;
     // 解密 → 脱敏（sk-****xxxx）；解密失败展示 ****
     let masked = crypto
@@ -293,7 +306,8 @@ pub async fn list(
     let crypto = st.crypto.clone();
     let mut stmt = conn
         .prepare(&format!(
-            "{ROW_SELECT} WHERE k.owner_id = ?1 ORDER BY k.id DESC"
+            "{} WHERE k.owner_id = ?1 ORDER BY k.id DESC",
+            row_select()
         ))
         .map_err(internal)?;
     let rows = stmt
@@ -416,7 +430,7 @@ pub async fn patch(
     }
     let crypto = st.crypto.clone();
     let row = conn
-        .query_row(&format!("{ROW_SELECT} WHERE k.id = ?1"), [id], |r| {
+        .query_row(&format!("{} WHERE k.id = ?1", row_select()), [id], |r| {
             sharing_row(&crypto, r)
         })
         .map_err(internal)?;
@@ -562,7 +576,7 @@ mod tests {
     /// ① 值正确（`earn` 只算 `type='earn'`，`consume` 不计入）且**跨用户不串味** ——
     ///    批量聚合读的是**全库** key 的 earn，再按 `key_id` 左连，一旦归属判断写错，
     ///    别人的收益会贴到我的行上（信息泄露 + 金额错）；
-    /// ② `list` 与 `patch` **两个调用点**给出同一个值（共用的 `ROW_SELECT` 是唯一真源）。
+    /// ② `list` 与 `patch` **两个调用点**给出同一个值（共用的 `row_select()` 是唯一真源）。
     #[tokio::test]
     async fn sharings_earn_is_one_batched_aggregate() {
         let st = test_state("earn");
@@ -651,7 +665,7 @@ mod tests {
         assert_eq!(row_a["quota"], 1000.0);
         assert_eq!(row_b["quota"], 1001.0);
 
-        // ② PATCH 单条走同一份 ROW_SELECT ⇒ 同一个值
+        // ② PATCH 单条走同一份 row_select() ⇒ 同一个值
         let (s, body) = send(
             st.clone(),
             "PATCH",
@@ -673,11 +687,20 @@ mod tests {
     }
 
     /// 同一件事的**计划层**证据（`perf_gate` 只保证源码形状，计划才证明优化器真的这么跑）：
-    /// 列表查询里的 earn 必须是**一个**未被关联的子查询（`MATERIALIZE`），
-    /// 且它扫的是覆盖索引 `idx_transactions_key_id_type_pts`（v15 迁移建的），不是回表。
-    /// 关联子查询（`CORRELATED SCALAR SUBQUERY`）就是 N+1 的形状 —— 那正是本改动要去掉的。
+    /// 列表查询里的 earn 必须是**一个**未被关联的子查询（`MATERIALIZE`），且它读的是读模型
+    /// `tx_facts`（两条臂），不是裸 `transactions`。
+    ///
+    /// 断言按**当年的那条改造**写，不钉死优化器当时选的索引名：
+    /// - 关联子查询（`CORRELATED SCALAR SUBQUERY`）就是 N+1 的形状 —— 那正是本改动要去掉的；
+    /// - 汇总臂必须**走索引**（`type = 'earn'` 由 `idx_transactions_rollup_type_bucket` 服务），
+    ///   而不是扫汇总表；
+    /// - 视图的两条臂都在（`CO-ROUTINE tx_facts` + `UNION ALL`）—— 只读明细的形态会在明细被删
+    ///   之后少算历史，正是这次改动的对象。
+    ///
+    /// ⚠️ **刻意不钉死**：明细臂扫什么。明细表在保留切片之后是有界的（窗口），此时全表扫可以接受；
+    /// 钉死一个索引名会让「优化器换了个同样好的索引」也变成红。
     #[test]
-    fn the_list_query_aggregates_earn_once_over_a_covering_index() {
+    fn the_list_query_aggregates_earn_once_over_the_read_model() {
         let st = test_state("plan");
         let conn = st.db.lock().unwrap();
         let uid: i64 = conn
@@ -694,7 +717,7 @@ mod tests {
                SELECT {uid}, 1 + (n % 3), CASE WHEN n % 3 = 0 THEN 'earn' ELSE 'consume' END, 0.5 FROM c;"
         ))
         .unwrap();
-        let sql = format!("{ROW_SELECT} WHERE k.owner_id = ?1 ORDER BY k.id DESC");
+        let sql = format!("{} WHERE k.owner_id = ?1 ORDER BY k.id DESC", row_select());
         let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let plan: Vec<String> = stmt
             .query_map([uid], |r| r.get::<_, String>(3))
@@ -706,13 +729,20 @@ mod tests {
             !plan.contains("CORRELATED"),
             "earn 不得是关联子查询（每行一次 ⇒ N+1）：{plan}"
         );
+        // 名字从 `tx_facts::VIEW` 取，不在这里再拼一遍 —— `tx_facts_gate` R1 要求
+        // 「点了视图名的字符串字面量只能住在 `tx_facts.rs` 里」。
+        let arms = format!("CO-ROUTINE {}", crate::tx_facts::VIEW);
         assert!(
-            plan.contains("COVERING INDEX idx_transactions_key_id_type_pts"),
-            "earn 聚合法应扫覆盖索引（v15 迁移建的）：{plan}"
+            plan.contains(&arms) && plan.contains("UNION ALL"),
+            "earn 聚合必须读读模型的两条臂（汇总 ∪ 明细），否则删明细后会少算分成：{plan}"
         );
         assert!(
-            !plan.contains("SCAN transactions\n") && !plan.contains("SCAN transactions |"),
-            "不得对 transactions 做非覆盖全表扫：{plan}"
+            plan.contains("SEARCH transactions_rollup USING"),
+            "汇总臂应走索引（type 上的 idx_transactions_rollup_type_bucket）：{plan}"
+        );
+        assert!(
+            !plan.contains("SCAN transactions_rollup"),
+            "汇总臂不得整表扫：{plan}"
         );
     }
 
