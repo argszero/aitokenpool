@@ -53,7 +53,7 @@ cargo run   # 首次自动创建 ./data/ 与配置，打开 http://localhost:808
 
 ### 首次启动
 
-- 自动创建统一数据目录（`<data>/`：`config.toml` + `aitokenpool.db` + `logs/`）
+- 自动创建统一数据目录（`<data>/`：`config.toml` + `aitokenpool.db` + `logs/` + `archive/`）—— `logs/` 是日志、`archive/` 是明细表的 JSONL 归档（保留窗口之外的明细**只**在那里）；备份与迁移请带上整个目录
 - 自动创建**初始管理员** `admin@aitokenpool.local`，随机 16 位密码打印在启动日志中（仅首次），登录后请立即修改密码
 - 普通用户可在登录页**自助注册**（邮箱验证码激活，未验证邮箱不可登录）
 - ⚠️ **必须设置主密钥** `ATP_MASTER_KEY`（`openssl rand -hex 32`，生成后固定保存）——用于加密上游 Key。**Docker Compose 路径下未设置会直接报错退出**（本仓库不提供默认值）；源码运行 / 裸 `docker run` 未设置时回退到随机 dev 密钥，重启后已上架的 Key 将无法解密

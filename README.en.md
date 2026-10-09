@@ -53,7 +53,7 @@ cargo run   # creates ./data/ and config on first start; open http://localhost:8
 
 ### First start
 
-- A unified data directory is created automatically (`<data>/`: `config.toml` + `aitokenpool.db` + `logs/`)
+- A unified data directory is created automatically (`<data>/`: `config.toml` + `aitokenpool.db` + `logs/` + `archive/`) — `logs/` holds the logs and `archive/` the JSONL archives of the detail tables (details past the retention window exist **only** there); back up and migrate the whole directory
 - An **initial admin** `admin@aitokenpool.local` is created with a random 16-character password printed to the startup log (first run only) — change it right after login
 - Regular users can **self-register** from the login page (email verification code; unverified emails can't log in)
 - ⚠️ **Set the master key `ATP_MASTER_KEY`** (`openssl rand -hex 32`; keep the value you generate) — it encrypts upstream API keys. **Under Docker Compose an unset value makes the command fail outright** (no default is provided); running from source or via a bare `docker run` falls back to a random dev key, and previously listed keys can't be decrypted after a restart
