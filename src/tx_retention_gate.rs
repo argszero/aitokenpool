@@ -15,9 +15,12 @@
 //! * **盖不住的那类区间 ——「无界」的 —— 必须把边界说给页面**。`#tx-range` 里有两个区间
 //!   没有深度可言（「全部时间」、自定义起点）：它们能整段落在保留窗口之外，静态门禁**表达不了**
 //!   那种深度。判据因此换成「要么不提供、要么披露」：服务端随响应发布保留边界
-//!   （`tx_rollup` 的 `DETAIL_SINCE_FIELD`，与删除同一算式），前端零行态消费它。
-//!   两侧同样**全派生**：选项名册从 `ui/index.html` 的 `#tx-range` 读（哪些无界由「该分支
-//!   有没有 `MS(…)` 深度」判定），字段名从 `tx_rollup.rs` 的常量读。
+//!   （`tx_rollup` 的 `DETAIL_SINCE_FIELD`，与删除同一算式），前端在**缺口**上消费它
+//!   （`summary.entries` 与 `total` 的差）。**披露必须长在缺口上，不许长在「列表空」上**：
+//!   明细还在（`total > 0`）时同样会少列，而「只在一条明细都没有时才解释」正好让说明只在
+//!   **最不需要它**的场合发射（R104）。两侧同样**全派生**：选项名册从 `ui/index.html` 的
+//!   `#tx-range` 读（哪些无界由「该分支有没有 `MS(…)` 深度」判定），字段名从 `tx_rollup.rs`
+//!   的常量读。
 //! * **删除的边界是「已折叠 ∧ 已归档」**。折叠水位（`transactions_rollup.up_to_id`）与
 //!   归档水位（`[archive]` 跟到哪一行）分别保证「汇总里有这份数据」与「原件还在文件里」；
 //!   少了任一条，删掉的行就**真的没了**。这一条是形状：`delete_folded` 必须把两界都取上界。
@@ -27,8 +30,10 @@
 //! * **词法的**：它证「源码里这两处形状成立」，**不证**删除真的只删对、也**不证**屏幕上
 //!   的数对 —— 行为由 `tx_rollup.rs::tests::delete_folded_*` 四条（窗口/水位/批量/读模型等价）
 //!   与 `main.rs` 的调度测试兜。
-//! * **R4 只证「说给页面了」，不证「说得对」**：它看见的是「发布 + 消费」这两个形状，
-//!   不证那句文案在每一种空态下都成立（哪个查询命中过什么，只有真库知道）。它也不区分
+//! * **R4 只证「说给页面了」，不证「说得对」**：它看见的是「发布 + 一个以缺口为准、不带空态
+//!   闸门、且被调用过的生产函数」这几个形状，不证那句文案在每一种状态下成立，也**不证它被写
+//!   进了哪个元素** —— 一个只把结果喂给空态插槽的改法仍会通过（它至少不再以「列表空」为准）。
+//!   屏幕上**看得见**由仓外 jsdom 探针按三态（有缺口 / 无缺口 / 零行）兜。它也不区分
 //!   披露的**手段** —— 换一种同样到达页面的写法（例如服务端直接算好两个数之差）仍算通过，
 //!   只要边界这个事实面还在。
 //! * **不写快照**：两侧期望值都从制品推导（预设取自 JS，窗口取自示例配置），钉死数字
@@ -81,9 +86,25 @@ const PUBLISH_FILE: &str = "wallet.rs";
 /// 前端消费边界的地方（R4 的消费侧）—— `ui/js/app.js`，即 `oracle` 里那份语料。
 const CONSUME_FILE: &str = "app.js";
 
-/// 前端零行态用的文案调用前缀 —— 边界必须与它**同处一个函数体**才算「在零行态消费」
-/// （只出现在别处的同名变量不算：页面不会因此改口）。
-const EMPTY_STATE_CALL: &str = "T(\"tx.empty.";
+/// 披露文案的调用前缀 —— 边界必须与它**同处一个函数体**才算「有人在生产披露」。
+const DISCLOSURE_CALL: &str = "T(\"tx.empty.";
+
+/// 缺口两侧那两个数的标识符：账本条数（读模型口径）与明细行数。
+///
+/// 生产披露的函数体必须让它们**在同一行相遇** —— 「有缺口」是两者的**差**，不是「列表空不空」。
+/// 只要求相遇，不钉死写法（减法 / 比较 / 都算）。
+const ENTRY_IDENT: &str = "entries";
+const ROW_IDENT: &str = "total";
+
+/// 「列表非空就不解释」的闸门形态 —— R104 轴的原形状：披露只在**最不需要它**的零行态发射。
+/// 生产披露的函数体**必须没有**它。与 `DISCLOSURE_CALL` 一样是个**词法拼写点**（射程见文件头）。
+///
+/// 判据只看**生产函数**的体。消费者按「这句话该在哪儿出现」挑插槽不算违规 —— 常驻的那句只在
+/// 明细还有行时占位、零行态把同一句话交给表格自己的副标题（见 `ui/js/app.js` 的
+/// `renderTxArchivedNote`），那是**位置**的选择，不是「要不要解释」的选择：两种状态都在解释，
+/// 屏幕上也不会出现两遍。区别在于「按列表空不空决定**要不要说**」（R104，违规）与「按列表空不空
+/// 决定这句话**落在哪个插槽**」（合规）；前者会把说明挡在最需要它的状态之外，后者不会。
+const EMPTY_GUARD: &str = "total > 0";
 
 /// 一次扫描的读数 —— 判决与它的证据一起产出。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -115,8 +136,9 @@ struct Reading {
     boundary_field: Option<String>,
     /// 服务端真的发布了它（发布侧的源里引用了那个常量，而不是又写一遍字面量）。
     boundary_published: bool,
-    /// 前端真的在**零行态**消费它（字段名与零行文案同处一个函数体）。
-    boundary_consumed: bool,
+    /// 前端真的在生产披露它 —— 生产函数的形状（见 `Disclosure`）：以**缺口**为准、不带空态
+    /// 闸门、且被调用过。
+    disclosure: Disclosure,
 }
 
 impl Reading {
@@ -138,17 +160,18 @@ impl Reading {
         self.has_time_window
     }
 
-    /// R4：盖不住的无界区间必须被披露（服务端发布 + 前端零行态消费）。
+    /// R4：盖不住的无界区间必须被披露（服务端发布 + 前端在**缺口**上生产说明）。
     ///
     /// 「无界区间一条都没有」是另一种**合法**解（把 `全部时间` / 自定义从控件里去掉），
     /// 那时规则自动成立 —— 它守的是「别让一种深度无界的区间静默地少答」，不是「必须提供它」。
     fn r4(&self) -> bool {
-        self.unbounded_options.is_empty() || (self.boundary_published && self.boundary_consumed)
+        self.unbounded_options.is_empty()
+            || (self.boundary_published && self.disclosure.reaches_page())
     }
 
     fn blame(&self) -> String {
         format!(
-            "r1={} r2={} r3={} r4={} · 预设 {:?} 天 · 窗口 {:?} 天 · 读不懂 {:?} · 只删明细 {} · 折叠界 {} · 归档界 {} · 两界同句 {} · 时间窗 {} · 区间选项 {:?} · 无界 {:?} · 边界字段 {:?} · 已发布 {} · 零行态消费 {}",
+            "r1={} r2={} r3={} r4={} · 预设 {:?} 天 · 窗口 {:?} 天 · 读不懂 {:?} · 只删明细 {} · 折叠界 {} · 归档界 {} · 两界同句 {} · 时间窗 {} · 区间选项 {:?} · 无界 {:?} · 边界字段 {:?} · 已发布 {} · 披露生产函数 {:?}（以缺口为准 {} · 空态闸门 {} · 被调用 {}）",
             self.r1(),
             self.r2(),
             self.r3(),
@@ -165,7 +188,10 @@ impl Reading {
             self.unbounded_options,
             self.boundary_field,
             self.boundary_published,
-            self.boundary_consumed,
+            self.disclosure.name,
+            self.disclosure.gap_derived,
+            self.disclosure.gated_on_empty,
+            self.disclosure.called,
         )
     }
 
@@ -301,21 +327,73 @@ fn boundary_field(rollup: &str) -> Option<String> {
     Some(after[..q].to_string())
 }
 
-/// `app.js` 里是否有**一个函数体**同时出现「边界字段名」与零行文案。
+/// 生产「明细缺口」披露的那个函数，以及它的形状。
 ///
-/// 只看「文件名出现过字段名」是不够的：那样它出现在任何一处（哪怕是在注释里、或在一个与
-/// 零行态无关的助手函数里）都算消费。形状上要的是「**说空态的那段代码**知道边界」。
-fn consumed_in_empty_state(js: &str, field: &str) -> bool {
+/// 判据全部落在**生产函数**身上，而不是「文件里出现过字段名」：那样它出现在任何一处
+/// （注释里、与披露无关的助手函数里）都算消费。形状上要的是「**说缺口的那段代码**知道边界、
+/// 且以缺口为准」。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Disclosure {
+    /// 函数名 —— `None` ⇒ 没有任何函数在生产披露。
+    name: Option<String>,
+    /// 体里两个数**在同一行相遇**（拿它们的差当判据，而不是「列表空不空」）。
+    gap_derived: bool,
+    /// 体里带着「列表非空 ⇒ 不解释」的闸门 —— R104 轴的原形状。
+    gated_on_empty: bool,
+    /// 除定义行之外还被**调用**过 ⇒ 不是「定义了但没人调」的死代码（屏幕上不会有任何东西）。
+    called: bool,
+}
+
+impl Disclosure {
+    /// 披露真的到达页面。
+    fn reaches_page(&self) -> bool {
+        self.name.is_some() && self.gap_derived && !self.gated_on_empty && self.called
+    }
+
+    /// 四件事里哪几件不成立（`name` 缺失时后三件无意义，仍如实列出）。
+    fn why_not(&self) -> String {
+        format!(
+            "生产函数 {:?} · 以缺口为准 {} · 空态闸门 {} · 被调用 {}",
+            self.name, self.gap_derived, self.gated_on_empty, self.called
+        )
+    }
+}
+
+/// 走一遍 `js` 里的 `function` 定义，读出**生产披露**的那个函数（最内层的匹配体）及它的形状。
+///
+/// 与「零行态消费」那版判据的差别有两处，两处都是本轴所在：
+/// * **取最内层的匹配体**。旧版取「第一个匹配的函数体」，而 `ui/js/app.js` 最外层是
+///   `(function () { … })()` 那层 IIFE —— 它的「体」配平后就是**整个文件**，于是
+///   「边界字段名与披露文案同处一个函数体」这条判据被模块包装器**恒真**满足
+///   （文件里出现过就等于同处一体）。取「没有任何匹配体落在它之内」的那个，判据才真的
+///   落在某个函数上。
+/// * **不许**用「列表空不空」当闸门（`total > 0`）—— 那正是 R104 说的「披露只在最不需要
+///   它的场合发射」。
+///
+/// 掩码等长（`mask_js` 只把注释/字符串/正则涂成空格）⇒ 函数体的**边界**在掩码文本上算，
+/// 而**内容**按问题挑文本：字符串字面量（`T("tx.empty.…`）只能在原文里找；「两个数在同一行
+/// 相遇」与闸门形态是**结构**，要在掩码文本里找，否则注释里逐字引用的代码会冒充判据。
+fn disclosure(js: &str, field: &str) -> Disclosure {
     let masked = mask_js(js);
-    // 掩码等长 ⇒ 用掩码文本找函数体的**边界**，用原文看**内容**。
-    let mut rest: &str = &masked;
-    let mut base = 0usize;
-    while let Some(i) = rest.find("function ") {
-        let abs = base + i;
-        let Some(open) = masked[abs..].find('{') else {
-            break;
+    // 每个 `function <名字>` 各自的体（按源码顺序）。刻意**不跳过**已被包住的那些：
+    // 外层体的末尾就是文件末尾，跳过它就再也走不到里面。
+    let mut found: Vec<(usize, usize, String)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = masked[from..].find("function ") {
+        let abs = from + rel;
+        from = abs + "function ".len();
+        let after = &masked[from..];
+        let name_len = after
+            .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+            .unwrap_or(after.len());
+        let name = after[..name_len].to_string();
+        if name.is_empty() {
+            continue; // 匿名（含那层 IIFE 的 `(function (`）：没有名字就无从谈「谁被调用」
+        }
+        let Some(rel_open) = masked[abs..].find('{') else {
+            continue;
         };
-        let open = abs + open;
+        let open = abs + rel_open;
         let mut depth = 0i32;
         let mut end = masked.len();
         for (k, ch) in masked[open..].char_indices() {
@@ -331,14 +409,30 @@ fn consumed_in_empty_state(js: &str, field: &str) -> bool {
                 _ => {}
             }
         }
-        let body = &js[abs..end];
-        if body.contains(field) && body.contains(EMPTY_STATE_CALL) {
-            return true;
+        if masked[abs..end].contains(field) && js[abs..end].contains(DISCLOSURE_CALL) {
+            found.push((abs, end, name));
         }
-        base = if end > abs { end } else { abs + 1 };
-        rest = &masked[base..];
     }
-    false
+    // 最内层：没有任何**别的**匹配体落在它之内。同层的取源码顺序里的第一个（确定性）。
+    let chosen = found.iter().find(|(a, e, _)| {
+        !found
+            .iter()
+            .any(|(a2, e2, _)| !(*a2 == *a && *e2 == *e) && *a2 >= *a && *e2 <= *e)
+    });
+    let Some((abs, end, name)) = chosen.map(|(a, e, n)| (*a, *e, n.clone())) else {
+        return Disclosure::default();
+    };
+    let body = &masked[abs..end];
+    // 定义行自己也算一次 `name(` ⇒ 计数 ≥ 2 才是真有一处**调用**。
+    let mentions = masked.matches(&format!("{name}(")).count();
+    Disclosure {
+        gap_derived: body
+            .lines()
+            .any(|l| l.contains(ENTRY_IDENT) && l.contains(ROW_IDENT)),
+        gated_on_empty: body.contains(EMPTY_GUARD),
+        called: mentions >= 2,
+        name: Some(name),
+    }
 }
 
 /// 从示例配置的 `[rollup]` 段读保留窗口（天）。注释行不算（同段注释里提到过这个键名）。
@@ -391,8 +485,8 @@ fn read() -> Reading {
         .unwrap_or(false);
     let consumed = field
         .as_deref()
-        .map(|f| consumed_in_empty_state(app_js, f))
-        .unwrap_or(false);
+        .map(|f| disclosure(app_js, f))
+        .unwrap_or_default();
     // ⚠️ `mask_strings = false`：这里要看的正是**字符串字面量里**的 SQL。掩掉字符串会把
     // 被判物一起抹平（读数变成「函数体里什么都没有」），而掩掉注释是必须的 ——
     // 否则文档注释里的 `DELETE FROM transactions` 会冒充站点。
@@ -426,7 +520,7 @@ fn read() -> Reading {
         unbounded_options: unbounded,
         boundary_field: field,
         boundary_published: published,
-        boundary_consumed: consumed,
+        disclosure: consumed,
     }
 }
 
@@ -446,11 +540,14 @@ fn the_unbounded_ranges_are_disclosed_to_the_page() {
     let r = read();
     assert!(
         r.r4(),
-        "交易列表提供了**深度无界**的区间（{:?}），而明细保留边界没有说给页面 —— 那一屏会同时出现\
-         聚合答得出的数和一条明细都没有的列表，配一句「试试调整筛选条件」（错的建议：筛选条件怎么调\
-         都变不出库里已经不存在的行）。要么把边界发布出去并由零行态消费，要么不提供这些区间：{}",
+        "交易列表提供了**深度无界**的区间（{:?}），而明细保留边界没有以「缺口」的形式说给页面 —— \
+         那一屏会同时出现聚合答得出的数和一条明细都没有、或**少列**的列表，配一句「试试调整筛选条件」\
+         （错的建议：筛选条件怎么调都变不出库里已经不存在的行）。要么把边界发布出去、并让一个\
+         **以 `entries` 与 `total` 的差为准**（而不是以「列表空不空」为准）的函数生产那句说明，\
+         要么不提供这些区间：{}\n  披露生产函数：{}",
         r.unbounded_options,
-        r.blame()
+        r.blame(),
+        r.disclosure.why_not()
     );
 }
 
@@ -498,12 +595,39 @@ fn the_retention_window_covers_every_preset_the_list_offers_negatives() {
             }),
         ),
         (
-            "无界区间还在，但前端零行态不再消费边界（只说通用那句建议）",
+            "无界区间还在，但前端不再生产披露（没人说这件事）",
             Box::new(|r: &mut Reading| {
                 if r.unbounded_options.is_empty() {
                     r.unbounded_options = vec!["synthetic".to_string()];
                 }
-                r.boundary_consumed = false;
+                r.disclosure.name = None;
+            }),
+        ),
+        (
+            "披露不再以「缺口」为准（两个数不在同一行相遇）",
+            Box::new(|r: &mut Reading| {
+                if r.unbounded_options.is_empty() {
+                    r.unbounded_options = vec!["synthetic".to_string()];
+                }
+                r.disclosure.gap_derived = false;
+            }),
+        ),
+        (
+            "披露重新带上「列表非空就不解释」的闸门（R104 轴的原形状）",
+            Box::new(|r: &mut Reading| {
+                if r.unbounded_options.is_empty() {
+                    r.unbounded_options = vec!["synthetic".to_string()];
+                }
+                r.disclosure.gated_on_empty = true;
+            }),
+        ),
+        (
+            "披露的函数定义了却没人调用（死代码 ⇒ 屏幕上什么都不会出现）",
+            Box::new(|r: &mut Reading| {
+                if r.unbounded_options.is_empty() {
+                    r.unbounded_options = vec!["synthetic".to_string()];
+                }
+                r.disclosure.called = false;
             }),
         ),
     ] {
@@ -570,8 +694,9 @@ fn the_scanner_sees_both_sides() {
         r.blame()
     );
     assert!(
-        r.boundary_consumed,
-        "`{CONSUME_FILE}` 里没有任何一个函数体同时出现边界字段名与零行文案（消费点没了？）：{}",
+        r.disclosure.reaches_page(),
+        "`{CONSUME_FILE}` 里没有一个「以缺口为准、不带空态闸门、且被调用过」的披露生产函数\
+         （生产点没了，或它又退回了 R104 的原形状）：{}",
         r.blame()
     );
     // 反面：不能**所有**区间都被判成无界 —— 那说明「分支头」按字符串字面量找、在掩码文本里

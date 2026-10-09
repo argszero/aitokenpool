@@ -1913,6 +1913,9 @@
         : filterRows(list, TX_COLUMNS, txTable.filters).length;
       cntEl.textContent = (Live.transactions || !loggedIn()) ? T("tx.pager.count", { n: n }) : "";
     }
+    // 明细缺口的常驻说明（R104）：明细被折叠归档后，上方卡片（读读模型）与列表/「共 N 条」
+    // （读明细表）会在同一屏上分叉 —— 这句话必须在**有行**时也看得见（零行态另有插槽）。
+    renderTxArchivedNote();
     // 趋势图：跟随 tab + 外部时间段（rant 2026-08-23T16:01:07 需求 2）
     renderTxTrend();
     buildDataTable({
@@ -1923,6 +1926,7 @@
       onState: renderTransactions,
       // 零行态：默认那句「试试调整筛选条件」在「命中记录已被汇总归档」时是错的建议
       // （见 txArchivedEmptySub）—— 由载荷里的 `summary.entries` vs `total` 决定要不要换。
+      // 有行时的同一件事由 `renderTxArchivedNote()` 常驻说明（同一句话、同一个来源）。
       emptySub: txArchivedEmptySub(),
       // 真后端分页（rant 2026-08-24T10:51:57）：总数显示后端 total；页码点击 → onState → renderTransactions 页码不一致自动重拉
       serverPaging: Live.transactions ? { total: Live.transactions.total || 0 } : null,
@@ -1935,22 +1939,51 @@
   //   · `summary.entries`：这条查询命中的**账本条数**（读模型口径，汇总/删除对它不可见）；
   //   · `total`：`transactions` 里还剩几行。
   // 两者不等 ⇒ 有一批命中记录已经折叠归档、不再逐条列得出（删除只发生在保留边界之外）。
-  // 此时「没有匹配的记录 / 试试调整筛选条件」是**错的建议** —— 筛选条件怎么调都变不出库
-  // 里已经不存在的行。返回要替上去的那句副标题；无从解释时返回 null（用缺省那句）。
+  // 此时上方卡片与「共 N 条」会在同一屏上分叉，而「没有匹配的记录 / 试试调整筛选条件」是
+  // **错的建议** —— 筛选条件怎么调都变不出库里已经不存在的行。返回要说的那句文案；无从解释时
+  // 返回 null。
   //
-  // ⚠️ 只在「这条查询一条明细都没有」时解释：`total > 0` 说明明细还在，零行只可能是这一页
-  // 翻过头了，那不是保留期的事，不能拿它解释。
-  function txArchivedEmptySub() {
+  // ⚠️ 判据是**两个数的差**（R104），不是「列表空不空」：明细还在（`total > 0`）时同样会少列。
+  //    这个函数因此**只回答「有没有缺口」**；「在哪里看得见」交给下面两个消费者
+  //    （`renderTxArchivedNote` 常驻、`txArchivedEmptySub` 零行态），它们不各算一份。
+  function txArchivedNoteText() {
     const t = Live.transactions;
     if (!t || !t.summary || !t.detail_since) return null;
     const entries = typeof t.summary.entries === "number" ? t.summary.entries : 0;
     const total = typeof t.total === "number" ? t.total : 0;
-    if (total > 0 || entries <= 0) return null;
+    if (entries <= total) return null;
     const since = new Date(t.detail_since);
     if (isNaN(since.getTime())) return null;
     // 天数由边界**现算**（边界是服务端按同一个算子算出来的），前端不另存一份「30」。
     const days = Math.max(0, Math.round((Date.now() - since.getTime()) / 86400000));
     return T("tx.empty.archived", { n: days });
+  }
+
+  // 缺口的**常驻**说明：写进 `#tx-archived-note`，每次渲染重算（判据只有上面一处）。
+  // 无缺口 / 边界未发布 ⇒ 清空并收起。收起走**属性频道**（`el.hidden`）—— 类频道里 `.hidden`
+  // 与元素自己的类会互相覆盖，属性频道没有这个问题。
+  //
+  // ⚠️ 只在**明细还有行**时占这个位置（`total > 0`）：一条明细都没有时，同一句话由表格自己的
+  // 零行态副标题说（见 `txArchivedEmptySub`，用户的视线本来就在那儿）—— 两个位置同时说，
+  // 屏幕上一句话出现两遍只是噪声。**这不是**「按列表空不空决定要不要解释」（R104 的原形状）：
+  // 判断仍然是两个数的差，变的只是这句话落在哪儿。
+  function renderTxArchivedNote() {
+    const el = $("#tx-archived-note");
+    if (!el) return;
+    const t = Live.transactions;
+    const total = t && typeof t.total === "number" ? t.total : 0;
+    const note = total > 0 ? txArchivedNoteText() : null;
+    el.textContent = note || "";
+    el.hidden = !note;
+  }
+
+  // 零行态的副标题：明细**一条都没有**时才换掉缺省那句「试试调整筛选条件」（R99）。
+  // `total > 0` 的零行只可能是这一页翻过头了（明细还在）—— 那不是保留期的事，用缺省句。
+  function txArchivedEmptySub() {
+    const t = Live.transactions;
+    const total = (t && typeof t.total === "number") ? t.total : 0;
+    if (total > 0) return null;
+    return txArchivedNoteText();
   }
 
   // 交易时间段 → start/end 查询参数（UTC ISO，后端 datetime() 解析；默认最近 24 小时）

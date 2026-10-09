@@ -510,7 +510,8 @@ pub async fn transactions(
     // `total` 因此必须与列表**同一个载体**（都读明细），否则页码数与实际能翻出来的行数不一致。
     // 代价如实记录：保留窗口之外的那段明细答不出来，而**聚合答得出** ⇒ 两者会在同一屏上
     // 分叉。分叉由响应里的 `detail_since`（保留边界）与 `summary.entries`（账本条数）披露，
-    // 由前端零行态说明（`txArchivedEmptySub`），由 `tx_retention_gate` 守。
+    // 由前端说明（`txArchivedNoteText`：常驻一句 + 零行态的副标题，**有行也看得见**），
+    // 由 `tx_retention_gate` 守。
     let total: i64 = conn
         .query_row(
             &format!(
