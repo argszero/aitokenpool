@@ -222,6 +222,7 @@ ui/
 - **形态**：`position:fixed; top:76px; right:24px` 浮层卡片（非 modal、无遮罩、`z-index:950` 低于 toast），入场 `help-in` 动画；窄屏（≤560px）左右 12px 全宽、`top:68px`；
 - **内容**：`renderHelp()` 渲染 4 行快捷键（`/` 搜索、`1–8` 视图、`Esc` 关闭/取消、`?` 帮助）+ 底部上下文行（当前视图 `VIEW_TITLE[activeView]` + 亮/深色主题）；
 - **优先级**：全局 keydown 里帮助打开时 **Esc 先关帮助**（再关行内新建 Key），`?` 在 typing 守卫之后（输入框内不劫持）；`toggleHelp(force)` 支持强制开/关（close 按钮用 `toggleHelp(false)`）；
+- **上下文行跟随它点名的事实**（R91）：`#help-context` 读的是两个**活事实**（`activeView` 与 `document.documentElement.dataset.theme`），而 `renderHelp()` 只在**打开**时渲染 ⇒ 三个事实的**改变处**各补一次刷新 —— 语言（`atp:langchange` 处理器，R94）、视图（`switchView`）、主题（`applyTheme`）—— 全部经**具名** `refreshHelp()`（一处声明，多处引用）；刷新**不关**面板，只是内容跟上来。守卫必须读 `toggleHelp` 用的那个 `classList` 频道（写成 `.hidden` 属性在此**恒假**，R94 实测）。`state_gate::the_help_context_line_follows_the_facts_it_names` 静态钉住这条：事实名册与写者名册**两侧都从代码派生**（不手抄），写者必须能沿调用图到达那个唯一的刷新器，且面板之外不得有第二处守卫；
 - **kbd 键帽**：`.kbd` 样式（等宽、边框、底部 2px 立体），与 `.nav-key` 视觉一致。
 
 ## 市场行展开约定（v1.19，rant 2026-08-17T20:39:30 F）
