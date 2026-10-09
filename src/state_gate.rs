@@ -5444,7 +5444,10 @@ impl R93Reading {
 //
 //   R1  每个「**非模态**（按 CSS 推导：该元素的类规则里都没有 `inset: 0`）＋ 内容由 **JS 写**
 //       （某函数体里同时出现该浮层的后代 id 与 `T(`）」的浮层，其**每一个**这样的写者都必须从
-//       处理器体内被调用。
+//       处理器体内被调用 —— **直接**调用，**或经一跳**：处理器调到的那个函数体内「按该浮层的
+//       开关频道判开着」再调这个写者（R91 把守卫收进具名 `refreshHelp()` 之后，语言 / 视图 /
+//       主题三条路走的就是这一跳）。**开合器不算刷新**（体内对该浮层 `classList.toggle(` 的
+//       做的是把它藏起来）⇒ 竞争修法 `m_close` 仍红。
 //   R2  名册不得被**削到只剩浮层写者**（挡「把名册删干净」式假修）：派生出来的 `render*` 刷新名
 //       里必须至少有一个**不是**射程内浮层的写者。判据从写者集合派生，不写阈值 —— C2178 实测：
 //       同一段处理器新增一个刷新名（`renderShareFormCopy`）之后，原来的「≥ 3 个」代理量就再也
@@ -5470,10 +5473,14 @@ const R94_HANDLER_START: &str = "addEventListener(\"atp:langchange\"";
 /// 紧邻的、**已经被刷新**的兄弟行（引导）—— 修复体的插入锚点（逐字来自 `ui/js/app.js`）。
 const R94_TOUR_GUARD: &str = "if (tourStep >= 0) renderTourStep();";
 
-/// 修复体新增的调用（代码部分，不含行尾注释）—— 变体树的**绿基线**。
+/// 修复体那一行「面板开着就重画」（代码部分，不含行尾注释）—— 变体树的**绿基线**。
 ///
 /// 与 R167 的 `R167_FIXED_BODY` / R168 的 `R168_FIXED_GUARD` 同型：它只出现在**自己拼出来的树**
 /// 里，且由落地轮的编译器门禁断言它确实是编辑表 E1 产物的子串（#548：导入制品，绝不重抄）。
+///
+/// R91 之后它不在处理器里、而是**具名刷新器 `refreshHelp()` 的体**（三条路共用一处声明）⇒
+/// [`r94_variant_fix`] 在真树上是**幂等 no-op**（真树就是修复树），[`r94_variant_unfixed`] 摘掉的
+/// 是那一处守卫（`refreshHelp` 从此不调写者）。R1 判「刷新了没」时跟一跳，见 [`r94_refreshes_via`]。
 const R94_FIXED_GUARD: &str = concat!(
     "if (!$(\"#help-panel\").classList.contains(\"hidden\")) ",
     "renderHelp();",
@@ -5701,6 +5708,26 @@ fn r94_calls(text: &str) -> BTreeSet<String> {
     out
 }
 
+/// 一跳刷新器：`helper`（处理器调到的那个名字）体内**调用了写者 `writer`**，且**按这个浮层的开关
+/// 频道判「开着」**（`"#<id>"` 与 `classList.contains(` 同体出现）—— 但**不是**这个浮层的开合器
+/// （体内有 `classList.toggle(` 的，做的是「把它藏起来」，不是刷新）。
+///
+/// R91 把「面板开着就重画」的守卫从处理器那处**收进具名 `refreshHelp()`**（视图 / 主题 / 语言三条路
+/// 共用一处声明）⇒ 处理器自此调的是**刷新器**而不是写者本身，R1 的判据必须能跟这一跳。**竞争修法仍
+/// 被拒**：`m_close` 让处理器调 `toggleHelp(false)`，而 `toggleHelp` 体内有 `classList.toggle(` ⇒
+/// 判为开合器、不算刷新（实测见 `the_r94_rules_separate_the_variants` 与 `the_r94_rules_have_teeth`
+/// 的 `guard gone` 腿）。
+fn r94_refreshes_via(app: &str, helper: &str, writer: &str, id: &str) -> bool {
+    let Some(body) = js_function_body(app, helper) else {
+        return false; // 不是本文件里的具名函数（或单行函数）⇒ 没有「一跳」可跟
+    };
+    let code = code_only(body);
+    code.contains(&format!("{writer}("))
+        && code.contains(&format!("\"#{id}\""))
+        && code.contains("classList.contains(")
+        && !code.contains("classList.toggle(")
+}
+
 /// 一次扫描同时产出三条规则的判决**与它们的证据**（逐条可打印 —— #339/#341：判词与取值两列）。
 struct R94Reading {
     /// 处理器体本身有没有被找到（找不到时三条规则会静默地在空集上「通过」）。
@@ -5792,7 +5819,10 @@ fn r94_read(html: &str, app: &str, css: &str) -> R94Reading {
     let mut missing = BTreeSet::new();
     for id in &scope {
         for w in writers.get(id).into_iter().flatten() {
-            if !calls.contains(w) {
+            // 直接调用，或**一跳**：处理器调了一个「按这个浮层的开关频道判开着、再调这个写者」的
+            // 刷新器（R91 起那处守卫收进具名 `refreshHelp()`，与视图 / 主题共用一处声明）。
+            let via_refresher = calls.iter().any(|c| r94_refreshes_via(app, c, w, id));
+            if !calls.contains(w) && !via_refresher {
                 missing.insert(format!("{id}/{w}"));
             }
         }
@@ -13648,6 +13678,817 @@ function bind() {
             miss_hide2.len(),
             3,
             "换成 class 频道后，三枚横幅都该被判红（实测 {miss_hide2:?}）"
+        );
+    }
+
+    // ============ R91：帮助面板的上下文行必须跟随它点名的事实（视图 / 主题）============
+    //
+    // ## 题眼
+    //
+    // `#help-panel` 是**非模态**浮层（`position: fixed`、无遮罩、不盖住侧栏），用户能带着它切视图、
+    // 切主题。而 `renderHelp()` 只在**打开**那一瞬间渲染（`toggleHelp` 的 open 分支）⇒ 它写下的
+    // `#help-context` 那一行（`T("help.context", { view, theme })`）点名的两个**活事实**变过之后
+    // 没人重绘，那一行停在旧值、**整会话不自愈**。（语言那条 R94 已补钩子；视图 / 主题这两条从
+    // `8c49025` 写下上下文行起就没有 —— 漂移，不是取舍。）
+    //
+    // ## 三条规则
+    //
+    // R1（名册两侧都派生）：`#help-context` 那一行点到名的**事实** = 「那一行（含渲染体内**一层**
+    //     `const` 中转）出现的点号路径」 ∩ 「全仓出现过**行首赋值**的目标路径」。写点行找不到 ⇒ 红。
+    // R2（一处声明）：`renderHelp(` 的调用点只允许落在两处 —— 开面板的 `toggleHelp`（派生自「谁
+    //     `classList.toggle` 了那个面板」）与**唯一的**刷新器；刷新器必须按面板的 **class 频道**判
+    //     「开着」（`$("#<panel>") … classList.contains("<token>")`，`<token>` 也派生自 `toggleHelp`）。
+    //     ⚠️ 写成 `.hidden` **属性**在此恒假（R94 在 `#help-panel` 上实测过）⇒ 刷新器会静默失效。
+    // R3（写者覆盖）：每个事实的每个**写者**要么在 **boot 区间**内写（那一刻面板不可能开着），要么
+    //     沿调用图到达某个**调用 `renderHelp(` 的具名函数**。空事实集上 R3 恒真 —— 那道闸是 R1。
+    //
+    // ## 射程（如实，不是承诺）
+    //
+    // 词法：证「声明上的覆盖关系」，**不证**屏幕上那一行真的换了字（那半归**仓外 jsdom 探针**）。
+    // 归属按「具名 `function NAME(` 的行区间」算；嵌套具名函数（`bindEvents` 里的 `showAuthForm`）
+    // 的区间会**外溢**到外层收尾（`js_function_body` 按 `  }` 收尾），本轴四个写点都是顶层函数、
+    // 外溢不改变判定 —— 但射程内的事实若由嵌套函数写，归属会误判（如实登记）。
+    // 「一层中转」只跟一层 `const`（`const theme = …`）：两层绰绰有余、本行也只有一层。
+
+    /// 上下文行的**写点选择器**（`renderHelp` 里那一行用它找元素）。
+    const R91_CONTEXT_WRITE: &str = "\"#help-context\"";
+    /// 标记里定位上下文行的锚 —— 面板 id **从它派生**，不手抄。
+    const R91_CONTEXT_ANCHOR: &str = "id=\"help-context\"";
+
+    /// 帮助面板的 id —— 派生自标记：包含 `id="help-context"` 的那个**顶行元素**（列 0 起头）。
+    fn help_panel_id(html: &str) -> Option<String> {
+        let clean = strip_html_comments(html);
+        let mut current: Option<String> = None;
+        for line in clean.lines() {
+            if line.starts_with('<') && !line.starts_with("</") && !line.starts_with("<!") {
+                current = element_id(line);
+            }
+            if line.contains(R91_CONTEXT_ANCHOR) {
+                return current;
+            }
+        }
+        None
+    }
+
+    /// 文本里的**点号路径** token（`document.documentElement.dataset.theme` 是一个整体）。
+    ///
+    /// 与 [`identifiers`] 的两点不同：① 连续的 `.名字` 续成一个 token；② 字符串字面量里不算 ——
+    /// `"help.context"` / `"#help-context"` 都不是路径（它们是键与选择器，不是事实）。
+    fn dotted_paths(text: &str) -> BTreeSet<String> {
+        let bytes = text.as_bytes();
+        let is_start = |c: u8| c.is_ascii_alphabetic() || c == b'_' || c == b'$';
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+        let mut out = BTreeSet::new();
+        let mut in_str: Option<u8> = None;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if let Some(q) = in_str {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    in_str = None;
+                }
+                i += 1;
+                continue;
+            }
+            if c == b'"' || c == b'\'' || c == b'`' {
+                in_str = Some(c);
+                i += 1;
+                continue;
+            }
+            if is_start(c) && (i == 0 || !is_ident(bytes[i - 1])) {
+                let start = i;
+                while i < bytes.len() && is_ident(bytes[i]) {
+                    i += 1;
+                }
+                while i + 1 < bytes.len() && bytes[i] == b'.' && is_start(bytes[i + 1]) {
+                    i += 1;
+                    while i < bytes.len() && is_ident(bytes[i]) {
+                        i += 1;
+                    }
+                }
+                out.insert(text[start..i].to_string());
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// 一行**行首就是一个点号路径、且紧跟赋值号**时给出那条路径（`==` / `=>` / `+=` 都不算）。
+    ///
+    /// 只看行首，是为了让「写点」有唯一的形状：`const theme = …`、`$("#x").value = …`、
+    /// `if (a.b = c)` 都不算写点（它们的行首不是路径，或路径之后不是赋值号）。
+    fn leading_assignment_path(line: &str) -> Option<String> {
+        let bytes = line.as_bytes();
+        let is_start = |c: u8| c.is_ascii_alphabetic() || c == b'_' || c == b'$';
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+        if bytes.first().copied().map(is_start) != Some(true) {
+            return None;
+        }
+        let mut i = 1usize;
+        while i < bytes.len() && is_ident(bytes[i]) {
+            i += 1;
+        }
+        while i + 1 < bytes.len() && bytes[i] == b'.' && is_start(bytes[i + 1]) {
+            i += 1;
+            while i < bytes.len() && is_ident(bytes[i]) {
+                i += 1;
+            }
+        }
+        let rest = line[i..].trim_start();
+        if rest.starts_with('=') && !rest.starts_with("==") && !rest.starts_with("=>") {
+            Some(line[..i].to_string())
+        } else {
+            None
+        }
+    }
+
+    /// 全部具名函数名（去重、字典序）—— `call_graph` 的键。
+    fn js_fn_names(app: &str) -> Vec<String> {
+        app.lines()
+            .filter_map(function_name)
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// 每个具名函数的**行区间**（0 基，含首尾）—— 归属用。
+    ///
+    /// **不**走共享的 [`js_function_body`]：它按「恰为 `  }` 的行」收尾，只认顶层函数，而 `boot_body`
+    /// 那个 `DOMContentLoaded` 回调里声明的函数（`applyTheme` / `toggleTheme`）收尾是 4 空格的 `    }`
+    /// ⇒ 前者在那里取不到区间（`js_function_body` 的已知射程，见它的文档）—— 而 `applyTheme` 正是本轴
+    /// 的写者之一（实测：不修这一处，`document.documentElement.dataset.theme` 的写者名册只剩
+    /// `<top-level>`，`renderNav` 那条牙也就翻不动）。这里改按**声明行的缩进**推收尾行：声明后第一行
+    /// 恰为「同缩进的 `}`」。单行函数（`function f() { … }` 一行收尾）没有这样的行 ⇒ 射程外（与共享版一致）。
+    fn js_fn_line_spans(app: &str) -> Vec<(String, usize, usize)> {
+        let lines: Vec<&str> = app.lines().collect();
+        let mut out: Vec<(String, usize, usize)> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let Some(name) = function_name(line) else {
+                continue;
+            };
+            if out.iter().any(|(n, _, _)| n == name) {
+                continue; // 同名只认第一处（与 `js_fn_names` 的去重一致）
+            }
+            let close = " ".repeat(line.len() - line.trim_start().len()) + "}";
+            match (i + 1..lines.len()).find(|&j| lines[j] == close) {
+                Some(end) => out.push((name.to_string(), i, end)),
+                None => continue, // 单行函数没有区间
+            }
+        }
+        out
+    }
+
+    /// 这一行归属哪个具名函数（**最内层**包含它的那个），不在任何函数里 ⇒ `<top-level>`。
+    fn owner_of_line(spans: &[(String, usize, usize)], line: usize) -> String {
+        spans
+            .iter()
+            .filter(|(_, s, e)| *s <= line && line <= *e)
+            .max_by_key(|(_, s, _)| *s)
+            .map(|(n, _, _)| n.clone())
+            .unwrap_or_else(|| "<top-level>".to_string())
+    }
+
+    /// 全仓「行首即点号路径的赋值」—— 路径 → `(写者, 1 基行号)`。
+    fn path_write_sites(
+        app: &str,
+        spans: &[(String, usize, usize)],
+    ) -> BTreeMap<String, Vec<(String, usize)>> {
+        let mut out: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
+        for (i, code) in code_text_by_line(app).iter().enumerate() {
+            let Some(path) = leading_assignment_path(code) else {
+                continue;
+            };
+            out.entry(path)
+                .or_default()
+                .push((owner_of_line(spans, i), i + 1));
+        }
+        out
+    }
+
+    /// `const/let/var NAME = <表达式>` 一处绑定（行首，`==` 不算）—— 渲染体内的一层中转。
+    fn r91_local_binding(line: &str) -> Option<(String, String)> {
+        let t = line.trim_start();
+        for pre in ["const ", "let ", "var "] {
+            let Some(rest) = t.strip_prefix(pre) else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            let after = rest[name.len()..].trim_start();
+            let expr = after.strip_prefix('=')?.trim_start();
+            if expr.starts_with('=') || expr.starts_with('>') {
+                return None;
+            }
+            return Some((name, expr.to_string()));
+        }
+        None
+    }
+
+    /// `renderHelp()` 里 `#help-context` 那一行点名的**候选事实**（含一层 `const` 中转）。
+    ///
+    /// `None` = 写点行找不到（名册会静默变空 ⇒ 调用方必须判红，不许在空集上通过）。
+    fn help_context_candidates(app: &str) -> Option<BTreeSet<String>> {
+        let body = js_function_body(app, "renderHelp")?;
+        let code = code_lines(body);
+        let mut bound: BTreeMap<String, String> = BTreeMap::new();
+        for line in code.lines() {
+            if let Some((name, expr)) = r91_local_binding(line) {
+                bound.insert(name, expr);
+            }
+        }
+        let mut cands = BTreeSet::new();
+        let mut found = false;
+        for line in code.lines() {
+            if line.contains(R91_CONTEXT_WRITE) {
+                found = true;
+                cands.extend(dotted_paths(line));
+            }
+        }
+        if !found {
+            return None;
+        }
+        let hops: Vec<String> = cands.iter().filter_map(|c| bound.get(c).cloned()).collect();
+        for expr in hops {
+            cands.extend(dotted_paths(&expr));
+        }
+        Some(cands)
+    }
+
+    /// 体内是否按面板的 **class 频道**判「关着」：`$("#<panel>") … classList.contains("<token>")`。
+    fn reads_panel_open_class(body: &str, panel: &str, token: &str) -> bool {
+        let selector = format!("\"#{panel}\"");
+        let test = format!("classList.contains(\"{token}\")");
+        body.lines()
+            .any(|l| l.contains(&selector) && l.contains(&test))
+    }
+
+    /// 开 / 关帮助面板的函数：体内既提到面板选择器、又对它 `classList.toggle(`。
+    fn help_toggler(app: &str, panel: &str) -> Option<String> {
+        let selector = format!("\"#{panel}\"");
+        js_fn_names(app).into_iter().find(|n| {
+            let body = code_body(app, n);
+            body.contains(&selector) && body.contains("classList.toggle(")
+        })
+    }
+
+    /// `toggleHelp` 写面板可见性用的 class token（`classList.toggle("<token>", …)`）——
+    /// 刷新器的判据必须读**同一个频道**，否则它恒假、静默失效。
+    fn help_class_token(app: &str, toggler: &str) -> Option<String> {
+        let body = code_body(app, toggler);
+        let at = body.find("classList.toggle(\"")? + "classList.toggle(\"".len();
+        let rest = &body[at..];
+        Some(rest[..rest.find('"')?].to_string())
+    }
+
+    /// 刷新器候选：体内既调 `renderHelp(`、又按面板 class 频道判「开着」。
+    fn help_refreshers(app: &str, panel: &str, token: &str) -> Vec<String> {
+        js_fn_names(app)
+            .into_iter()
+            .filter(|n| {
+                let body = code_body(app, n);
+                body.contains("renderHelp(") && reads_panel_open_class(&body, panel, token)
+            })
+            .collect()
+    }
+
+    /// 体内调用 `renderHelp(` 的具名函数 —— R3 的落点。
+    ///
+    /// **声明行不算**：`code_body(app, "renderHelp")` 的第一行就是 `function renderHelp() {`
+    /// 自己，不排掉的话渲染器会被当成它自己的调用者（名册里凭空多一枚）。
+    fn renderhelp_callers(app: &str) -> BTreeSet<String> {
+        js_fn_names(app)
+            .into_iter()
+            .filter(|n| {
+                code_body(app, n)
+                    .lines()
+                    .any(|l| l.contains("renderHelp(") && !l.starts_with("function "))
+            })
+            .collect()
+    }
+
+    /// 全仓函数名 → 调用名集合（R3 的传递闭包用）。
+    ///
+    /// **不**直接用共享的 [`call_graph`]：它按 [`js_function_body`] 切体，而后者只认顶层函数 ⇒
+    /// `DOMContentLoaded` 回调里声明的函数（`applyTheme` / `toggleTheme`）**不在图里**，出边
+    /// （`applyTheme → refreshHelp`）也就丢了 ⇒ `applyTheme` 那处主题写点会被冤枉成「没接线」
+    /// （实测：不补这一处，未修树上主题那条腿与真树上的 R3 一起红）。区间与 [`js_fn_line_spans`]
+    /// **同一份**（本轴的单一真源），不另起一份名册。
+    fn js_call_graph(app: &str) -> BTreeMap<String, BTreeSet<String>> {
+        let lines: Vec<&str> = app.lines().collect();
+        js_fn_line_spans(app)
+            .into_iter()
+            .map(|(name, start, end)| (name, callee_names(&lines[start..=end].join("\n"))))
+            .collect()
+    }
+
+    /// `renderHelp(` 的**调用行**里落在 `allowed`（开面板者 / 唯一刷新器）之外的（`写者:行 文本`）。
+    fn renderhelp_strays(
+        app: &str,
+        spans: &[(String, usize, usize)],
+        allowed: &BTreeSet<String>,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        for (i, code) in code_text_by_line(app).iter().enumerate() {
+            if !code.contains("renderHelp(") || code.starts_with("function ") {
+                continue;
+            }
+            let owner = owner_of_line(spans, i);
+            if !allowed.contains(&owner) {
+                out.push(format!("{owner}:{} {code}", i + 1));
+            }
+        }
+        out
+    }
+
+    /// boot 处理器占的**行区间**（0 基，含首尾）—— 顶层写点的豁免只给这一段。
+    fn boot_line_span(app: &str) -> Option<(usize, usize)> {
+        let body = boot_body(app)?;
+        let at = app.find("document.addEventListener(\"DOMContentLoaded\"")?;
+        let start = app[..at].matches('\n').count();
+        Some((start, start + body.matches('\n').count()))
+    }
+
+    /// 本轴的读数（三条规则 + 各自的证据）。
+    #[derive(Debug, Default)]
+    struct R91Reading {
+        panel: Option<String>,
+        token: Option<String>,
+        toggler: Option<String>,
+        /// 写点行找得到吗（`None` 的名册 = 红，不是「全绿」）。
+        context_found: bool,
+        /// 上下文行点名的**候选**（含一层中转），未与写点求交。
+        candidates: BTreeSet<String>,
+        /// 事实 = 候选 ∩ 有写点的路径。
+        facts: BTreeSet<String>,
+        /// 事实 → 写者函数名。
+        writers: BTreeMap<String, BTreeSet<String>>,
+        /// 事实 → `写者:行` 证据。
+        witnesses: BTreeMap<String, Vec<String>>,
+        refreshers: Vec<String>,
+        callers: BTreeSet<String>,
+        strays: Vec<String>,
+        boot: Option<(usize, usize)>,
+        /// R3 的缺项：`事实 @ 写者:行`。
+        uncovered: Vec<String>,
+        r1: bool,
+        r2: bool,
+        r3: bool,
+    }
+
+    impl R91Reading {
+        fn verdicts(&self) -> (bool, bool, bool) {
+            (self.r1, self.r2, self.r3)
+        }
+
+        fn report(&self) -> String {
+            format!(
+                "panel={:?} token={:?} toggler={:?} context_found={} facts={:?} writers={:?} \
+                 witnesses={:?} refreshers={:?} callers={:?} strays={:?} boot={:?} uncovered={:?}",
+                self.panel,
+                self.token,
+                self.toggler,
+                self.context_found,
+                self.facts,
+                self.writers,
+                self.witnesses,
+                self.refreshers,
+                self.callers,
+                self.strays,
+                self.boot,
+                self.uncovered
+            )
+        }
+    }
+
+    /// 把一棵树读一遍（面板 id 从 `html` 派生，事实与写者都从 `app` 派生）。
+    fn r91_read(html: &str, app: &str) -> R91Reading {
+        let mut out = R91Reading::default();
+        let spans = js_fn_line_spans(app);
+        let writes = path_write_sites(app, &spans);
+        out.boot = boot_line_span(app);
+
+        // ── R1：名册两侧都派生 ────────────────────────────────────────────────────────
+        if let Some(cands) = help_context_candidates(app) {
+            out.context_found = true;
+            out.candidates = cands;
+        }
+        for cand in &out.candidates {
+            if writes.contains_key(cand) {
+                out.facts.insert(cand.clone());
+            }
+        }
+        for f in &out.facts {
+            let sites = writes.get(f).cloned().unwrap_or_default();
+            out.writers
+                .insert(f.clone(), sites.iter().map(|(o, _)| o.clone()).collect());
+            out.witnesses.insert(
+                f.clone(),
+                sites.iter().map(|(o, n)| format!("{o}:{n}")).collect(),
+            );
+        }
+
+        // ── R2：一处声明 ──────────────────────────────────────────────────────────────
+        out.panel = help_panel_id(html);
+        if let Some(panel) = out.panel.clone() {
+            out.toggler = help_toggler(app, &panel);
+            out.token = out.toggler.clone().and_then(|t| help_class_token(app, &t));
+            if let Some(token) = out.token.clone() {
+                out.refreshers = help_refreshers(app, &panel, &token);
+            }
+        }
+        out.callers = renderhelp_callers(app);
+        let mut allowed: BTreeSet<String> = out.refreshers.iter().cloned().collect();
+        if let Some(t) = &out.toggler {
+            allowed.insert(t.clone());
+        }
+        out.strays = renderhelp_strays(app, &spans, &allowed);
+
+        // ── R3：写者覆盖（在 boot 区间写 = 那一刻面板不可能开着）────────────────────────
+        let graph = js_call_graph(app);
+        for f in &out.facts {
+            for (owner, line) in writes.get(f).map(Vec::as_slice).unwrap_or(&[]) {
+                let covered = if owner == "<top-level>" {
+                    // 写点是 1 基、区间是 0 基闭区间 ⇒ 先归一到 0 基再比。
+                    let at = line.saturating_sub(1);
+                    out.boot.map(|(s, e)| at >= s && at <= e).unwrap_or(false)
+                } else {
+                    reachable(&graph, std::slice::from_ref(owner))
+                        .iter()
+                        .any(|r| out.callers.contains(r))
+                };
+                if !covered {
+                    out.uncovered.push(format!("{f} @ {owner}:{line}"));
+                }
+            }
+        }
+
+        out.r1 = out.context_found && !out.facts.is_empty();
+        out.r2 = out.toggler.is_some()
+            && out.token.is_some()
+            && out.refreshers.len() == 1
+            && out.strays.is_empty();
+        out.r3 = out.uncovered.is_empty();
+        out
+    }
+
+    /// 轴：帮助面板的上下文行点名两个**活事实**（当前视图 / 当前主题），它们各自的**改变处**必须
+    /// 让开着的面板跟上来。
+    ///
+    /// 三条规则各自的牙见 [`the_r91_rules_have_teeth`]，读取器的阳性对照见
+    /// [`the_r91_roster_is_real`]，判别式本身的牙见 [`the_r91_extractors_have_teeth`]。
+    #[test]
+    fn the_help_context_line_follows_the_facts_it_names() {
+        let read = r91_read(INDEX_HTML, APP_JS);
+        assert!(
+            read.context_found,
+            "取不到 `#help-context` 的写点 —— 事实名册会静默变空、三条规则一起空转：{}",
+            read.report()
+        );
+        assert!(
+            read.token.is_some(),
+            "取不到面板可见性用的 class token（{:?}）—— 刷新器的频道判据失去依据：{}",
+            read.toggler,
+            read.report()
+        );
+        assert!(
+            read.boot.is_some(),
+            "取不到 boot 处理器的行区间 —— 顶层写点的豁免会静默失效：{}",
+            read.report()
+        );
+        assert_eq!(
+            read.verdicts(),
+            (true, true, true),
+            "帮助面板的上下文行必须跟随它点名的事实（R91）：{}",
+            read.report()
+        );
+    }
+
+    /// 阳性对照：派生器 / 写者名册 / 刷新器名册在**真实树**上读到东西，且读到的是**那两个事实**。
+    ///
+    /// ⚠️ 绝对判词只打在与本门禁同树的制品上（`call_graph` 只认 `function NAME(`，见模块头）。
+    #[test]
+    fn the_r91_roster_is_real() {
+        let read = r91_read(INDEX_HTML, APP_JS);
+
+        // ① 面板 id 与 class 频道都派生自标记 / `toggleHelp`（不是手抄的）。
+        assert_eq!(
+            help_panel_id(INDEX_HTML).as_deref(),
+            Some("help-panel"),
+            "面板 id 的派生链断了（标记结构变了？）"
+        );
+        assert_eq!(read.toggler.as_deref(), Some("toggleHelp"));
+        assert_eq!(read.token.as_deref(), Some("hidden"));
+
+        // ② 事实名册：真实树上**恰好**是那两个（视图 + 主题）。
+        assert_eq!(
+            read.facts,
+            ["activeView", "document.documentElement.dataset.theme"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+            "上下文行点名的事实名册变了 —— 判别式还是同一个吗：{}",
+            read.report()
+        );
+        assert!(
+            read.candidates.contains("theme") && read.candidates.contains("VIEW_TITLE"),
+            "候选集里没有 `renderHelp` 体内的局部名 —— 一层中转的判别式坏了：{}",
+            read.report()
+        );
+
+        // ③ 写者名册（从全仓行首赋值派生）。
+        assert_eq!(
+            read.writers["activeView"],
+            ["enterGuest", "switchView"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+            "`activeView` 的写者名册变了：{}",
+            read.report()
+        );
+        assert_eq!(
+            read.writers["document.documentElement.dataset.theme"],
+            ["<top-level>", "applyTheme"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+            "主题的写者名册变了（boot 那一处在 `DOMContentLoaded` 里、不属任何具名函数）：{}",
+            read.report()
+        );
+
+        // ④ 一处声明：恰好一个刷新器、没有游离的 `renderHelp(` 调用点。
+        assert_eq!(read.refreshers, vec!["refreshHelp".to_string()]);
+        assert!(read.strays.is_empty(), "有游离调用点：{:?}", read.strays);
+        assert_eq!(
+            read.callers,
+            ["refreshHelp", "toggleHelp"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+            "`renderHelp(` 的调用者名册变了：{}",
+            read.report()
+        );
+    }
+
+    /// 判别式自己的牙：路径 / 赋值 / 归属 / 频道，逐条喂合成输入。
+    #[test]
+    fn the_r91_extractors_have_teeth() {
+        // 行首赋值：只有「路径 + 一个 `=`」算。
+        assert_eq!(leading_assignment_path("a.b = c;").as_deref(), Some("a.b"));
+        assert_eq!(
+            leading_assignment_path("document.documentElement.dataset.theme = t;").as_deref(),
+            Some("document.documentElement.dataset.theme")
+        );
+        for no in [
+            "a.b == c;",
+            "a.b += 1;",
+            "const a = 1;",
+            "let a = 1;",
+            "$(\"#x\").value = 1;",
+            "if (a.b = c) {}",
+        ] {
+            assert_eq!(leading_assignment_path(no), None, "`{no}` 不是写点");
+        }
+
+        // 点号路径：字符串字面量里不算（键与选择器不是事实）。
+        let p = dotted_paths("T(\"help.context\", { view: d.a.b, theme: theme });");
+        assert!(
+            p.contains("d.a.b") && p.contains("view") && p.contains("theme"),
+            "{p:?}"
+        );
+        assert!(!p.contains("help.context"), "字符串里的点号不是路径：{p:?}");
+
+        // 面板 id：`id="help-context"` 的**顶行**祖先。
+        assert_eq!(
+            help_panel_id("<div id=\"x\">\n  <p id=\"help-context\"></p>\n</div>\n").as_deref(),
+            Some("x")
+        );
+        assert_eq!(
+            help_panel_id("<div id=\"x\"></div>\n<p id=\"help-context-hard\"></p>\n"),
+            None,
+            "没有真锚点时必须给 `None`（否则面板 id 会退回上一个元素）"
+        );
+
+        // 归属：函数内 vs 顶层，按区间取**最内层**的。
+        let synth = "  function outer() {\n    a.b = 1;\n  }\n  a.b = 2;\n";
+        let spans = js_fn_line_spans(synth);
+        assert_eq!(owner_of_line(&spans, 1), "outer");
+        assert_eq!(owner_of_line(&spans, 3), "<top-level>");
+
+        // 频道：`.hidden` **属性**式守卫恒假，不算「按 class 频道判」。
+        assert!(reads_panel_open_class(
+            "if (!$(\"#p\").classList.contains(\"hidden\")) renderHelp();",
+            "p",
+            "hidden"
+        ));
+        assert!(!reads_panel_open_class(
+            "if (!$(\"#p\").hidden) renderHelp();",
+            "p",
+            "hidden"
+        ));
+        assert!(!reads_panel_open_class(
+            "if (!$(\"#p\").classList.contains(\"visible\")) renderHelp();",
+            "p",
+            "hidden"
+        ));
+
+        // boot 区间：真树上的区间必须**罩住**那处顶层主题写点（否则豁免恒假、R3 会假红）。
+        let (s, e) = boot_line_span(APP_JS).expect("取不到 boot 区间");
+        assert!(s < e && e - s > 20, "boot 区间看着不像处理器体：{s}..{e}");
+    }
+
+    /// 删掉 `function <name>(…) { … }` 整块（含声明行与 2 空格缩进）—— 还原未修形状用。
+    fn r91_drop_function(app: &str, name: &str) -> String {
+        let head = format!("function {name}(");
+        let Some(at) = app.find(&head) else {
+            return app.to_string();
+        };
+        let Some(body) = js_function_body(app, name) else {
+            return app.to_string();
+        };
+        let start = at.saturating_sub(2);
+        format!("{}{}", &app[..start], &app[start + body.len()..])
+    }
+
+    /// 把**恰好等于** `from` 的那一行换成 `to`（只换第一处；没找到就原样返回）。
+    fn r91_swap_line(src: &str, from: &str, to: &str) -> String {
+        let mut done = false;
+        let kept: Vec<String> = src
+            .lines()
+            .map(|l| {
+                if !done && l == from {
+                    done = true;
+                    to.to_string()
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        let mut out = kept.join("\n");
+        if src.ends_with('\n') {
+            out.push('\n');
+        }
+        out
+    }
+
+    /// R91 的**基线树** = 未修形状：删刷新器、拿掉视图 / 主题两处调用、语言那处还原成内联守卫。
+    ///
+    /// 幂等：已是未修形状时再走一遍不会有变化（`refreshHelp` 已不存在）。
+    fn r91_base_tree(app: &str) -> String {
+        const INLINE: &str =
+            "      if (!$(\"#help-panel\").classList.contains(\"hidden\")) renderHelp();";
+        let s = r91_swap_line(app, "      refreshHelp();", INLINE);
+        let s = r91_drop_function(&s, "refreshHelp");
+        r93_remove_line(&s, "refreshHelp();")
+    }
+
+    /// 变异 ①：写点选择器改名 ⇒ R1 该翻红（名册变空），另两条不动。
+    fn r91_variant_no_context(app: &str) -> String {
+        app.replacen("\"#help-context\"", "\"#help-context-x\"", 1)
+    }
+
+    /// 变异 ②：刷新器的守卫没了（无条件重绘）⇒ R2 该翻红（频道判据找不到刷新器）。
+    fn r91_variant_guard_gone(app: &str) -> String {
+        r91_swap_line(
+            app,
+            "    if (!$(\"#help-panel\").classList.contains(\"hidden\")) renderHelp();",
+            "    renderHelp();",
+        )
+    }
+
+    /// 变异 ③：把守卫**内联**回语言那一处（R91 修掉的那个形状）⇒ R2 该翻红（游离调用点）。
+    fn r91_variant_inline_guard(app: &str) -> String {
+        r91_swap_line(
+            app,
+            "      refreshHelp();",
+            "      if (!$(\"#help-panel\").classList.contains(\"hidden\")) renderHelp();",
+        )
+    }
+
+    /// 变异 ④：拿掉视图那处刷新 ⇒ R3 该翻红（`switchView` 不再到达调用者）。
+    fn r91_variant_drop_view_refresh(app: &str) -> String {
+        r91_swap_line(app, "    refreshHelp();", "    /* refreshHelp(); */")
+    }
+
+    /// 变异 ⑤：同一个事实多一个**没接线**的写者（将来新增的函数，忘了补刷新）⇒ R3 该翻红
+    /// （覆盖规则不是只认今天这两个函数）。
+    ///
+    /// 写者是一枚**新声明**的函数、而不是塞进既有函数里：既有函数里塞一行会被调用图算成
+    /// 「够得着刷新器」（例如 `renderNav` 体内就有 `switchView(...)` 这条边，静态闭包看得见它），
+    /// 那测的就不是「新写者没接线」而是「闭包过近似」了。
+    fn r91_variant_unwired_writer(app: &str) -> String {
+        app.replacen(
+            "  function renderHelp() {\n",
+            "  // 将来新增的写者：从会话状态恢复视图（忘了补刷新）\n  function restoreView(id) {\n    activeView = id;\n  }\n  function renderHelp() {\n",
+            1,
+        )
+    }
+
+    /// 三条规则**各有独立的牙**：每个变异体只动一处，期望**恰好一条**翻转（#454）。
+    ///
+    /// 基线是**已知为绿的**真树（#458）。顺序 = `(r1, r2, r3)`。
+    #[test]
+    fn the_r91_rules_have_teeth() {
+        let base = r91_read(INDEX_HTML, APP_JS);
+        assert_eq!(
+            base.verdicts(),
+            (true, true, true),
+            "自证基线不绿，牙齿测试没有意义：{}",
+            base.report()
+        );
+
+        let no_context = r91_variant_no_context(APP_JS);
+        let guard_gone = r91_variant_guard_gone(APP_JS);
+        let inlined = r91_variant_inline_guard(APP_JS);
+        let no_view = r91_variant_drop_view_refresh(APP_JS);
+        let unwired = r91_variant_unwired_writer(APP_JS);
+        for (label, tree) in [
+            ("context selector renamed", &no_context),
+            ("guard gone", &guard_gone),
+            ("guard inlined at the language site", &inlined),
+            ("the view refresh is dropped", &no_view),
+            ("a new writer of the same fact is not wired", &unwired),
+        ] {
+            assert_ne!(tree, APP_JS, "变异 `{label}` 没改动任何字符（锚点漂了）");
+        }
+
+        let mutants: [(&str, R91Reading, (bool, bool, bool)); 5] = [
+            (
+                "context selector renamed",
+                r91_read(INDEX_HTML, &no_context),
+                (false, true, true),
+            ),
+            (
+                "guard gone",
+                r91_read(INDEX_HTML, &guard_gone),
+                (true, false, true),
+            ),
+            (
+                "guard inlined at the language site",
+                r91_read(INDEX_HTML, &inlined),
+                (true, false, true),
+            ),
+            (
+                "the view refresh is dropped",
+                r91_read(INDEX_HTML, &no_view),
+                (true, true, false),
+            ),
+            (
+                "a new writer of the same fact is not wired",
+                r91_read(INDEX_HTML, &unwired),
+                (true, true, false),
+            ),
+        ];
+        for (label, read, expected) in mutants {
+            assert_eq!(
+                read.verdicts(),
+                expected,
+                "规则 `{label}` 的牙不成立（期望 {expected:?}）：{}",
+                read.report()
+            );
+        }
+
+        // R3 的缺项必须是**它自己**（不是只认某个函数的硬编码；行号是派生的，不比绝对值）。
+        let unwired_read = r91_read(INDEX_HTML, &unwired);
+        assert_eq!(
+            unwired_read.uncovered.len(),
+            1,
+            "未接线写者的缺项不止一条：{}",
+            unwired_read.report()
+        );
+        assert!(
+            unwired_read.uncovered[0].starts_with("activeView @ restoreView:"),
+            "未接线写者的缺项不是它自己：{}",
+            unwired_read.report()
+        );
+
+        // A/B：未修形状（R91 之前）必须红在「刷新器 / 写者覆盖」这两条上，R1 仍绿
+        // （名册本来就派生得出来 —— 缺陷是「没人跟上来」，不是「名册取不到」）。
+        let unfixed = r91_read(INDEX_HTML, &r91_base_tree(APP_JS));
+        assert_eq!(
+            unfixed.verdicts(),
+            (true, false, false),
+            "未修形状没有红在该红的两条上：{}",
+            unfixed.report()
+        );
+        assert!(
+            unfixed.refreshers.is_empty()
+                && unfixed
+                    .uncovered
+                    .iter()
+                    .any(|u| u.starts_with("activeView")),
+            "未修形状的证据不像「没有刷新器」：{}",
+            unfixed.report()
         );
     }
 }

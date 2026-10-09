@@ -93,6 +93,16 @@
     panel.classList.toggle("hidden", !open);
   }
 
+  // `#help-context` 点名的两个**活事实**（当前视图 / 当前主题）都能在面板**开着**时变 —— 这块面板是
+  // 刻意的**非模态**浮层（`position: fixed`、无遮罩、不盖住侧栏与设置页的语言下拉），用户可以带着它
+  // 切视图、切主题。而 `renderHelp()` 只在**打开**时渲染（`toggleHelp` 的 open 分支）⇒ 事实变了必须在
+  // **改变它的那一处**补这一笔，否则这一行停在旧值、**整会话不自愈**（语言那条路 R94 已补上，视图 /
+  // 主题这两条一直没补）。刷新**不关**面板：用户开着的那块必须还在，只是内容要跟上来。
+  // 判「开没开」必须读 `classList`（`toggleHelp` 用 class 隐藏）——写成 `.hidden` 属性会让守卫恒真。
+  function refreshHelp() {
+    if (!$("#help-panel").classList.contains("hidden")) renderHelp();
+  }
+
   /* --- 表格密度（rant 20:46:57 C：舒适/紧凑两档，localStorage atp-density 记忆，全站 .table 生效） --- */
   function applyDensity(d) {
     const app = $("#app");
@@ -657,6 +667,8 @@
     $("#main").scrollTop = 0;
     // 动态文档标题（rant 18:06:09 F：视图切换跟随「视图 · AITokenPool」，未知视图回默认）
     document.title = VIEW_TITLE[id] ? T(VIEW_TITLE[id]) + " · AITokenPool" : "AITokenPool";
+    // R91：视图正是帮助面板上下文行点名的两个事实之一 —— 更新任何「描述当前视图」的载体时一并刷新它
+    refreshHelp();
     // URL hash 路由（rant 20:39:30 A：视图切换同步 #/视图；非法 hash 回退时不清 URL，避免污染历史）
     if (!opts || opts.sync !== false) syncHash(id);
     return true;
@@ -4729,8 +4741,9 @@
       // ⇒ 用户能在它**开着**时去切语言；它的标题/关闭按钮是 `[data-i18n]`（`applyStatic()` 会换掉），
       // 而四行快捷键与 `#help-context` 是 `renderHelp()` 用 JS 建的、**没有钩子** —— 它全仓唯一调用点
       // 是 `toggleHelp` 的**打开**分支 ⇒ 不在这里补一次，同一块面板就是两种语言，且整会话不自愈（R94）。
-      // 判「开没开」必须读 `classList`（`toggleHelp` 用 class 隐藏）；写成 `.hidden` 会让守卫恒真。
-      if (!$("#help-panel").classList.contains("hidden")) renderHelp();
+      // R91 起这条守卫收进 `refreshHelp()` **一处声明**（视图 / 主题两条路走的是同一个）—— 别在这里
+      // 重新内联：内联会让守卫与名册脱钩，正是 R91 修的那个形状。
+      refreshHelp();
       // `#app` **内部**的行内卡片（C2178）：R94 之上那条名册按构造只取 `#app` **之后**的浮层，
       // 而卡片是 `#app` 的后代 —— 它们同样「用户此刻可能正开着」。上架卡片的下拉选项与
       // 单价/Plan 提示是命令式写的（插值与选项集合表达不了属性通道），`renderSharing` 的下拉
@@ -4750,6 +4763,7 @@
     // 应用主题（toggleTheme 与设置页「偏好 → 主题」下拉共用；localStorage atp-theme 记忆）
     function applyTheme(next) {
       document.documentElement.dataset.theme = next;
+      refreshHelp(); // R91：主题是帮助面板上下文行点名的另一个事实
       const sel = $("#prefs-theme");
       if (sel) sel.value = next;
       try { localStorage.setItem("atp-theme", next); } catch (e) { /* 隐私模式忽略 */ }
