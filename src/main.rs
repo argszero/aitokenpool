@@ -320,7 +320,7 @@ fn archive_tick(
 /// 启动**一张表**的明细归档任务：每 `interval_secs` 秒把新行追加到可滚动、有保留期的 JSONL。
 ///
 /// rant 2026-10-09T12:28:58 验收项 2（详细记录写入可滚动、有保留期的 JSONL 文件）的调度点；
-/// 验收项 1（明细只留汇总）是后续改动，届时「已归档」的水位就是「可安全删除」的分界。
+/// 验收项 1（明细只留汇总）由 `spawn_tx_rollup` 落地：折叠与删除都以「已归档」的水位为界。
 /// 两张明细表同一套机件、各自一个任务与目录（见 `archive::Spec`）。
 fn spawn_archive(
     db: Arc<std::sync::Mutex<rusqlite::Connection>>,
@@ -562,7 +562,7 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
     // 交易明细汇总（同 rant 验收项 1）：明细折叠成可加汇总行。它读**归档水位**作为折叠上界
-    // （只折已归档的明细 ⇒ 将来删明细不丢原件），所以要拿到同一个归档目录。
+    // （只折已归档的明细 ⇒ 删明细不丢原件），所以要拿到同一个归档目录。
     if rollup_cfg.enabled {
         spawn_tx_rollup(
             state.db.clone(),
