@@ -89,26 +89,43 @@ pub async fn runtime(
     // 方向只写在 `type` 列里。所以按符号过滤（`pts > 0` / `pts < 0`）会让「流出」**永远是 0**
     // （没有任何 writer 产负数），并把消费也算进「流入」。口径与 wallet.rs 的 7 天净额序列
     // （`type IN ('earn','topup','gift')` 为正、其余取负）一致。
+    // 读模型（`tx_facts` = 已折叠汇总行 ∪ 未折叠明细）：全库口径没有 `user_id`，时间窗用
+    // `date(...)`（10 字符）比对，与汇总臂的 16 字符分钟桶同样可比（短串是长串的前缀）。
     let month_in: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(pts), 0) FROM transactions \
-             WHERE type IN ('earn', 'topup', 'gift') \
-               AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
+            &format!(
+                "SELECT COALESCE(SUM(pts), 0) FROM {} \
+                 WHERE type IN ('earn', 'topup', 'gift') \
+                   AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
+                crate::tx_facts::source("")
+            ),
             [],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
     let month_out: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(pts), 0) FROM transactions \
-             WHERE type IN ('consume', 'expire', 'withdraw') \
-               AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
+            &format!(
+                "SELECT COALESCE(SUM(pts), 0) FROM {} \
+                 WHERE type IN ('consume', 'expire', 'withdraw') \
+                   AND time >= date('now', 'start of month') AND time < date('now', 'start of month', '+1 month')",
+                crate::tx_facts::source("")
+            ),
             [],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
+    // 「总笔数」= 调用笔数 ⇒ 汇总行上必须 `SUM(row_count)`：`COUNT(*)` 数的是**桶数**，
+    // 删掉已折叠明细之后两者才会分岔（`tx_facts.rs` 的夹具钉住这条）。
     let total_txs: i64 = conn
-        .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+        .query_row(
+            &format!(
+                "SELECT COALESCE(SUM(row_count), 0) FROM {}",
+                crate::tx_facts::source("")
+            ),
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
 
     // 今日按小时调用量（rant 2026-09-11T16:23:43 PR6：原型「今日调用量（按小时）」bar-list）。

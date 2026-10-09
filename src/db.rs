@@ -371,6 +371,15 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     //       同桶第二批会**再插一行**。
     //   (2) `up_to_id` = 汇总水位（本行已折叠到的最大 `transactions.id`）。不另立进度文件：
     //       水位与数据同一次事务落盘，不存在「数据进了、水位没进」的中间态。
+    //
+    // 另外三条索引是**读侧**（`tx_facts` 读模型视图）要用的，写在同一个 `IF NOT EXISTS` 批次里
+    // ⇒ 老库开库即补上：
+    //   * `(up_to_id)`：视图的明细臂以 `t.id > MAX(up_to_id)` 划界，而 `MAX(...)` **没有索引
+    //     就是每次查询全表扫汇总表**（20 万桶实测 6.8ms，两条臂合计只要 0.6ms —— 头重脚轻）；
+    //     有索引时 `MAX` 退化成取末项。
+    //   * `(user_id, bucket)`：唯一索引的前缀只到 `user_id`（`bucket` 在末位）⇒ 用户维度的
+    //     时间窗谓词用不上它，只能扫该用户的全部桶（实测 8.6ms → 0.6ms）。
+    //   * `(type, bucket)`：ops 的全库月窗口没有 `user_id`，走这条。
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS transactions_rollup (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -389,7 +398,13 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             up_to_id      INTEGER NOT NULL DEFAULT 0
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_rollup_bucket
-            ON transactions_rollup(user_id, model, key_id, api_key_id, type, status, bucket);",
+            ON transactions_rollup(user_id, model, key_id, api_key_id, type, status, bucket);
+        CREATE INDEX IF NOT EXISTS idx_transactions_rollup_up_to
+            ON transactions_rollup(up_to_id);
+        CREATE INDEX IF NOT EXISTS idx_transactions_rollup_user_bucket
+            ON transactions_rollup(user_id, bucket);
+        CREATE INDEX IF NOT EXISTS idx_transactions_rollup_type_bucket
+            ON transactions_rollup(type, bucket);",
     )?;
     // schema_version 记录**最高的**已迁移版本。⚠️ 必须用 MAX 读：该表没有唯一约束，
     // 而 `INSERT OR REPLACE` 在无冲突时就是普通 INSERT —— 只读第一行的话
@@ -416,6 +431,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             [SCHEMA_VERSION],
         )?;
     }
+    // 读模型视图（rant 2026-10-09T12:28:58 验收项 1 读侧）：`tx_facts = 汇总行 ∪ 未折叠明细`。
+    // 它不进 `SCHEMA_VERSION` —— 视图的**定义是代码**，每次开库按 `tx_rollup` 的声明重建
+    // （故不存在「旧库里的定义陈旧」这一态），没有数据要迁移。
+    crate::tx_facts::ensure_view(conn)?;
     Ok(())
 }
 

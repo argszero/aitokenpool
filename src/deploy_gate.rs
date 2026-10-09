@@ -799,7 +799,10 @@ const DOCKERIGNORE: &str = include_str!("../.dockerignore");
 ///
 /// ⚠️ 为什么不能按行截断第一个 `//`：`"https://…"` 里的 `//` 不是注释，而本仓 `src` 里
 /// 就有这种字符串字面量；注释优先于字符串，两者必须在同一个状态机里判。
-fn code_mask(src: &str, mask_strings: bool) -> String {
+///
+/// `pub(crate)`：`tx_facts_gate` 也用同一台掩码机（两处判据都用「等长掩码后配平括号」，
+/// 各自的**语料**不同 —— 机械不该有两份，`js_gate::mask_js` 是同一个先例）。
+pub(crate) fn code_mask(src: &str, mask_strings: bool) -> String {
     let b = src.as_bytes();
     let mut out = b.to_vec();
     let mut i = 0usize;
