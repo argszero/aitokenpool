@@ -55,7 +55,7 @@
 //! |---|---|
 //! | `routes/wallet.rs` 的分页列表与 `total` | 要的是**逐行身份**（`id`/`counterpart`），汇总行没有；`total` 必须与列表同源，否则页码数对不上能翻出来的行数。**删除按保留窗口**放行，窗口必须盖住列表自己提供的每一个预设区间（`tx_retention_gate` 守这条）。⚠️ 但它不是「最近一段」的读者就完事了：`#tx-range` 还提供**无界**的区间（`全部时间` / 自定义起点），它们可以整段落在窗口之外 —— 那时明细答不出、聚合答得出。这段分叉**不许沉默**：`/api/transactions` 随响应发布保留边界（`tx_rollup::detail_since`）与账本条数（`summary.entries`），前端零行态据此说明原因（`tx_retention_gate` 第四条规则守这条）。 |
 //! | `db.rs::keys_used_from_ledger` | `v < 13` 的一次性修复步：真源是**账本**，而它只可能在「还没有汇总表」的老库上跑 —— 那时一行明细都没被折叠过，更没被删过。 |
-//! | `tx_rollup.rs` / `tx_archive.rs` | 折叠与归档**本来就**读明细 —— 它们是明细的写者。 |
+//! | `tx_rollup.rs` / `archive.rs` | 折叠与归档**本来就**读明细 —— 它们是明细的写者。 |
 //! | `billing.rs` / `gateway.rs` 的 `COUNT(*)` | 那些在 `#[cfg(test)]` 里（断言 settle 写了行），非生产读数。 |
 //!
 //! `routes/sharing.rs::row_select()` 的 earn 批量聚合**曾**在这张清单上，已随删除切片搬进视图
