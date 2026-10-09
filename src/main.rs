@@ -24,6 +24,7 @@ mod gift;
 mod i18n_pack;
 // 兜底目录同步门禁（C2011）：同样是仅测试期编译 —— data.js 与 config.example.toml
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
+mod archive;
 #[cfg(test)]
 mod catalog_gate;
 mod mail;
@@ -31,9 +32,9 @@ mod protocol;
 mod router;
 mod routes;
 mod sse;
-mod tx_archive;
 mod tx_facts;
 mod tx_rollup;
+mod usage_retention;
 // 表格结构门禁（C2108）：同样是仅测试期编译 —— ui/index.html 与 ui/js/app.js
 // 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
@@ -96,6 +97,10 @@ mod tx_facts_gate;
 // 列表预设区间从 ui/js/app.js、保留窗口从 config/config.example.toml 在编译期读入。
 #[cfg(test)]
 mod tx_retention_gate;
+// 用量明细保留门禁（rant 2026-10-09T12:28:58 的独立余项）：同样是仅测试期编译 ——
+// 读者名册从 src/routes/*.rs、门槛从 src/usage_retention.rs 在编译期读入。
+#[cfg(test)]
+mod usage_retention_gate;
 
 use std::sync::Arc;
 
@@ -290,21 +295,21 @@ async fn drain_deadline(
     on_timeout();
 }
 
-/// 一轮交易明细归档：拿到库就写，拿不到（库正忙）就跳过。返回本轮写入的行数。
+/// 一轮明细归档：拿到库就写，拿不到（库正忙）就跳过。返回本轮写入的行数。
 ///
 /// `try_lock` 是**刻意**的：`db` 是全站唯一的 `Mutex<Connection>`，一次宽窗聚合可以在
 /// NFS 上占用数秒（rant 2026-10-09T12:28:58 的背景）。归档是**后台维护**，绝不能与请求
 /// 抢锁 —— 库正忙时安静跳过，下一轮再来。
-fn tx_archive_tick(
+fn archive_tick(
     db: &std::sync::Mutex<rusqlite::Connection>,
-    ar: &tx_archive::TxArchive,
+    ar: &archive::Archive,
     batch: i64,
 ) -> usize {
     match db.try_lock() {
-        Ok(conn) => match tx_archive::archive_pending(&conn, ar, batch) {
+        Ok(conn) => match archive::archive_pending(&conn, ar, batch) {
             Ok(n) => n,
             Err(e) => {
-                log::warn!("交易明细归档失败: {e}");
+                log::warn!("明细归档失败（{}）: {e}", ar.spec().table);
                 0
             }
         },
@@ -312,24 +317,23 @@ fn tx_archive_tick(
     }
 }
 
-/// 启动交易明细归档任务：每 `interval_secs` 秒把新事务行追加到可滚动、有保留期的 JSONL。
+/// 启动**一张表**的明细归档任务：每 `interval_secs` 秒把新行追加到可滚动、有保留期的 JSONL。
 ///
 /// rant 2026-10-09T12:28:58 验收项 2（详细记录写入可滚动、有保留期的 JSONL 文件）的调度点；
 /// 验收项 1（明细只留汇总）是后续改动，届时「已归档」的水位就是「可安全删除」的分界。
-fn spawn_tx_archive(
+/// 两张明细表同一套机件、各自一个任务与目录（见 `archive::Spec`）。
+fn spawn_archive(
     db: Arc<std::sync::Mutex<rusqlite::Connection>>,
-    data_dir: &std::path::Path,
+    spec: &'static archive::Spec,
+    dir: std::path::PathBuf,
     cfg: &config::Archive,
 ) -> anyhow::Result<()> {
-    let ar = tx_archive::TxArchive::new(
-        data_dir.join(&cfg.dir),
-        cfg.max_file_size,
-        cfg.max_files as usize,
-    )?;
+    let ar = archive::Archive::new(spec, dir, cfg.max_file_size, cfg.max_files as usize)?;
     let batch = cfg.batch;
     let every = std::time::Duration::from_secs(cfg.interval_secs.max(1));
     log::info!(
-        "交易明细归档已启用: {}（每 {}s 一批 ≤ {} 行）",
+        "{} 明细归档已启用: {}（每 {}s 一批 ≤ {} 行）",
+        spec.table,
         ar.dir().display(),
         every.as_secs(),
         batch
@@ -340,11 +344,11 @@ fn spawn_tx_archive(
             // 归档是**同步 DB I/O**（库在 NAS 上，见 rant 2026-10-09T12:28:58 的背景）：
             // 放到 blocking 线程执行，别占住 tokio worker —— worker 是 `/healthz` 的命脉。
             let (db, ar) = (db.clone(), ar.clone());
-            let n = tokio::task::spawn_blocking(move || tx_archive_tick(&db, &ar, batch))
+            let n = tokio::task::spawn_blocking(move || archive_tick(&db, &ar, batch))
                 .await
                 .unwrap_or(0);
             if n > 0 {
-                log::debug!("交易明细归档: +{n} 行");
+                log::debug!("{} 明细归档: +{n} 行", spec.table);
             }
             tokio::time::sleep(every).await;
         }
@@ -366,7 +370,7 @@ fn tx_rollup_tick(
 ) -> (usize, usize) {
     match db.try_lock() {
         Ok(conn) => {
-            let archived = tx_archive::watermark_at(archive_dir);
+            let archived = archive::watermark_at(archive_dir);
             let folded = match tx_rollup::fold_pending(&conn, archived, batch) {
                 Ok(n) => n,
                 Err(e) => {
@@ -422,6 +426,63 @@ fn spawn_tx_rollup(
         }
     });
     Ok(())
+}
+
+/// 一轮用量明细保留：删掉**已归档**（`id ≤ 归档水位`）且早于日历门槛的行，返回删除行数。
+///
+/// `try_lock` 与归档同款：库是全站唯一的 `Mutex<Connection>`，一次宽窗聚合可在 NFS 上占数秒；
+/// 保留是后台维护，库正忙时安静跳过，绝不与请求抢锁。
+fn usage_retention_tick(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    archive_dir: &std::path::Path,
+    batch: i64,
+) -> usize {
+    match db.try_lock() {
+        Ok(conn) => {
+            // 水位**每轮现读**：用量归档任务可能在两次之间推进了它。归档没跑起来 ⇒ 0 ⇒ 一行不删。
+            let watermark = archive::watermark_at(archive_dir);
+            match usage_retention::delete_archived(&conn, watermark, batch) {
+                Ok(n) => n,
+                Err(e) => {
+                    log::warn!("删除已归档的用量明细失败: {e}");
+                    0
+                }
+            }
+        }
+        Err(_) => 0,
+    }
+}
+
+/// 启动用量明细保留任务：每 `interval_secs` 秒删一批已归档且已过日历门槛的旧行。
+///
+/// rant 2026-10-09T12:28:58 独立余项（第二张只增不减的明细表）的调度点。归档由 `[archive]`
+/// 的用量归档任务负责（写 `<archive.dir>/usage/`），本任务**只读它推进的水位** —— 于是
+/// 「先归档、后删」由**水位**保证，而不是靠两个任务的先后：`[archive]` 关掉 ⇒ 水位 0 ⇒ 一行不删。
+/// 同步 DB I/O 走 `spawn_blocking`（worker 是 `/healthz` 的命脉，见 rant 背景）。
+fn spawn_usage_retention(
+    db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    archive_dir: std::path::PathBuf,
+    cfg: &config::UsageRetention,
+) {
+    let batch = cfg.batch;
+    let every = std::time::Duration::from_secs(cfg.interval_secs.max(1));
+    log::info!(
+        "用量明细保留已启用: 门槛 {}（每 {}s 一批 ≤ {batch} 行）",
+        usage_retention::KEEP_SINCE,
+        every.as_secs()
+    );
+    tokio::spawn(async move {
+        loop {
+            let (db, dir) = (db.clone(), archive_dir.clone());
+            let n = tokio::task::spawn_blocking(move || usage_retention_tick(&db, &dir, batch))
+                .await
+                .unwrap_or(0);
+            if n > 0 {
+                log::debug!("用量明细保留: 删除 {n} 行");
+            }
+            tokio::time::sleep(every).await;
+        }
+    });
 }
 
 #[tokio::main]
@@ -480,10 +541,25 @@ async fn main() -> anyhow::Result<()> {
     // 归档配置必须在 AppState::new 之前取出 —— cfg 随后被移动到 state 里
     let archive_cfg = cfg.archive.clone();
     let rollup_cfg = cfg.rollup.clone();
+    let usage_cfg = cfg.usage_retention.clone();
     let state = routes::AppState::new(conn, cfg, crypto);
-    // 交易明细归档（rant 2026-10-09T12:28:58 验收项 2）：明细写可滚动、有保留期的 JSONL
+    // 明细归档（rant 2026-10-09T12:28:58 验收项 2）：明细写可滚动、有保留期的 JSONL。
+    // 两张只增不减的明细表各一个任务 —— 交易在归档根目录、用量在它的子目录里
+    // （水位文件同名，靠目录隔离；文件名前缀是第二道保险）。
     if archive_cfg.enabled {
-        spawn_tx_archive(state.db.clone(), &data_dir, &archive_cfg)?;
+        let arch_root = data_dir.join(&archive_cfg.dir);
+        spawn_archive(
+            state.db.clone(),
+            &archive::TRANSACTIONS,
+            arch_root.clone(),
+            &archive_cfg,
+        )?;
+        spawn_archive(
+            state.db.clone(),
+            &archive::USAGE_RECORDS,
+            arch_root.join(archive::USAGE_SUBDIR),
+            &archive_cfg,
+        )?;
     }
     // 交易明细汇总（同 rant 验收项 1）：明细折叠成可加汇总行。它读**归档水位**作为折叠上界
     // （只折已归档的明细 ⇒ 将来删明细不丢原件），所以要拿到同一个归档目录。
@@ -493,6 +569,16 @@ async fn main() -> anyhow::Result<()> {
             data_dir.join(&archive_cfg.dir),
             &rollup_cfg,
         )?;
+    }
+    // 用量明细保留（rant 2026-10-09T12:28:58 的独立余项）：删掉**已归档**且早于日历门槛的
+    // 用量明细。归档落在 `<archive.dir>/usage/`（上面的用量归档任务），本任务只读它的水位
+    // ⇒ `[archive]` 关掉时一行不删（见 `usage_retention::delete_archived` 的 fail-closed）。
+    if usage_cfg.enabled {
+        spawn_usage_retention(
+            state.db.clone(),
+            data_dir.join(&archive_cfg.dir).join(archive::USAGE_SUBDIR),
+            &usage_cfg,
+        );
     }
     let app = routes::router()
         .with_state(state)
@@ -575,11 +661,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ---- 交易明细归档（rant 2026-10-09T12:28:58 验收项 2）----
+    // ---- 明细归档（rant 2026-10-09T12:28:58 验收项 2）----
 
     #[test]
-    fn tx_archive_tick_writes_then_idles_and_never_blocks_on_a_busy_db() {
-        let dir = std::env::temp_dir().join(format!("atp_main_txarchive_{}", std::process::id()));
+    fn archive_tick_writes_then_idles_and_never_blocks_on_a_busy_db() {
+        let dir = std::env::temp_dir().join(format!("atp_main_archive_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let db = std::sync::Mutex::new(crate::db::open(":memory:").unwrap());
         {
@@ -597,23 +683,16 @@ mod tests {
             )
             .unwrap();
         }
-        let ar = crate::tx_archive::TxArchive::new(&dir, 1_000_000, 5).unwrap();
+        let ar = crate::archive::Archive::new(&crate::archive::TRANSACTIONS, &dir, 1_000_000, 5)
+            .unwrap();
 
-        assert_eq!(tx_archive_tick(&db, &ar, 100), 1, "首轮应写入那 1 行");
-        assert_eq!(
-            tx_archive_tick(&db, &ar, 100),
-            0,
-            "追平后应为 0（不重复写）"
-        );
+        assert_eq!(archive_tick(&db, &ar, 100), 1, "首轮应写入那 1 行");
+        assert_eq!(archive_tick(&db, &ar, 100), 0, "追平后应为 0（不重复写）");
         assert_eq!(ar.load_watermark(), 1, "水位应停在那行 id");
 
         // 库被占住 ⇒ 本轮安静跳过（0），而不是阻塞等在锁上
         let guard = db.lock().unwrap();
-        assert_eq!(
-            tx_archive_tick(&db, &ar, 100),
-            0,
-            "库正忙时必须跳过，不得抢锁"
-        );
+        assert_eq!(archive_tick(&db, &ar, 100), 0, "库正忙时必须跳过，不得抢锁");
         drop(guard);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -811,5 +890,60 @@ mod tests {
             .expect("排水完成后 serve 应返回")
             .unwrap()
             .unwrap();
+    }
+
+    // ---- 用量明细保留（rant 2026-10-09T12:28:58 的独立余项）----
+
+    #[test]
+    fn usage_retention_tick_deletes_only_archived_rows_past_the_threshold() {
+        let dir = std::env::temp_dir().join(format!("atp_main_usage_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = std::sync::Mutex::new(crate::db::open(":memory:").unwrap());
+        {
+            let conn = db.lock().unwrap();
+            // usage_records.user_id 有外键 ⇒ 先种用户
+            conn.execute(
+                "INSERT INTO users (id, email, password_hash) VALUES (1, 'u1@test', 'h')",
+                [],
+            )
+            .unwrap();
+            // 一行落在门槛之外（两月前）、一行在窗口内
+            conn.execute(
+                "INSERT INTO usage_records (user_id, model, tokens, cost, time) \
+                 VALUES (1, 'm', 1, 2.5, date('now','start of month','-2 month'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_records (user_id, model, tokens, cost, time) \
+                 VALUES (1, 'm', 1, 2.5, datetime('now'))",
+                [],
+            )
+            .unwrap();
+        }
+        // 归档水位（用真 Archive 写下，不手抄文件名）
+        let ar = crate::archive::Archive::new(&crate::archive::USAGE_RECORDS, &dir, 1_000_000, 7)
+            .unwrap();
+
+        // 没有归档水位 ⇒ 一行不删（fail-closed：归档没跑起来就没有落处）
+        assert_eq!(usage_retention_tick(&db, &dir, 100), 0, "没有归档 ⇒ 不删");
+
+        // 水位 = 2（两行都已落盘）⇒ 只删过门槛的那一行
+        ar.save_watermark(2).unwrap();
+        assert_eq!(usage_retention_tick(&db, &dir, 100), 1);
+        let left: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM usage_records", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 1, "窗口内的那行必须留着");
+
+        // 库被占住 ⇒ 安静跳过（0），而不是阻塞等在锁上
+        let guard = db.lock().unwrap();
+        assert_eq!(usage_retention_tick(&db, &dir, 100), 0, "库正忙时必须跳过");
+        drop(guard);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

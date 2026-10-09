@@ -194,6 +194,52 @@ impl Default for Archive {
     }
 }
 
+// ---- 用量明细保留（rant 2026-10-09T12:28:58 的独立余项：第二张只增不减的明细表）----
+
+fn default_usage_retention_enabled() -> bool {
+    true
+}
+fn default_usage_retention_batch() -> i64 {
+    2_000
+}
+fn default_usage_retention_interval_secs() -> u64 {
+    60
+}
+
+/// 用量明细保留（[usage_retention] 段）。
+///
+/// `usage_records` 是同一笔 `settle` 写的**第二张**只增不减的明细表。与 `[rollup]`（交易）
+/// 不同，它**不需要折叠** —— 每个读者都是写死的月/日窗口（见 `src/usage_retention.rs`），
+/// 所以本段只驱动一件事：**先归档、再按日历窗口删**。归档用 `[archive]` 的参数与目录，
+/// 落在 `<archive.dir>/usage/` 子目录里（水位文件同名，靠目录隔离）。
+///
+/// 保留窗口**没有**配置项：门槛是 `usage_retention::KEEP_SINCE`
+/// （`date('now','start of month','-1 month')`，保留本月 ＋ 上月）—— 它是读者的同一套
+/// 日历谓词，`usage_retention_gate` 守着「门槛 ≤ 每个读者的下界」。把它做成天数配置
+/// 反而会引入「30 天够不够 31 天」的论证负担。
+#[derive(Debug, Clone, Deserialize)]
+pub struct UsageRetention {
+    /// 是否启用（默认 true）
+    #[serde(default = "default_usage_retention_enabled")]
+    pub enabled: bool,
+    /// 每轮最多删多少行（越小 → 单次持库时间越短，默认 2000）
+    #[serde(default = "default_usage_retention_batch")]
+    pub batch: i64,
+    /// 扫描间隔（秒，默认 60；最小 1）
+    #[serde(default = "default_usage_retention_interval_secs")]
+    pub interval_secs: u64,
+}
+
+impl Default for UsageRetention {
+    fn default() -> Self {
+        UsageRetention {
+            enabled: default_usage_retention_enabled(),
+            batch: default_usage_retention_batch(),
+            interval_secs: default_usage_retention_interval_secs(),
+        }
+    }
+}
+
 // ---- 交易明细汇总（rant 2026-10-09T12:28:58：明细只留汇总）----
 
 fn default_rollup_enabled() -> bool {
@@ -266,6 +312,9 @@ pub struct Config {
     /// 交易明细汇总（rant 2026-10-09T12:28:58：明细只留汇总）
     #[serde(default)]
     pub rollup: Rollup,
+    /// 用量明细保留（rant 2026-10-09T12:28:58 的独立余项：第二张只增不减的明细表）
+    #[serde(default)]
+    pub usage_retention: UsageRetention,
     pub points: Points,
     pub providers: Vec<Provider>,
     pub plans: Vec<Plan>,
@@ -561,6 +610,25 @@ mod tests {
         assert_eq!(cfg.rollup.batch, 2_000);
         assert_eq!(cfg.rollup.interval_secs, 60);
         assert_eq!(cfg.rollup.retain_days, Rollup::default().retain_days);
+    }
+
+    #[test]
+    fn usage_retention_defaults_when_section_absent() {
+        // 未配置 [usage_retention] 段 → 全默认值（rant 2026-10-09T12:28:58 的独立余项）
+        let d = UsageRetention::default();
+        assert!(d.enabled, "默认启用 —— 库不再无限增长的目标句就是方向");
+        assert_eq!(d.batch, 2_000);
+        assert_eq!(d.interval_secs, 60);
+    }
+
+    #[test]
+    fn usage_retention_example_section_matches_defaults() {
+        // config.example.toml 的 [usage_retention] 段必须解析出与缺省一致的样例值
+        // （CONTRIBUTING：涉及配置的改动同步示例文件）
+        let cfg = Config::load("config/config.example.toml").unwrap();
+        assert!(cfg.usage_retention.enabled);
+        assert_eq!(cfg.usage_retention.batch, 2_000);
+        assert_eq!(cfg.usage_retention.interval_secs, 60);
     }
 
     #[test]

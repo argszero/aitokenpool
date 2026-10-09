@@ -6,7 +6,7 @@
 //! 状态 + 时间（分钟级）；汇总行带可加量（`pts` 与各 token 的 `SUM`、以及行数 `COUNT`），
 //! 于是「分成 / 收益 / 月流水」这些聚合仍算得出来。
 //!
-//! 第二条（`src/tx_archive.rs`：明细写可滚动、有保留期的 JSONL）是**本模块的前置**：汇总只允许
+//! 第二条（`src/archive.rs`：明细写可滚动、有保留期的 JSONL）是**本模块的前置**：汇总只允许
 //! 折叠**已经进了 JSONL** 的明细（`id ≤ 归档水位`），于是将来「删掉已折叠的明细」永远不丢原件
 //! —— 归档水位就是「可以安全删除到哪里」的那条分界线。`fold_pending` 因此把归档水位**当参数收**，
 //! 调用方拿不到水位就折不动。
@@ -140,7 +140,7 @@ pub fn watermark(conn: &Connection) -> Result<i64> {
 
 /// 把一批**已归档**的明细折叠进汇总表，返回本批折叠的明细行数（0 = 已追平或无可折叠）。
 ///
-/// `archive_watermark` 是 [`crate::tx_archive`] 的归档水位：只有 `id ≤ archive_watermark` 的
+/// `archive_watermark` 是 [`crate::archive`] 的归档水位：只有 `id ≤ archive_watermark` 的
 /// 明细允许进入汇总。传入 0（归档未启用）⇒ 一行都不折 —— 这是**刻意的 fail-closed**：
 /// 折叠过的明细将来会被删除，而未归档的明细删了就真没了。
 ///
