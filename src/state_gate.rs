@@ -181,7 +181,8 @@
 //! # C2141：侧边栏只 advertise「按得响」的键位
 //!
 //! 侧边栏每个 nav-item 都带一个**角标数字**与 `title`（「快捷键 N · 名称」），而键盘上有**一个**
-//! 数字键处理器。两侧都是同一个契约的两半，且**必须取自同一个数组**：
+//! 数字键处理器，帮助面板上还印着一行**数字区间**。三处都是同一个契约的三半，且**必须取自同一个
+//! 数组**：
 //!
 //! ```text
 //!   const NAV_ORDER = NAV.flatMap((g) => g.items);      // 登记表（视图增删 ⇒ 这里自动跟着变）
@@ -196,10 +197,10 @@
 //! 它不是登记表的成员，于是 `indexOf(item)` 恒 **-1**，角标印 **0**（`NAV_ORDER[-1]` 落空 ⇒
 //! **死键**），而真正能打开市场的键是 **2**：一个游客永远看不到的数字。`title` 也跟着撒谎
 //! （「Shortcut 0 · Marketplace」）。该形状自 #44（v1.17 D 无障碍快捷键）写下即在，与文档
-//! `ui/README.md` §键盘可达性（「数字 1-8 → 切换侧边栏视图（键位 = `NAV_ORDER` 下标 +1）」）
-//! 直接冲突 ⇒ **漂移，不是取舍**。
+//! `ui/README.md` §键盘可达性（「数字 1–N → 切换侧边栏视图（键位 = `NAV_ORDER` 下标 +1，
+//! **N = 该数组长度**）」）直接冲突 ⇒ **漂移，不是取舍**。
 //!
-//! 四条规则，各有各的牙：
+//! 四条规则，各有各的牙（那个契约的**第三个广告位**另有自己的门禁，见下一节）：
 //!
 //! 1. **`renderNav` 只渲染登记表里的项**：体内不得出现导航项字面量（`id: "…"`）。游客分支要从
 //!    登记表里**筛**（`NAV_ORDER.filter(…)`），与处理器同源。
@@ -219,6 +220,34 @@
 //! 成对的 `/* … */` 片段，但**不做词法分析** —— 字符串字面量里的 `/*` 会被当成块注释起点、
 //! 行尾的 `//` 注释不算注释（`app.js` 当前两者都没有，`is_comment_line` 的兄弟门禁同型）。
 //! 只认字面表名：`const T = D; T.MARKET` 这类别名逃得过。
+//!
+//! # C2185：同一份契约的第三个广告位 —— 帮助面板印的数字区间
+//!
+//! 「哪些数字键切视图」这个事实有**三个**广告位：侧边栏角标、数字键处理器（上一节）、以及快捷键
+//! 帮助面板的第 2 行。`ui/README.md` §快捷键帮助面板说「`renderHelp()` 渲染 4 行快捷键
+//! （`/` 搜索、`1–N` 视图、…）」，而 `HELP_KEYS` 里那一格曾写着字面量 **`1–8`**。同一个事实的
+//! 另一半 —— 「处理器的上限**不写死**」—— 正是 #182 那次改动的主旨（提交正文：把 `7` 改成 `8`
+//! 只是把同一个 bug 在下一个视图插入时重新装填），而 #182 **同一次提交**里给面板手工填了 `8`
+//! ⇒ 先预测、后重犯，同样是**漂移，不是取舍**。今天视图恰 8 个，两者输出逐字相同 ⇒ **潜伏**。
+//!
+//! `HELP_KEYS` 声明在 `NAV_ORDER` **之前**（TDZ）⇒ 那一格的键不能是字面量，只能是**渲染时求值**
+//! 的表达式（`["1–" + NAV_ORDER.length, …]` 会在初始化时抛 `ReferenceError`）。所以修法是
+//! 「键值可以是函数、渲染器求值」—— 与同文件 `buildDataTable` 的 `col.title` 同型（本文件既有
+//! 的写法，不是本轮新造的机制）。
+//!
+//! 三条规则（`the_help_panel_takes_its_digit_range_from_the_registry`）：
+//!
+//! 1. **印区间的那一行恰好一处，且它读登记表**（`NAV_ORDER.length`）—— 行的身份是它的文案键
+//!    `help.k2`，所以改名逃不掉。
+//! 2. **那份清单里不得留下区间字面量**（`1–8`，en dash / hyphen / minus 都算）—— 区间是推导
+//!    出来的事实，写死就是第二个真源。
+//! 3. **渲染器必须求值那一格**（`typeof … === "function" ? …() : …`）：直接印会把函数源码当
+//!    文案印到屏幕上。
+//!
+//! **已知边界（如实的射程）**：规则 2 的扫描落在 `HELP_KEYS` 的**声明块**里 —— 把这份清单整个
+//! 搬进别处（不再有那个声明头）会让它**红**（诚实失败，不是假绿）；规则 3 只认 `typeof …
+//! "function"` 这一种写法。区间在屏幕上**真的是**几个数字由**仓外 jsdom 探针**钉（给 `NAV_ORDER`
+//! 加第 9 个视图后看面板印 `1–9`、而不是 `1–8`）—— 形状归门禁，值归探针。
 //!
 //! # C2170：身份边界要清的不只是 `Live` —— **模块级**的视图状态同样跨不过边界
 //!
@@ -277,6 +306,14 @@ const SESSION_TESTS: [&str; 2] = ["loggedIn", "isGuest"];
 const NAV_REGISTRY: &str = "NAV_ORDER";
 /// 登记表的定义式：它是从 `NAV` **推导**出来的展开结果，不是一个手抄的第二份清单。
 const NAV_REGISTRY_DERIVATION: &str = "NAV.flatMap";
+
+/// 帮助面板里印**数字区间**的那一行（C2185）：它是「哪些数字键切视图」这个事实的**第三个广告位**
+/// （前两个是侧边栏角标与数字键处理器）。行的身份是它的文案键，所以改名不会逃过规则 1。
+const HELP_DIGIT_ROW_KEY: &str = "help.k2";
+/// 那三行清单的声明头（规则 2 扫区间字面量时的射程边界）。
+const HELP_KEYS_DECL: &str = "const HELP_KEYS = [";
+/// 面板唯一的渲染器：键值是表达式时，它必须**求值**而不是把表达式印出来。
+const HELP_RENDERER: &str = "renderHelp";
 
 /// 设置视图里**配置卡**的三张卡（C2148）：账户 / 通知 / 偏好。
 ///
@@ -423,6 +460,58 @@ fn declares_nav_item(line: &str) -> bool {
         }
     }
     false
+}
+
+/// 这一行是否**印了一个数字区间字面量**（`1–8` / `1-8` / `1 − 8`）—— 「哪些数字键切视图」是**推导**
+/// 出来的事实（区间 = 登记表长度），写死它就是第二个真源（C2185）。
+///
+/// 判别式 = 「`1`（前一位不是字母数字/`_`，排除 `v1-8` 这类嵌进更长的 token）+ 可选空白 + 破折号
+/// （en dash `–` / hyphen `-` / minus `−`）+ 可选空白 + **数字**」四件事同时成立。要求破折号后**跟着
+/// 数字**是关键：推导式 `"1–" + NAV_ORDER.length` 的破折号后是引号，正是要放行的写法。
+fn declares_digit_range(line: &str) -> bool {
+    const DASHES: [char; 3] = ['–', '-', '−'];
+    let chars: Vec<char> = line.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        if *c != '1' {
+            continue;
+        }
+        if i > 0 && (chars[i - 1].is_ascii_alphanumeric() || chars[i - 1] == '_') {
+            continue; // `v1-8`、`a1-8`：`1` 不是一个独立 token 的开头
+        }
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] == ' ' {
+            j += 1;
+        }
+        if j >= chars.len() || !DASHES.contains(&chars[j]) {
+            continue;
+        }
+        let mut k = j + 1;
+        while k < chars.len() && chars[k] == ' ' {
+            k += 1;
+        }
+        if k < chars.len() && chars[k].is_ascii_digit() {
+            return true;
+        }
+    }
+    false
+}
+
+/// 切出 `const HELP_KEYS = [` 起始、到下一行恰为 `];` 为止的**声明块**（含两端）。
+///
+/// 数组字面量逐行写、每行一条目；收尾行在本文件里恒为 2 空格缩进的 `];`（与 `js_function_body`
+/// 同一种「按行收尾」约定）。**调用方必须自证切对了地方** —— 把清单整个搬走会让规则 2 **红**
+/// （诚实失败：射程边界写在注释里，不是假绿）。
+fn help_keys_block(src: &str) -> Option<String> {
+    let start = src.find(HELP_KEYS_DECL)?;
+    let rest = &src[start..];
+    let mut offset = 0usize;
+    for line in rest.split_inclusive('\n') {
+        offset += line.len();
+        if line.trim() == "];" {
+            return Some(rest[..offset].to_string());
+        }
+    }
+    None
 }
 
 /// 切出 `function <name>(` 之后的**函数体**（含收尾 `}`）。
@@ -10132,12 +10221,15 @@ function bind() {
         );
     }
 
-    /// 侧边栏只 advertise「按得响」的键位（C2141）。四条规则各有各的牙。
+    /// 侧边栏只 advertise「按得响」的键位（C2141）。四条规则各有各的牙（同一契约的第三个广告位
+    /// —— 帮助面板的数字区间 —— 由 `the_help_panel_takes_its_digit_range_from_the_registry`
+    /// 钉，见 C2185）。
     ///
     /// 契约（`ui/README.md` §键盘可达性）说：nav-item 的角标 = 项在 `NAV_ORDER` 里的下标 +1，
-    /// 数字键处理器按**同一个数组**取项，「视图增删后两者自动保持一致」。本门禁钉的就是这个
+    /// 数字键处理器按**同一个数组**取项，「视图增删后两者自动保持一致」；帮助面板印的数字区间
+    /// 同样取自它（§快捷键帮助面板：`1–N` 视图，N = 该数组长度）。本门禁钉的就是这个
     /// 「同一个数组」—— 任一侧另立一份清单，角标与生效键就会脱钩（C2141：游客角标 0、死键，
-    /// 真正生效的是 2）。
+    /// 真正生效的是 2；C2185：面板写死 `1–8`，加了视图还印 `1–8`）。
     #[test]
     fn the_sidebar_advertises_only_digits_that_work() {
         let nav = function_source(APP_JS, "renderNav").expect("找不到 renderNav");
@@ -10220,6 +10312,125 @@ function bind() {
             "登记表 `{NAV_REGISTRY}` 不是从 `NAV` 推导（`{NAV_REGISTRY_DERIVATION}`）而是另抄的一份\
              清单 —— 它与侧边栏的分组立刻会不一致：{}",
             decls[0]
+        );
+    }
+
+    /// 帮助面板印的数字区间取自**同一个登记表**（C2185）。三条规则各有各的牙。
+    ///
+    /// 契约（`ui/README.md` §快捷键帮助面板）：第 2 行印的 `1–N` 里 N = `NAV_ORDER` 的长度 ——
+    /// 它是「哪些数字键切视图」这个事实的**第三个广告位**（前两个是侧边栏角标与数字键处理器，
+    /// 见上一条）。判据与那两侧同型：**同一个数组**。`HELP_KEYS` 声明在 `NAV_ORDER` **之前**
+    /// （TDZ）⇒ 那一格的键只能是**渲染时求值**的表达式，渲染器必须求值它（与同文件
+    /// `buildDataTable` 的 `col.title` 同型）。
+    ///
+    /// 溯源 = 漂移（不是取舍）：#182 的提交正文写着「把 `7` 改成 `8` 只是把同一个 bug 在下一个视图
+    /// 插入时重新装填」—— 同一次提交却给面板手工填了 `8`（先预测、后重犯）。
+    #[test]
+    fn the_help_panel_takes_its_digit_range_from_the_registry() {
+        let all_text = code_text_by_line(APP_JS);
+
+        // ── 规则 1：印区间的那一行**恰好一处**，且它读登记表 ────────────────────────────
+        let digit_rows: Vec<&str> = all_text
+            .iter()
+            .filter(|l| l.contains(HELP_DIGIT_ROW_KEY))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            digit_rows.len(),
+            1,
+            "印数字区间的那一行（`{HELP_DIGIT_ROW_KEY}`）有 {} 处（须恰好 1 处）—— 零处说明提取锚点\
+             漂了（下面的断言会在空集上假绿），多一处就是多一个「区间从哪来」的说法：{digit_rows:?}",
+            digit_rows.len()
+        );
+        assert!(
+            digit_rows[0].contains(NAV_REGISTRY) && digit_rows[0].contains(".length"),
+            "帮助面板的数字区间不是从 `{NAV_REGISTRY}` 推导的（这一行看不到 `{NAV_REGISTRY}.length`）——\
+             它是「哪些数字键切视图」的**第三个广告位**，写死的区间在视图增删后与角标/处理器脱钩，\
+             而没有任何东西负责让它跟上：{}",
+            digit_rows[0]
+        );
+
+        // ── 规则 2：那份清单里**没有**留下的区间字面量（`1–8`）──────────────────────────
+        let help_block = help_keys_block(APP_JS).expect("找不到 `HELP_KEYS` 的声明块（锚点漂了）");
+        let help_block_text = code_text_by_line(&help_block);
+        assert!(
+            help_block_text
+                .iter()
+                .any(|l| l.contains(HELP_DIGIT_ROW_KEY)),
+            "切出来的 `HELP_KEYS` 块不对（里面没有 `{HELP_DIGIT_ROW_KEY}`）：{help_block}"
+        );
+        let ranges: Vec<&String> = help_block_text
+            .iter()
+            .filter(|l| declares_digit_range(l))
+            .collect();
+        assert!(
+            ranges.is_empty(),
+            "`HELP_KEYS` 里仍写着数字区间字面量（`1–8`）—— 区间是**推导出来的事实**，写死它就是\
+             第二个真源：{ranges:?}"
+        );
+
+        // ── 规则 3：渲染器**求值**这一格（键是表达式；直接印会把函数源码印到屏幕上）────────
+        let render = function_source(APP_JS, HELP_RENDERER).expect("找不到 renderHelp");
+        let render_text = code_text_by_line(&render).join("\n");
+        assert!(
+            render_text.contains("typeof") && render_text.contains("\"function\""),
+            "`{HELP_RENDERER}` 没有**求值**键值（看不到 `typeof … === \"function\" ? …() : …`）—— \
+             `{HELP_KEYS_DECL}` 声明在 `{NAV_REGISTRY}` 之前（TDZ），那一格的键只能是表达式；直接\
+             印它会把函数源码当文案印到屏幕上。同文件 `buildDataTable` 的 `col.title` 就是这种写法：\
+             {render_text}"
+        );
+
+        // ── 三条规则的判别式自证（合成输入，含阴性对照）──────────────────────────────────
+        assert!(
+            declares_digit_range("    [\"1–8\", \"help.k2\"],"),
+            "规则 2 认不出写死的 en-dash 区间"
+        );
+        assert!(
+            declares_digit_range("    [\"1-8\", \"help.k2\"],"),
+            "规则 2 认不出写死的 ASCII hyphen 区间"
+        );
+        assert!(
+            declares_digit_range("  - 数字 1 – 12 → 切换视图；"),
+            "规则 2 认不出带空格的区间"
+        );
+        assert!(
+            !declares_digit_range("    [() => \"1–\" + NAV_ORDER.length, \"help.k2\"],"),
+            "规则 2 把推导式（破折号后跟着引号、不是数字）当成了字面量区间"
+        );
+        assert!(
+            !declares_digit_range("        const short = NAV_ORDER.indexOf(item) + 1;"),
+            "规则 2 把普通算术当成了区间"
+        );
+        assert!(
+            !declares_digit_range("    stroke-width=\"1.8\" stroke-linecap=\"round\""),
+            "规则 2 把 CSS/SVG 数值（`1.8`）当成了区间"
+        );
+        assert!(
+            !declares_digit_range("    // 版本 v1-8 不是区间"),
+            "规则 2 把嵌进更长 token 的 `v1-8` 当成了区间"
+        );
+        // 规则 1 的判别式：真源码那一行读登记表（否则上面两条会在错的输入上判绿）
+        assert!(
+            digit_rows[0].contains(NAV_REGISTRY),
+            "规则 1 的输入不是真源码里那一行：{}",
+            digit_rows[0]
+        );
+        // 规则 3 的判别式：渲染器停在正确的地方（含它渲染的 `help-row`，不含清单的声明头）
+        assert!(
+            render_text.contains("help-row") && !render_text.contains(HELP_KEYS_DECL),
+            "renderHelp 提取错了地方（规则 3 会在错的输入上判绿）：{render_text}"
+        );
+        // 块提取器：切出来的正是那份清单（四条都在，且没吞掉紧随其后的渲染器）
+        assert!(
+            help_block.contains("help.k1")
+                && help_block.contains("help.k2")
+                && help_block.contains("help.k3")
+                && help_block.contains("help.k4"),
+            "块提取器切错/切短了：{help_block}"
+        );
+        assert!(
+            !help_block.contains("function renderHelp"),
+            "块提取器切长了（吞进了渲染器）：{help_block}"
         );
     }
 

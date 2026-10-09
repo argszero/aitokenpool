@@ -110,11 +110,11 @@ ui/
 - **焦点环**：全局 `:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }`；输入类控件（`.input` / `.th-filter`）已有边框高亮，`outline: none` 不叠加；
 - **全局快捷键**（`document` keydown，输入框内不触发、Cmd/Ctrl/Alt 组合不劫持）：
   - `/` → 聚焦市场搜索 `#mk-search`；
-  - 数字 **1-8** → 切换侧边栏视图（键位 = `NAV_ORDER` 下标 +1，范围由该数组长度决定：仪表盘/市场/共享/钱包/交易/管理/运营/设置；游客模式由 `switchView` 拦截提示登录）；
+  - 数字 **1–N** → 切换侧边栏视图（键位 = `NAV_ORDER` 下标 +1，**N = 该数组长度**：仪表盘/市场/共享/钱包/交易/管理/运营/设置；游客模式由 `switchView` 拦截提示登录）；
   - Esc → 关闭行内新建 Key（`#ak-new-inline`）；
   - Esc → 关闭消费对话框（`#chat-modal`）；
 - **导航提示**：nav-item 补 `title`（"快捷键 N · 名称"）+ 右侧 `.nav-key` 键位角标（管理视图带「管理员」tag 时省略角标）。
-- **键位只有一个真源**：角标 = 项在 `NAV_ORDER`（`NAV.flatMap(g => g.items)`）里的下标 +1，数字键处理器按同一数组取项。因此**渲染的每一项都必须取自 `NAV_ORDER`** —— 含游客分支（`NAV_ORDER.filter(it => GUEST_VIEWS.includes(it.id))`）：手搓一个同形字面量会让 `indexOf` 恒 -1，角标印 `0`（死键）、`title` 也跟着印 `Shortcut 0`，而真正生效的键游客看不到（C2141）。静态门禁 `src/state_gate.rs::the_sidebar_advertises_only_digits_that_work` 钉这个形状。
+- **键位只有一个真源**：角标 = 项在 `NAV_ORDER`（`NAV.flatMap(g => g.items)`）里的下标 +1，数字键处理器按同一数组取项，帮助面板印的数字区间也取自它（`"1–" + NAV_ORDER.length`，见下方「快捷键帮助面板约定」一节）。因此**渲染的每一项都必须取自 `NAV_ORDER`** —— 含游客分支（`NAV_ORDER.filter(it => GUEST_VIEWS.includes(it.id))`）：手搓一个同形字面量会让 `indexOf` 恒 -1，角标印 `0`（死键）、`title` 也跟着印 `Shortcut 0`，而真正生效的键游客看不到（C2141）。静态门禁 `src/state_gate.rs::the_sidebar_advertises_only_digits_that_work` 钉这个形状。
 
 ## 行内校验错误约定（v1.17，rant 2026-08-17T16:57:17 E 表单校验）
 
@@ -220,7 +220,8 @@ ui/
 
 - **触发**：按 `?`（或 `Shift+/`，浏览器会给出 `e.key === "?"`）开合右上角行内卡片 `#help-panel`；**Esc 或再按 `?` 关闭**；关闭按钮 × 同效；
 - **形态**：`position:fixed; top:76px; right:24px` 浮层卡片（非 modal、无遮罩、`z-index:950` 低于 toast），入场 `help-in` 动画；窄屏（≤560px）左右 12px 全宽、`top:68px`；
-- **内容**：`renderHelp()` 渲染 4 行快捷键（`/` 搜索、`1–8` 视图、`Esc` 关闭/取消、`?` 帮助）+ 底部上下文行（当前视图 `VIEW_TITLE[activeView]` + 亮/深色主题）；
+- **内容**：`renderHelp()` 渲染 4 行快捷键（`/` 搜索、`1–N` 视图、`Esc` 关闭/取消、`?` 帮助）+ 底部上下文行（当前视图 `VIEW_TITLE[activeView]` + 亮/深色主题）；
+- **数字区间随登记表**（R93）：第 2 行印的 `1–N` 里 **N = `NAV_ORDER` 的长度** —— 它是「哪些数字键切视图」这个事实的**第三个广告位**（前两个是侧边栏角标与数字键处理器），三者必须同源。`HELP_KEYS` 声明在 `NAV_ORDER` **之前**（TDZ）⇒ 键值是**渲染时求值**的表达式，由 `renderHelp()` 求值（与同文件 `buildDataTable` 的 `col.title` 同型）；写死的 `1–8` 会在视图增删后与那两个广告位脱钩（#182 删掉处理器的写死上限、却把这一处**手抄**成 8）。静态门禁 `src/state_gate.rs::the_help_panel_takes_its_digit_range_from_the_registry` 钉这个形状；区间在屏幕上**真的是**几个数字由**仓外 jsdom 探针**钉（加第 9 个视图后看面板印 `1–9` 而不是 `1–8`）。
 - **优先级**：全局 keydown 里帮助打开时 **Esc 先关帮助**（再关行内新建 Key），`?` 在 typing 守卫之后（输入框内不劫持）；`toggleHelp(force)` 支持强制开/关（close 按钮用 `toggleHelp(false)`）；
 - **上下文行跟随它点名的事实**（R91）：`#help-context` 读的是两个**活事实**（`activeView` 与 `document.documentElement.dataset.theme`），而 `renderHelp()` 只在**打开**时渲染 ⇒ 三个事实的**改变处**各补一次刷新 —— 语言（`atp:langchange` 处理器，R94）、视图（`switchView`）、主题（`applyTheme`）—— 全部经**具名** `refreshHelp()`（一处声明，多处引用）；刷新**不关**面板，只是内容跟上来。守卫必须读 `toggleHelp` 用的那个 `classList` 频道（写成 `.hidden` 属性在此**恒假**，R94 实测）。`state_gate::the_help_context_line_follows_the_facts_it_names` 静态钉住这条：事实名册与写者名册**两侧都从代码派生**（不手抄），写者必须能沿调用图到达那个唯一的刷新器，且面板之外不得有第二处守卫；
 - **kbd 键帽**：`.kbd` 样式（等宽、边框、底部 2px 立体），与 `.nav-key` 视觉一致。

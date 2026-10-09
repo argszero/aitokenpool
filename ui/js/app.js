@@ -74,15 +74,20 @@
   }
 
   // 快捷键帮助面板（rant 20:39:30 E：行内卡片非 modal；? / Shift+/ 开合，Esc 或再按 ? 关闭）
+  // 第 2 行印的是**生效的数字区间**（1..NAV_ORDER.length）—— 它是「哪些数字键切视图」这个事实的
+  // **第三个广告位**（前两个是侧边栏角标与数字键处理器，都取自 NAV_ORDER）。写死 `1–8` 会在视图
+  // 增删后与那两个脱钩（#182 把处理器的写死上限删掉时，这一处是**手抄**着改成 8 的）。
+  // 键值因此是**渲染时求值**的表达式：HELP_KEYS 声明在 NAV_ORDER 之前（TDZ），字面量里取不到它；
+  // renderHelp 求值（与同文件 buildDataTable 的 `col.title` 同型 —— 那是本文件既有的写法）。
   const HELP_KEYS = [
     ["/", "help.k1"],
-    ["1–8", "help.k2"],
+    [() => "1–" + NAV_ORDER.length, "help.k2"],
     ["Esc", "help.k3"],
     ["?", "help.k4"],
   ];
   function renderHelp() {
     $("#help-body").innerHTML = HELP_KEYS.map(([k, d]) =>
-      '<div class="help-row"><span class="kbd">' + esc(k) + "</span><span class=\"help-desc\">" + esc(T(d)) + "</span></div>").join("");
+      '<div class="help-row"><span class="kbd">' + esc(typeof k === "function" ? k() : k) + "</span><span class=\"help-desc\">" + esc(T(d)) + "</span></div>").join("");
     const theme = document.documentElement.dataset.theme === "light" ? T("help.theme.light") : T("help.theme.dark");
     $("#help-context").textContent = T("help.context", { view: T(VIEW_TITLE[activeView] || activeView), theme: theme });
   }
