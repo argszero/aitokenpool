@@ -49,15 +49,17 @@
 //!
 //! ## 还有哪些生产聚合仍在读原始表（本切片**故意**没搬）
 //!
-//! 删掉已折叠明细之前，这张清单必须清空 —— 每一条都是「删除后会少算一段历史」的读数：
+//! 删除落地时，这张清单上每一条要么搬进视图、要么被证明「不可能读到被删的那段」：
 //!
 //! | 站点 | 为什么不搬 |
 //! |---|---|
-//! | `routes/wallet.rs` 的分页列表与 `total` | 要的是**逐行身份**（`id`/`counterpart`），汇总行没有；`total` 必须与列表同源，否则页码数对不上能翻出来的行数。 |
-//! | `routes/sharing.rs::ROW_SELECT` 的 earn 批量聚合 | 该 SQL 是 `const &str`（两个调用点逐字复用）；搬它要先把常量改成函数，并把 `the_list_query_aggregates_earn_once_over_a_covering_index` 的计划断言一并改写 —— 独立切片。 |
-//! | `db.rs::keys_used_from_ledger` | `v < 13` 的一次性修复步：真源是**账本**，而它只可能在「还没有汇总表」的老库上跑。 |
+//! | `routes/wallet.rs` 的分页列表与 `total` | 要的是**逐行身份**（`id`/`counterpart`），汇总行没有；`total` 必须与列表同源，否则页码数对不上能翻出来的行数。**删除按保留窗口**放行，窗口必须盖住列表自己提供的每一个预设区间（`tx_retention_gate` 守这条），于是这条永远只是「最近一段」的读者。 |
+//! | `db.rs::keys_used_from_ledger` | `v < 13` 的一次性修复步：真源是**账本**，而它只可能在「还没有汇总表」的老库上跑 —— 那时一行明细都没被折叠过，更没被删过。 |
 //! | `tx_rollup.rs` / `tx_archive.rs` | 折叠与归档**本来就**读明细 —— 它们是明细的写者。 |
 //! | `billing.rs` / `gateway.rs` 的 `COUNT(*)` | 那些在 `#[cfg(test)]` 里（断言 settle 写了行），非生产读数。 |
+//!
+//! `routes/sharing.rs::row_select()` 的 earn 批量聚合**曾**在这张清单上，已随删除切片搬进视图
+//! （常量 `ROW_SELECT` 改成函数 `row_select()`，计划断言一并改写）。
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;

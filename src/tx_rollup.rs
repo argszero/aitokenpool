@@ -174,6 +174,46 @@ pub fn fold_pending(conn: &Connection, archive_watermark: i64, batch: i64) -> Re
     Ok(folded as usize)
 }
 
+/// 删除**已折叠、已归档、且早于保留窗口**的明细，返回本批删除的行数（0 = 无需删或本轮已删空）。
+///
+/// 这是验收项 1「明细只留汇总」的**收尾动作** —— 没有它，`transactions` 仍然只增不减，折叠只是
+/// 在旁边多长出一张同样在涨的表。三道上界缺一不可，每道都在防一种「删了就回不来」：
+///
+/// 1. **`id ≤ MIN(汇总水位, 归档水位)`** —— 只删汇总表已经算过、且原件已经进 JSONL 的行。
+///    汇总水位是 `fold_pending` 自己写下的 `up_to_id`，归档水位由调用方传入（与折叠**同源**）；
+///    取小 ⇒ 归档一旦落后（或归档目录丢失 ⇒ 水位 0）就一行都不删，与折叠同一条 fail-closed 纪律。
+/// 2. **`time < now - retain_days`** —— 保留窗口内的明细仍逐条留在库里（交易页翻页、共享页按行
+///    读的都是 `transactions` 本身）。窗口是**明细**的保留期；**汇总行永远不删**。
+/// 3. **`LIMIT batch`** —— 单次持库时间有界，后台维护绝不与请求抢锁（与折叠、归档同一条纪律）。
+///
+/// 按 `id` 升序删 ⇒ 先删最旧的；`id` 单调（`AUTOINCREMENT`，删了也不会被复用），所以扫描一撞到
+/// 保留窗口就停，不会为了找几行而翻遍全表。
+///
+/// **对读模型无影响**：被删的行都满足 `id ≤ 汇总水位`，而视图 `tx_facts` 的明细臂只取
+/// `id > 汇总水位` —— 这些行在删除前后都**只**由汇总臂表示
+/// （`the_read_model_answers_the_same_aggregates_across_the_deletion` 用真库逐列钉住这条）。
+pub fn delete_folded(
+    conn: &Connection,
+    archive_watermark: i64,
+    retain_days: i64,
+    batch: i64,
+) -> Result<usize> {
+    let upto = watermark(conn)?.min(archive_watermark);
+    if batch <= 0 || upto <= 0 {
+        return Ok(0);
+    }
+    let window = format!("-{} days", retain_days.max(0));
+    conn.execute(
+        "DELETE FROM transactions WHERE id IN ( \
+           SELECT id FROM transactions \
+           WHERE id <= ?1 AND time < datetime('now', ?2) \
+           ORDER BY id LIMIT ?3 \
+         )",
+        params![upto, window, batch],
+    )
+    .with_context(|| "删除已折叠的明细失败".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +657,118 @@ mod tests {
         );
         // 阳性对照：两侧都非空
         assert!(cols.len() >= 7, "维度列数: {cols:?}");
+    }
+
+    /// 明细行数（删除测试的读数）。
+    fn tx_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// 种一批明细：`ages` 里每个元素是「多少天前」，用它算出 `time`。
+    /// 窗口判据是 `time < datetime('now', '-N days')`，所以夹具必须相对 `now` 取，
+    /// 写死字面量会把「跑测试时已经过了那个点没有」变成隐藏前提。
+    fn seed_aged(conn: &Connection, ages: &[i64]) {
+        for age in ages {
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '', NULL, 'm', 1, 1, 'consume', '成功', datetime('now', ?1))",
+                params![format!("-{age} days")],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn delete_folded_only_releases_rows_older_than_the_retention_window() {
+        let conn = migrated_db();
+        // 40/20/1 天前各一条 —— 窗口 30 天 ⇒ 只应放出 40 天前那条。
+        seed_aged(&conn, &[40, 20, 1]);
+        assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 3, "先全折");
+        assert_eq!(delete_folded(&conn, 1_000, 30, 100).unwrap(), 1);
+        assert_eq!(tx_count(&conn), 2, "窗口内的明细必须留下");
+        // 已经删过 ⇒ 幂等（同窗口再跑不删任何行）
+        assert_eq!(delete_folded(&conn, 1_000, 30, 100).unwrap(), 0);
+        // 窗口收到 0 天 ⇒ 剩下的（20/1 天前）也都过了窗口
+        assert_eq!(delete_folded(&conn, 1_000, 0, 100).unwrap(), 2);
+        assert_eq!(tx_count(&conn), 0);
+        // 汇总行一个不少：明细删光之后聚合仍然答得出（这是「明细只留汇总」的全部意义）
+        let rows = rollup_rows(&conn);
+        assert_eq!(rows.len(), 3, "三个不同的分钟桶应各一行: {rows:?}");
+        assert_eq!(rows.iter().map(|r| r.3).sum::<i64>(), 3, "行数守恒");
+    }
+
+    #[test]
+    fn delete_folded_never_gets_ahead_of_the_fold_or_the_archive() {
+        let conn = migrated_db();
+        seed_aged(&conn, &[60, 50]);
+        // 一条都没折过 ⇒ 水位 0 ⇒ 一行都不删（即使它们都老得过了窗口）
+        assert_eq!(watermark(&conn).unwrap(), 0);
+        assert_eq!(delete_folded(&conn, 1_000, 30, 100).unwrap(), 0);
+        assert_eq!(tx_count(&conn), 2, "没折过不许删");
+
+        // 折了，但归档水位只到第 1 行 ⇒ 最多删到 id 1（归档没跟上的那半不许动）
+        assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 2);
+        assert_eq!(delete_folded(&conn, 1, 30, 100).unwrap(), 1);
+        assert_eq!(tx_count(&conn), 1, "归档没覆盖到的行不许删");
+        // 归档追平 ⇒ 剩下的那条才可删
+        assert_eq!(delete_folded(&conn, 1_000, 30, 100).unwrap(), 1);
+        assert_eq!(tx_count(&conn), 0);
+    }
+
+    #[test]
+    fn delete_folded_is_bounded_by_its_batch() {
+        let conn = migrated_db();
+        seed_aged(&conn, &[90, 80, 70]);
+        assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 3);
+        // 批量 2 ⇒ 每轮最多删 2 条，剩下的下一轮再删（后台维护不长时间持库）
+        assert_eq!(delete_folded(&conn, 1_000, 30, 2).unwrap(), 2);
+        assert_eq!(tx_count(&conn), 1);
+        assert_eq!(delete_folded(&conn, 1_000, 30, 2).unwrap(), 1);
+        assert_eq!(tx_count(&conn), 0);
+        // 边界：批次 <= 0 或水位 <= 0 ⇒ 一行都不删（不无限删）
+        seed_aged(&conn, &[90]);
+        assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 1);
+        assert_eq!(delete_folded(&conn, 1_000, 30, 0).unwrap(), 0);
+        assert_eq!(delete_folded(&conn, 0, 30, 100).unwrap(), 0);
+        assert_eq!(tx_count(&conn), 1, "非法参数下明细必须还在");
+    }
+
+    #[test]
+    fn delete_folded_leaves_the_read_model_answering_the_same_numbers() {
+        // 「删明细」之所以安全，全靠读模型 `tx_facts` 同时覆盖汇总与**未折叠**明细。
+        // 这条把「删前 / 删后」真的对比一次：同一批数据，删之前用视图读、删之后再用视图读。
+        let conn = migrated_db();
+        for (sec, pts, tokens) in [(5, 2.0, 20.0), (17, 3.0, 30.0), (59, 4.0, 40.0)] {
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '', NULL, 'm', ?1, ?2, 'consume', '成功', \
+                         datetime('now', '-40 days', 'start of day', '+12 hours', ?3))",
+                params![tokens, pts, format!("+{sec} seconds")],
+            )
+            .unwrap();
+        }
+        crate::tx_facts::ensure_view(&conn).unwrap();
+        // 名字经 `tx_facts::VIEW` 取：`tx_facts_gate` R1 只允许视图名在 `tx_facts.rs` 里成字面量。
+        let read_sql = format!(
+            "SELECT COALESCE(SUM(pts), 0), COALESCE(SUM(tokens), 0), COALESCE(SUM(row_count), 0) \
+             FROM {} WHERE user_id = 1",
+            crate::tx_facts::VIEW
+        );
+        let read = |c: &Connection| -> (f64, f64, i64) {
+            c.query_row(&read_sql, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+        };
+        let before = read(&conn);
+        assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 3);
+        assert_eq!(delete_folded(&conn, 1_000, 30, 100).unwrap(), 3);
+        assert_eq!(tx_count(&conn), 0, "明细确实清空了");
+        let after = read(&conn);
+        assert_eq!(
+            before, after,
+            "读模型在删明细前后必须逐字相同（否则「只留汇总」就是在丢账）"
+        );
+        // 阳性对照：数确实非零，否则上面的恒等是「0 == 0」的假等式
+        assert!(before.0 > 0.0 && before.2 == 3, "对照: {before:?}");
     }
 }

@@ -92,6 +92,10 @@ mod tx_type_roster_gate;
 // src/ 的 SQL 语料在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod tx_facts_gate;
+// 交易明细保留门禁（rant 2026-10-09T12:28:58 验收项 1 删除切片）：同样是仅测试期编译 ——
+// 列表预设区间从 ui/js/app.js、保留窗口从 config/config.example.toml 在编译期读入。
+#[cfg(test)]
+mod tx_retention_gate;
 
 use std::sync::Arc;
 
@@ -348,44 +352,58 @@ fn spawn_tx_archive(
     Ok(())
 }
 
-/// 一轮交易明细汇总：拿到库就折，拿不到（库正忙）就跳过。返回本批折叠的明细行数。
+/// 一轮交易明细汇总：拿到库就折，拿不到（库正忙）就跳过。返回（本批折叠行数, 本批删除行数）。
 ///
 /// 与归档同一条纪律：`try_lock` + 有界批次 —— 后台维护绝不与请求抢锁。
-/// `archive_dir` 只用来读归档水位：汇总**只允许折叠已归档的明细**，所以归档没跟上的部分
-/// 本轮折不动（下一轮再看）。这只会让汇总**落后**于归档，绝不会超前 —— 落后是安全的。
+/// `archive_dir` 只用来读归档水位：汇总**只允许折叠已归档的明细**，删除同理（只删已折叠且已归档
+/// 的），所以归档没跟上的部分本轮既折不动也删不掉（下一轮再看）。这只会让汇总**落后**于归档，
+/// 绝不会超前 —— 落后是安全的。
 fn tx_rollup_tick(
     db: &std::sync::Mutex<rusqlite::Connection>,
     archive_dir: &std::path::Path,
     batch: i64,
-) -> usize {
+    retain_days: i64,
+) -> (usize, usize) {
     match db.try_lock() {
         Ok(conn) => {
             let archived = tx_archive::watermark_at(archive_dir);
-            match tx_rollup::fold_pending(&conn, archived, batch) {
+            let folded = match tx_rollup::fold_pending(&conn, archived, batch) {
                 Ok(n) => n,
                 Err(e) => {
                     log::warn!("交易明细汇总失败: {e}");
                     0
                 }
-            }
+            };
+            // 删除排在折叠**之后**：本轮刚折出来的行也可能已过保留窗口（回填老库时几乎必然），
+            // 先折后删让「已折叠」这个前提在同一个 tick 里就成立。
+            let deleted = match tx_rollup::delete_folded(&conn, archived, retain_days, batch) {
+                Ok(n) => n,
+                Err(e) => {
+                    log::warn!("删除已折叠的明细失败: {e}");
+                    0
+                }
+            };
+            (folded, deleted)
         }
-        Err(_) => 0,
+        Err(_) => (0, 0),
     }
 }
 
-/// 启动交易明细汇总任务：每 `interval_secs` 秒把新明细折叠成可加汇总行。
+/// 启动交易明细汇总任务：每 `interval_secs` 秒把新明细折叠成可加汇总行，并删掉已过保留窗口的明细。
 ///
-/// rant 2026-10-09T12:28:58 验收项 1（明细只留汇总）的调度点。它只写 `transactions_rollup`；
-/// 明细的删除与读路径的改接是后续切片 —— 先得让汇总行存在，并且能对明细逐条对账。
+/// rant 2026-10-09T12:28:58 验收项 1（明细只留汇总）的调度点。它写 `transactions_rollup`，
+/// 并删 `transactions` 里**已折叠且已归档**的旧行 —— 两者都不会让聚合读数变化（读模型
+/// `tx_facts` 同时覆盖汇总与未折叠明细）。
 fn spawn_tx_rollup(
     db: Arc<std::sync::Mutex<rusqlite::Connection>>,
     archive_dir: std::path::PathBuf,
     cfg: &config::Rollup,
 ) -> anyhow::Result<()> {
     let batch = cfg.batch;
+    let retain_days = cfg.retain_days;
     let every = std::time::Duration::from_secs(cfg.interval_secs.max(1));
     log::info!(
-        "交易明细汇总已启用: {}（每 {}s 一批 ≤ {batch} 行）",
+        "交易明细汇总已启用: {}（每 {}s 一批 ≤ {batch} 行，明细保留 {retain_days} 天）",
         archive_dir.display(),
         every.as_secs(),
     );
@@ -393,11 +411,12 @@ fn spawn_tx_rollup(
         loop {
             // 同归档：同步 DB I/O 走 blocking 线程，不占 tokio worker（worker 是 `/healthz` 的命脉）。
             let (db, dir) = (db.clone(), archive_dir.clone());
-            let n = tokio::task::spawn_blocking(move || tx_rollup_tick(&db, &dir, batch))
-                .await
-                .unwrap_or(0);
-            if n > 0 {
-                log::debug!("交易明细汇总: 折叠 +{n} 行");
+            let (folded, deleted) =
+                tokio::task::spawn_blocking(move || tx_rollup_tick(&db, &dir, batch, retain_days))
+                    .await
+                    .unwrap_or((0, 0));
+            if folded > 0 || deleted > 0 {
+                log::debug!("交易明细汇总: 折叠 +{folded} 行、删除 {deleted} 行");
             }
             tokio::time::sleep(every).await;
         }
@@ -603,7 +622,7 @@ mod tests {
     // ---- 交易明细汇总（rant 2026-10-09T12:28:58 验收项 1）----
 
     #[test]
-    fn tx_rollup_tick_folds_only_archived_rows_and_never_blocks_on_a_busy_db() {
+    fn tx_rollup_tick_folds_archived_rows_then_deletes_only_what_the_window_releases() {
         let dir = std::env::temp_dir().join(format!("atp_main_txrollup_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let db = std::sync::Mutex::new(crate::db::open(":memory:").unwrap());
@@ -614,11 +633,13 @@ mod tests {
                 [],
             )
             .unwrap();
-            for i in 0..2 {
+            // 时间**相对 now** 取：保留窗口的判据是 `time < datetime('now', '-N days')`，
+            // 写死一个字面量会让「现在是不是已经过了那个点」变成隐藏前提（UTC 与本地差 8 小时）。
+            for age_days in [40, 1] {
                 conn.execute(
                     "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
-                     VALUES (1, '', NULL, 'm', 1, 1, 'consume', '成功', ?1)",
-                    [format!("2026-10-09 12:34:0{i}")],
+                     VALUES (1, '', NULL, 'm', 1, 1, 'consume', '成功', datetime('now', ?1))",
+                    [format!("-{age_days} days")],
                 )
                 .unwrap();
             }
@@ -626,12 +647,24 @@ mod tests {
         let archive_dir = dir.join("archive");
         std::fs::create_dir_all(&archive_dir).unwrap();
 
-        // 归档水位 0（归档还没跟到任何一行）⇒ 一行都不折
-        assert_eq!(tx_rollup_tick(&db, &archive_dir, 100), 0, "未归档不得折叠");
-        // 归档追到第 2 行 ⇒ 折叠 2 条（同一分钟 ⇒ 一行汇总）
+        // 归档水位 0（归档还没跟到任何一行）⇒ 既不折也不删（fail-closed）
+        assert_eq!(
+            tx_rollup_tick(&db, &archive_dir, 100, 30),
+            (0, 0),
+            "未归档不得折叠、也不得删除"
+        );
+        // 归档追到第 2 行 ⇒ 折叠 2 条；40 天前那条已过 30 天窗口 ⇒ 同轮删掉，1 天前那条留下
         std::fs::write(archive_dir.join("watermark"), "2").unwrap();
-        assert_eq!(tx_rollup_tick(&db, &archive_dir, 100), 2);
-        assert_eq!(tx_rollup_tick(&db, &archive_dir, 100), 0, "追平后为 0");
+        assert_eq!(
+            tx_rollup_tick(&db, &archive_dir, 100, 30),
+            (2, 1),
+            "窗口内的明细不得删"
+        );
+        assert_eq!(
+            tx_rollup_tick(&db, &archive_dir, 100, 30),
+            (0, 0),
+            "追平后为 0"
+        );
         {
             let conn = db.lock().unwrap();
             let (rows, n): (i64, i64) = conn
@@ -641,12 +674,36 @@ mod tests {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .unwrap();
-            assert_eq!((rows, n), (1, 2), "同一分钟两条明细 ⇒ 一行汇总、行数 2");
+            assert_eq!((rows, n), (2, 2), "两条明细不同分钟 ⇒ 两行汇总、行数各 1");
+            let left: i64 = conn
+                .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(left, 1, "只应删掉窗口外的那一条");
+        }
+        // 窗口 0 天 ⇒ 剩下那条也过了窗口，一并删掉；汇总行**永远**不动
+        assert_eq!(
+            tx_rollup_tick(&db, &archive_dir, 100, 0),
+            (0, 1),
+            "窗口 0 天应放出全部已折叠明细"
+        );
+        {
+            let conn = db.lock().unwrap();
+            let left: i64 = conn
+                .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+                .unwrap();
+            let rollup_rows: i64 = conn
+                .query_row("SELECT COUNT(*) FROM transactions_rollup", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!((left, rollup_rows), (0, 2), "明细清空，汇总行一个不少");
         }
 
-        // 库被占住 ⇒ 本轮安静跳过（0），而不是阻塞等在锁上
+        // 库被占住 ⇒ 本轮安静跳过（(0,0)），而不是阻塞等在锁上
         let guard = db.lock().unwrap();
-        assert_eq!(tx_rollup_tick(&db, &archive_dir, 100), 0, "库正忙必须跳过");
+        assert_eq!(
+            tx_rollup_tick(&db, &archive_dir, 100, 30),
+            (0, 0),
+            "库正忙必须跳过"
+        );
         drop(guard);
 
         let _ = std::fs::remove_dir_all(&dir);
