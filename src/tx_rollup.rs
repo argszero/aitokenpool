@@ -33,6 +33,13 @@ use rusqlite::{params, Connection};
 /// 汇总表名。建表语句在 `db.rs` 的 v16 迁移里（schema 的唯一归属地）。
 pub const TABLE: &str = "transactions_rollup";
 
+/// `/api/transactions` 发布明细保留边界时用的**响应字段名**（唯一拼写点）。
+///
+/// 前端（`ui/js/app.js`）按这个名字读它，用来解释「列表空了但汇总还有数」。
+/// 名字只写在这里：服务端经 [`DETAIL_SINCE_FIELD`] 拼响应、门禁（`tx_retention_gate`）
+/// 从同一个常量取值去前端对账 ⇒ 「服务端换了字段名、页面还在读旧名」不会有第二个载体。
+pub const DETAIL_SINCE_FIELD: &str = "detail_since";
+
 /// 汇总维度：列名 → 从明细取值的表达式。
 ///
 /// 这是**唯一载体**：`SELECT ... AS <列名>`、`GROUP BY <表达式>`、`ON CONFLICT(<列名>)` 三处
@@ -192,6 +199,24 @@ pub fn fold_pending(conn: &Connection, archive_watermark: i64, batch: i64) -> Re
 /// **对读模型无影响**：被删的行都满足 `id ≤ 汇总水位`，而视图 `tx_facts` 的明细臂只取
 /// `id > 汇总水位` —— 这些行在删除前后都**只**由汇总臂表示
 /// （`the_read_model_answers_the_same_aggregates_across_the_deletion` 用真库逐列钉住这条）。
+/// 明细保留边界（UTC，`YYYY-MM-DDTHH:MM:SSZ`）：**早于它的明细不保证还在 `transactions` 里**。
+///
+/// 这是「列表答不出来的那段」的**唯一定义处** —— 与 [`delete_folded`] 同一个时钟、同一个算式
+/// （SQL 的 `datetime('now', '-N days')`，负数按 0 处理）⇒ 删的是它、页面说的是它，两者不可能
+/// 各自算出一个边界。读侧只读**边界值**，不做删除判断（那是 `delete_folded` 的事）。
+///
+/// ⚠️ 边界早于它 ≠ 明细已经没了：删除还受「已折叠 ∧ 已归档」两道闸（见 `delete_folded`）。
+/// 所以本值是**上界**——真正少答的那段只可能落在它之外。调用方据此说明口径，不据此断言缺失。
+pub fn detail_since(conn: &Connection, retain_days: i64) -> Result<String> {
+    let window = format!("-{} days", retain_days.max(0));
+    conn.query_row(
+        "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now', ?1))",
+        params![window],
+        |r| r.get(0),
+    )
+    .with_context(|| "读取明细保留边界失败".to_string())
+}
+
 pub fn delete_folded(
     conn: &Connection,
     archive_watermark: i64,

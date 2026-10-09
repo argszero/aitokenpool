@@ -13,6 +13,7 @@ use serde::Deserialize;
 use crate::dao;
 use crate::routes::{internal, ApiErr, AppState, AuthUser};
 use crate::tx_facts;
+use crate::tx_rollup;
 
 /// 交易 `type` 过滤器的**唯一真源** —— 凡是受理 `type` 查询参数的端点都用它校验。
 ///
@@ -478,7 +479,8 @@ pub async fn transactions(
             COALESCE(SUM(t.tokens), 0), \
             COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
             COALESCE(SUM(t.cached_tokens), 0), \
-            COALESCE(SUM(t.output_tokens), 0) \
+            COALESCE(SUM(t.output_tokens), 0), \
+            COALESCE(SUM(t.row_count), 0) \
             FROM {} {} WHERE {where_sql}",
         tx_facts::source("t"),
         tx_joins_if(join_needed)
@@ -493,13 +495,22 @@ pub async fn transactions(
                 "input_tokens": r.get::<_, f64>(4)?,
                 "cached_tokens": r.get::<_, f64>(5)?,
                 "output_tokens": r.get::<_, f64>(6)?,
+                // `entries` = 这条查询命中的**账本条数**（读模型口径：汇总行按 `row_count` 折算成
+                // 原来的条数）⇒ 汇总/删除对它是**不可见**的，它答的是「有多少条账本记录」。
+                // ⚠️ 与 `total`（明细表里还剩几行）**刻意是两个数**：明细被删掉之后
+                // `entries > total`，差额正是「已折叠归档、不再逐条列得出」的那段 —— 见
+                // `detail_since` 与前端零行态。数条数必须 `SUM(row_count)`，不得 `COUNT(*)`
+                // （后者数的是视图有几行，即分钟桶数）。
+                "entries": r.get::<_, i64>(7)?,
             }))
         })
         .map_err(internal)?;
     // ⚠️ 分页列表**不走** `tx_facts`（明细才是它要的东西）：汇总行是**聚合**，
     // 没有 `id`、没有 `counterpart`，一行代表 N 条调用 ⇒ 视图答不出「第 N 页的第 K 条」。
     // `total` 因此必须与列表**同一个载体**（都读明细），否则页码数与实际能翻出来的行数不一致。
-    // 后果如实记录：删除已折叠明细的切片必须等列表的归属定下来（视图 vs 合成分钟行）再动。
+    // 代价如实记录：保留窗口之外的那段明细答不出来，而**聚合答得出** ⇒ 两者会在同一屏上
+    // 分叉。分叉由响应里的 `detail_since`（保留边界）与 `summary.entries`（账本条数）披露，
+    // 由前端零行态说明（`txArchivedEmptySub`），由 `tx_retention_gate` 守。
     let total: i64 = conn
         .query_row(
             &format!(
@@ -565,13 +576,23 @@ pub async fn transactions(
         .map_err(internal)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(internal)?;
-    Ok(Json(serde_json::json!({
+    // 明细保留边界（`tx_rollup::detail_since`，与删除同一算式）：早于它的明细不保证还逐条在
+    // `transactions` 里 —— 聚合（summary/trend）答得出、本列表答不出的分界就是它。
+    // 折叠关掉时**没有**删除发生，也就没有这条边界 ⇒ 不发（`null`），页面不会去说一件没发生的事。
+    let detail_since: Option<String> = if st.cfg.rollup.enabled {
+        Some(tx_rollup::detail_since(&conn, st.cfg.rollup.retain_days).map_err(internal)?)
+    } else {
+        None
+    };
+    let mut body = serde_json::json!({
         "items": rows,
         "total": total,
         "page": page,
         "page_size": page_size,
         "summary": summary,
-    })))
+    });
+    body[crate::tx_rollup::DETAIL_SINCE_FIELD] = serde_json::json!(detail_since);
+    Ok(Json(body))
 }
 
 /// GET /api/transactions/trend 查询参数

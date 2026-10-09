@@ -1921,11 +1921,36 @@
       rows: list,
       state: txTable,
       onState: renderTransactions,
+      // 零行态：默认那句「试试调整筛选条件」在「命中记录已被汇总归档」时是错的建议
+      // （见 txArchivedEmptySub）—— 由载荷里的 `summary.entries` vs `total` 决定要不要换。
+      emptySub: txArchivedEmptySub(),
       // 真后端分页（rant 2026-08-24T10:51:57）：总数显示后端 total；页码点击 → onState → renderTransactions 页码不一致自动重拉
       serverPaging: Live.transactions ? { total: Live.transactions.total || 0 } : null,
       // R164：排序交给服务端执行（请求带 sort/dir）—— 理由见 buildDataTable 里的本地排序守卫。
       serverSort: true,
     });
+  }
+
+  // 交易列表的「明细缺口」说明（R99 轴）：后端在**同一个响应**里给两个数 ——
+  //   · `summary.entries`：这条查询命中的**账本条数**（读模型口径，汇总/删除对它不可见）；
+  //   · `total`：`transactions` 里还剩几行。
+  // 两者不等 ⇒ 有一批命中记录已经折叠归档、不再逐条列得出（删除只发生在保留边界之外）。
+  // 此时「没有匹配的记录 / 试试调整筛选条件」是**错的建议** —— 筛选条件怎么调都变不出库
+  // 里已经不存在的行。返回要替上去的那句副标题；无从解释时返回 null（用缺省那句）。
+  //
+  // ⚠️ 只在「这条查询一条明细都没有」时解释：`total > 0` 说明明细还在，零行只可能是这一页
+  // 翻过头了，那不是保留期的事，不能拿它解释。
+  function txArchivedEmptySub() {
+    const t = Live.transactions;
+    if (!t || !t.summary || !t.detail_since) return null;
+    const entries = typeof t.summary.entries === "number" ? t.summary.entries : 0;
+    const total = typeof t.total === "number" ? t.total : 0;
+    if (total > 0 || entries <= 0) return null;
+    const since = new Date(t.detail_since);
+    if (isNaN(since.getTime())) return null;
+    // 天数由边界**现算**（边界是服务端按同一个算子算出来的），前端不另存一份「30」。
+    const days = Math.max(0, Math.round((Date.now() - since.getTime()) / 86400000));
+    return T("tx.empty.archived", { n: days });
   }
 
   // 交易时间段 → start/end 查询参数（UTC ISO，后端 datetime() 解析；默认最近 24 小时）
@@ -2256,10 +2281,13 @@
     return html;
   }
 
-  // 数据行 HTML（每次重建 tbody 内容）
-  function tableBodyHtml(pageRows, columns) {
+  // 数据行 HTML（每次重建 tbody 内容）。
+  // `emptySub` 是**调用方**对零行副标题的覆盖（缺省 = 通用那句「试试调整筛选条件」）：
+  // 一句话建议是否成立取决于**为什么没有行**，只有调用方知道 —— 交易页在「命中的记录已被
+  // 汇总归档、不在明细表里」时换成说明原因（那时「调整筛选条件」怎么调都变不出已经不存在的行）。
+  function tableBodyHtml(pageRows, columns, emptySub) {
     let html = "";
-    if (!pageRows.length) html += '<tr><td colspan="' + columns.length + '" class="empty-cell">' + emptyState(T("tx.empty"), T("tx.empty.sub")) + "</td></tr>";
+    if (!pageRows.length) html += '<tr><td colspan="' + columns.length + '" class="empty-cell">' + emptyState(T("tx.empty"), emptySub || T("tx.empty.sub")) + "</td></tr>";
     pageRows.forEach((row) => {
       html += "<tr>";
       columns.forEach((col) => {
@@ -2272,7 +2300,7 @@
   }
 
   function buildDataTable(cfg) {
-    const { container, columns, rows, state, onState, serverPaging, serverSort } = cfg;
+    const { container, columns, rows, state, onState, serverPaging, serverSort, emptySub } = cfg;
 
     // 1) 筛选
     let data = filterRows(rows, columns, state.filters);
@@ -2397,7 +2425,7 @@
 
     // 5) 数据行（每次重建 tbody 内容）
     const tbody = table.querySelector("tbody");
-    tbody.innerHTML = tableBodyHtml(pageRows, columns);
+    tbody.innerHTML = tableBodyHtml(pageRows, columns, emptySub);
     // 5b) 排序方向标记（thead 不重建，见 paintSortIndicators 注释）
     paintSortIndicators(container, columns, state);
 
