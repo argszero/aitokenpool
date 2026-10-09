@@ -3178,7 +3178,8 @@
         stat(T("ops.stats.uptime"), esc(fmtUptime(rt)), T("ops.stats.uptime.sub")),
         stat(T("ops.stats.users"), T("cnt.people", { n: rt.users }), T("ops.stats.users.sub")),
         stat(T("ops.stats.keys"), T("cnt.keys", { n: rt.active_keys }), T("ops.stats.keys.sub.on")),
-        // 交易量：total_txs 自 85982e8（PR #80）起就一直在算、在返回（全库 COUNT(*)），
+        // 交易量：total_txs 自 85982e8（PR #80）起就一直在算、在返回（现在的口径见 src/routes/ops.rs：
+        // 读模型 tx_facts 的 SUM(row_count)，数的是账本条数 ⇒ 明细折叠/删除对它不可见），
         // 但 v1.22 零 mock 重构（89963f3）删掉 mock 分支那一行时漏了重接——这是**回归**，
         // 不是新功能，也不是原型对齐（原型没有这张卡）。零 mock 不破：值取自响应，不取 D.TRANSACTIONS。
         stat(T("ops.stats.trades"), T("cnt.trades", { n: rt.total_txs }), T("ops.stats.trades.sub")),
