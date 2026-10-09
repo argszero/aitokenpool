@@ -81,6 +81,10 @@ mod shutdown_gate;
 // 加 #[cfg(test)] 后不会进入发布产物。
 #[cfg(test)]
 mod option_escape_gate;
+// 交易类型名册门禁（R94）：同样是仅测试期编译 —— src/routes/wallet.rs 与 ui/js/app.js
+// 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod tx_type_roster_gate;
 
 use std::sync::Arc;
 
