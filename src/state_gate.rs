@@ -12709,6 +12709,479 @@ function bind() {
             "闭包被单行函数带跑：{real:?}"
         );
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════
+    // 行内卡片的 Esc 契约（R168 的卡内那一半）
+    // ══════════════════════════════════════════════════════════════════════════════════════════
+    //
+    // `ui/README.md` 的键盘可达性约定写着「行内表单 Enter 提交、**Esc 关闭行内卡片**」，快捷键
+    // 面板第 3 行也把 Esc 印成角色无关的「关闭 / 取消」（`help.k3`）。R168 那条
+    // （`the_escape_contract_reaches_every_dismissible_overlay`）钉的是 `#app` **之外**那一半 ——
+    // 它的名册派生自 `overlays_outside_app`，卡内元素按构造取不到；而它的闭包记录当时写的是
+    // 「引导 / 帮助面板 / `#ak-new-inline` / 表格高亮清除 / **各卡片监听器都实现了**」，
+    // 这句话**没有执行者**，而且一直是假的：`#share-form-card` 是唯一「自带取消控件、却没有
+    // 任何 Esc 分支收起它」的行内卡片。
+    //
+    // 溯源＝漂移，不是取舍：`e65caa3`（#40，v1.16 键盘可达轮）**同一个提交**给 topup / raise
+    // （`].forEach` 别名）与 dept / model（卡级监听）四张卡各加了 Esc，唯独漏了它；而它的取消
+    // 按钮 `#sf-cancel` 与关闭器 `hideShareForm` 在那次改动**之前**就已存在（`d70e032` #7 起），
+    // 即「给行内卡片加 Esc」时它已经是可开可关的。可达症状：点「＋ 上架新 key」→ 卡片打开并把
+    // 焦点放进 `#sf-key` → 按 Esc 毫无反应（焦点在输入框里，全局梯的 typing 守卫先吃掉按键，
+    // 而卡级监听器根本不存在），同一屏的充值 / 加额 / 部门 / 模型四张卡按 Esc 都收起。
+    //
+    // 名册（markup 派生）：`#app` 之内、具名、带**裸 `hidden`** 属性（`inline_panels_inside_app`，
+    // C2176 的同一把尺子）**且自带一个取消控件**（`id="…-cancel"`，归属最近的前一张卡片）。
+    // 最后一条是「用户点得到关闭」的 markup 证据：`#mk-recent` 同样 boot 收起，但它的「清空」是
+    // 数据动作、面板由 `renderRecent()` 自己收 ⇒ 不在本轴（对比 C2176 的名册，那里它必须在）。
+    //
+    // 判据（全部从制品推导，零手写名册、零快照）：
+    //   R1  名册里每张卡片都必须有一条 Esc 分支**真的收起它**；
+    //   R2  名册阳性对照（非空、恰六枚、每个取消控件都有归属、且位置化副本与
+    //       `inline_panels_inside_app` 逐条一致）；
+    //   R3  反向：把真树上那条 `#share-form-card` 的 Esc 分支摘掉 ⇒ 缺的**恰**是它。
+    //
+    // 「真的收起」只认**属性频道**：字面量 `"#<id>").hidden = true`、经被调用的关闭器（一跳），
+    // 或经零参选择器助手（`shareFormCard().hidden = true`，助手本体是 `$("#share-form-card")`）。
+    // 刻意**不认** `classList.add("hidden")`：这些卡片由 `$("#id").hidden = false` 打开 ⇒ 只用类
+    // 收起的「修法」会让 `.hidden` 永远是 `false`、卡片此后再也打不开（与 C2176 的
+    // `hides_element_by_property` 同一条理由，那条的注释里写明了这个后果）。
+
+    /// 走一遍 `#app` 之内的行（射程与 [`inline_panels_inside_app`] 同源：进 `#app` 之后，
+    /// 到第一个**列 0** 的非空行为止；空行不进访问器）。
+    ///
+    /// 两个派生器共用它 —— 射程只有一处声明，助手之间的「归属」才有共同的坐标。
+    fn c2190_walk_app(html: &str, mut visit: impl FnMut(usize, &str)) {
+        let clean = strip_html_comments(html);
+        let mut found_app = false;
+        for (i, line) in clean.lines().enumerate() {
+            if !found_app {
+                if line.starts_with("<div id=\"app\"") {
+                    found_app = true;
+                }
+                continue;
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                break; // 列 0 ⇒ 已经出了 `#app`
+            }
+            visit(i, line);
+        }
+    }
+
+    /// 名册宇宙的**位置化**副本（只为拿行号，好把取消控件归属到卡片）。条件与
+    /// [`inline_panels_inside_app`] 逐字相同，一致性由 [`c2190_roster`] 里的等值断言钉住 ——
+    /// 副本一旦漂移，那条断言就把「名册悄悄换了对象」变成响亮失败。
+    fn c2190_panel_positions(html: &str) -> Vec<(usize, String)> {
+        let mut out: Vec<(usize, String)> = Vec::new();
+        c2190_walk_app(html, |i, line| {
+            if let Some(id) = element_id(line) {
+                if has_bare_hidden_attr(line) {
+                    out.push((i, id));
+                }
+            }
+        });
+        out
+    }
+
+    /// 行内 `id="…-cancel"` 形态的取消控件 id（属性名左界须是空白，`data-i18n-id="…"` 不算）。
+    fn c2190_cancel_controls(line: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find("id=\"") {
+            let at = from + rel;
+            let left_ok = at == 0 || line.as_bytes()[at - 1].is_ascii_whitespace();
+            let s = at + "id=\"".len();
+            let Some(end) = line[s..].find('"') else {
+                break;
+            };
+            let value = &line[s..s + end];
+            if left_ok && value.ends_with("-cancel") {
+                out.push(value.to_string());
+            }
+            from = s + end + 1;
+        }
+        out
+    }
+
+    /// 本轴的名册：`#app` 之内、自带取消控件的行内卡片（归属＝**最近的前一张**卡片）。
+    ///
+    /// 归属失败（控件落在任何卡片之前）直接 panic：那是 markup 形状变了，不是「零发现」——
+    /// 静默漏掉一张卡就等于把本轴悄悄缩小（坑 #814：报「0 发现」的扫描器必须带阳性对照）。
+    fn c2190_roster(html: &str) -> Vec<String> {
+        let positions = c2190_panel_positions(html);
+        assert_eq!(
+            positions
+                .iter()
+                .map(|(_, id)| id.clone())
+                .collect::<Vec<_>>(),
+            inline_panels_inside_app(html),
+            "位置化副本与 `inline_panels_inside_app` 脱钩了 —— 名册宇宙的扫描条件漂移"
+        );
+        let mut owners: Vec<String> = Vec::new();
+        let mut controls: Vec<String> = Vec::new();
+        c2190_walk_app(html, |n, line| {
+            for control in c2190_cancel_controls(line) {
+                controls.push(control.clone());
+                match positions.iter().rev().find(|(at, _)| *at < n) {
+                    Some((_, owner)) => owners.push(owner.clone()),
+                    None => panic!(
+                        "取消控件 `{control}` 落在 `#app` 内任何行内卡片之前 —— 归属规则失效"
+                    ),
+                }
+            }
+        });
+        assert_eq!(
+            owners.len(),
+            controls.len(),
+            "有取消控件没有被归属（名册会静默缩小）"
+        );
+        owners.sort();
+        owners.dedup();
+        owners
+    }
+
+    /// 一个具名函数的体：多行的 `function`（[`function_source`]），或**单行**的 `const` / `let` /
+    /// `var` 定义。后一条是为本仓的关闭器与选择器助手加的 —— 它们多是一行式箭头
+    /// （`const hideShareForm = () => { … };`），`function_source` 只认 `function NAME(`，够不到。
+    fn c2190_body(app: &str, name: &str) -> Option<String> {
+        if let Some(body) = function_source(app, name) {
+            return Some(body);
+        }
+        for line in app.lines() {
+            let code = strip_trailing_comment(line);
+            let t = code.trim();
+            for kw in ["const ", "let ", "var "] {
+                let Some(rest) = t.strip_prefix(&format!("{kw}{name}")) else {
+                    continue;
+                };
+                // 名字要**到此为止**：`const shareForm` 与 `const shareFormCard` 是两回事
+                if !(rest.starts_with(' ') || rest.starts_with('=')) {
+                    continue;
+                }
+                if t.ends_with(';') && t.contains("=>") {
+                    return Some(t.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// 零参选择器助手：`const f = () => $("#x");` / `function f() { return $("#x"); }` ⇒ `x`。
+    /// 只认体内**恰好一个** `"#…"` 字面量（多一个就不是「这个元素的选择器」了）。
+    fn c2190_selector_helper(app: &str, name: &str) -> Option<String> {
+        let body = c2190_body(app, name)?;
+        let ids = quoted_hash_ids(&body);
+        if ids.len() == 1 {
+            Some(ids[0].clone())
+        } else {
+            None
+        }
+    }
+
+    /// 这段代码**自己**按属性频道收起的元素集合：字面量 `"#<id>").hidden = true`，或经一个零参
+    /// 选择器助手（`<helper>().hidden = true`，而该助手就是 `$("#<id>")`）。
+    fn c2190_hidden_here(app: &str, code: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for id in quoted_hash_ids(code) {
+            if hides_element_by_property(code, &id) {
+                out.insert(id);
+            }
+        }
+        for helper in callee_names(code) {
+            if let Some(id) = c2190_selector_helper(app, &helper) {
+                if code.contains(&format!("{helper}().hidden = true")) {
+                    out.insert(id);
+                }
+            }
+        }
+        out
+    }
+
+    /// 一条 Esc 分支**真的收起**的元素集合：本行内联，或经**它调用**的函数（一跳）。
+    ///
+    /// 一跳就够：卡片的关闭器自己就是收尾的那一层（`hideShareForm` 体内经零参助手
+    /// `shareFormCard()` 写 `.hidden`），再深的间接在射程外、如实记录。
+    fn c2190_branch_hidden(app: &str, line: &str) -> BTreeSet<String> {
+        let mut out = c2190_hidden_here(app, line);
+        for f in callee_names(line) {
+            if let Some(body) = c2190_body(app, &f) {
+                out.extend(c2190_hidden_here(app, &body));
+            }
+        }
+        out
+    }
+
+    /// `getElementById(<标识符>)` 里的标识符（字符串实参不算 —— 那是一等公民，已被字面量分支收走）。
+    fn c2190_element_by_id_params(code: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let pattern = "getElementById(";
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find(pattern) {
+            let s = from + rel + pattern.len();
+            let rest = &code[s..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if !name.is_empty() && rest[name.len()..].starts_with(')') {
+                out.insert(name);
+            }
+            from = s;
+        }
+        out
+    }
+
+    /// `["a","b"].forEach((p) => { … }` 里 `p` 绑定的元素 id 集合。
+    ///
+    /// Esc 行本身只有 `document.getElementById(p).hidden = true`，字面量在**上一行**的数组里
+    /// （topup / raise 两张卡就是这个形状）⇒ 必须往上找那条绑定，否则这两张卡会被误报成「没有
+    /// Esc」。只取 id 形状的字面量（小写字母 / 数字 / `-`），别的字符串不算。
+    fn c2190_foreach_binding(lines: &[&str], at: usize, param: &str) -> Option<Vec<String>> {
+        for line in lines[..at].iter().rev().take(40) {
+            let code = strip_trailing_comment(line);
+            if !code.contains(&format!("].forEach(({param})")) {
+                continue;
+            }
+            let mut ids = Vec::new();
+            let mut from = 0usize;
+            while let Some(rel) = code[from..].find('"') {
+                let s = from + rel + 1;
+                let Some(end) = code[s..].find('"') else {
+                    break;
+                };
+                let value = &code[s..s + end];
+                if !value.is_empty()
+                    && value
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                {
+                    ids.push(value.to_string());
+                }
+                from = s + end + 1;
+            }
+            return Some(ids);
+        }
+        None
+    }
+
+    /// 全文件里**真的被收起**的元素集合：每条含 `"Escape"` 的代码行 →
+    /// ① 行内 / 经被调函数按属性频道收起的字面量 id；
+    /// ② `document.getElementById(<p>).hidden = true` 且 `<p>` 由上面的 `].forEach((<p>)` 绑定的 id。
+    ///
+    /// 注释行与行尾注释不参与（`strip_trailing_comment` ＋ `//` 前缀）——否则一句解释就能把
+    /// 「这里本该有 Esc」说成已经有了。
+    fn c2190_closed_ids(app: &str) -> BTreeSet<String> {
+        let lines: Vec<&str> = app.lines().collect();
+        let mut out = BTreeSet::new();
+        for (i, raw) in lines.iter().enumerate() {
+            let code = strip_trailing_comment(raw);
+            if code.trim_start().starts_with("//") || !code.contains("\"Escape\"") {
+                continue;
+            }
+            out.extend(c2190_branch_hidden(app, &code));
+            for param in c2190_element_by_id_params(&code) {
+                if !code.contains(&format!("getElementById({param}).hidden = true")) {
+                    continue;
+                }
+                if let Some(ids) = c2190_foreach_binding(&lines, i, &param) {
+                    out.extend(ids);
+                }
+            }
+        }
+        out
+    }
+
+    /// 轴：快捷键面板宣传（且 `ui/README.md` 承诺）的 Esc 契约必须覆盖**行内卡片**。
+    #[test]
+    fn the_escape_contract_reaches_every_inline_panel() {
+        // ── R2（名册阳性对照）：恰六枚，且不含 `#mk-recent`（它没有取消控件）───────────────
+        let roster = c2190_roster(INDEX_HTML);
+        let expected: Vec<String> = [
+            "ak-new-inline",
+            "dept-form-card",
+            "model-form-card",
+            "raise-card",
+            "share-form-card",
+            "topup-card",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        assert_eq!(
+            roster, expected,
+            "`#app` 内「自带取消控件」的行内卡片集合变了 —— 若是有意新增，请一并给它一条 Esc 分支"
+        );
+        assert!(
+            !roster.contains(&"mk-recent".to_string()),
+            "`#mk-recent` 没有取消控件（「清空」是数据动作），不该进本轴名册"
+        );
+
+        // ── R1（主牙）：每张这样的卡片都必须有一条 Esc 分支真的收起它 ─────────────────────
+        let closed = c2190_closed_ids(APP_JS);
+        assert!(
+            closed.len() >= 5,
+            "一条 Esc 分支都没读到 —— R1 会退化成恒真：{closed:?}"
+        );
+        let missing: Vec<&String> = roster.iter().filter(|id| !closed.contains(*id)).collect();
+        assert!(
+            missing.is_empty(),
+            "这些行内卡片自带取消控件、却没有任何 Esc 分支收起它们：{missing:?}\
+             （`ui/README.md`：『行内表单 Enter 提交、Esc 关闭行内卡片』）"
+        );
+
+        // ── R3（反向）：修的那条分支必须承重 —— 摘掉它，缺的**恰**是 `#share-form-card` ────
+        let stripped = c2190_variant_without_share_escape(APP_JS);
+        assert_ne!(stripped, APP_JS, "锚点漂移：摘掉那条 Esc 之后树没变");
+        let after = c2190_closed_ids(&stripped);
+        let gone: BTreeSet<String> = roster
+            .iter()
+            .filter(|id| !after.contains(*id))
+            .cloned()
+            .collect();
+        assert_eq!(
+            gone,
+            ["share-form-card"]
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<BTreeSet<_>>(),
+            "把上架表单那条 Esc 分支摘掉之后，缺的必须**恰**是 `#share-form-card`，\
+             其余五张卡照旧都有（否则 R1 的判别式变了）"
+        );
+    }
+
+    /// 把 `#share-form-card` 那条 Esc 分支摘掉 —— **不写死那一行的字面量**（#469：门禁不许把
+    /// 这一次编辑的文本钉成快照），而是按「含 `"Escape"` 且点名该卡片」这个形状去找它。
+    fn c2190_variant_without_share_escape(app: &str) -> String {
+        let lines: Vec<&str> = app.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.contains("\"Escape\"") && l.contains("\"#share-form-card\""))
+            .expect("真树上找不到点名 `#share-form-card` 的 Esc 分支（锚点漂移）");
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != at)
+            .map(|(_, l)| *l)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 判别式的牙：三种「真的收起」都认，三种竞争写法都不认，注释不算证据。
+    #[test]
+    fn the_inline_panel_esc_extractors_have_teeth() {
+        // ── 名册：自带取消控件的卡入集；没有取消控件的（`mk-recent` 形态）不入集 ────────────
+        let markup = concat!(
+            "<div id=\"login-view\"></div>\n",
+            "<div id=\"app\" class=\"app hidden\">\n",
+            "  <div class=\"recent-row\" id=\"mk-recent\" hidden></div>\n",
+            "  <div class=\"card\" id=\"a-card\" hidden>\n",
+            "    <button type=\"button\" id=\"a-cancel\">x</button>\n",
+            "  </div>\n",
+            "  <div class=\"card\" id=\"b-card\" hidden>\n",
+            "    <button type=\"button\" id=\"b-cancel\">x</button>\n",
+            "  </div>\n",
+            "</div>\n",
+        );
+        assert_eq!(
+            c2190_roster(markup),
+            vec!["a-card".to_string(), "b-card".to_string()],
+            "名册：两张带取消控件的卡（`mk-recent` 无控件 ⇒ 不入集）"
+        );
+        assert_eq!(
+            c2190_panel_positions(markup).len(),
+            3,
+            "位置化副本仍是 `#app` 内全部裸 `hidden` 的具名元素（三枚）"
+        );
+        let no_control = markup.replace(
+            "    <button type=\"button\" id=\"a-cancel\">x</button>\n",
+            "",
+        );
+        assert_ne!(no_control, markup, "去掉取消控件的锚点漂移了");
+        assert_eq!(
+            c2190_roster(&no_control),
+            vec!["b-card".to_string()],
+            "没有取消控件的卡片不该进名册（名册是「用户点得到关闭」的 markup 证据）"
+        );
+        // `data-i18n-id="…-cancel"` 不是元素 id；类频道的 `hidden` 不算（沿用 C2176 的尺子）
+        let sneaky = concat!(
+            "<div id=\"app\" class=\"app hidden\">\n",
+            "  <div class=\"card\" id=\"a-card\" hidden>\n",
+            "    <span data-i18n-id=\"a-cancel\"></span>\n",
+            "  </div>\n",
+            "  <section class=\"view hidden\" id=\"view-x\"></section>\n",
+            "</div>\n",
+        );
+        assert!(
+            c2190_roster(sneaky).is_empty(),
+            "`data-i18n-id` / 类频道的 `hidden` 被当成了本轴的成员"
+        );
+
+        // ── 判据：三种「真的收起」的写法都认 ─────────────────────────────────────────────
+        let literal = concat!(
+            "  el.addEventListener(\"keydown\", (e) => {\n",
+            "    if (e.key === \"Escape\") { $(\"#a-card\").hidden = true; }\n",
+            "  });\n",
+        );
+        assert!(
+            c2190_closed_ids(literal).contains("a-card"),
+            "本行内联的属性频道收起没被认出来"
+        );
+        let via_fn = concat!(
+            "  function hideA() {\n",
+            "    $(\"#a-card\").hidden = true;\n",
+            "  }\n",
+            "  el.addEventListener(\"keydown\", (e) => { if (e.key === \"Escape\") { hideA(); } });\n",
+        );
+        assert!(
+            c2190_closed_ids(via_fn).contains("a-card"),
+            "经被调关闭器（一跳）的收起没被认出来"
+        );
+        let via_helper = concat!(
+            "  const cardA = () => $(\"#a-card\");\n",
+            "  const hideA = () => { cardA().hidden = true; };\n",
+            "  el.addEventListener(\"keydown\", (e) => { if (e.key === \"Escape\") { hideA(); } });\n",
+        );
+        assert!(
+            c2190_closed_ids(via_helper).contains("a-card"),
+            "经零参选择器助手的收起没被认出来（这正是 `hideShareForm` / `shareFormCard` 的形状）"
+        );
+        let for_each = concat!(
+            "  [\"a-card\", \"b-card\"].forEach((id) => {\n",
+            "    document.getElementById(id).addEventListener(\"keydown\", (e) => {\n",
+            "      if (e.key === \"Escape\") { document.getElementById(id).hidden = true; }\n",
+            "    });\n",
+            "  });\n",
+        );
+        let ids = c2190_closed_ids(for_each);
+        assert!(
+            ids.contains("a-card") && ids.contains("b-card"),
+            "`].forEach((id)` 别名形状没被认出来（topup / raise 两张卡就是它）：{ids:?}"
+        );
+
+        // ── 三种竞争写法都不认 ───────────────────────────────────────────────────────────
+        let class_only = concat!(
+            "  el.addEventListener(\"keydown\", (e) => {\n",
+            "    if (e.key === \"Escape\") { $(\"#a-card\").classList.add(\"hidden\"); }\n",
+            "  });\n",
+        );
+        assert!(
+            c2190_closed_ids(class_only).is_empty(),
+            "类频道被当成了属性频道（`.hidden` 会永远是 `false`，卡片此后再也打不开）"
+        );
+        let guard_only = "  if (e.key === \"Escape\" && !$(\"#a-card\").hidden) { return; }\n";
+        assert!(
+            c2190_closed_ids(guard_only).is_empty(),
+            "只**提到**元素、没有任何收起动作的行被当成了 Esc 分支"
+        );
+        let commented = "  // if (e.key === \"Escape\") { $(\"#a-card\").hidden = true; }\n";
+        assert!(
+            c2190_closed_ids(commented).is_empty(),
+            "注释行被当成了证据（一句解释就能把缺陷说成修好了）"
+        );
+    }
+
     // ═════════════ C2178：语言切换必须够到 `#app` **内部**的卡片 ═════════════
     //
     // R94（#288 / `5e67055`）的刷新名册按构造只取 `ui/index.html` 里 `#app` **之后**的顶行浮层

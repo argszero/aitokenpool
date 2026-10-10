@@ -4408,6 +4408,11 @@
 
     $("#share-add-btn").addEventListener("click", showShareForm);
     $("#sf-cancel").addEventListener("click", hideShareForm);
+    // 键盘可达（rant 2026-08-17T15:50:05 B.9）：Esc 收起上架 / 编辑表单 —— 与部门、模型两张行内表单
+    // 同**层**（卡级监听），而不是挂在全局梯上：焦点在表单输入框里，全局梯的 typing 守卫会先把按键
+    // 吃掉（`#ak-new-inline` 靠一条位于守卫**之前**的分支才不受影响）。走卡片自己的关闭器，
+    // 与「取消」按钮同一条收尾路径 —— 它除转 `hidden` 外还要清 `editingShareId`。
+    $("#share-form-card").addEventListener("keydown", (e) => { if (e.key === "Escape") { hideShareForm(); } });
 
     // 「每天」快捷选项：勾选 = 全选周一~周日（并禁用单日），取消 = 全清
     const allCb = document.querySelector("#sf-days-all input");
