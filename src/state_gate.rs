@@ -20498,6 +20498,28 @@ fn r156_variant_defect(src: &str) -> String {
 // 射程（如实）：词法级。它证①绿柱读的是 `income` 字段②三个载体是同一个**键**③该键的包值与
 // 交易页那条序列的键**逐字相同**④earn-only 卡另有一个名字、且它的供数仍是 `month_earn`。
 // 它**不证**屏幕上那一刻的数值（那一半归 jsdom 探针），也不解析正则字面量与模板串。
+//
+// ── R5（本轴按**键**枚举载体的盲区，2026-10-10 补）────────────────────────────────
+//
+// R1–R4 的名册是**按键**取的：图例的键、tooltip 的键、交易页图例的键。可是同一条序列在
+// 交易页还会出现在**另一个键里** —— 趋势卡四档控件的**合成档位**（`tx.trend.mode.both`，
+// 「消费＋收入」）是**一个键同时命名两条序列**：它既不是那条序列的键，也不在图例里，
+// 因此 R2「三个载体是同一个键」永远看不见它。修前树的形状正是这个盲区：
+//
+//   `tx.trend.mode.both` 的**英文**值是 `Spend + income`（作者自己按 `income` 命名），
+//   而**中文**值写的是 `消费＋收益` —— 用了 `earn` 那一路的词；同一屏、同一次点击，
+//   档位下的**图例**推的是 `T("tx.trend.metric.income")`＝「收入」⇒ **两个词同屏**。
+//   而把那条序列改名成「收益」不是选项：那会把它与 earn-only 卡（`dash.earnings`
+//   「共享收益」）重新压成同一个词，正是本轴的 C2175 缺陷原样复活。
+//
+// R5 因此**不按手抄名册**判：合成档位是从渲染器自己的 `txTrendShows()`（`consume: m ===
+// "consume" || m === "both"` …）**推导**出来的 —— 被 ≥2 个系列字段同时命中的那一档；它合并
+// 的那几条序列则是「与它同组的字段里除它以外的档位」。规则＝合成标签在两个包里都必须**具名**
+// 它合并的每一条序列（用该序列**自己的**标签，大小写不敏感），且**不得**带上它没合并的档位
+// 的名字（挡住「往上加词」的化妆式修法）。
+//
+// 射程（如实）：同上，词法级。它证「同一个键的两个语言值指的是同一条序列、且与它合并的那几条
+// 序列同名」，**不证**像素（屏幕那一刻的文本由仓外 jsdom 探针的 A/B 腿负责）。
 
 /// 图例容器（绿柱标签的静态载体 —— 射程起点）。
 const R68_LEGEND_ID: &str = "id=\"dash-trend-legend\"";
@@ -20513,6 +20535,14 @@ const R68_EARN_FIELD: &str = "month_earn";
 const R68_INCOME_FIELD: &str = "income";
 /// 语言层原语（取标签键时的锚）。
 const R68_T_OPEN: &str = "T(\"";
+/// 趋势卡四档控件的容器（R5 的射程起点）。
+const R68_TABS_ID: &str = "id=\"tx-trend-modes\"";
+/// 档位按钮上那个「档位 id」属性。
+const R68_MODE_ATTR: &str = "data-tx-trend-mode=\"";
+/// 文本钩子的属性前缀（带 `="` ⇒ `data-i18n-title=` / `-label=` 不会被误当文本键）。
+const R68_I18N_ATTR: &str = "data-i18n=\"";
+/// `txTrendShows()` 里档位比较的形状（`m === "both"`）。
+const R68_MODE_CMP: &str = "m === \"";
 
 /// 从 `marker` 所在元素的**起始 `<div`** 起配平到它的收尾（返回值含 `</div>`）。
 ///
@@ -20629,19 +20659,156 @@ fn r68_tooltip_key(body: &str, var: &str) -> Option<String> {
     found
 }
 
-/// 四条判词的真值（顺序同 R1..R4）。
+/// `chunk` 里属性 `attr`（**含** `="`）的取值。
+fn r68_attr_value(chunk: &str, attr: &str) -> Option<String> {
+    let at = chunk.find(attr)? + attr.len();
+    let e = chunk[at..].find('"')? + at;
+    Some(chunk[at..e].to_string())
+}
+
+/// `#tx-trend-modes` 里每个档位按钮的 `(档位 id, 标签键)`，按 markup 顺序。
+///
+/// 键与档位 id 都从**标记**读 ⇒ 本轴的名册与 R2 一样，零手抄。
+fn r68_mode_tabs(html: &str) -> Option<Vec<(String, String)>> {
+    let block = r68_element_block(html, R68_TABS_ID)?;
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(p) = block[from..].find("<button") {
+        let s = from + p;
+        let e = block[s..].find("</button>")? + s;
+        let btn = &block[s..e];
+        out.push((
+            r68_attr_value(btn, R68_MODE_ATTR)?,
+            r68_attr_value(btn, R68_I18N_ATTR)?,
+        ));
+        from = e;
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// `txTrendShows()` 的 `return { … }` 里，每个系列字段命中的档位 id 集合（按字段序）。
+///
+/// 「哪一档同时显示两条序列」是**渲染器自己**说的（`consume: m === "consume" || m === "both"`），
+/// 所以 R5 不需要任何一份手抄的档位名册 —— 合成档位是从这里**推导**出来的。
+fn r68_trend_series_fields(app: &str) -> Option<Vec<(String, Vec<String>)>> {
+    let body = js_function_body(app, "txTrendShows")?;
+    let at = body.find("return {")? + "return {".len();
+    let e = body[at..].find('}')? + at;
+    let mut out = Vec::new();
+    for part in body[at..e].split(',') {
+        let (field, expr) = part.split_once(':')?;
+        let field = field.trim().to_string();
+        let mut ids = Vec::new();
+        let mut from = 0usize;
+        while let Some(p) = expr[from..].find(R68_MODE_CMP) {
+            let s = from + p + R68_MODE_CMP.len();
+            let end = expr[s..].find('"')? + s;
+            ids.push(expr[s..end].to_string());
+            from = end;
+        }
+        if field.is_empty() || ids.is_empty() {
+            return None;
+        }
+        out.push((field, ids));
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// R5：**合成档位**（同时显示两条序列的那一档）的标签，必须由**它合并的那几条序列自己的名字**
+/// 构成，且不得带上它没合并的那些档位的名字 —— 两个语言包各判一次。
+///
+/// 这正是按**键**枚举载体的规则看不见的那一类：R2 拿的是「图例的键 == 交易页图例的键」，
+/// 而合成标签是**一个键同时命名两条序列**（`tx.trend.mode.both`），它既不是那条序列的键、
+/// 也不在图例里 —— 修前树的形状就是它写着另一条序列（`earn`）的名字。
+fn r68_composite_names_its_series(
+    tabs: &[(String, String)],
+    fields: &[(String, Vec<String>)],
+    zh: &str,
+    en: &str,
+) -> bool {
+    let hits = |id: &str| -> usize {
+        fields
+            .iter()
+            .filter(|(_, ids)| ids.iter().any(|m| m == id))
+            .count()
+    };
+    let multi: Vec<&str> = tabs
+        .iter()
+        .map(|(i, _)| i.as_str())
+        .filter(|i| hits(i) >= 2)
+        .collect();
+    if multi.len() != 1 {
+        return false;
+    }
+    let comp = multi[0];
+    let key_of = |id: &str| -> Option<&str> {
+        tabs.iter()
+            .find(|(i, _)| i.as_str() == id)
+            .map(|(_, k)| k.as_str())
+    };
+    let merged: Vec<&str> = fields
+        .iter()
+        .filter(|(_, ids)| ids.iter().any(|m| m == comp))
+        .flat_map(|(_, ids)| ids.iter().map(|m| m.as_str()))
+        .filter(|m| *m != comp)
+        .collect();
+    let others: Vec<&str> = tabs
+        .iter()
+        .map(|(i, _)| i.as_str())
+        .filter(|i| *i != comp && !merged.contains(i))
+        .collect();
+    let Some(comp_key) = key_of(comp) else {
+        return false;
+    };
+    let label = |region: &str, key: &str| pack_string(region, key).map(|v| v.to_lowercase());
+    for region in [zh, en] {
+        let Some(cl) = label(region, comp_key) else {
+            return false;
+        };
+        for m in &merged {
+            let Some(k) = key_of(m) else { return false };
+            let Some(v) = label(region, k) else {
+                return false;
+            };
+            if v.is_empty() || !cl.contains(&v) {
+                return false;
+            }
+        }
+        for o in &others {
+            let Some(k) = key_of(o) else { return false };
+            let Some(v) = label(region, k) else {
+                return false;
+            };
+            if cl.contains(&v) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// 五条判词的真值（顺序同 R1..R5）。
 #[derive(Debug)]
 struct R68Reading {
     r1: bool,
     r2: bool,
     r3: bool,
     r4: bool,
+    r5: bool,
     detail: String,
 }
 
 impl R68Reading {
-    fn verdicts(&self) -> (bool, bool, bool, bool) {
-        (self.r1, self.r2, self.r3, self.r4)
+    fn verdicts(&self) -> (bool, bool, bool, bool, bool) {
+        (self.r1, self.r2, self.r3, self.r4, self.r5)
     }
 
     fn report(&self) -> String {
@@ -20649,7 +20816,7 @@ impl R68Reading {
     }
 }
 
-/// 读三份制品（语言包 / markup / 渲染器），导出四条判词。键与期望值全部**派生**：
+/// 读三份制品（语言包 / markup / 渲染器），导出五条判词。键与期望值全部**派生**：
 /// 图例的键来自 markup、tooltip 的键来自渲染器、交易页那条序列的键来自 `app.js` 自己的
 /// 图例行、绿柱的字段名来自绿柱自己的绑定 —— 名册里没有一个手抄的键。
 fn r68_read(pack: &str, html: &str, app: &str) -> R68Reading {
@@ -20710,14 +20877,27 @@ fn r68_read(pack: &str, html: &str, app: &str) -> R68Reading {
     let r4 = card_body.contains(&format!("Live.wallet.{R68_EARN_FIELD}"))
         && !card_body.contains(R68_INCOME_FIELD);
 
+    // R5：**合成档位**（同时显示两条序列的那一档）的标签，必须由它合并的那几条序列自己的名字
+    // 构成。R2 只按**键**枚举载体 —— 而合成标签是「一个键同时命名两条序列」，既不是那条序列
+    // 的键、也不出现在图例里 ⇒ 任何按单个键取值的规则都看不见它（修前树正是这个形状：
+    // `tx.trend.mode.both` 的中文名用了 `earn` 那一路的词，而它自己的英文名写的是 `income`）。
+    let tabs = r68_mode_tabs(html);
+    let fields = r68_trend_series_fields(app);
+    let r5 = match (tabs.as_deref(), fields.as_deref()) {
+        (Some(tabs), Some(fields)) => r68_composite_names_its_series(tabs, fields, zh, en),
+        _ => false,
+    };
+
     R68Reading {
         r1,
         r2,
         r3,
         r4,
+        r5,
         detail: format!(
-            "r1={r1} r2={r2} r3={r3} r4={r4} | legend_key={legend_key:?} \
-             bar_var={bar_var:?} tooltip_key={tooltip_key:?} tx_key={tx_key:?} rhs={rhs:?}"
+            "r1={r1} r2={r2} r3={r3} r4={r4} r5={r5} | legend_key={legend_key:?} \
+             bar_var={bar_var:?} tooltip_key={tooltip_key:?} tx_key={tx_key:?} rhs={rhs:?} \
+             tabs={tabs:?} fields={fields:?}"
         ),
     }
 }
@@ -20728,7 +20908,7 @@ fn the_dashboard_trend_names_its_series_the_way_the_transactions_trend_names_it(
     let rd = r68_read(I18N_JS, INDEX_HTML, APP_JS);
     assert_eq!(
         rd.verdicts(),
-        (true, true, true, true),
+        (true, true, true, true, true),
         "绿柱的名字与它画的那条序列不是同一件事：{}",
         rd.report()
     );
@@ -20768,6 +20948,53 @@ fn the_dashboard_trend_label_roster_is_derived() {
         pack_string(zh, R68_EARNINGS_KEY).is_some() && pack_string(en, R68_EARNINGS_KEY).is_some(),
         "语言包里缺 `{R68_EARNINGS_KEY}` —— 那台仪器读的是另一张卡了"
     );
+
+    // R5 的两份名册也都**真的**扫到了（否则 R5 在提取器返回空时恒假，等于一条哑规则）：
+    // ① 档位控件里每个按钮都有 `data-tx-trend-mode` 与文本键，且两个包都能取到值；
+    // ② `txTrendShows()` 的字段里出现的档位 id 全部是控件上真实存在的档位；
+    // ③ 「同时显示两条序列」的档位恰好一个 —— 那就是 R5 判的那个合成档位。
+    let tabs = r68_mode_tabs(INDEX_HTML).expect("`#tx-trend-modes` 的档位按钮扫不到");
+    assert!(
+        tabs.len() >= 3,
+        "档位控件里只有 {} 个按钮 —— 名册不像名册",
+        tabs.len()
+    );
+    for (id, key) in &tabs {
+        assert!(!id.is_empty(), "档位按钮没有 `data-tx-trend-mode`");
+        assert!(pack_string(zh, key).is_some(), "zh 包缺键 `{key}`");
+        assert!(pack_string(en, key).is_some(), "en 包缺键 `{key}`");
+    }
+    let fields =
+        r68_trend_series_fields(APP_JS).expect("`txTrendShows()` 的 `return { … }` 读不出来");
+    assert!(
+        fields.len() >= 2,
+        "`txTrendShows()` 只陈述了 {} 条序列",
+        fields.len()
+    );
+    for (_, ids) in &fields {
+        for m in ids {
+            assert!(
+                tabs.iter().any(|(i, _)| i == m),
+                "`txTrendShows()` 提到档位 `{m}`，而控件上没有这个档位 —— 两份名册分家了"
+            );
+        }
+    }
+    let multi: Vec<&str> = tabs
+        .iter()
+        .map(|(i, _)| i.as_str())
+        .filter(|i| {
+            fields
+                .iter()
+                .filter(|(_, ids)| ids.iter().any(|m| m == i))
+                .count()
+                >= 2
+        })
+        .collect();
+    assert_eq!(
+        multi.len(),
+        1,
+        "「同时显示两条序列」的档位不是恰好一个：{multi:?}"
+    );
 }
 
 /// 每条规则**各有独立的牙**：每个合成变异体只打翻它针对的那一条（基线＝已知为绿的活树）。
@@ -20779,7 +21006,7 @@ fn the_dashboard_trend_label_rules_have_teeth() {
     let live = r68_read(I18N_JS, INDEX_HTML, APP_JS);
     assert_eq!(
         live.verdicts(),
-        (true, true, true, true),
+        (true, true, true, true, true),
         "基线不是绿的 —— 变异体的读数无从解释：{}",
         live.report()
     );
@@ -20787,22 +21014,52 @@ fn the_dashboard_trend_label_rules_have_teeth() {
     // ① 把绿柱接到 `.earn` 上（「改数据迁就旧名字」的竞争修法）⇒ 只翻 R1。
     let app = r68_variant_earn_field(APP_JS);
     let rd = r68_read(I18N_JS, INDEX_HTML, &app);
-    assert_eq!(rd.verdicts(), (false, true, true, true), "{}", rd.report());
+    assert_eq!(
+        rd.verdicts(),
+        (false, true, true, true, true),
+        "{}",
+        rd.report()
+    );
 
     // ② 只改包值（给同一条序列另起一个同义的窄词）⇒ 只翻 R2。
     let pack = r68_variant_pack_value(I18N_JS, "dash.trend.income", "共享分成");
     let rd = r68_read(&pack, INDEX_HTML, APP_JS);
-    assert_eq!(rd.verdicts(), (true, false, true, true), "{}", rd.report());
+    assert_eq!(
+        rd.verdicts(),
+        (true, false, true, true, true),
+        "{}",
+        rd.report()
+    );
 
     // ③ 让 earn-only 卡与绿柱共用同一个词（**修前树的形状**）⇒ 只翻 R3。
     let pack = r68_variant_pack_value(I18N_JS, R68_EARNINGS_KEY, "收入");
     let rd = r68_read(&pack, INDEX_HTML, APP_JS);
-    assert_eq!(rd.verdicts(), (true, true, false, true), "{}", rd.report());
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, false, true, true),
+        "{}",
+        rd.report()
+    );
 
     // ④ 把 earn-only 卡也接到 income 上（把同一个错换个方向重犯）⇒ 只翻 R4。
     let app = r68_variant_widen_card(APP_JS);
     let rd = r68_read(I18N_JS, INDEX_HTML, &app);
-    assert_eq!(rd.verdicts(), (true, true, true, false), "{}", rd.report());
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, true, false, true),
+        "{}",
+        rd.report()
+    );
+
+    // ⑤ 合成档位的标签改用另一条序列的名字（**修前树的形状**）⇒ 只翻 R5。
+    let pack = r68_variant_pack_value(I18N_JS, "tx.trend.mode.both", "消费＋收益");
+    let rd = r68_read(&pack, INDEX_HTML, APP_JS);
+    assert_eq!(
+        rd.verdicts(),
+        (true, true, true, true, false),
+        "{}",
+        rd.report()
+    );
 }
 
 /// 扫描器自证：提取器与配平在**合成输入**上按声明工作（与活树无关）。

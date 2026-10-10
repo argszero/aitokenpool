@@ -375,7 +375,7 @@
     "tx.trend.card": "每日消费 / 收益",
     "tx.trend.card.sub": "单位：点数 · 随上方时间段与筛选联动",
     "tx.trend.mode.net": "总点数",
-    "tx.trend.mode.both": "消费＋收益",
+    "tx.trend.mode.both": "消费＋收入",
     "tx.trend.card.net": "点数变化",
     "tx.trend.net.sub": "单位：点数 · 时间窗口内累计净变化（起点为 0，可为负）",
     "tx.col.time": "时间",
