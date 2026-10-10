@@ -361,7 +361,9 @@ pub struct Provider {
 pub struct Plan {
     pub id: String,
     pub provider: String,
-    /// 显示名（可选；为空时 /api/plans 按 type 推导）
+    /// 显示名（可选）：`config.example.toml` 的 `[[plans]]` 一律不写它 ⇒ `/api/plans` 原样回传
+    /// 空串（语言中性标记，后端**不自造**）；显示文案由前端 `planLabel()` 按 `type` 取语言包键
+    ///（机制与缘由见 `src/gateway.rs` 的 `plans()`）。
     #[serde(default)]
     pub name: String,
     /// paygo | token | coding
