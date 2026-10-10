@@ -63,7 +63,9 @@ python3 -m http.server 8000 --directory ui
 ui/
 ├── index.html        # 入口（登录页 + 应用外壳 + 全部视图）
 ├── css/style.css     # 设计系统（深色主题 · 强调色 #4ecdc4 · 响应式预留 · v1.15 视觉美化）
+├── js/api.js         # API 客户端（封装 fetch：api.get/post/patch/del，自动带 Bearer token；401 → 清 token 回登录页）
 ├── js/data.js        # 内嵌数据（仅游客市场 MARKET + 上架表单兜底 MODELS/PLANS/PROVIDERS/PROVIDER_LABELS；登录态 mock 已清零 v1.22）
+├── js/i18n.js        # 语言包（零依赖，I18N zh/en 双词典 + t() + data-i18n 静态文案 + 后端错误映射）
 ├── js/app.js         # 交互逻辑（导航、筛选、表单、分页、Toast；v1.15 内联 SVG 图标 + 空状态组件）
 └── README.md         # 本文件
 ```
