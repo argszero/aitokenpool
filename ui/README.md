@@ -213,7 +213,7 @@ ui/
 - 单例 `#toast` 已废弃 → 改为**队列容器** `#toast-wrap`（`index.html` 底部，初始为空）：`position:fixed; bottom:28px; left:50%; translateX(-50%)`，`flex-direction:column` 纵向堆叠，`gap:10px`，`pointer-events:none`（不拦截页面点击）；
 - `toast(msg, type)` **每次创建独立 `.toast` 元素**（`document.createElement` + `appendChild`），不再覆盖旧消息；**上限 `TOAST_MAX = 3`**——超限同步移除最旧一条（`wrap.children[0]`）腾位；
 - **独立生命周期**：每条到时（`TOAST_MS=2600`）加 `.out` 触发 `toast-out` 淡出动画（`TOAST_OUT_MS=200`）后 `removeChild`；互不影响、不共享定时器；
-- **分级样式保留**：`.toast.success/.error/.info` 边框色 + 文字色与 v1.16 一致，75 个 `toast()` 调用点零改动；`.toast` 自身 `pointer-events:auto`（容器 none），为可交互 toast（如按钮）预留；
+- **分级样式保留**：`.toast.success/.error/.info` 边框色 + 文字色与 v1.16 一致，77 个 `toast()` 调用点零改动；`.toast` 自身 `pointer-events:auto`（容器 none），为可交互 toast（如按钮）预留；
 - 冒烟测试注意：DOM-stub 的 `classList.add` 只更新 `_classes` 集合、不同步 `className` 字符串——断言淡出态用 `_classes.has("out")`。
 
 ## 快捷键帮助面板约定（v1.19，rant 2026-08-17T20:39:30 E）
