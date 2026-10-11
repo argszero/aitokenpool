@@ -12367,7 +12367,7 @@ function bind() {
         );
         // 7) 箭头函数常量没有 `function` 声明头 ⇒ 提取器返回 None（不是空串），调用方要 `continue`。
         //    ⚠️ **合成输入，不用真实文件** —— 真实文件里 `esc` **同时**还有一个**具名函数表达式**
-        //    （`app.js:323` `document.addEventListener("keydown", function esc(e) {`）⇒ 提取器**该**
+        //    （`app.js` 的 `confirmInline()` 里就有一个具名函数表达式 `function esc(e) {…}`）⇒ 提取器**该**
         //    返回 Some。踩过：本条断言原写作 `function_source(APP_JS, "esc").is_none()`，在**所有**树上
         //    恒红（自检自红 ⇒ 自检不成立）。教训：**名字不是标识符的唯一载体** —— 同一名字可以有
         //    箭头常量、具名函数声明、具名函数表达式三种载体，且可以同时存在。
@@ -15263,7 +15263,7 @@ fn c2180_read(html: &str, boundary: &str, ranges: &[String]) -> C2180Reading {
 /// 分页/筛选/时间段是模块级的 —— 尤其 `txTable.loaded*` 是**载荷的有效性证据**。载荷
 /// （`Live.transactions`）被清空而证据留下 ⇒ 下一位用户进入交易视图时守卫按 `txTable.page`
 /// （上一位用户的第 5 页）发请求；服务端 `offset=(page-1)*page_size` + `LIMIT ? OFFSET ?`
-/// （`wallet.rs:389/396/410`）回 `items: []` 而 `total: 3` ⇒ 屏幕上「没有匹配的记录」旁边写着
+/// （`wallet.rs` 的 `transactions()`）回 `items: []` 而 `total: 3` ⇒ 屏幕上「没有匹配的记录」旁边写着
 /// 「共 3 条」，且**不自愈**（`buildDataTable` 把 `state.page` 夹到 1 发生在渲染**内部**，守卫
 /// 不会因此重跑；实测 2.5s 内零次纠正请求）。同一跳里 `type=consume` + 7 天 `start=` 也从
 /// 上一位用户手里带过来，新用户的视图被静默收窄。
