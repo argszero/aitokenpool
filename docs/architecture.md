@@ -78,7 +78,7 @@
 > 本表按**功能面**归纳，不是逐条路由的完整清单；权威清单以 `src/routes/mod.rs` 的 `router()` 为准。
 
 - `GET /healthz` — 健康检查（返回版本号）
-- `POST /api/auth/register` / `login` / `verify` / `resend-code` / `forgot` / `change-password`
+- `POST /api/auth/register` / `login` / `verify` / `resend-code` / `forgot-password` / `change-password`
 - `GET /api/me` — 当前用户
 - `POST/GET/DELETE /api/api-keys` — 分发 key 生成 / 列表 / 撤销
 - `GET /api/models` — 模型列表（含可用 key 与价格）
