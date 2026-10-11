@@ -97,7 +97,7 @@ interval_secs = 60                  # 扫描间隔（秒）
 anchor_currency = "CNY"
 
 # 点数粒度：1 CNY = 1 点（点数可为小数，账本与展示最多保留 5 位小数）。
-# 例：DeepSeek Flash 输出 4.5 元/M → 消费 0.0000045 点/token。
+# 例：某模型输出价 4.5 元/M → 消费 0.0000045 点/token。
 points_per_unit = 1
 
 # 显示名与最小单位（仅用于 UI 展示，不参与账本计算）
