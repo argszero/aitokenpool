@@ -22659,7 +22659,7 @@ fn r117_mutate(src: &str, old: &str, new: &str) -> String {
 }
 
 /// 轴：`confirmInline` 的三条出口（执行 / 超时 / Esc）都走到**同一个**收尾，且收尾把该做的
-/// 都做了。修前：执行出口不还原标签、超时出口不摘监听 ⇒ 五条规则里四条同时红。
+/// 都做了。修前：执行出口不还原标签、超时出口不摘监听 ⇒ 六条规则里五条同时红（见下方缺陷形状的判词）。
 #[test]
 fn the_inline_confirm_disarms_on_every_exit() {
     let rd = r117_read(APP_JS);
