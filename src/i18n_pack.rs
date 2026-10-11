@@ -1358,7 +1358,7 @@ fn key_token_occurs(corpus: &str, key: &str) -> bool {
 ///
 /// ⚠️ 这条规则在**今天的真语料上是冗余的**（A/B 实测，诚实记录）：`share.day.1..7`
 /// 同时被 `index.html:305-311` 的周几芯片以 `data-i18n` **静态绑定**，所以即便把
-/// `app.js:946-947` 那段拼接删掉，该家族仍然可达、门禁照绿。它的牙齿由
+/// `app.js` 的 `fmtDays()` 那段拼接删掉，该家族仍然可达、门禁照绿。它的牙齿由
 /// `pack_reachability_checker_detects_injected_defects` 用**合成输入**证明
 /// （删掉前缀后 `pfx.*` 必须立刻变不可达）—— 这条规则是为**未来**的动态家族准备的：
 /// 没有它，`T("<prefix>" + n)` 拼出来的那一族键会被整族误报成孤儿。
