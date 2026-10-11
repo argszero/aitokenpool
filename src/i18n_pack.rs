@@ -3058,7 +3058,7 @@ mod tests {
     ///
     /// `transactions.time` 不在其中：`time` 这个名字太泛（游客 mock 的 `MM-DD HH:mm` 也叫
     /// `time`，`dailySeries` 对它取前 5 位是**故意的**），所以交易视图行的形状由
-    /// `txs_to_view_row_carries_the_raw_timestamp` 单独按位置钉。
+    /// `wire_timestamps_reach_the_renderer_unsliced` 单独按位置钉。
     const WIRE_TS_FIELDS: [&str; 2] = ["created_at", "last_used"];
 
     /// 前端现成的本地化 helper —— 出现在「被切的表达式」里就算这串是**先交给 helper 再切**的。

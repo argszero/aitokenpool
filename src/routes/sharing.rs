@@ -226,7 +226,7 @@ pub async fn create(
 /// ⚠️ 这个聚合读**读模型** `tx_facts`，不读裸 `transactions`（rant 2026-10-09T12:28:58 的删除切片）：
 /// 明细一旦超过保留窗口就会被删掉，而收益是**分成**——少算一段历史等于发错钱。读模型把
 /// 「已折叠的汇总行 ∪ 尚未折叠的明细」合成一个可加视图，于是这里**无论明细删到哪一步都同值**
-/// （`the_earn_aggregate_is_the_same_across_the_deletion` 用真库钉住这条）。
+/// （`the_list_query_aggregates_earn_once_over_the_read_model` 用真库钉住这条）。
 ///
 /// 列顺序决定 [`sharing_row`] 的下标读取，且两个调用点必须**逐字相同** —— 只改一处会让所有字段
 /// 静默错位（不报错、类型也往往恰好兼容）。提取成函数就是为了让这件事只剩下一个地方可改
