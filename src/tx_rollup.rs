@@ -199,7 +199,7 @@ pub fn fold_pending(conn: &Connection, archive_watermark: i64, batch: i64) -> Re
 ///
 /// **对读模型无影响**：被删的行都满足 `id ≤ 汇总水位`，而视图 `tx_facts` 的明细臂只取
 /// `id > 汇总水位` —— 这些行在删除前后都**只**由汇总臂表示
-/// （`the_read_model_answers_the_same_aggregates_across_the_deletion` 用真库逐列钉住这条）。
+/// （`delete_folded_leaves_the_read_model_answering_the_same_numbers` 用真库逐列钉住这条）。
 /// 明细保留边界（UTC，`YYYY-MM-DDTHH:MM:SSZ`）：**早于它的明细不保证还在 `transactions` 里**。
 ///
 /// 这是「列表答不出来的那段」的**唯一定义处** —— 与 [`delete_folded`] 同一个时钟、同一个算式
