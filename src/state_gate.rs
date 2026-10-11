@@ -16844,7 +16844,7 @@ fn r92_variant_readme_desync(readme: &str) -> String {
 /// 取别名是因为 CI 跑 `clippy --all-targets -- -D warnings`，裸元组会触发 `type_complexity`。
 type R92Leg<'a> = (&'a str, &'a str, &'a str, &'a str, (bool, bool, bool));
 
-/// 提取器落在真位点上（自证：定义处恰好一处、调用点 75 条、实参数都是 1..3、词表三者非空）。
+/// 提取器落在真位点上（自证：定义处恰好一处、调用点 77 条、实参数都是 1..3、词表三者非空）。
 #[test]
 fn the_r92_scanner_lands_on_the_real_toast_sites() {
     let sites = r92_sites(APP_JS);
