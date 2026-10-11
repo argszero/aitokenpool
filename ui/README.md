@@ -50,7 +50,7 @@ python3 -m http.server 8000 --directory ui
 同一套界面（角色视图）：
 
 1. 仪表盘 Dashboard — 点数余额、本月用量、共享收益、**本月点数变化（近 1 月按类型汇总收支：赠送/过期/收益/消费/充值/提现 + 净变化，取代静态"点数来源"分组）**
-2. 模型市场 Marketplace — 模型浏览、**搜索（输入防抖 ~150ms + 关键词 `<mark>` 高亮 + 清空 × 按钮，v1.18 D）**、厂商筛选、排序（按价格/上下文）；可用性标注「多 key · 自动故障转移」（该模型配置多个上游 key，见 `docs/architecture.md` §3 模块表 `router.rs` 行）；每行「使用 / 消费」入口 → 聊天 Mock 模拟调用（按模型输出参考价扣小数点数，如 -0.38 点，产生消费交易；余额不足时阻断并提示）
+2. 模型市场 Marketplace — 模型浏览、**搜索（输入防抖 ~150ms + 关键词 `<mark>` 高亮 + 清空 × 按钮，v1.18 D）**、厂商筛选、排序（按价格/上下文）；可用性标注「多 key · 自动故障转移」（该模型配置多个上游 key，见 `docs/architecture.md` §3 模块表 `router.rs` 行）；每行「使用 / 消费」入口 → **真实消费调用**（`consumeModel()`：登录态 `POST /v1/chat/completions`，成功后刷新钱包与当前视图；余额不足 / 暂无可用 key 等由后端错误直接提示。聊天 Mock 是另一条路，见 §数据说明）
 3. 共享管理 Sharing — 默认只显示统计 + 我的共享列表（key 脱敏展示，可**编辑**（复用同一张行内表单 `#share-form-card`，打开即预填该行当前值）/ 暂停 / 恢复 / 重新上架 / 彻底删除；列表展示「厂商 · Plan / 模型 · 可用时间段」，如「智谱 · GLM Coding Plan / glm-5.2 · 周一~周五 09:00-18:00」，未设置显示「全天」）；点击"＋ 添加 / 上架新 key"展开上架表单（**三级联动：厂商 → Plan → 模型**——内置国内已知 Plan 清单（阿里云百炼 / 智谱 / 火山方舟 / Kimi / MiniMax / DeepSeek，每家含「API（按量）」= 按量计价的 key），选 Plan 后显示 Plan 类型（按量 / 订阅）；**可用时间段为结构化字段**：星期多选 chips + 起止时间（留空 = 全天不限），备注仅纯文本；须填 API Key，平台加密托管；分享者只填声明额度，单价由平台按模型定价自动计算并展示参考价），提交成功或取消后自动收起
 4. 钱包 Wallet — 点数余额、**本月点数变化（近 1 月按类型汇总收支 + 净变化，与仪表盘一致）**、**充值入口（US-4：模拟流程——输入点数 → 余额增加 → topup 交易记录；文案注明"演示，真实支付后续接入"；提现仍 disabled）**、**申请加额（US-20：企业成员余额低时申请更多点数 → 提交后等待管理员审批，默认需审批）**；收支明细已去重，统一到【交易记录】（页内提供跳转提示）
 5. 交易记录 Transactions — 消费/收益/充值/提现/赠送/过期（gift / expiry）唯一明细入口，Tab 筛选 + MRT 风格表格（列排序/列筛选/分页，与 Tab 叠加生效）
@@ -284,7 +284,7 @@ ui/
 - 数据：**localStorage `atp-recent-models`** = 最近模型**身份串**（`provider/model`）数组（JSON），**最多 5 个**、**去重**（`markRecentUsed(key)`：先滤掉已存在再 `unshift` 置顶，`saveRecentKeys` 截断 5）；`getRecentKeys()` try/catch 容错 ＋ **只认身份串**（旧版本存下的下标按空处理、一次性丢弃）→ 空数组；
   - ⚠️ C2138（#255）更正：本节原先记录的「`id` 数组」口径已作废 —— 当时的两个助手已改名为 `getRecentKeys`/`saveRecentKeys`，存储值由**数组下标**改为**身份串**；详见下文「模型身份：`provider/model`，不是数组下标」。
 - 渲染：`renderRecent()` 把身份串按 `find((x) => modelKey(x) === key)` 映射为 `.chip` 按钮（`data-recent-model`，找不到模型则跳过），写入 chips 容器并同步 `#mk-recent.hidden`；**`renderMarketplace()` 末尾调用**（进市场即还原）+ **`openChat()` 内 markRecentUsed 后立即调用**（使用后即时更新）；
-- 交互：`#mk-recent` click 委托——`[data-recent-model]` → 游客 toast「请先登录」/ 否则 `openChat(c.dataset.recentModel)`（复用市场「使用 / 消费」主操作）；`[data-mk-recent-clear]` → `saveRecentKeys([])` + `renderRecent()`（行隐藏）；
+- 交互：`#mk-recent` click 委托——`[data-recent-model]` → 游客 toast「请先登录」/ 否则 `openChat(c.dataset.recentModel)`；`[data-mk-recent-clear]` → `saveRecentKeys([])` + `renderRecent()`（行隐藏）；
 - 样式：`.recent-row`（flex 换行，label 次要色）+ `.recent-row .chip:hover` accent 高亮（复用 `.chip` 基础药丸）；冒烟测试注意 stub 需给 chip 元素 `closest("[data-recent-model]")` 返回自身。
 
 ## 交易记录导出 CSV 约定（v1.20，rant 2026-08-17T20:46:57 E）
@@ -331,7 +331,7 @@ ui/
 ## 数据说明
 
 - 点数规则与机制细节见 `docs/user-stories.md`（v1.8：机制说明不再进入面向用户的界面文案）；UI 只呈现结果（余额数字、模型价格点数、交易金额/类型/状态、可用/繁忙）
-- 消费模拟（聊天 Mock）按 输出参考价 × 0.19M tokens 计费，扣减小数点数并产生 consume 交易（US-6）
+- 消费模拟（聊天 Mock）按 输出参考价 × 0.19M tokens 计费，扣减小数点数（US-6）
 - 上架单价不由分享者手填：单价是模型×厂商的客观属性，平台按模型价格表自动计算（参考单价 = 该模型输出价 点数/1M）；模型无定价数据时给出"按默认价"兜底，不报错
 - 市场模型带 `multi` 标记：表示该模型配置多个上游 key → 标注「多 key · 自动故障转移」（见 `docs/architecture.md` §3 模块表 `router.rs` 行：多 Provider 选择 / 粘性 / 静默故障转移——原文的 v0.2 / 4.2.1 节，已随文档精简合并到此节）
 - 上架需提交 API Key（password 输入）：平台加密托管、仅用于代理调用；共享列表只展示**服务端**的脱敏值（`src/routes/sharing.rs::mask_upstream_key`，如 `sk-****1234`），前端原样印出、不展示明文
@@ -859,7 +859,7 @@ R3 签名收据捕获的标识符其初始化式必须调用**守卫比较的那
 | 控件 | 它缺的那一半 |
 |------|--------------|
 | `#settings-nickname` | 可编辑、由真实 `/api/me` 填，但**全仓没有写昵称的后端路径**（`UPDATE users` 只写 `dept_id`/`verified`/`password_hash`）⇒ 输入在下一次 `renderSettings` 被真名抹掉 |
-| `#prefs-model` | 由真实 `/api/models` 填、看着能选，但**无监听 / 无存储键 / 全仓无消费者**（`openChat()` 只在模型行与「最近使用」芯片处被调用，都自带模型实参） |
+| `#prefs-model` | 由真实 `/api/models` 填、看着能选，但**无监听 / 无存储键 / 全仓无消费者**（`openChat()` 只在「最近使用」芯片处被调用，自带模型实参） |
 | 三枚通知开关 | 渲染成**已勾选**，**无 id / 无 name / 无人读** —— 仓内没有通知子系统 |
 
 **判据是「同卡兄弟」与「仓内成例」**（⇒ 漏修而非取舍）：同卡的邮箱早已 `readonly` + 一句提示
