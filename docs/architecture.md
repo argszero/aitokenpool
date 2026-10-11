@@ -32,7 +32,7 @@
 | `billing.rs` | 计量计费：token → 价格 → CNY 锚定点数（1 点 = 1 元，5 位小数）；高峰时段计价 |
 | `gift.rs` | 新人每日赠送（注册起 10 天，当日有效，惰性过期清理） |
 | `auth.rs` / `mail.rs` | Bearer 认证（API Key）+ argon2；SMTP 验证码（重试 3 次） |
-| `db.rs` | SQLite 建表 + 幂等迁移 + seed（仅测试） |
+| `db.rs` | SQLite 建表 + 幂等迁移 + seed（models 表启动时同步 config `[[models]]`；测试用户 seed 仅测试） |
 | `dao.rs` | 数据访问层 |
 | `routes/` | 认证 / 钱包 / 交易 / 仪表盘 / 共享 / 管理 / 运营者 API |
 
