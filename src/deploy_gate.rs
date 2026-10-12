@@ -982,7 +982,7 @@ fn rust_sources() -> Vec<(String, String)> {
 
 /// `include_str!` / `include_bytes!` 的站点：`(行号, 字节偏移, 目标字面量)`。
 ///
-/// **只在代码位置认定站点**：注释里的（本仓 8 处）与字符串正文里的同名字面量都不算。
+/// **只在代码位置认定站点**：注释里的与字符串正文里的同名字面量都不算。
 /// 后者不是假想 —— 本文件自己的测试夹具就是字符串里的 `include_str!("…")`：R84 实测，
 /// 「按行截断 `//`」的旧写法把它们读成站点，还读出 `…CHANGELOG.md\` 这种带反斜杠的目标。
 fn include_sites(src: &str) -> Vec<(usize, usize, String)> {
