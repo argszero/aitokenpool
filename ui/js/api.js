@@ -78,8 +78,8 @@ const api = (() => {
   // ⚠️ 必须是**函数声明**，不能写成 `const T = window.t`（app.js 的写法）：index.html 里
   // 本文件在 i18n.js **之前**加载，模块级捕获会永久绑到 undefined；函数声明则被提升，
   // 且每次调用才现取，与加载顺序无关。
-  // ⚠️ 也不能直接调 `window.t(...)`：那是 app.js 的局部别名，全局并不存在。
-  // 真正稳定的全局是 i18n.js 导出的 `window.I18n`。
+  // ⚠️ 也不能把 `window.t` 当成唯一入口：它也是 i18n.js 的导出（`window.t = t`；app.js 的
+  // `const T = window.t` 正是取它），但只是 `t` 本身 —— 完整入口是 `window.I18n`（还带 mapErr / applyStatic 等）。
   // ⚠️ 刻意沿用 `T` 这个名字：`src/i18n_pack.rs` 的键扫描器只认这一种调用形态，
   // 换个名字就得再写一份识别规则 —— 规则一旦分叉，两条门禁统计的就不再是同一批调用点（坑 75）。
   function T(key, vars) {
