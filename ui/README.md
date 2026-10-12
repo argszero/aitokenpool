@@ -127,7 +127,7 @@ ui/
 ## 过渡动画约定（v1.17，rant 2026-08-17T16:57:17 F 视图过渡）
 
 - **视图切换**：`.view:not(.hidden)` 播放 `viewIn`（opacity 0→1 + translateY(6px)→0，150ms ease-out）；每次从隐藏变为可见自动重放；
-- **表格更新**：`.table tbody` 播放 `tbodyIn`（opacity 0→1，150ms）；整表重建（buildDataTable / 加额申请列表）新 tbody 节点自动播放；静态 tbody（market/sharing/api-keys/emp/dept/ops）在 innerHTML 更新后用 `pulseTbody(el)` 重启动画（style.animation=none → 强制 reflow → 还原）。
+- **表格更新**：`.table tbody` 播放 `tbodyIn`（opacity 0→1，150ms）；整表重建（buildDataTable / 加额申请列表）新 tbody 节点自动播放；静态 tbody（market/sharing/api-keys/emp/dept/model/ops）在 innerHTML 更新后用 `pulseTbody(el)` 重启动画（style.animation=none → 强制 reflow → 还原）。
 
 ## 一致性约定（v1.17，rant 2026-08-17T16:57:17 G 细节一致性）
 
