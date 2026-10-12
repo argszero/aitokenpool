@@ -17086,18 +17086,17 @@ fn the_r92_rules_separate_the_variants() {
     );
 }
 
-// ⚠️ FRAGMENT — 追加到 `src/state_gate.rs` 的**文件末尾**（模块级，与 R92 lane 同层：
-//    `fn r92_read` ≈:12836、`#[test] fn the_r92_rules_separate_the_variants` ≈:13206，
-//    文件最后一行 `}` 就是那个 test fn 的收尾 ⇒ 追加物与它们是兄弟，不缩进。）
+// ⚠️ 本 lane（原以 `FRAGMENT` 片段形式交付）位于 `src/state_gate.rs` 模块级，与 R92 lane 同层
+//    （`fn r92_read`、`#[test] fn the_r92_rules_separate_the_variants` 的收尾之后
+//    ⇒ 与它们是兄弟，不缩进）。
 // ⚠️ `PathBuf` 在本文件里**没有** module-level import ⇒ 本 lane 一律写全路径
-//    `std::path::PathBuf`（别加 `use`，那样会动到 13268 行文件的中段）。
+//    `std::path::PathBuf`（别加 `use`，那样会动到本文件的中段）。
 // ⚠️ 状态：**已用等价的 Python 模拟在真语料上逐腿验证**（见落地轮施工单的矩阵），
 //    并已由仓外 jsdom 探针（5 变体 × 12 腿）在**真 DOM** 上坐实另一半射程；
 //    另已做静态自检（本 lane 的 28 个顶层标识符在 `state_gate.rs` 里各 0 次；依赖的
 //    `pack_region_strict`/`I18N_JS`/`ZH_PACK_START`/`EN_PACK_START`/`PACK_END`/`R164_WALLET`
 //    全部已在；`use std::collections::{BTreeMap, BTreeSet};` 覆盖全部用法）。
-//    但**仍未编译**（R99/R100/R101 三轮的沙箱都是 read-only，`cargo` 写不了 `target/`）。
-//    落地时必须先跑 rustfmt / cargo test / clippy 三件套。
+//    本 lane 已并入本仓，并通过 rustfmt / cargo test / clippy 三件套。
 
 // ------------------------------------------------------------------ R99 ---
 //
