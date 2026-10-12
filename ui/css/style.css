@@ -134,7 +134,7 @@ h1, h2, h3 { text-wrap: balance; }
 .table tbody { animation: tbodyIn 0.15s ease-out; }
 .muted { color: var(--text-mute); }
 /* 数字类：等宽 + 表格数字对齐（原型 .num）。
-   bug 2026-09-11T22:01:43：原型第 71 行的全局 .num 在迁移时漏掉，导致表格外的
+   bug 2026-09-11T22:01:43：原型的全局 .num 在迁移时漏掉，导致表格外的
    .num（#wallet-forever / #tx-count）失去等宽字体与 tabular-nums 对齐；表格内
    的元素一直由下方 `.table .num` 规则兜住，故此前未被发现。 */
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
