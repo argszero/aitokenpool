@@ -897,9 +897,10 @@ R3 签名收据捕获的标识符其初始化式必须调用**守卫比较的那
 - **唯一真源**：`src/routes/mod.rs::MIN_PASSWORD_CHARS`（字符数）。三处请求校验（register /
   reset-password / change-password）一律经 `password_too_short()`，**不得**再写 `pw.len() < N`
   —— Rust 的 `String::len()` 是 UTF-8 **字节**数，`密码abc`（5 字符 / 9 字节）会被它放行。
-- **四张脸必须同单位**：`ui/index.html` 注册占位符「至少 8 位」（设计基线，`docs/prototype/`
-  同款）· i18n 两包 `err.weakPassword` · `i18n.js` 的 ERR_MAP 字面量（服务端返回的原话）·
-  客户端守卫。任一处改成「字节」都不算修法：下限是**字符**，改宣告等于把缺陷写进文档。
+- **四张脸必须同单位**：设计基线原型的注册占位符「至少 8 位」（`docs/prototype/` 的
+  `aitokenpool-console.html`；`ui/index.html` 的注册框**不承载**这句宣告）· i18n 两包
+  `err.weakPassword` · `i18n.js` 的 ERR_MAP 字面量（服务端返回的原话）· 客户端守卫。任一处改成
+  「字节」都不算修法：下限是**字符**，改宣告等于把缺陷写进文档。
 - **客户端**：`Array.from(pw).length`（Unicode 标量值），**不是** `pw.length`（UTF-16 code
   unit）。emoji 一个字符在 `.length` 里是 2 ⇒ 与后端 `chars().count()` 逐标量对齐。
 - **门禁**：`src/state_gate.rs::the_password_minimum_is_counted_in_the_unit_its_message_names`
