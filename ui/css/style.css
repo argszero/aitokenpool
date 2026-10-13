@@ -597,7 +597,7 @@ mark {
 .form { display: flex; flex-direction: column; gap: 12px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 /* 表单按钮行（原型 .row）：bug 2026-09-11T22:01:43 —— 原型类名 .row 在实现中缺失，
-   而 markup 里 6 处 `class="row"`（共享上架 / 充值 / 申请加额的确认·取消按钮行）
+   而 markup 里 `class="row"` 的按钮行（充值 / 申请加额的确认·取消）
    因此完全无样式，按钮贴在一起且不换行。补齐与原型逐条一致的规则。 */
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 /* 字段标签：**没有组件类**的 label 才吃这条列向排布（`:not([class])`）。
