@@ -39,8 +39,9 @@ pub(crate) const UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::fr
 
 /// 口令下限：**按字符计**。`String::len()` 是 UTF-8 字节数，用它会把下限悄悄放宽到
 /// 2–3 个 CJK 字符（`密码abc` = 5 字符 / 9 字节），与产品宣告的「至少 8 位」不符。
-/// 唯一真源：`ui/index.html` 的注册占位符、`ui/js/i18n.js` 的 `err.weakPassword` 与 ERR_MAP
-/// 字面量都写「位」；客户端 `ui/js/app.js` 用 `Array.from(...).length` 同口径。
+/// 唯一真源：设计基线原型（`docs/prototype/` 的注册密码框）的占位符、`ui/js/i18n.js` 的
+/// `err.weakPassword` 与 ERR_MAP 字面量都写「位」；客户端 `ui/js/app.js` 用
+/// `Array.from(...).length` 同口径。
 pub(crate) const MIN_PASSWORD_CHARS: usize = 8;
 
 /// 口令是否短于下限（字符口径）。三处请求校验必须走它。
