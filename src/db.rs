@@ -1,8 +1,7 @@
 //! SQLite 数据层（rusqlite bundled）
 //!
-//! 表结构对齐 docs/architecture.md §5 + P0-A rant（2026-08-17T22:21:52）：
-//! users / keys（上游 key）/ api_keys（分发 key，atk_live_ 前缀）/ models /
-//! quotas（点数账户）/ transactions / usage_records + schema_version 迁移表。
+//! 表结构对齐 docs/architecture.md §5 + P0-A rant（2026-08-17T22:21:52）。
+//! 完整表名册以下方 `migrate()` 的 `CREATE TABLE` 为准 —— 此处不复述，列举会腐烂。
 //!
 //! 迁移策略：CREATE TABLE IF NOT EXISTS 幂等；schema_version 记录当前版本，
 //! 重复启动不报错。
