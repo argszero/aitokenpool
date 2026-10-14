@@ -13690,7 +13690,7 @@ function bind() {
         (prop, class)
     }
 
-    /// 一行里 `needle` 之后是否跟着赋值号（不是 `==`）—— 复用 `=` 与 `==` 的判别（坑见 `has_tx_read`）。
+    /// 一行里 `needle` 之后是否跟着赋值号（不是 `==`）—— 复用 `=` 与 `==` 的判别。
     fn has_assignment_after(line: &str, needle: &str) -> bool {
         let Some(at) = line.find(needle) else {
             return false;
