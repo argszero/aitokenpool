@@ -157,7 +157,7 @@ fn default_archive_interval_secs() -> u64 {
 /// 交易明细归档（[archive] 段，rant 2026-10-09T12:28:58 验收项 2）。
 ///
 /// `transactions` 表只增不减会让 SQLite 无限膨胀（dev 实测 97.3 万行、`COUNT(*)` 23.7s）。
-/// 明细落到 `TxArchive` 管理的可滚动 JSONL（保留期 = `max_files` × `max_file_size`），
+/// 明细落到 `archive::Archive` 管理的可滚动 JSONL（保留期 = `max_files` × `max_file_size`），
 /// SQLite 侧只留保留窗口内的明细与汇总（见 [`Rollup`]）—— 归档的价值在于明细被折叠、删除后仍有原件。
 #[derive(Debug, Clone, Deserialize)]
 pub struct Archive {
