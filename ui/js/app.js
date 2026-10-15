@@ -1980,9 +1980,10 @@
     if (entries <= total) return null;
     const since = new Date(t.detail_since);
     if (isNaN(since.getTime())) return null;
-    // 天数由边界**现算**（边界是服务端按同一个算子算出来的），前端不另存一份「30」。
-    const days = Math.max(0, Math.round((Date.now() - since.getTime()) / 86400000));
-    return T("tx.empty.archived", { n: days });
+    // ⚠️ 不再把边界换算成「天」（rant 2026-10-15T16:25:04.530850+08:00 验收项 1：窗口的默认值
+    // 是 **10 分钟**）—— 分钟级的窗口取整成天会变成「最近 0 天」，一句错话。直接说**边界那一刻**：
+    // 单位无关，前端也不必再算一遍窗口（边界本来由服务端按同一个算子算出）。
+    return T("tx.empty.archived", { t: fmtPrecise(t.detail_since) });
   }
 
   // 上面那句话的**常驻**插槽：写进 `#tx-archived-note`，每次渲染重算（判据只有上面一处）。

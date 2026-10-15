@@ -404,7 +404,9 @@
     "tx.status.credited": "入账",
     "tx.empty": "没有匹配的记录",
     "tx.empty.sub": "试试调整筛选条件",
-    "tx.empty.archived": "更早的记录已归档，明细仅保留最近 {n} 天（其汇总仍计入上方卡片）",
+    // 边界那一刻由服务端给（同一算子），前端只负责说出来 —— 窗口是分钟级（默认 10 分钟），
+    // 换算成「天」会变成「0 天」（rant 2026-10-15T16:25:04.530850+08:00 验收项 1/2）。
+    "tx.empty.archived": "更早的行是分钟级汇总：真实明细仅保留到 {t}（其汇总仍计入上方卡片）",
     // 读模型的汇总行代表 N 条真实明细（rant 2026-10-15T16:25:04.530850+08:00 验收项 2）——
     // 交易列表的「×N」标记的悬停说明，唯一写者是 `ui/js/app.js::txRowCount()`。
     "tx.row.bucket": "本行是分钟级汇总，代表 {n} 条真实明细",
@@ -1239,7 +1241,7 @@
     "tx.status.credited": "Credited",
     "tx.empty": "No matching records",
     "tx.empty.sub": "Try adjusting filters",
-    "tx.empty.archived": "Earlier entries are archived — details are kept for the last {n} days only (their totals still count in the cards above)",
+    "tx.empty.archived": "Earlier rows are per-minute roll-ups — individual records are kept until {t} only (their totals still count in the cards above)",
     "tx.row.bucket": "Per-minute roll-up — this row covers {n} records",
     "tx.filter.placeholder": "Filter…",
     "tx.filter.min": "min",

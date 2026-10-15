@@ -6,19 +6,29 @@
 //! 删除只受一条约束 —— `transactions` 的**分页列表**要的是逐行身份（`id`/`counterpart`），
 //! 汇总行没有它，所以列表**永远**只能从明细表答。于是：
 //!
-//! * **保留窗口必须盖得住列表自己提供的每一个预设区间**。少一天都不行：窗口是
-//!   `time < datetime('now', '-N minutes')`，列表最深预设若比它还深，用户点那个预设会
-//!   看到「共 N 条」和实际能翻的行数一起缩水，而**没有任何提示**（`total` 与行同源，
-//!   所以也不会自相矛盾 —— 它会安静地少答一段历史）。
+//! * **保留窗口必须能用分钟表达，且它在盖不住列表的预设时必须有「还债」的载体**。
+//!   窗口是 `time < datetime('now', '-N minutes')`，列表最深预设若比它还深、而列表又**只**
+//!   答得出窗口内的明细，用户点那个预设就会看到「共 N 条」和实际能翻的行数一起缩水，而
+//!   **没有任何提示**（`total` 与行同源，所以也不会自相矛盾 —— 它会安静地少答一段历史）。
+//!   本轴的原判据到此为止；rant `2026-10-15T16:25:04` 的验收项 2 把**后半句**改掉了：列表
+//!   改从读模型 `tx_facts` 取数之后，窗口外那段历史有载体（分钟汇总行），债还清了 ——
+//!   于是判据写成「窗口盖得住 **或** 列表不再从明细表取数」，而不是把规则删掉：谁把列表搬回
+//!   明细表，这条立刻重新生效（这正是验收项 5 的变异之一）。单位那一半仍然照旧：**读不到
+//!   分钟键**（又退回按「天」写）即红 —— 天粒度表达不了「只留 10 分钟」，一天以下只剩 `0`，
+//!   而 `0` 是「完全不留明细」这条**另一条**规则。
 //!   判据两侧都**派生**：预设深度从 `ui/js/app.js::txRangeParams` 读，窗口从
-//!   `config/config.example.toml` 的 `[rollup] retain_minutes`（分钟）读。
+//!   `config/config.example.toml` 的 `[rollup] retain_minutes`（分钟）读，「列表搬没搬」从
+//!   `src/routes/wallet.rs` 的列表端点体里读（不再出现 `FROM transactions` ⇒ 搬了）。
 //! * **盖不住的那类区间 ——「无界」的 —— 必须把边界说给页面**。`#tx-range` 里有两个区间
 //!   没有深度可言（「全部时间」、自定义起点）：它们能整段落在保留窗口之外，静态门禁**表达不了**
 //!   那种深度。判据因此换成「要么不提供、要么披露」：服务端随响应发布保留边界
 //!   （`tx_rollup` 的 `DETAIL_SINCE_FIELD`，与删除同一算式），前端在**缺口**上消费它
 //!   （`summary.entries` 与 `total` 的差）。**披露必须长在缺口上，不许长在「列表空」上**：
-//!   明细还在（`total > 0`）时同样会少列，而「只在一条明细都没有时才解释」正好让说明只在
-//!   **最不需要它**的场合发射（R104）。两侧同样**全派生**：选项名册从 `ui/index.html` 的
+//!   R104 轴的原形状是「只在一条明细都没有时才解释」，而那正好让说明只在**最不需要它**的
+//!   场合发射（零行态屏幕本来就写着「没有匹配记录」）。⚠️ 验收项 2 之后「缺口」的含义换了：
+//!   `entries > total` 不再说「有一段列不出来」，而说「这一屏里有行代表多条记录」（分钟汇总行）。
+//!   判据的形状（以缺口为准、不带空态闸门、被调用）不变 —— 那句话今天要说的正是「更早的行
+//!   是分钟级汇总」，所以它仍然必须长在**有行**的时候。两侧同样**全派生**：选项名册从 `ui/index.html` 的
 //!   `#tx-range` 读（哪些无界由「该分支有没有 `MS(…)` 深度」判定），字段名从 `tx_rollup.rs`
 //!   的常量读。
 //! * **删除的边界是「已折叠 ∧ 已归档」**。折叠水位（`transactions_rollup.up_to_id`）与
@@ -83,8 +93,16 @@ const OPTION_VALUE: &str = "<option value=\"";
 /// 明细保留边界字段名的**唯一拼写点**（`tx_rollup.rs` 的 `pub const`）。
 const BOUNDARY_CONST: &str = "pub const DETAIL_SINCE_FIELD: &str = \"";
 
-/// 服务端发布边界的地方（R4 的发布侧）。
+/// 服务端发布边界的地方（R4 的发布侧）。它同时是**列表端点**所在的那个文件。
 const PUBLISH_FILE: &str = "wallet.rs";
+
+/// 交易列表端点（R1 后半：它从哪个载体取数，决定窗口的「债」还不还得清）。
+const LIST_FN: &str = "pub async fn transactions(";
+
+/// 明细表在 SQL 里的拼法 —— 列表端点的体里**不得**再出现它（口径即「不再从明细表取数」；
+/// 与 `deletes_details_only` 同一种「反面即判据」的写法，理由同：正面的证据是**另一个门禁**
+/// 的事 —— `tx_facts_gate` R4 守「列表真的读视图」）。
+const RAW_TABLE: &str = "FROM transactions";
 
 /// 前端消费边界的地方（R4 的消费侧）—— `ui/js/app.js`，即 `oracle` 里那份语料。
 const CONSUME_FILE: &str = "app.js";
@@ -142,16 +160,32 @@ struct Reading {
     /// 前端真的在生产披露它 —— 生产函数的形状（见 `Disclosure`）：以**缺口**为准、不带空态
     /// 闸门、且被调用过。
     disclosure: Disclosure,
+    /// 交易列表端点**不再**从明细表取数（R1 后半的还债凭证）：它的函数体里有 `tx_facts::source(`
+    /// 而没有 `FROM transactions`。
+    list_reads_view: bool,
 }
 
 impl Reading {
-    /// R1：产品自己提供的每个预设区间都落在保留窗口内。
+    /// R1：窗口能用**分钟**表达，且它盖不住列表的预设时那个「欠」必须有人还。
+    ///
+    /// ① 单位：示例配置里读不到 `retain_minutes` ⇒ 又退回按「天」写 ⇒ 红。这不是形式主义 ——
+    ///    本轴存在的理由就是「只留 10 分钟」这个窗口在天的粒度下**写不出来**。
+    /// ② 覆盖债：窗口比列表最深预设浅时，只允许列表**不再从明细表取数**（那时窗口外那段历史
+    ///    由读模型的分钟汇总行承载）。列表若搬回明细表，这条立刻重新生效。
+    ///
+    /// ⚠️ 两侧**同单位**比较（预设是「天」、窗口是「分钟」）—— 直接比会把「10 分钟」当成 10 天，
+    /// 或（换算成天再取整）当成 0 天。
     fn r1(&self) -> bool {
-        match (self.presets_days.last(), self.retain_minutes) {
-            // 两侧**同单位**比较（预设是「天」、窗口是「分钟」）—— 直接比会把「10 分钟」
-            // 当成 10 天，或（换算成天再取整）当成 0 天。
-            (Some(deepest), Some(window)) => deepest.saturating_mul(MINUTES_PER_DAY) <= window,
-            _ => false,
+        let Some(window) = self.retain_minutes else {
+            return false;
+        };
+        match self.presets_days.last() {
+            Some(deepest) => {
+                deepest.saturating_mul(MINUTES_PER_DAY) <= window || self.list_reads_view
+            }
+            // 一个预设都没读出来 ⇒ 不做无据的断言（提取器失真由 `the_scanner_sees_both_sides`
+            // 的阳性对照兜：它要求至少 3 个预设、且含最深那个）。
+            None => false,
         }
     }
 
@@ -176,7 +210,7 @@ impl Reading {
 
     fn blame(&self) -> String {
         format!(
-            "r1={} r2={} r3={} r4={} · 预设 {:?} 天 · 窗口 {:?} 分钟 · 读不懂 {:?} · 只删明细 {} · 折叠界 {} · 归档界 {} · 两界同句 {} · 时间窗 {} · 区间选项 {:?} · 无界 {:?} · 边界字段 {:?} · 已发布 {} · 披露生产函数 {:?}（以缺口为准 {} · 空态闸门 {} · 被调用 {}）",
+            "r1={} r2={} r3={} r4={} · 预设 {:?} 天 · 窗口 {:?} 分钟 · 读不懂 {:?} · 列表读读模型 {} · 只删明细 {} · 折叠界 {} · 归档界 {} · 两界同句 {} · 时间窗 {} · 区间选项 {:?} · 无界 {:?} · 边界字段 {:?} · 已发布 {} · 披露生产函数 {:?}（以缺口为准 {} · 空态闸门 {} · 被调用 {}）",
             self.r1(),
             self.r2(),
             self.r3(),
@@ -184,6 +218,7 @@ impl Reading {
             self.presets_days,
             self.retain_minutes,
             self.unreadable,
+            self.list_reads_view,
             self.deletes_details_only,
             self.has_fold_bound,
             self.has_archive_bound,
@@ -204,6 +239,31 @@ impl Reading {
     fn all(&self) -> bool {
         self.r1() && self.r2() && self.r3() && self.r4()
     }
+}
+
+/// 从**掩码文本**里切出某个具名函数的体（**含**第一个 `{`、**不含**配平的 `}`）。
+///
+/// 掩码等长（`mask_js` / `code_mask` 只把注释与可选的字符串正文涂成空格）⇒ 在掩码文本上算出的
+/// 下标对原文同样有效。函数的体一旦含多字节字符，按字节切**才**是安全的 —— 这正是本仓所有
+/// 走查器都走掩码文本的原因。
+fn function_body<'a>(masked: &'a str, marker: &str) -> Option<&'a str> {
+    let start = masked.find(marker)?;
+    let tail = &masked[start..];
+    let open = tail.find('{')?;
+    let mut depth = 0i32;
+    for (k, ch) in tail[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&tail[open..=open + k]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `txRangeParams` 函数体在源码里的**字节区间** `[open, end)`（含第一个 `{`，不含配平的 `}`）。
@@ -483,10 +543,17 @@ fn read() -> Reading {
         .unwrap_or_default();
     let field = boundary_field(&rollup);
     // 发布侧：引用常量名（不是又写一遍字面量 —— 那会变成第二个拼写点）。
-    let published = source_files()
+    let wallet = source_files()
         .into_iter()
         .find(|(name, _)| name.ends_with(PUBLISH_FILE))
-        .map(|(_, src)| src.contains("tx_rollup::DETAIL_SINCE_FIELD"))
+        .map(|(_, src)| src)
+        .unwrap_or_default();
+    let published = wallet.contains("tx_rollup::DETAIL_SINCE_FIELD");
+    // R1 后半的还债凭证：列表端点的体里**不再出现明细表**，却经 `tx_facts::source(` 取数。
+    // ⚠️ 掩码只掩注释（`false`）：要看的正是 SQL **字符串字面量**里的表名；掩掉字符串会让
+    // 「搬回明细表」在读数上消失（判据跟着一起瞎）。
+    let list_reads_view = function_body(&code_mask(&wallet, false), LIST_FN)
+        .map(|b| b.contains("tx_facts::source(") && !b.contains(RAW_TABLE))
         .unwrap_or(false);
     let consumed = field
         .as_deref()
@@ -526,6 +593,7 @@ fn read() -> Reading {
         boundary_field: field,
         boundary_published: published,
         disclosure: consumed,
+        list_reads_view,
     }
 }
 
@@ -534,8 +602,10 @@ fn the_retention_window_covers_every_preset_the_list_offers() {
     let r = read();
     assert!(
         r.r1(),
-        "交易列表提供的预设区间比明细保留窗口还深 ⇒ 点那个预设会安静地少答一段历史（`total` \
-         与行同源，不会自相矛盾，只会一起缩水）：{}",
+        "明细保留窗口必须能用**分钟**表达（示例配置里读不到 `{RETAIN_KEY}` ⇒ 又退回按「天」写），\
+         且它比列表自己提供的预设还深时那个「欠」必须有人还：要么窗口盖得住，要么列表**不再从\
+         明细表取数**（读读模型 `tx_facts`，窗口外那段历史由分钟汇总行承载）。两者都没有 ⇒ 用户点\
+         深预设会安静地少答一段历史（`total` 与行同源，不会自相矛盾，只会一起缩水）：{}",
         r.blame()
     );
 }
@@ -563,12 +633,28 @@ fn the_retention_window_covers_every_preset_the_list_offers_negatives() {
     assert!(base.all(), "基线: {}", base.blame());
 
     for (name, mutate) in [
+        // R1 ① 单位：示例配置里读不到分钟键（又退回按「天」写）⇒ 该窗口表达不出来。
         (
-            "窗口收到列表最深的预设之下",
+            "窗口退回按「天」写（示例配置里读不到分钟键）",
+            Box::new(|r: &mut Reading| {
+                r.retain_minutes = None;
+            }) as Box<dyn Fn(&mut Reading)>,
+        ),
+        // R1 ② 覆盖债：窗口比最深预设浅，而列表也**搬回**明细表取数 ⇒ 深预设没人答得出来。
+        (
+            "窗口收到列表最深的预设之下，而列表也搬回明细表取数",
             Box::new(|r: &mut Reading| {
                 r.retain_minutes =
                     Some(r.presets_days.last().copied().unwrap_or(0) * MINUTES_PER_DAY - 1);
-            }) as Box<dyn Fn(&mut Reading)>,
+                r.list_reads_view = false;
+            }),
+        ),
+        // R1 ② 的另一半（这才是验收项 5 点名的变异）：窗口仍然盖不住，但把列表搬回明细表。
+        (
+            "把列表搬回明细表取数（窗口盖不住最深预设 ⇒ 债没人还）",
+            Box::new(|r: &mut Reading| {
+                r.list_reads_view = false;
+            }),
         ),
         (
             "删掉折叠水位界限",
@@ -697,6 +783,12 @@ fn the_scanner_sees_both_sides() {
     assert!(
         r.boundary_published,
         "服务端没引用那个常量（发布侧又写了一遍字面量，或发布点没了）：{}",
+        r.blame()
+    );
+    assert!(
+        r.list_reads_view,
+        "没在列表端点的体里看见「不再从明细表取数」（函数名变了？又或者列表真的搬回明细表了）—— \
+         这条是 R1 后半的凭证，它假阴性会让 R1 恒假、假阳性会让 R1 恒真：{}",
         r.blame()
     );
     assert!(
