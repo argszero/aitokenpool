@@ -581,7 +581,7 @@ pub async fn transactions(
     // `transactions` 里 —— 聚合（summary/trend）答得出、本列表答不出的分界就是它。
     // 折叠关掉时**没有**删除发生，也就没有这条边界 ⇒ 不发（`null`），页面不会去说一件没发生的事。
     let detail_since: Option<String> = if st.cfg.rollup.enabled {
-        Some(tx_rollup::detail_since(&conn, st.cfg.rollup.retain_days).map_err(internal)?)
+        Some(tx_rollup::detail_since(&conn, st.cfg.rollup.window_minutes()).map_err(internal)?)
     } else {
         None
     };

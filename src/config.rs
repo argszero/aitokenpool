@@ -251,8 +251,8 @@ fn default_rollup_batch() -> i64 {
 fn default_rollup_interval_secs() -> u64 {
     60
 }
-fn default_rollup_retain_days() -> i64 {
-    30
+fn default_rollup_retain_minutes() -> i64 {
+    43_200
 }
 
 /// 交易明细汇总（[rollup] 段，rant 2026-10-09T12:28:58 验收项 1）。
@@ -264,9 +264,14 @@ fn default_rollup_retain_days() -> i64 {
 /// 删除只删**已折叠且已归档**的 —— 于是删掉的行永远有原件（JSONL）与聚合（汇总表）两个落脚处；
 /// `[archive]` 关掉时水位 0 ⇒ 不折也不删（fail-closed），这是刻意的。
 ///
-/// `retain_days` 是**明细**的保留窗口（不是汇总的）：窗口内的明细仍逐条留在 `transactions` 里，
+/// 窗口是**明细**的保留窗口（不是汇总的）：窗口内的明细仍逐条留在 `transactions` 里，
 /// 交易页照常翻页；窗口外的只剩汇总行（与 JSONL 里的原件）。取 0 即「明细只留汇总」的极值
 /// —— 折叠追平后 `transactions` 会被清空，交易页只答得出最近一分钟，**这是刻意的取舍，不是缺陷**。
+///
+/// 单位是**分钟**（`retain_minutes`）。此前是**天**（`retain_days`，默认 30）—— 那个单位
+/// 表达不出「只留 10 分钟」这样的保留策略，而已落地的删除本来就按 `datetime('now', ?)` 算偏移，
+/// 分钟是它天然的分辨率。旧键 `retain_days` 仍然**认**（见 [`Rollup::window_minutes`]），
+/// 不静默忽略。
 #[derive(Debug, Clone, Deserialize)]
 pub struct Rollup {
     /// 是否启用（默认 true；折叠是「明细只留汇总」的前置，回填 97 万行需要很长时间）
@@ -278,10 +283,25 @@ pub struct Rollup {
     /// 折叠扫描间隔（秒，默认 60；最小 1）
     #[serde(default = "default_rollup_interval_secs")]
     pub interval_secs: u64,
-    /// 明细的保留窗口（天，默认 30）：早于 `now - retain_days` 的**已折叠**明细每轮删一批。
-    /// 0 = 不留明细（只留汇总），负数按 0 计。
-    #[serde(default = "default_rollup_retain_days")]
-    pub retain_days: i64,
+    /// 明细的保留窗口（**分钟**，默认 `43200` = 30 天）：早于 `now - retain_minutes` 的
+    /// **已折叠**明细每轮删一批。0 = 不留明细（只留汇总），负数按 0 计。
+    #[serde(default = "default_rollup_retain_minutes")]
+    pub retain_minutes: i64,
+    /// **已弃用**：保留窗口的旧拼写（**天**）。给出时**优先**于 `retain_minutes`（×1440），
+    /// 于是老配置原样可用；新配置请写 `retain_minutes`。
+    #[serde(default)]
+    pub retain_days: Option<i64>,
+}
+
+impl Rollup {
+    /// 明细保留窗口的**唯一取值点**（分钟）—— 删除、`detail_since`、启动日志都只经它，
+    /// 免得「读哪个字段」有两处答案。旧拼写 `retain_days` 给出时优先（×1440）。
+    pub fn window_minutes(&self) -> i64 {
+        match self.retain_days {
+            Some(days) => days.max(0).saturating_mul(1440),
+            None => self.retain_minutes.max(0),
+        }
+    }
 }
 
 impl Default for Rollup {
@@ -290,7 +310,8 @@ impl Default for Rollup {
             enabled: default_rollup_enabled(),
             batch: default_rollup_batch(),
             interval_secs: default_rollup_interval_secs(),
-            retain_days: default_rollup_retain_days(),
+            retain_minutes: default_rollup_retain_minutes(),
+            retain_days: None,
         }
     }
 }
@@ -600,7 +621,30 @@ mod tests {
         assert!(d.enabled, "默认启用 —— 折叠是「明细只留汇总」的前置");
         assert_eq!(d.batch, 2_000);
         assert_eq!(d.interval_secs, 60);
-        assert_eq!(d.retain_days, 30, "明细默认保留 30 天");
+        assert_eq!(d.retain_minutes, 43_200, "明细默认保留 30 天（43200 分钟）");
+        assert_eq!(d.retain_days, None, "旧拼写缺省不设 —— 新字段才是真源");
+        assert_eq!(d.window_minutes(), 43_200);
+    }
+
+    /// 旧拼写 `retain_days`（**天**）仍然算数（×1440），而且**优先**于新键 —— 老配置原样可用。
+    /// 这条同时是「新单位真的能表达 10 分钟」的判据：旧的「天」写不出它。
+    #[test]
+    fn rollup_legacy_retain_days_still_selects_the_window() {
+        let legacy: Rollup = toml::from_str("retain_days = 30").unwrap();
+        assert_eq!(legacy.window_minutes(), 43_200, "旧拼写按天 ×1440");
+
+        // 两个键同时给出 ⇒ 旧拼写赢（升配置的人不必同时清掉旧行，也不会被静默改掉窗口）
+        let both: Rollup = toml::from_str("retain_minutes = 10\nretain_days = 30").unwrap();
+        assert_eq!(both.window_minutes(), 43_200, "旧键优先");
+        assert_eq!(both.retain_minutes, 10, "新键照旧解析出来（只是不生效）");
+
+        // 只给新键 ⇒ 就是它自己：10 分钟这个窗口在旧的「天」单位下**写不出来**
+        let new_only: Rollup = toml::from_str("retain_minutes = 10").unwrap();
+        assert_eq!(new_only.window_minutes(), 10, "10 分钟现在真的表达得出来");
+
+        // 负值按 0 计（与 `delete_folded` 的 `max(0)` 同一条纪律）
+        let negative: Rollup = toml::from_str("retain_minutes = -5").unwrap();
+        assert_eq!(negative.window_minutes(), 0, "负数按 0 计");
     }
 
     #[test]
@@ -611,7 +655,8 @@ mod tests {
         assert!(cfg.rollup.enabled);
         assert_eq!(cfg.rollup.batch, 2_000);
         assert_eq!(cfg.rollup.interval_secs, 60);
-        assert_eq!(cfg.rollup.retain_days, Rollup::default().retain_days);
+        assert_eq!(cfg.rollup.retain_minutes, Rollup::default().retain_minutes);
+        assert_eq!(cfg.rollup.retain_days, None, "示例配置用新拼写");
     }
 
     #[test]

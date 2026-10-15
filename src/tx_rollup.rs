@@ -190,7 +190,7 @@ pub fn fold_pending(conn: &Connection, archive_watermark: i64, batch: i64) -> Re
 /// 1. **`id ≤ MIN(汇总水位, 归档水位)`** —— 只删汇总表已经算过、且原件已经进 JSONL 的行。
 ///    汇总水位是 `fold_pending` 自己写下的 `up_to_id`，归档水位由调用方传入（与折叠**同源**）；
 ///    取小 ⇒ 归档一旦落后（或归档目录丢失 ⇒ 水位 0）就一行都不删，与折叠同一条 fail-closed 纪律。
-/// 2. **`time < now - retain_days`** —— 保留窗口内的明细仍逐条留在库里（交易页翻页、共享页按行
+/// 2. **`time < now - retain_minutes`** —— 保留窗口内的明细仍逐条留在库里（交易页翻页、共享页按行
 ///    读的都是 `transactions` 本身）。窗口是**明细**的保留期；**汇总行永远不删**。
 /// 3. **`LIMIT batch`** —— 单次持库时间有界，后台维护绝不与请求抢锁（与折叠、归档同一条纪律）。
 ///
@@ -203,13 +203,13 @@ pub fn fold_pending(conn: &Connection, archive_watermark: i64, batch: i64) -> Re
 /// 明细保留边界（UTC，`YYYY-MM-DDTHH:MM:SSZ`）：**早于它的明细不保证还在 `transactions` 里**。
 ///
 /// 这是「列表答不出来的那段」的**唯一定义处** —— 与 [`delete_folded`] 同一个时钟、同一个算式
-/// （SQL 的 `datetime('now', '-N days')`，负数按 0 处理）⇒ 删的是它、页面说的是它，两者不可能
+/// （SQL 的 `datetime('now', '-N minutes')`，负数按 0 处理）⇒ 删的是它、页面说的是它，两者不可能
 /// 各自算出一个边界。读侧只读**边界值**，不做删除判断（那是 `delete_folded` 的事）。
 ///
 /// ⚠️ 边界早于它 ≠ 明细已经没了：删除还受「已折叠 ∧ 已归档」两道闸（见 `delete_folded`）。
 /// 所以本值是**上界**——真正少答的那段只可能落在它之外。调用方据此说明口径，不据此断言缺失。
-pub fn detail_since(conn: &Connection, retain_days: i64) -> Result<String> {
-    let window = format!("-{} days", retain_days.max(0));
+pub fn detail_since(conn: &Connection, retain_minutes: i64) -> Result<String> {
+    let window = format!("-{} minutes", retain_minutes.max(0));
     conn.query_row(
         "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now', ?1))",
         params![window],
@@ -221,14 +221,14 @@ pub fn detail_since(conn: &Connection, retain_days: i64) -> Result<String> {
 pub fn delete_folded(
     conn: &Connection,
     archive_watermark: i64,
-    retain_days: i64,
+    retain_minutes: i64,
     batch: i64,
 ) -> Result<usize> {
     let upto = watermark(conn)?.min(archive_watermark);
     if batch <= 0 || upto <= 0 {
         return Ok(0);
     }
-    let window = format!("-{} days", retain_days.max(0));
+    let window = format!("-{} minutes", retain_minutes.max(0));
     conn.execute(
         "DELETE FROM transactions WHERE id IN ( \
            SELECT id FROM transactions \
@@ -691,9 +691,10 @@ mod tests {
             .unwrap()
     }
 
-    /// 种一批明细：`ages` 里每个元素是「多少天前」，用它算出 `time`。
-    /// 窗口判据是 `time < datetime('now', '-N days')`，所以夹具必须相对 `now` 取，
-    /// 写死字面量会把「跑测试时已经过了那个点没有」变成隐藏前提。
+    /// 种一批明细：`ages` 里每个元素是「多少天前」，用它算出 `time`（整天的夹具更好读，
+    /// 而 SQLite 的 `-N days` 修饰词照样吃）。
+    /// 窗口判据是 `time < datetime('now', '-N minutes')`（窗口单位是**分钟**，见 [`delete_folded`]），
+    /// 所以夹具必须相对 `now` 取，写死字面量会把「跑测试时已经过了那个点没有」变成隐藏前提。
     fn seed_aged(conn: &Connection, ages: &[i64]) {
         for age in ages {
             conn.execute(
@@ -708,14 +709,14 @@ mod tests {
     #[test]
     fn delete_folded_only_releases_rows_older_than_the_retention_window() {
         let conn = migrated_db();
-        // 40/20/1 天前各一条 —— 窗口 30 天 ⇒ 只应放出 40 天前那条。
+        // 40/20/1 天前各一条 —— 窗口 43_200 分钟（30 天）⇒ 只应放出 40 天前那条。
         seed_aged(&conn, &[40, 20, 1]);
         assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 3, "先全折");
-        assert_eq!(delete_folded(&conn, 1_000, 30, 100).unwrap(), 1);
+        assert_eq!(delete_folded(&conn, 1_000, 43_200, 100).unwrap(), 1);
         assert_eq!(tx_count(&conn), 2, "窗口内的明细必须留下");
         // 已经删过 ⇒ 幂等（同窗口再跑不删任何行）
-        assert_eq!(delete_folded(&conn, 1_000, 30, 100).unwrap(), 0);
-        // 窗口收到 0 天 ⇒ 剩下的（20/1 天前）也都过了窗口
+        assert_eq!(delete_folded(&conn, 1_000, 43_200, 100).unwrap(), 0);
+        // 窗口收到 0 分钟 ⇒ 剩下的（20/1 天前）也都过了窗口
         assert_eq!(delete_folded(&conn, 1_000, 0, 100).unwrap(), 2);
         assert_eq!(tx_count(&conn), 0);
         // 汇总行一个不少：明细删光之后聚合仍然答得出（这是「明细只留汇总」的全部意义）
@@ -724,21 +725,48 @@ mod tests {
         assert_eq!(rows.iter().map(|r| r.3).sum::<i64>(), 3, "行数守恒");
     }
 
+    /// 窗口的**分辨率是分钟**：旧单位「天」把 10 分钟这种窗口变成无法表达的存在
+    /// （`-0 days` 就是「全放」），而分钟级的窗口正是「真实明细只留 10 分钟」那句诉求的前提。
+    /// 这条用分钟级的夹具把新单位真的按分钟算钉住 —— 只把 `N` 由 30 换成 43_200 的测试
+    /// 两棵树都会绿，分不出单位有没有生效。
+    #[test]
+    fn delete_folded_resolves_the_window_in_minutes() {
+        let conn = migrated_db();
+        // 5 / 20 分钟前各一条（SQLite 的修饰词直接按分钟给）
+        for age in [5, 20] {
+            conn.execute(
+                "INSERT INTO transactions (user_id, counterpart, key_id, model, tokens, pts, type, status, time) \
+                 VALUES (1, '', NULL, 'm', 1, 1, 'consume', '成功', datetime('now', ?1))",
+                params![format!("-{age} minutes")],
+            )
+            .unwrap();
+        }
+        assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 2, "先全折");
+        // 窗口 10 分钟 ⇒ 只放出 20 分钟前那条；5 分钟前那条是窗口内的
+        assert_eq!(delete_folded(&conn, 1_000, 10, 100).unwrap(), 1);
+        assert_eq!(tx_count(&conn), 1, "窗口内的明细必须留下");
+        // 窗口收到 3 分钟 ⇒ 剩下那条（5 分钟前）也过了窗口
+        assert_eq!(delete_folded(&conn, 1_000, 3, 100).unwrap(), 1);
+        assert_eq!(tx_count(&conn), 0);
+        // 汇总行一个不少 ⇒ 「明细没了、账还在」
+        assert_eq!(rollup_rows(&conn).len(), 2, "两个分钟桶应各一行");
+    }
+
     #[test]
     fn delete_folded_never_gets_ahead_of_the_fold_or_the_archive() {
         let conn = migrated_db();
         seed_aged(&conn, &[60, 50]);
         // 一条都没折过 ⇒ 水位 0 ⇒ 一行都不删（即使它们都老得过了窗口）
         assert_eq!(watermark(&conn).unwrap(), 0);
-        assert_eq!(delete_folded(&conn, 1_000, 30, 100).unwrap(), 0);
+        assert_eq!(delete_folded(&conn, 1_000, 43_200, 100).unwrap(), 0);
         assert_eq!(tx_count(&conn), 2, "没折过不许删");
 
         // 折了，但归档水位只到第 1 行 ⇒ 最多删到 id 1（归档没跟上的那半不许动）
         assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 2);
-        assert_eq!(delete_folded(&conn, 1, 30, 100).unwrap(), 1);
+        assert_eq!(delete_folded(&conn, 1, 43_200, 100).unwrap(), 1);
         assert_eq!(tx_count(&conn), 1, "归档没覆盖到的行不许删");
         // 归档追平 ⇒ 剩下的那条才可删
-        assert_eq!(delete_folded(&conn, 1_000, 30, 100).unwrap(), 1);
+        assert_eq!(delete_folded(&conn, 1_000, 43_200, 100).unwrap(), 1);
         assert_eq!(tx_count(&conn), 0);
     }
 
@@ -748,15 +776,15 @@ mod tests {
         seed_aged(&conn, &[90, 80, 70]);
         assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 3);
         // 批量 2 ⇒ 每轮最多删 2 条，剩下的下一轮再删（后台维护不长时间持库）
-        assert_eq!(delete_folded(&conn, 1_000, 30, 2).unwrap(), 2);
+        assert_eq!(delete_folded(&conn, 1_000, 43_200, 2).unwrap(), 2);
         assert_eq!(tx_count(&conn), 1);
-        assert_eq!(delete_folded(&conn, 1_000, 30, 2).unwrap(), 1);
+        assert_eq!(delete_folded(&conn, 1_000, 43_200, 2).unwrap(), 1);
         assert_eq!(tx_count(&conn), 0);
         // 边界：批次 <= 0 或水位 <= 0 ⇒ 一行都不删（不无限删）
         seed_aged(&conn, &[90]);
         assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 1);
-        assert_eq!(delete_folded(&conn, 1_000, 30, 0).unwrap(), 0);
-        assert_eq!(delete_folded(&conn, 0, 30, 100).unwrap(), 0);
+        assert_eq!(delete_folded(&conn, 1_000, 43_200, 0).unwrap(), 0);
+        assert_eq!(delete_folded(&conn, 0, 43_200, 100).unwrap(), 0);
         assert_eq!(tx_count(&conn), 1, "非法参数下明细必须还在");
     }
 
@@ -787,7 +815,7 @@ mod tests {
         };
         let before = read(&conn);
         assert_eq!(fold_pending(&conn, 1_000, 100).unwrap(), 3);
-        assert_eq!(delete_folded(&conn, 1_000, 30, 100).unwrap(), 3);
+        assert_eq!(delete_folded(&conn, 1_000, 43_200, 100).unwrap(), 3);
         assert_eq!(tx_count(&conn), 0, "明细确实清空了");
         let after = read(&conn);
         assert_eq!(

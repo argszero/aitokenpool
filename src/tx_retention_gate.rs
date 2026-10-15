@@ -7,11 +7,11 @@
 //! 汇总行没有它，所以列表**永远**只能从明细表答。于是：
 //!
 //! * **保留窗口必须盖得住列表自己提供的每一个预设区间**。少一天都不行：窗口是
-//!   `time < datetime('now', '-N days')`，列表最深预设若比 `N` 还深，用户点那个预设会
+//!   `time < datetime('now', '-N minutes')`，列表最深预设若比它还深，用户点那个预设会
 //!   看到「共 N 条」和实际能翻的行数一起缩水，而**没有任何提示**（`total` 与行同源，
 //!   所以也不会自相矛盾 —— 它会安静地少答一段历史）。
 //!   判据两侧都**派生**：预设深度从 `ui/js/app.js::txRangeParams` 读，窗口从
-//!   `config/config.example.toml` 的 `[rollup] retain_days` 读。
+//!   `config/config.example.toml` 的 `[rollup] retain_minutes`（分钟）读。
 //! * **盖不住的那类区间 ——「无界」的 —— 必须把边界说给页面**。`#tx-range` 里有两个区间
 //!   没有深度可言（「全部时间」、自定义起点）：它们能整段落在保留窗口之外，静态门禁**表达不了**
 //!   那种深度。判据因此换成「要么不提供、要么披露」：服务端随响应发布保留边界
@@ -53,8 +53,11 @@ const RANGE_FN: &str = "function txRangeParams(";
 /// 预设区间的表达形态：`MS(<整数乘积>)`，`MS(h)` 就是 `h` 小时。
 const MS: &str = "MS(";
 
-/// 保留窗口所在文件的键。
-const RETAIN_KEY: &str = "retain_days";
+/// 保留窗口所在文件的键（**分钟**）。
+const RETAIN_KEY: &str = "retain_minutes";
+
+/// 一天的分钟数 —— 预设深度（天）与保留窗口（分钟）同单位比较用。
+const MINUTES_PER_DAY: i64 = 1440;
 
 /// 示例配置里窗口所在的段。
 const RETAIN_SECTION: &str = "[rollup]";
@@ -113,8 +116,8 @@ struct Reading {
     presets_days: Vec<i64>,
     /// 读不懂的 `MS(…)` 表达式（应 0：读不懂就等于那条预设**没有判据**）。
     unreadable: Vec<String>,
-    /// 示例配置里的保留窗口（天）；读不到 = `None`。
-    retain_days: Option<i64>,
+    /// 示例配置里的保留窗口（**分钟**）；读不到 = `None`。
+    retain_minutes: Option<i64>,
     /// 删除函数体里是否出现「只删明细表」。
     deletes_details_only: bool,
     /// 删除函数体里是否带上折叠水位。
@@ -144,8 +147,10 @@ struct Reading {
 impl Reading {
     /// R1：产品自己提供的每个预设区间都落在保留窗口内。
     fn r1(&self) -> bool {
-        match (self.presets_days.last(), self.retain_days) {
-            (Some(deepest), Some(window)) => *deepest <= window,
+        match (self.presets_days.last(), self.retain_minutes) {
+            // 两侧**同单位**比较（预设是「天」、窗口是「分钟」）—— 直接比会把「10 分钟」
+            // 当成 10 天，或（换算成天再取整）当成 0 天。
+            (Some(deepest), Some(window)) => deepest.saturating_mul(MINUTES_PER_DAY) <= window,
             _ => false,
         }
     }
@@ -171,13 +176,13 @@ impl Reading {
 
     fn blame(&self) -> String {
         format!(
-            "r1={} r2={} r3={} r4={} · 预设 {:?} 天 · 窗口 {:?} 天 · 读不懂 {:?} · 只删明细 {} · 折叠界 {} · 归档界 {} · 两界同句 {} · 时间窗 {} · 区间选项 {:?} · 无界 {:?} · 边界字段 {:?} · 已发布 {} · 披露生产函数 {:?}（以缺口为准 {} · 空态闸门 {} · 被调用 {}）",
+            "r1={} r2={} r3={} r4={} · 预设 {:?} 天 · 窗口 {:?} 分钟 · 读不懂 {:?} · 只删明细 {} · 折叠界 {} · 归档界 {} · 两界同句 {} · 时间窗 {} · 区间选项 {:?} · 无界 {:?} · 边界字段 {:?} · 已发布 {} · 披露生产函数 {:?}（以缺口为准 {} · 空态闸门 {} · 被调用 {}）",
             self.r1(),
             self.r2(),
             self.r3(),
             self.r4(),
             self.presets_days,
-            self.retain_days,
+            self.retain_minutes,
             self.unreadable,
             self.deletes_details_only,
             self.has_fold_bound,
@@ -435,8 +440,8 @@ fn disclosure(js: &str, field: &str) -> Disclosure {
     }
 }
 
-/// 从示例配置的 `[rollup]` 段读保留窗口（天）。注释行不算（同段注释里提到过这个键名）。
-fn retain_days(toml: &str) -> Option<i64> {
+/// 从示例配置的 `[rollup]` 段读保留窗口（**分钟**）。注释行不算（同段注释里提到过这个键名）。
+fn retain_minutes(toml: &str) -> Option<i64> {
     let mut in_section = false;
     for raw in toml.lines() {
         let line = raw.trim();
@@ -504,7 +509,7 @@ fn read() -> Reading {
     Reading {
         presets_days: presets,
         unreadable,
-        retain_days: retain_days(include_str!("../config/config.example.toml")),
+        retain_minutes: retain_minutes(include_str!("../config/config.example.toml")),
         // 「只删明细表」= 出现 `DELETE FROM transactions` 而**不**出现汇总表的删除形态。
         deletes_details_only: body.contains("DELETE FROM transactions")
             && !body.contains("DELETE FROM transactions_rollup"),
@@ -561,7 +566,8 @@ fn the_retention_window_covers_every_preset_the_list_offers_negatives() {
         (
             "窗口收到列表最深的预设之下",
             Box::new(|r: &mut Reading| {
-                r.retain_days = Some(r.presets_days.last().copied().unwrap_or(0) - 1);
+                r.retain_minutes =
+                    Some(r.presets_days.last().copied().unwrap_or(0) * MINUTES_PER_DAY - 1);
             }) as Box<dyn Fn(&mut Reading)>,
         ),
         (
@@ -668,7 +674,7 @@ fn the_scanner_sees_both_sides() {
     );
     assert!(r.unreadable.is_empty(), "有读不懂的预设: {}", r.blame());
     assert!(
-        r.retain_days.is_some(),
+        r.retain_minutes.is_some(),
         "示例配置里读不到 {RETAIN_KEY}（段名或键名变了？）：{}",
         r.blame()
     );
