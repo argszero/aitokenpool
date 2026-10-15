@@ -2346,7 +2346,7 @@
         for (const sk of state.sort) {
           const col = columns.find((c) => c.key === sk.key);
           // C2054：列的**渲染值**可能与行里存的原始值不同（如 pts 的有符号值）——
-          // 列可用 `sortVal` 声明「排序按哪个值」，缺省仍是 row[key]（其余 6 张表行为不变）。
+          // 列可用 `sortVal` 声明「排序按哪个值」，缺省仍是 row[key]。
           const av = col && col.sortVal ? col.sortVal(a) : a[sk.key];
           const bv = col && col.sortVal ? col.sortVal(b) : b[sk.key];
           let cmp;
