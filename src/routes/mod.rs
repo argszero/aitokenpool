@@ -2565,7 +2565,10 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["items"].as_array().unwrap().len(), 1);
-        assert_eq!(v["items"][0]["counterpart"], "加额审批");
+        // 列表不再发布 `counterpart`（读模型没有它，前端交易语境也零消费点）⇒ 改钉这一行
+        // **是什么**：一笔 topup、金额正是批下来的 500。
+        assert_eq!(v["items"][0]["type"], "topup");
+        assert_eq!(v["items"][0]["pts"], 500.0);
         // 重复批准 → 409
         let (s, _) = post(
             st.clone(),
@@ -2690,11 +2693,13 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "ops 充值应 200: {body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["balance"], 12471.0 + 200.0);
-        // 交易记录 counterpart=运营者（demo 视角）
+        // 交易记录（demo 视角）：一笔 topup、金额 200 —— 列表不再发布 `counterpart`
+        // （读模型没有它），故钉这一行**是什么**而不是它的对手方文案。
         let (s, body) = get(st.clone(), "/api/transactions?type=topup", Some(&demo)).await;
         assert_eq!(s, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["items"][0]["counterpart"], "运营者");
+        assert_eq!(v["items"][0]["type"], "topup");
+        assert_eq!(v["items"][0]["pts"], 200.0);
         // 负数金额 → 400
         let (s, _) = post(
             st,

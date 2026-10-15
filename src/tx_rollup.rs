@@ -190,8 +190,9 @@ pub fn fold_pending(conn: &Connection, archive_watermark: i64, batch: i64) -> Re
 /// 1. **`id ≤ MIN(汇总水位, 归档水位)`** —— 只删汇总表已经算过、且原件已经进 JSONL 的行。
 ///    汇总水位是 `fold_pending` 自己写下的 `up_to_id`，归档水位由调用方传入（与折叠**同源**）；
 ///    取小 ⇒ 归档一旦落后（或归档目录丢失 ⇒ 水位 0）就一行都不删，与折叠同一条 fail-closed 纪律。
-/// 2. **`time < now - retain_minutes`** —— 保留窗口内的明细仍逐条留在库里（交易页翻页、共享页按行
-///    读的都是 `transactions` 本身）。窗口是**明细**的保留期；**汇总行永远不删**。
+/// 2. **`time < now - retain_minutes`** —— 保留窗口内的明细仍逐条留在库里。窗口是**明细**的保留
+///    期；**汇总行永远不删**。窗口外的明细不再是交易页的**行粒度**来源（页面对这些分钟只给汇总行），
+///    但它们的量仍逐条算进读模型的 `row_count`（rant 2026-10-15T16:25:04.530850+08:00 验收项 2）。
 /// 3. **`LIMIT batch`** —— 单次持库时间有界，后台维护绝不与请求抢锁（与折叠、归档同一条纪律）。
 ///
 /// 按 `id` 升序删 ⇒ 先删最旧的；`id` 单调（`AUTOINCREMENT`，删了也不会被复用），所以扫描一撞到
@@ -202,12 +203,13 @@ pub fn fold_pending(conn: &Connection, archive_watermark: i64, batch: i64) -> Re
 /// （`delete_folded_leaves_the_read_model_answering_the_same_numbers` 用真库逐列钉住这条）。
 /// 明细保留边界（UTC，`YYYY-MM-DDTHH:MM:SSZ`）：**早于它的明细不保证还在 `transactions` 里**。
 ///
-/// 这是「列表答不出来的那段」的**唯一定义处** —— 与 [`delete_folded`] 同一个时钟、同一个算式
+/// 这是「明细不再逐条存在」的**唯一定义处** —— 与 [`delete_folded`] 同一个时钟、同一个算式
 /// （SQL 的 `datetime('now', '-N minutes')`，负数按 0 处理）⇒ 删的是它、页面说的是它，两者不可能
 /// 各自算出一个边界。读侧只读**边界值**，不做删除判断（那是 `delete_folded` 的事）。
 ///
 /// ⚠️ 边界早于它 ≠ 明细已经没了：删除还受「已折叠 ∧ 已归档」两道闸（见 `delete_folded`）。
-/// 所以本值是**上界**——真正少答的那段只可能落在它之外。调用方据此说明口径，不据此断言缺失。
+/// 所以本值是**上界**——真正被删掉的那段只可能落在它之外。调用方据此说明口径，不据此断言缺失。
+/// 它今天的读者是交易页：边界之外的行粒度**只由汇总行承担**（不丢信息，但一个桶一行）。
 pub fn detail_since(conn: &Connection, retain_minutes: i64) -> Result<String> {
     let window = format!("-{} minutes", retain_minutes.max(0));
     conn.query_row(

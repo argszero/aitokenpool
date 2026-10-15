@@ -1,35 +1,49 @@
-//! 交易事实读模型门禁（R97）：视图 `tx_facts` 的**拼写、读法与时间窗**。
+//! 交易事实读模型门禁（R97）：视图 `tx_facts` 的**拼写、读法、时间窗，以及列表是否真的走它**。
 //!
 //! `src/tx_facts.rs` 把「已折叠的分钟级汇总行」与「尚未折叠的明细」合成一个读模型视图，
 //! 好让**删掉已折叠的明细**对聚合读数不可见。视图本身只是一段 SQL 文本，它兑现承诺
-//! 与否由三条**调用侧**的形状决定 —— 三条都不在类型系统里，只能由本门禁守：
+//! 与否由四条**调用侧**的形状决定 —— 四条都不在类型系统里，只能由本门禁守：
 //!
 //! * **R1 拼写**：视图名只有一个拼写点（`tx_facts::VIEW` 之后**放进 SQL 的那一处**），
 //!   生产 SQL 一律经 `tx_facts::source()` 取它。**字符串字面量**里手写视图名 ⇒ 一个
 //!   新的载体出现了：改名/换形态时它会静默留在原地（`FROM tx_facts` 这种写法尤其隐蔽，
 //!   它不单独成串）。判据是「每个**点了这个名字的字符串字面量**都必须住在
 //!   `tx_facts.rs` 里」，因此不靠「名字 = 整个字面量」这个过窄的形状。
-//! * **R2 读法**：读视图的查询必须是**聚合**，且**不得数行数**。视图的一行是「一个分钟桶」，
-//!   而 `row_count` 才是「这个桶压了多少条调用」 ⇒ `COUNT(*)` 数的是桶数。这一条有分母：
-//!   `tx_facts.rs::counting_view_rows_is_not_counting_calls` 用夹具钉住了两者不相等
-//!   （事实归测试，这里只守**形状**：读视图的那段 SQL 里不许出现 `COUNT(`）。
+//! * **R2 读法**：读视图的每一处都必须**声明它读的是什么粒度**。视图的一行是「一个分钟桶
+//!   **或**一条尚未折叠的明细」，**不是**一条调用 ⇒ 说得通的形状只有三种：① **聚合**
+//!   （含 `SUM(`）—— `summary` / `trend` / 账本读数 / 共享收益；② **逐行**（含 `row_count`）
+//!   —— 分页列表：每行自报它代表多少条真实明细（rant 2026-10-15T16:25:04.530850+08:00
+//!   验收项 2「每行带计数」）；③ **数行数**（`COUNT(`）—— 分页的 `total`：数的是「视图有
+//!   几行」，即这一页翻得出多少行，与列表**同源**是它成立的前提（验收项 3）。
+//!   三者都没有 ⇒ 有人把视图当成「一行一条调用」的表在读（既不聚合、也不自报行数）。
+//!   ⚠️ `COUNT(` **曾是**本门禁的牙：旧契约是「分页列表留在原始表上」，读视图只有聚合一种
+//!   形状，`COUNT(*)` 只可能是「把桶数当条数」。验收项 2/3 翻转了那个前提 —— 列表现在**必须**
+//!   数视图的行数 —— 于是这条牙改守它真正要守的那半：「**条数**一律 `SUM(row_count)`」，
+//!   而那已是**事实**（分母：`tx_facts.rs::counting_view_rows_is_not_counting_calls` 钉住
+//!   两者不相等），不再是形状。形状侧留下的是**声明粒度**：三者缺一即红。
 //!   同理视图没有 `counterpart`（展示用的对手方标识在汇总行上不存在）——读视图的 SQL
-//!   一旦点它，说明有人在拿视图当**明细列表**用（分页列表必须留在原始表上）。
+//!   一旦点它，说明有人在拿视图当**明细列表**用，而汇总行给不出它。
 //! * **R3 时间窗**：读侧的时间界必须过 `tx_facts::minute_aligned()`，且那个截断点**长在
 //!   `tx_where` 里**。汇总臂的时间列只有 16 字符（分钟桶），明细臂 19 字符
 //!   （`YYYY-MM-DD HH:MM:SS`）；带秒的界会让两条臂对同一个桶给出不同答案（短前缀更小），
 //!   于是折叠前后读数不同 —— 而前端发的正是 `toISOString()`（秒几乎从不为 0）。
+//! * **R4 列表在视图上**（验收项 2 的**存在性**）：视图必须真的在服务分页列表 —— 一处逐行
+//!   读法（带 `row_count`）**且**一处行数统计（`COUNT(`）。R1/R2/R3 全是「不许」，只剩它们时
+//!   「列表搬回原始表」这一态照样全绿（聚合读法一处都没动）—— 门禁就守不住本轮的成果。
+//!   R4 是它的反面：列表走了，两条见证都没了，红。这正是验收项 5 的变异腿「把列表改回读
+//!   原始表，门禁必须变红」。⚠️ 它要的是**见证存在**（每类至少一处），不是把调用点总数钉死。
 //!
 //! # 射程（如实）
 //!
-//! * **词法的**：它证「源码里那三处形状成立」，**不证**屏幕/接口上的数对 —— 数值等价由
+//! * **词法的**：它证「源码里那四处形状成立」，**不证**屏幕/接口上的数对 —— 数值等价由
 //!   `tx_facts.rs` 的真库测试（视图 vs 明细，三个折叠状态）与 `cargo test` 一起兜。
 //! * 语料 = `body_limit_gate::source_files()`（走盘 `src/**`、跳过门禁模块自身）；
 //!   掩码 = `deploy_gate::code_mask()`（**等长**掩码，偏移量与原文一一对应）。
 //!   两处都**复用**，不另立一份机械（`js_gate::mask_js` 是同一个先例）。
 //! * **不写快照**：期望值全部从制品推导（视图名取自 `tx_facts::VIEW`，语料走盘，
 //!   调用点由锚点现找）；读视图的**调用点数刻意不钉死** —— 本门禁遍历全部调用点，
-//!   新增读者自动进射程，钉一个数反而会变成第二个需要同步的载体。
+//!   新增读者自动进射程，钉一个数反而会变成第二个需要同步的载体。R4 要的是**见证存在**
+//!   （逐行读法、行数统计各至少一处），同样不钉总数。
 //! * **阳性对照**：`the_scanner_sees_the_carriers_it_judges` 断言扫描器确实看见了视图名的
 //!   那个字面量、至少一个读视图的调用点、以及那一个截断点 —— 否则「零违规」与
 //!   「扫描器是瞎的」在读数上无法区分（坑 #814）。
@@ -52,6 +66,9 @@ const WHERE_FN: &str = "fn tx_where(";
 /// 视图上不存在、只属于明细的列 —— 读视图的 SQL 点到它，就是把视图当明细列表用。
 const DETAIL_ONLY: &str = "counterpart";
 
+/// 「这一行代表多少条真实明细」的列 —— 逐行读法**必须**带着它（R2 的第二种声明、R4 的第一条见证）。
+const ROW_COUNT: &str = "row_count";
+
 /// 一次扫描的读数 —— 判决与它的证据一起产出（一个藏在脚注里的期望会报出自我一致的谎）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Reading {
@@ -61,10 +78,12 @@ struct Reading {
     name_sites: usize,
     /// 读视图的调用点数。
     view_reads: usize,
-    /// 读视图却不含 `SUM(` 的调用点（应 0）。
-    non_additive: Vec<String>,
-    /// 读视图却数行数（`COUNT(`）的调用点（应 0）。
+    /// 读视图却没声明粒度的调用点（应 0）：既不含 `SUM(`、也不读 `row_count`、也不数行数。
+    undeclared: Vec<String>,
+    /// 读视图且数行数（`COUNT(`）的调用点 —— 分页的 `total` 正是它（R4 的第二条见证）。
     row_counting: Vec<String>,
+    /// 读视图且**逐行**读、带着 `row_count` 的调用点 —— 分页列表正是它（R4 的第一条见证）。
+    row_carrying: Vec<String>,
     /// 读视图却点了明细专属列的调用点（应 0）。
     detail_only: Vec<String>,
     /// 拿不到外层 `format!(…)` 的调用点（应 0：取不到就等于那个调用点**没有判据**）。
@@ -81,12 +100,10 @@ impl Reading {
         self.name_sites == 1 && self.name_homes == [OWNER.to_string()]
     }
 
-    /// R2：读视图的每一处都是可加聚合，且不数行数、不点明细专属列；每处都读得懂。
+    /// R2：读视图的每一处都声明了粒度（聚合 / 逐行带 `row_count` / 数行数），不点明细专属列，
+    /// 且每处都读得懂。
     fn r2(&self) -> bool {
-        self.non_additive.is_empty()
-            && self.row_counting.is_empty()
-            && self.detail_only.is_empty()
-            && self.unreadable.is_empty()
+        self.undeclared.is_empty() && self.detail_only.is_empty() && self.unreadable.is_empty()
     }
 
     /// R3：时间窗的截断点唯一，且长在 `tx_where` 里。
@@ -94,22 +111,30 @@ impl Reading {
         self.aligns == 1 && self.aligned_in_where
     }
 
+    /// R4：分页列表真的走读模型 —— 逐行读法（带 `row_count`）与它同源的行数统计都在。
+    fn r4(&self) -> bool {
+        !self.row_carrying.is_empty() && !self.row_counting.is_empty()
+    }
+
     fn ok(&self) -> bool {
-        self.r1() && self.r2() && self.r3()
+        self.r1() && self.r2() && self.r3() && self.r4()
     }
 
     fn report(&self) -> String {
         format!(
-            "r1={} r2={} r3={} | 名字面量 {} 处/{} 个文件 {:?} · 读视图 {} 处 · 非可加 {:?} · \
-             数行数 {:?} · 明细专属 {:?} · 读不懂 {:?} · 对齐 {} 处（在 {WHERE_FN} 内 {}）",
+            "r1={} r2={} r3={} r4={} | 名字面量 {} 处/{} 个文件 {:?} · 读视图 {} 处 · 未声明粒度 {:?} · \
+             逐行带 {ROW_COUNT} {:?} · 数行数 {:?} · 明细专属 {:?} · 读不懂 {:?} · \
+             对齐 {} 处（在 {WHERE_FN} 内 {}）",
             self.r1(),
             self.r2(),
             self.r3(),
+            self.r4(),
             self.name_sites,
             self.name_homes.len(),
             self.name_homes,
             self.view_reads,
-            self.non_additive,
+            self.undeclared,
+            self.row_carrying,
             self.row_counting,
             self.detail_only,
             self.unreadable,
@@ -251,11 +276,18 @@ fn judge(corpus: &[(String, String)]) -> Reading {
             r.view_reads += 1;
             match enclosing_format(text, &structure, at) {
                 Some(span) => {
-                    if !span.contains("SUM(") {
-                        r.non_additive.push(format!("{path}: {}", one_line(span)));
-                    }
-                    if counts_rows(span) {
+                    // 粒度的三种声明（R2）。逐行读法**必须**带 `row_count` —— 视图的一行是一个
+                    // 分钟桶或一条明细，不是一条调用；不自报行数就等于把桶当成一条真调用。
+                    let aggregate = span.contains("SUM(");
+                    let counting = counts_rows(span);
+                    if counting {
                         r.row_counting.push(format!("{path}: {}", one_line(span)));
+                    }
+                    if span.contains(ROW_COUNT) && !aggregate && !counting {
+                        r.row_carrying.push(format!("{path}: {}", one_line(span)));
+                    }
+                    if !aggregate && !counting && !span.contains(ROW_COUNT) {
+                        r.undeclared.push(format!("{path}: {}", one_line(span)));
                     }
                     if span.contains(DETAIL_ONLY) {
                         r.detail_only.push(format!("{path}: {}", one_line(span)));
@@ -322,9 +354,10 @@ fn the_scanner_sees_the_carriers_it_judges() {
     println!("{}", r.report());
 }
 
-/// **轴**：视图名只有一个拼写点、读它的每一处都是可加聚合、时间窗只有一个截断点。
+/// **轴**：视图名只有一个拼写点、读它的每一处都声明了粒度、时间窗只有一个截断点，
+/// 且分页列表真的走它。
 #[test]
-fn the_view_is_named_once_and_read_only_by_additive_aggregates() {
+fn the_view_is_named_once_and_read_in_declared_grains() {
     let r = judge(&corpus());
     assert!(
         r.r1(),
@@ -333,12 +366,19 @@ fn the_view_is_named_once_and_read_only_by_additive_aggregates() {
     );
     assert!(
         r.r2(),
-        "读视图的查询里有非可加 / 数行数 / 点明细专属列 / 读不懂的调用点：{}",
+        "读视图的查询里有没声明粒度的（既不聚合、也不带 `{ROW_COUNT}`、也不数行数）/ \
+         点明细专属列 / 读不懂的调用点：{}",
         r.report()
     );
     assert!(
         r.r3(),
         "时间窗的分钟对齐不止一处、或不在 `{WHERE_FN}` 里：{}",
+        r.report()
+    );
+    assert!(
+        r.r4(),
+        "读模型没有在服务分页列表 —— 逐行读法（带 `{ROW_COUNT}`）与它同源的行数统计（`COUNT(`）\
+         必须各有一处：列表搬回原始表了？{}",
         r.report()
     );
 }
@@ -356,10 +396,22 @@ fn owner_fixture() -> String {
 /// （内含分钟对齐）与一个读视图的聚合查询。
 ///
 /// `select` 是那个查询的选择列表，`fn_name` 用来把截断点搬进/搬出 `tx_where`。
+/// `with_list` 决定语料里有没有**分页列表的两条见证**（逐行读法带 `row_count` ＋ 行数统计
+/// `COUNT(`）—— R4 的变异腿就是把它们去掉。
 ///
 /// ⚠️ 配对必须真的平衡：`format!(…, tx_facts::source("t"))` 是**两**层括号，少一层时
 /// `matched()` 报 `None`，症状是「扫描器读不懂语料」——看着像门禁坏了，其实是夹具写错了。
-fn fixture(fn_name: &str, select: &str) -> Vec<(String, String)> {
+fn fixture_with(fn_name: &str, select: &str, with_list: bool) -> Vec<(String, String)> {
+    let list = if with_list {
+        format!(
+            "fn tx_list(...) {{\n    \
+             let sql = format!(\"SELECT t.id, t.{ROW_COUNT} FROM {{}} WHERE {{w}}\", {CALL}\"t\"));\n}}\n\
+             fn tx_total(...) {{\n    \
+             let sql = format!(\"SELECT COUNT(*) FROM {{}} WHERE {{w}}\", {CALL}\"t\"));\n}}\n"
+        )
+    } else {
+        String::new()
+    };
     vec![
         (OWNER.to_string(), owner_fixture()),
         (
@@ -368,10 +420,16 @@ fn fixture(fn_name: &str, select: &str) -> Vec<(String, String)> {
                 "fn {fn_name}(...) {{\n    \
                  binds.push(rusqlite::types::Value::Text({ALIGN}s)));\n}}\n\
                  fn summary(...) {{\n    \
-                 let sql = format!(\"SELECT {select} FROM {{}} {{}} WHERE {{w}}\", {CALL}\"t\"));\n}}\n"
+                 let sql = format!(\"SELECT {select} FROM {{}} {{}} WHERE {{w}}\", {CALL}\"t\"));\n}}\n\
+                 {list}"
             ),
         ),
     ]
+}
+
+/// 带分页列表见证的合成语料（各条 R1/R2/R3 牙都建在它上面，于是那些牙只翻自己那一条）。
+fn fixture(fn_name: &str, select: &str) -> Vec<(String, String)> {
+    fixture_with(fn_name, select, true)
 }
 
 /// 对照语料（全绿）。
@@ -399,7 +457,7 @@ fn a_second_file_writing_the_view_name_reddens_the_spelling_rule() {
     ));
     let r = judge(&c);
     assert!(
-        !r.r1() && r.r2() && r.r3(),
+        !r.r1() && r.r2() && r.r3() && r.r4(),
         "字面量里手写的视图名没被点名（且只该点这一条）：{}",
         r.report()
     );
@@ -415,7 +473,7 @@ fn a_second_literal_in_the_owner_file_reddens_the_spelling_rule() {
     ));
     let r = judge(&c);
     assert!(
-        !r.r1() && r.r2() && r.r3(),
+        !r.r1() && r.r2() && r.r3() && r.r4(),
         "第二个拼写点没被点名：{}",
         r.report()
     );
@@ -433,27 +491,26 @@ fn mentioning_the_module_file_name_is_not_spelling_the_view() {
     assert!(r.r1(), "把模块文件名当成了视图名的拼写点：{}", r.report());
 }
 
-/// **牙（R2）**：读视图却用 `COUNT(*)` ⇒ 数的是分钟桶数而不是调用数。
+/// **牙（R2）·对照**：`COUNT(*)` 今天是**合法声明** —— 分页的 `total` 数的是「视图有几行」，
+/// 而它与列表同源正是验收项 3 的要求。这一条钉住那次翻转（旧契约下它是红的）：
+/// `COUNT(` 不再是违规，「数**条数**必须 `SUM(row_count)`」那半归**事实**管，分母是
+/// `tx_facts.rs::counting_view_rows_is_not_counting_calls`。
 #[test]
-fn a_view_reader_that_counts_rows_reddens() {
-    let c = fixture("tx_where", "COALESCE(SUM(t.pts), 0), COUNT(*)");
+fn counting_the_views_rows_is_a_declared_grain() {
+    let c = fixture("tx_where", "COUNT(*)");
     let r = judge(&c);
-    assert!(
-        !r.r2() && r.r1() && r.r3(),
-        "`COUNT(*)` 没被点名：{}",
-        r.report()
-    );
+    assert!(r.ok(), "`COUNT(*)` 被误判成违规：{}", r.report());
 }
 
-/// **牙（R2）**：`row_count` 不是 `COUNT(` —— 加和它是对的，不能被误判。
+/// **牙（R2）·对照**：`SUM(row_count)` 是**聚合**声明，不是逐行读法，也不该被当成数行数。
 #[test]
-fn summing_the_row_count_is_not_row_counting() {
+fn summing_the_row_count_is_a_declared_grain() {
     let c = fixture(
         "tx_where",
         "COALESCE(SUM(t.pts), 0), COALESCE(SUM(t.row_count), 0)",
     );
     let r = judge(&c);
-    assert!(r.ok(), "`SUM(row_count)` 被误判成数行数：{}", r.report());
+    assert!(r.ok(), "`SUM(row_count)` 被误判：{}", r.report());
 }
 
 /// **牙（R2）**：读视图却点了明细专属列 ⇒ 有人拿视图当明细列表用。
@@ -462,20 +519,21 @@ fn a_view_reader_that_touches_a_detail_only_column_reddens() {
     let c = fixture("tx_where", "COALESCE(SUM(t.pts), 0), t.counterpart");
     let r = judge(&c);
     assert!(
-        !r.r2() && r.r1() && r.r3(),
+        !r.r2() && r.r1() && r.r3() && r.r4(),
         "明细专属列没被点名：{}",
         r.report()
     );
 }
 
-/// **牙（R2）**：读视图却不聚合（取单列）⇒ 非可加。
+/// **牙（R2）**：读视图却**不声明粒度** —— 逐行取列却不带 `row_count`（既不聚合、也不数行数）
+/// ⇒ 有人把视图当成「一行一条调用」的表在读。
 #[test]
-fn a_view_reader_that_does_not_aggregate_reddens() {
-    let c = fixture("tx_where", "t.pts");
+fn a_view_reader_that_declares_no_grain_reddens() {
+    let c = fixture("tx_where", "t.id, t.pts, t.type");
     let r = judge(&c);
     assert!(
-        !r.r2() && r.r1() && r.r3(),
-        "非可加读法没被点名：{}",
+        !r.r2() && r.r1() && r.r3() && r.r4(),
+        "没声明粒度的读法没被点名：{}",
         r.report()
     );
 }
@@ -486,8 +544,37 @@ fn an_aligner_outside_the_where_builder_reddens() {
     let c = fixture("somewhere_else", "COALESCE(SUM(t.pts), 0)");
     let r = judge(&c);
     assert!(
-        !r.r3() && r.r1() && r.r2(),
+        !r.r3() && r.r1() && r.r2() && r.r4(),
         "截断点不在 `{WHERE_FN}` 里却没被点名：{}",
+        r.report()
+    );
+}
+
+/// **牙（R4）**：分页列表搬回原始表 —— 语料里不再有逐行读法、也没有行数统计 ⇒ 只翻 R4。
+///
+/// 这是验收项 5 的变异腿在门禁侧的对照：R1/R2/R3 照旧全绿（聚合读法一处都没动），
+/// 只有 R4 知道列表已经不在读模型上了。
+#[test]
+fn a_list_that_leaves_the_view_reddens_the_list_rule() {
+    let c = fixture_with("tx_where", "COALESCE(SUM(t.pts), 0)", false);
+    let r = judge(&c);
+    assert!(
+        !r.r4() && r.r1() && r.r2() && r.r3(),
+        "列表搬走之后 R4 没红（其余三条本该照旧全绿）：{}",
+        r.report()
+    );
+}
+
+/// **牙（R4）**：只把**行数统计**搬回原始表（`total` 不再数视图的行数）⇒ 同样只翻 R4 ——
+/// 「列表与 `total` 同源」是两条见证，各有一条牙。
+#[test]
+fn a_total_that_leaves_the_view_reddens_the_list_rule() {
+    let mut c = good_fixture();
+    c[1].1 = c[1].1.replace("SELECT COUNT(*)", "SELECT SUM(t.pts)");
+    let r = judge(&c);
+    assert!(
+        !r.r4() && r.r1() && r.r2() && r.r3(),
+        "`total` 搬走之后 R4 没红：{}",
         r.report()
     );
 }

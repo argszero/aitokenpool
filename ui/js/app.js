@@ -1565,6 +1565,16 @@
   const txType = (k) => (TX_TYPE[k] ? TX_TYPE[k]() : k);
   const txStatus = (s) => s === "成功" ? T("tx.status.success") : s === "处理中" ? T("tx.status.pending") : s === "入账" ? T("tx.status.credited") : s;
 
+  // 一行代表多少条真实明细（rant 2026-10-15T16:25:04.530850+08:00 验收项 2）—— 列表读的是读模型
+  // `tx_facts`（分钟级汇总行 ∪ 未折叠明细），所以「一行」不再等于「一条调用」。服务端每行都给
+  // `row_count`（汇总行＝它压了多少条、未折叠明细恒 1），本函数是**唯一**把它变成屏上那句话的地方：
+  // 只有 `> 1` 才标出来（N = 1 的两态数值上等价），`title` 说清这行是什么。
+  const txRowCount = (t) => {
+    const n = typeof t.rowCount === "number" ? t.rowCount : 1;
+    if (n <= 1) return "";
+    return '<span class="muted nb" style="font-size:11.5px" title="' + esc(T("tx.row.bucket", { n: n })) + '"> ×' + n + "</span>";
+  };
+
   // 交易表的列筛选**只有服务端一个实现**（rant 2026-08-25T10:33:26）：每个带 `filter` 的列都声明
   // `serverFilter: true`，含义是「这列的筛选值随请求发给服务端（`txFilterParams`）」⇒ 客户端
   // 不得再用 `filterRows` 本地筛一遍（同一条规则的第二份实现，归一化与语义都不同，见 `filterRows`）。
@@ -1577,7 +1587,18 @@
       // 这样筛选状态存的是 DB 值，切换语言后 filterVal 仍能匹配（此前状态存本地化文案 ⇒ 切语言即失配，表格变空）
       options: () => ["consume", "earn", "topup", "withdraw", "gift", "expire"].map((k) => ({ value: k, label: txType(k) })),
       filterVal: (t) => t.type,
-      render: (t) => t.type === "earn" ? '<span class="pill pill-ok">' + T("tx.type.earn") + "</span>" : t.type === "consume" ? '<span class="pill pill-accent">' + T("tx.type.consume") + "</span>" : t.type === "gift" ? '<span class="pill pill-ok">' + T("tx.type.gift") + "</span>" : '<span class="pill pill-muted">' + esc(txType(t.type)) + "</span>" },
+      render: (t) => {
+        const pill = t.type === "earn" ? '<span class="pill pill-ok">' + T("tx.type.earn") + "</span>"
+          : t.type === "consume" ? '<span class="pill pill-accent">' + T("tx.type.consume") + "</span>"
+          : t.type === "gift" ? '<span class="pill pill-ok">' + T("tx.type.gift") + "</span>"
+          : '<span class="pill pill-muted">' + esc(txType(t.type)) + "</span>";
+        // 行粒度（rant 2026-10-15T16:25:04.530850+08:00 验收项 2）：列表读的是读模型
+        // `tx_facts` = 分钟级汇总行 ∪ 未折叠明细 ⇒ 一个**汇总行代表 N 条真实明细**，页面
+        // 必须把它说出来，而不是装作面前是一条明细。N = 1 的两态（一条明细 / 只压了一条的桶）
+        // 数值上等价，不标；`txRowCount()` 是这一格的唯一写者。
+        return pill + txRowCount(t);
+      },
+    },
     // rant 2026-08-22T17:21:39 需求 2：新增「用户」列（transactions.user_id JOIN users 取用户名）
     { key: "user", title: () => T("tx.col.user"), sort: "string", filter: "text", serverFilter: true },
     { key: "model", title: () => T("tx.col.model"), sort: "string", filter: "text", serverFilter: true },
@@ -1645,7 +1666,8 @@
         if (typeof t.outputRaw === "number") outputT += t.outputRaw;
       });
     }
-    // 记录数 = 后端 total（真分页下即筛选项下的全量条数；无 total 时退化为当前可见行数）
+    // 记录数 = 后端 total（真分页下即筛选条件下的全量**行数**：列表与它同源，一行可能是一个分钟桶
+    // —— 行粒度由每行的 `×N` 交代；无 total 时退化为当前可见行数）
     count = (Live.transactions && typeof Live.transactions.total === "number")
       ? Live.transactions.total
       : list.length;
@@ -1913,8 +1935,9 @@
         : filterRows(list, TX_COLUMNS, txTable.filters).length;
       cntEl.textContent = (Live.transactions || !loggedIn()) ? T("tx.pager.count", { n: n }) : "";
     }
-    // 明细缺口的常驻说明（R104）：明细被折叠归档后，上方卡片（读读模型）与列表/「共 N 条」
-    // （读明细表）会在同一屏上分叉 —— 这句话必须在**有行**时也看得见（零行态另有插槽）。
+    // 行粒度 / 明细保留窗口的常驻说明（R104）：列表与「共 N 条」现在**也读读模型**（验收项 2/3），
+    // 于是「卡片答得出、列表答不出」的分叉没有了 —— `entries > total` 今天说的是**行粒度**：
+    // 命中里有一批调用被折成了分钟桶（一行代表多条）。这句话必须在**有行**时也看得见（零行态另有插槽）。
     renderTxArchivedNote();
     // 趋势图：跟随 tab + 外部时间段（rant 2026-08-23T16:01:07 需求 2）
     renderTxTrend();
@@ -1935,17 +1958,20 @@
     });
   }
 
-  // 交易列表的「明细缺口」说明（R99 轴）：后端在**同一个响应**里给两个数 ——
-  //   · `summary.entries`：这条查询命中的**账本条数**（读模型口径，汇总/删除对它不可见）；
-  //   · `total`：`transactions` 里还剩几行。
-  // 两者不等 ⇒ 有一批命中记录已经折叠归档、不再逐条列得出（删除只发生在保留边界之外）。
-  // 此时上方卡片与「共 N 条」会在同一屏上分叉，而「没有匹配的记录 / 试试调整筛选条件」是
-  // **错的建议** —— 筛选条件怎么调都变不出库里已经不存在的行。返回要说的那句文案；无从解释时
-  // 返回 null。
+  // 交易列表的「行粒度」说明（R99 轴起，验收项 2 之后的意义见下）：后端在**同一个响应**里
+  // 给两个数 ——
+  //   · `summary.entries`：这条查询命中的**账本条数**（`SUM(row_count)`，折叠对它不可见）；
+  //   · `total`：**读模型有几行** ＝ 这一页翻得出多少行（`COUNT(*)`，与列表同源）。
+  // 两者不等 ⇒ 命中里至少有**一个分钟桶**（那条记录被折进了汇总行，一行代表 N 条）——
+  // 这正是本卡要说的事：屏幕上的行不都是单条明细，而真实明细只保留到 `detail_since`。
+  // 「没有匹配的记录 / 试试调整筛选条件」在这种状态下也是**错的建议**（筛选条件变不出被折叠的逐条身份）。
+  // 返回要说的那句文案；无从解释时返回 null。
   //
-  // ⚠️ 判据是**两个数的差**（R104），不是「列表空不空」：明细还在（`total > 0`）时同样会少列。
-  //    这个函数因此**只回答「有没有缺口」**；「在哪里看得见」交给下面两个消费者
-  //    （`renderTxArchivedNote` 常驻、`txArchivedEmptySub` 零行态），它们不各算一份。
+  // ⚠️ 判据是**两个数的差**（R104），不是「列表空不空」。这个函数因此**只回答「要不要说」**；
+  //    「在哪里看得见」交给下面两个消费者（`renderTxArchivedNote` 常驻、`txArchivedEmptySub`
+  //    零行态），它们不各算一份。
+  //    ⚠️ 列表读读模型之后 `entries > 0 ⇒ total > 0`（每一条命中都至少占一行）⇒ 零行态那条
+  //    分支今天**不可达**；措辞与门禁（`tx_retention_gate`）的重写归下一片（rant 的 R5）。
   function txArchivedNoteText() {
     const t = Live.transactions;
     if (!t || !t.summary || !t.detail_since) return null;
@@ -1959,7 +1985,7 @@
     return T("tx.empty.archived", { n: days });
   }
 
-  // 缺口的**常驻**说明：写进 `#tx-archived-note`，每次渲染重算（判据只有上面一处）。
+  // 上面那句话的**常驻**插槽：写进 `#tx-archived-note`，每次渲染重算（判据只有上面一处）。
   // 无缺口 / 边界未发布 ⇒ 清空并收起。收起走**属性频道**（`el.hidden`）—— 类频道里 `.hidden`
   // 与元素自己的类会互相覆盖，属性频道没有这个问题。
   //
@@ -3366,8 +3392,14 @@
       if (m) d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)));
     }
     if (d && !isNaN(d.getTime())) {
-      return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) +
-        " " + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+      const head = d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) +
+        " " + p2(d.getHours()) + ":" + p2(d.getMinutes());
+      // ⚠️ 源串**只有分钟**时不得补 `:00`：读模型里被折叠的行只精确到分钟（服务端发的就是
+      // 16 字符的分钟桶），补出来的秒是**伪造的精度** —— 与 C2111（导出与单元格同口径）、
+      // C2126（这里曾把 19 字符整秒串切掉秒位）同一条规则的两端：单元格只说源串说过的话。
+      // 明细行（整秒）与「整天」串（无时刻，按当日 00:00 起）照旧。
+      const minuteOnly = /T\d{2}:\d{2}Z$/.test(t) || /\s\d{2}:\d{2}$/.test(t);
+      return minuteOnly ? head : head + ":" + p2(d.getSeconds());
     }
     return t; // 非标准格式（游客 mock 'MM-DD HH:mm' 等）原样返回
   }
@@ -3980,6 +4012,9 @@
         tokenBrk: brkTitle,
         pts: t.pts,
         status: t.status || "成功",
+        // 本行代表多少条真实明细（读模型的 `row_count`；未折叠明细恒 1）—— 由 `txRowCount()`
+        // 渲染成「×N」，页面据此不把汇总行当作单条真实明细（验收项 2）。
+        rowCount: typeof t.row_count === "number" ? t.row_count : 1,
       };
     });
   }
