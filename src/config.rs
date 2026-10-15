@@ -252,7 +252,7 @@ fn default_rollup_interval_secs() -> u64 {
     60
 }
 fn default_rollup_retain_minutes() -> i64 {
-    43_200
+    10
 }
 
 /// 交易明细汇总（[rollup] 段，rant 2026-10-09T12:28:58 验收项 1）。
@@ -264,9 +264,12 @@ fn default_rollup_retain_minutes() -> i64 {
 /// 删除只删**已折叠且已归档**的 —— 于是删掉的行永远有原件（JSONL）与聚合（汇总表）两个落脚处；
 /// `[archive]` 关掉时水位 0 ⇒ 不折也不删（fail-closed），这是刻意的。
 ///
-/// 窗口是**明细**的保留窗口（不是汇总的）：窗口内的明细仍逐条留在 `transactions` 里，
-/// 交易页照常翻页；窗口外的只剩汇总行（与 JSONL 里的原件）。取 0 即「明细只留汇总」的极值
-/// —— 折叠追平后 `transactions` 会被清空，交易页只答得出最近一分钟，**这是刻意的取舍，不是缺陷**。
+/// 窗口是**明细**的保留窗口（不是汇总的）。默认 **10 分钟**：宿主 2026-10-15 的裁定是「根本没有
+/// 查询真实明细的需求」（rant 2026-10-15T16:25:04.530850+08:00），窗口内的明细仍逐条留下，
+/// 窗口外的只剩汇总行（与 JSONL 里的原件）—— 而交易页**看得到**那段历史：它读读模型
+/// `tx_facts`，窗口外的那部分以**分钟级汇总行**呈现（一行代表 N 条，行自己用 `row_count` 交代）。
+/// 取 0 即「明细只留汇总」的极值 —— 折叠追平后 `transactions` 会被清空，交易页上每一行都是
+/// 汇总行，**这是刻意的取舍，不是缺陷**。
 ///
 /// 单位是**分钟**（`retain_minutes`）。此前是**天**（`retain_days`，默认 30）—— 那个单位
 /// 表达不出「只留 10 分钟」这样的保留策略，而已落地的删除本来就按 `datetime('now', ?)` 算偏移，
@@ -283,8 +286,9 @@ pub struct Rollup {
     /// 折叠扫描间隔（秒，默认 60；最小 1）
     #[serde(default = "default_rollup_interval_secs")]
     pub interval_secs: u64,
-    /// 明细的保留窗口（**分钟**，默认 `43200` = 30 天）：早于 `now - retain_minutes` 的
-    /// **已折叠**明细每轮删一批。0 = 不留明细（只留汇总），负数按 0 计。
+    /// 明细的保留窗口（**分钟**，默认 `10`）：早于 `now - retain_minutes` 的**已折叠**明细每轮
+    /// 删一批。0 = 不留明细（只留汇总），负数按 0 计。窗口外的明细在交易页上以分钟汇总行呈现
+    /// （读模型 `tx_facts`），不丢信息、只是粒度变粗。
     #[serde(default = "default_rollup_retain_minutes")]
     pub retain_minutes: i64,
     /// **已弃用**：保留窗口的旧拼写（**天**）。给出时**优先**于 `retain_minutes`（×1440），
@@ -621,9 +625,9 @@ mod tests {
         assert!(d.enabled, "默认启用 —— 折叠是「明细只留汇总」的前置");
         assert_eq!(d.batch, 2_000);
         assert_eq!(d.interval_secs, 60);
-        assert_eq!(d.retain_minutes, 43_200, "明细默认保留 30 天（43200 分钟）");
+        assert_eq!(d.retain_minutes, 10, "明细默认只保留 10 分钟");
         assert_eq!(d.retain_days, None, "旧拼写缺省不设 —— 新字段才是真源");
-        assert_eq!(d.window_minutes(), 43_200);
+        assert_eq!(d.window_minutes(), 10);
     }
 
     /// 旧拼写 `retain_days`（**天**）仍然算数（×1440），而且**优先**于新键 —— 老配置原样可用。
