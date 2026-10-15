@@ -58,7 +58,7 @@
 | `quotas` | 点数账户（balance 永久 + gift_balance 有效赠送） |
 | `gift_grants` | 赠送明细（amount / expires_at / status: active\|used\|expired） |
 | `transactions` | 交易流水（type 取值以 `src/routes/wallet.rs` 的 `TX_FILTER_TYPES` 为准；含 token 明细列） |
-| `transactions_rollup` | 交易明细折叠出的分钟级**可加**汇总（`src/tx_rollup.rs`）；聚合经视图 `tx_facts` 取数，见下 |
+| `transactions_rollup` | 交易明细折叠出的分钟级**可加**汇总（`src/tx_rollup.rs`）；聚合与交易页列表经视图 `tx_facts` 取数，见下 |
 | `usage_records` | 调用明细（tokens 拆 input / cached / output） |
 | `departments` / `raise_requests` | 部门 + 成员加额申请（企业版） |
 | `email_verifications` | 注册邮箱验证码（与 `users.verified` 配套，v6 起） |
@@ -68,8 +68,9 @@
 > 服务现在**先归档、再删除**。`transactions`：明细 → 归档成 `<数据目录>/archive/transactions-*.jsonl`
 > （`src/archive.rs`）→ 折叠成 `transactions_rollup`（`src/tx_rollup.rs`）→ **聚合改从视图 `tx_facts`
 > （＝汇总 ∪ 未折叠明细，`src/tx_facts.rs`）取数** → 删除已折叠且已归档、过了 `[rollup] retain_minutes`
-> 的行。分页列表要的是逐行身份（汇总行没有），仍读明细 ⇒ 它与聚合会在保留窗口之外分叉，
-> `/api/transactions` 随响应发布这段边界。`usage_records`：读者全是写死的月/日窗口，**不需要折叠** ——
+> 的行。**分页列表与聚合读同一个视图** ⇒ 「更早的历史」不会在交易页上凭空消失：折叠掉的明细
+> 以分钟汇总行的形式照样列得出来，每行用它自己的行粒度（`row_count`）交代它代表多少条真实明细，
+> 而「账本共 N 条」（`SUM(row_count)`）与「列表共 N 行」（`COUNT(*)`）**刻意不是同一个数**。`usage_records`：读者全是写死的月/日窗口，**不需要折叠** ——
 > 归档后按同一套日历窗口删除（`src/usage_retention.rs`）。两表的开关与批次见 `config.example.toml` 的
 > `[archive]` / `[rollup]` / `[usage_retention]`；**归档未就绪（水位为 0）时一行不删**。
 

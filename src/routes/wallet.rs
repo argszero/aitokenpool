@@ -118,14 +118,18 @@ fn tx_sort_expr(key: &str) -> Option<String> {
 
 /// 解析 `sort` / `dir` 查询参数 → `ORDER BY` 片段（列表端点专用；用户串**永不**进入 SQL）。
 ///
-/// - 缺省（或空串）⇒ `t.id DESC`：**今日行为不变**（最新在前）。
+/// - 缺省（或空串）⇒ `t.time DESC, t.id DESC`：**最新在前**。缺省键从 `t.id DESC` 改成
+///   `t.time DESC` 是验收项 2 的后果，不是口味：列表改读读模型之后，同一列上同时住着
+///   「分钟桶」（16 字符）与「未折叠明细的时刻」（19 字符），而两条臂的 `id` 各自从 1 起 ——
+///   按 `id` 排会把**汇总行的主键**当成时间用，最新那批反而排到最后。
 /// - `sort` 是逗号分隔的键列表，`dir` 是**逐列对应**的方向列表（缺省全 `asc`）——仓内排序本
 ///   就是多列的（Shift 点击叠加），服务端只认第一列会让两支箭头里只有一支被兑现，那正是本轴
 ///   要修的病本身。
 /// - 未知键 / 长度不匹配 / 非法方向 ⇒ 400，文案由白名单**派生**；**不得**静默回退默认排序
 ///   （回退会让「箭头 ⇔ 顺序」再次脱钩，也就是又回到缺陷本身）。
 /// - 尾部恒加 `, t.id DESC`：分页是 `LIMIT/OFFSET`，非唯一排序会让相邻页的边界不确定
-///   （同一行出现两次、另一行永不出现）。
+///   （同一行出现两次、另一行永不出现）。收尾键用视图的 [`tx_facts`] 行身份列 —— 两条臂的
+///   `id` 各自唯一，且臂间的时间串长度不同（16 vs 19 字符）⇒ `(time, id)` 唯一。
 fn tx_order_by(sort: Option<&str>, dir: Option<&str>) -> Result<String, ApiErr> {
     // ⚠️ 400 的信封**写在调用点**（`json!({ "error": … })`，与仓内其余 60 余处同形），
     // 不要收回成「接收 `String` 的助手/闭包」：那样 `"error"` 的值就成了**裸标识符**，
@@ -140,7 +144,7 @@ fn tx_order_by(sort: Option<&str>, dir: Option<&str>) -> Result<String, ApiErr> 
     };
     let keys = sort.map(split).unwrap_or_default();
     if keys.is_empty() {
-        return Ok("t.id DESC".to_string());
+        return Ok("t.time DESC, t.id DESC".to_string());
     }
     let dirs = dir.map(split).unwrap_or_default();
     if !dirs.is_empty() && dirs.len() != keys.len() {
@@ -496,26 +500,27 @@ pub async fn transactions(
                 "cached_tokens": r.get::<_, f64>(5)?,
                 "output_tokens": r.get::<_, f64>(6)?,
                 // `entries` = 这条查询命中的**账本条数**（读模型口径：汇总行按 `row_count` 折算成
-                // 原来的条数）⇒ 汇总/删除对它是**不可见**的，它答的是「有多少条账本记录」。
-                // ⚠️ 与 `total`（明细表里还剩几行）**刻意是两个数**：明细被删掉之后
-                // `entries > total`，差额正是「已折叠归档、不再逐条列得出」的那段 —— 见
-                // `detail_since` 与前端零行态。数条数必须 `SUM(row_count)`，不得 `COUNT(*)`
-                // （后者数的是视图有几行，即分钟桶数）。
+                // 原来的条数）⇒ 折叠对它是**不可见**的，它答的是「有多少条账本记录」。
+                // ⚠️ 与 `total`（**视图有几行** = 这一页翻得出多少行）**刻意是两个数**：折叠过的
+                // 那部分以分钟桶的形式占**一行**而不是 N 行 ⇒ `entries >= total`，差额正是
+                // 「被折进桶里的条数」（已经不是「列不出来的那段」—— 列表与 `total` 都改读读模型
+                // 之后没有列不出来的行了）。数条数必须 `SUM(row_count)`，不得 `COUNT(*)`
+                // （后者数的是视图有几行，即分钟桶数 + 未折叠明细数）。
                 "entries": r.get::<_, i64>(7)?,
             }))
         })
         .map_err(internal)?;
-    // ⚠️ 分页列表**不走** `tx_facts`（明细才是它要的东西）：汇总行是**聚合**，
-    // 没有 `id`、没有 `counterpart`，一行代表 N 条调用 ⇒ 视图答不出「第 N 页的第 K 条」。
-    // `total` 因此必须与列表**同一个载体**（都读明细），否则页码数与实际能翻出来的行数不一致。
-    // 代价如实记录：保留窗口之外的那段明细答不出来，而**聚合答得出** ⇒ 两者会在同一屏上
-    // 分叉。分叉由响应里的 `detail_since`（保留边界）与 `summary.entries`（账本条数）披露，
-    // 由前端说明（`txArchivedNoteText`：常驻一句 + 零行态的副标题，**有行也看得见**），
-    // 由 `tx_retention_gate` 守。
+    // ⚠️ 分页列表与 `total` **同源，都读读模型 `tx_facts`**（rant 2026-10-15T16:25:04.530850+08:00
+    // 验收项 2/3）。一行的含义是「一个分钟桶 × 一组维度值」或「一条尚未折叠的明细」——
+    // 前者自带 `row_count`（它代表多少条真实明细），后者恒 1。于是「明细只留一小段」不再让
+    // 交易页只能答出那一小段。`total` 因此是**行数**，与列表逐行对得上（页码数不会与能翻出来的
+    // 行数不一致）；它与 `summary.entries`（**条数** = `SUM(row_count)`）刻意是两个数，
+    // 差额就是折叠本身，由每行的 `row_count` 与 `detail_since` 说给页面。
     let total: i64 = conn
         .query_row(
             &format!(
-                "SELECT COUNT(*) FROM transactions t {} WHERE {where_sql}",
+                "SELECT COUNT(*) FROM {} {} WHERE {where_sql}",
+                tx_facts::source("t"),
                 tx_joins_if(join_needed)
             ),
             params_from_iter(where_binds.iter()),
@@ -531,44 +536,50 @@ pub async fn transactions(
     list_binds.push(rusqlite::types::Value::Integer(page_size as i64));
     list_binds.push(rusqlite::types::Value::Integer(offset as i64));
     let list_sql = format!(
-        "SELECT t.id, t.counterpart, t.key_id, t.api_key_id, t.model, t.tokens, t.cached_tokens, t.output_tokens, \
-                t.pts, t.type, t.status, t.time, \
+        "SELECT t.id, t.key_id, t.api_key_id, t.model, t.tokens, t.cached_tokens, t.output_tokens, \
+                t.pts, t.type, t.status, t.time, t.row_count, \
                 CASE WHEN k.note <> '' THEN k.note \
                      WHEN k.plan <> '' THEN k.provider || ' / ' || k.plan \
                      ELSE k.provider END AS key_label, \
                 u.name AS user_name, \
                 ak.name AS key_name \
-         FROM transactions t \
+         FROM {} \
          LEFT JOIN keys k ON k.id = t.key_id \
          LEFT JOIN users u ON u.id = t.user_id \
          LEFT JOIN api_keys ak ON ak.id = t.api_key_id \
          WHERE {list_where} \
          ORDER BY {order} LIMIT ?{} OFFSET ?{}",
+        tx_facts::source("t"),
         n + 1,
         n + 2
     );
     let mut stmt = conn.prepare(&list_sql).map_err(internal)?;
     let rows: Vec<serde_json::Value> = stmt
         .query_map(params_from_iter(list_binds.iter()), |r| {
-            let time: String = r.get(11)?;
-            let tokens: f64 = r.get(5)?;
-            let cached: f64 = r.get(6)?;
-            let output: f64 = r.get(7)?;
+            let time: String = r.get(10)?;
+            let tokens: f64 = r.get(4)?;
+            let cached: f64 = r.get(5)?;
+            let output: f64 = r.get(6)?;
             let input = tokens - cached - output;
             Ok(serde_json::json!({
+                // 行身份：汇总臂是汇总行主键、明细臂是明细行主键（见 `tx_facts::IDENTITY`）。
+                // 前端交易语境不读它，它只保证翻页边界确定 —— 所以汇总行的这个值**不是**
+                // 「哪一笔交易」，页面也不得据此宣称任何逐条身份。
                 "id": r.get::<_, i64>(0)?,
-                "counterpart": r.get::<_, String>(1)?,
-                "key_id": r.get::<_, Option<i64>>(2)?,
-                "api_key_id": r.get::<_, Option<i64>>(3)?,
-                "model": r.get::<_, String>(4)?,
+                "key_id": r.get::<_, Option<i64>>(1)?,
+                "api_key_id": r.get::<_, Option<i64>>(2)?,
+                "model": r.get::<_, String>(3)?,
                 "tokens": tokens,
                 "input_tokens": input,
                 "cached_tokens": cached,
                 "output_tokens": output,
-                "pts": r.get::<_, f64>(8)?,
-                "type": r.get::<_, String>(9)?,
-                "status": r.get::<_, String>(10)?,
+                "pts": r.get::<_, f64>(7)?,
+                "type": r.get::<_, String>(8)?,
+                "status": r.get::<_, String>(9)?,
                 "time": crate::dao::utc_iso(&time),
+                // 本行代表多少条真实明细（验收项 2）：汇总行的 `row_count`，明细尾巴恒 1。
+                // 页面据此把汇总行说清楚，而不是把它当作单条真实明细。
+                "row_count": r.get::<_, i64>(11)?,
                 "key_label": r.get::<_, Option<String>>(12)?,
                 "user_name": r.get::<_, Option<String>>(13)?,
                 "key_name": r.get::<_, Option<String>>(14)?,
@@ -577,9 +588,10 @@ pub async fn transactions(
         .map_err(internal)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(internal)?;
-    // 明细保留边界（`tx_rollup::detail_since`，与删除同一算式）：早于它的明细不保证还逐条在
-    // `transactions` 里 —— 聚合（summary/trend）答得出、本列表答不出的分界就是它。
-    // 折叠关掉时**没有**删除发生，也就没有这条边界 ⇒ 不发（`null`），页面不会去说一件没发生的事。
+    // 明细保留边界（`tx_rollup::detail_since`，与删除同一算式）：早于它的**明细**不保证还逐条在
+    // `transactions` 里（它们仍以分钟汇总行的形式列得出来 —— 列表读的正是读模型）。
+    // 它同时是「折叠开着」的**同义信号**：折叠关掉时既没有删除、也没有汇总行 ⇒ 不发（`null`），
+    // 页面不会去说一件没发生的事，也不会去解释不存在的汇总行。
     let detail_since: Option<String> = if st.cfg.rollup.enabled {
         Some(tx_rollup::detail_since(&conn, st.cfg.rollup.window_minutes()).map_err(internal)?)
     } else {

@@ -17,13 +17,15 @@
 //! ```
 //!
 //! **列集完全由 `tx_rollup::{DIMENSION, ADDITIVE}` 派生**（本模块不另立一份列名清单）：
-//! 维度 7 列 + 可加 5 列 ⇒ 视图 12 列。三处**刻意不相同的映射**，都由下面的常量钉住：
+//! 行身份 1 列（[`IDENTITY`]）+ 维度 7 列 + 可加 5 列 ⇒ 视图 13 列。三处**刻意不相同的映射**，
+//! 都由下面的常量钉住：
 //!
 //! | 维度列 | 汇总臂取值 | 明细臂取值 | 为什么 |
 //! |---|---|---|---|
+//! | `id` | `id`（汇总行主键） | `t.id`（明细行主键） | 分页要一个**唯一**排序键（见 [`IDENTITY`]）。 |
 //! | `key_id` / `api_key_id` | `NULLIF(<col>, 0)` | `t.<col>`（保留 NULL） | 汇总表为让 NULL 在唯一索引里相撞，用 `0` 当哨兵（`IFNULL(…, 0)`）。若不还原，`GROUP BY key_id` 会把「没有 key」的行归到 `id = 0` 这一组 —— 分组键**变了**，尽管 `SUM` 不变（实测：`(None, 6.0)` 变 `(0, 6.0)`）。 |
 //! | `bucket` | `bucket`（16 字符分钟串） | `t.time`（19 字符整秒） | 汇总行**没有比分钟更细的时刻**可用；明细侧保留原值，见下「分钟对齐」。 |
-//! | `row_count` | `row_count` | `1` | 明细一行就是一行；汇总行带的是它压了多少行 —— 所以**数行数必须 `SUM(row_count)`，不得 `COUNT(*)`**（后者数的是「视图有几行」，即分钟桶数）。 |
+//! | `row_count` | `row_count` | `1` | 明细一行就是一行；汇总行带的是它压了多少行 —— 所以**数「条数」必须 `SUM(row_count)`，不得 `COUNT(*)`**（后者数的是「视图有几行」，即分钟桶数）。 |
 //!
 //! ## 分钟对齐（读侧的时间窗契约）
 //!
@@ -39,27 +41,44 @@
 //!
 //! ## 射程（如实）
 //!
-//! - 本视图服务的是**聚合读数**：`SUM` / `GROUP BY` / 数行数。它**不是**明细列表 ——
-//!   汇总行没有 `id`、没有 `counterpart`，一行代表 N 条调用。分页交易列表因此**仍读
-//!   `transactions`**（`delete_folded` 已落地，两者在保留窗口之外会分叉 —— 披露见下表）。
+//! - 本视图服务**两件事**：聚合读数（`SUM` / `GROUP BY`）与**分页明细列表**
+//!   （`/api/transactions`，rant 2026-10-15T16:25:04.530850+08:00 验收项 2）。列表从视图取，
+//!   于是「明细只留一小段」不再意味着「交易页只能答出那一小段」—— 更早的历史以**分钟级汇总行**
+//!   的形式照样列得出来。
+//! - 列表与聚合的**粒度不同、口径相同**：列表一行是「一个分钟桶 × 一组维度值」（或尚未折叠的
+//!   一条明细），聚合一行是「一条账本记录」。所以**列表的 `total` 是行数、`summary.entries` 是
+//!   条数**，两者刻意不是同一个数（差额就是折叠 —— 由 `row_count` 说给页面）。
+//! - 视图**没有 `counterpart`**：对手方标识在汇总行上不存在，且前端交易语境零消费点
+//!   （`ui/js/app.js`）。列表因此不再发布它（`tx_facts_gate` R2 盯着「读视图的 SQL 不得点它」）。
+//! - **分钟桶的交界不沉默**（rant §3.2）：折叠按 `id` 分批 ⇒ 某一分钟可能**一半已折进桶、
+//!   一半还留在尾巴**（`id ≤ 水位` 的那部分在汇总行里，`id > 水位` 的那部分在明细臂里）。
+//!   那一分钟于是**在列表里出现不止一行**：一行汇总（`row_count` = 折进去的那几条）＋ 若干行
+//!   明细（`row_count` = 1 各一条）。这是**有意的呈现**，不是重复：两截互斥、无一行被算两次，
+//!   `SUM(row_count)` 仍等于那一分钟的真实明细条数（`a_minute_folded_in_half_still_adds_up`
+//!   在夹具上钉住这条），而「这一行代表几条明细」由每一行自己用 `row_count` / `×N` 交代 ——
+//!   用户不会把汇总行当成单条真实明细，也不会看到凭空多出来或凭空少掉的记录。
+//!   交界行只在**水位所在的那一分钟**存在，且随折叠推进每分钟只出现一次（水位单调、一旦
+//!   越过该分钟，那一分钟的尾巴行就被折进桶里，两行合一）。
 //! - 账本（`SUM(transactions)` 按 `type` 判方向，C2050）**不**走本视图：账单是权威，
 //!   它读原始表。
 //! - 视图的**定义**是代码（每次开库 `DROP`+`CREATE`）⇒ 不存在「旧库里的定义陈旧」这一态；
 //!   代价是每次开库多一条 DDL。
 //!
-//! ## 还有哪些生产聚合仍在读原始表（本切片**故意**没搬）
+//! ## 还有哪些生产读数仍在读原始表（**故意**没搬）
 //!
 //! 删除落地时，这张清单上每一条要么搬进视图、要么被证明「不可能读到被删的那段」：
 //!
 //! | 站点 | 为什么不搬 |
 //! |---|---|
-//! | `routes/wallet.rs` 的分页列表与 `total` | 要的是**逐行身份**（`id`/`counterpart`），汇总行没有；`total` 必须与列表同源，否则页码数对不上能翻出来的行数。**删除按保留窗口**放行，窗口必须盖住列表自己提供的每一个预设区间（`tx_retention_gate` 守这条）。⚠️ 但它不是「最近一段」的读者就完事了：`#tx-range` 还提供**无界**的区间（`全部时间` / 自定义起点），它们可以整段落在窗口之外 —— 那时明细答不出、聚合答得出。这段分叉**不许沉默**：`/api/transactions` 随响应发布保留边界（`tx_rollup::detail_since`）与账本条数（`summary.entries`），前端零行态据此说明原因（`tx_retention_gate` 第四条规则守这条）。 |
 //! | `db.rs::keys_used_from_ledger` | `v < 13` 的一次性修复步：真源是**账本**，而它只可能在「还没有汇总表」的老库上跑 —— 那时一行明细都没被折叠过，更没被删过。 |
 //! | `tx_rollup.rs` / `archive.rs` | 折叠与归档**本来就**读明细 —— 它们是明细的写者。 |
 //! | `billing.rs` / `gateway.rs` 的 `COUNT(*)` | 那些在 `#[cfg(test)]` 里（断言 settle 写了行），非生产读数。 |
 //!
 //! `routes/sharing.rs::row_select()` 的 earn 批量聚合**曾**在这张清单上，已随删除切片搬进视图
 //! （常量 `ROW_SELECT` 改成函数 `row_select()`，计划断言一并改写）。
+//! `routes/wallet.rs` 的分页列表与它的 `total` **也曾**在这张清单上，已随验收项 2 搬进视图
+//! —— 它当初「要逐行身份、汇总行没有」的理由随 [`IDENTITY`] 与「列表按分钟汇总展示」这条
+//! 产品决定消失，`tx_retention_gate` 的第一条规则（窗口必须盖住列表的预设区间）也随之改写。
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -72,6 +91,20 @@ pub const VIEW: &str = "tx_facts";
 pub fn source(alias: &str) -> String {
     format!("{VIEW} {alias}")
 }
+
+/// 视图的**行身份**列 —— 两条臂各自的主键（汇总臂 `transactions_rollup.id`，明细臂
+/// `transactions.id`）。
+///
+/// 它**不是**交易身份：汇总行代表 N 条调用，它答不出「这是哪一笔」。分页列表要的正是
+/// 「每行一个可翻的位次」，而 `LIMIT/OFFSET` 需要一个**唯一**排序键 —— 少了它，并列的行
+/// 在相邻页的边界上不确定（同一行出现两次、另一行永不出现，R164 轴）。
+///
+/// 两条臂的 `id` 各自唯一，且**永不互相撞车**：汇总臂的时间列是 16 字符的分钟桶、明细臂是
+/// 19 字符（见「分钟对齐」）⇒ 任何两行只要来自不同的臂，时间串就不相等，`(time, id)` 于是唯一。
+///
+/// 汇总臂的 `id` **从来不渲染**：前端不读它（`ui/js/app.js` 交易语境零消费点），CSV 的
+/// 11 列里也没有它。它只活在 `ORDER BY` 的收尾里。
+const IDENTITY: &str = "id";
 
 /// 明细臂取值：凡 `DIMENSION` 里**表达式不是裸列名**的列，必须在此显式给出明细侧的取值。
 ///
@@ -131,9 +164,12 @@ fn detail_value(col: &str) -> String {
 /// （它连测试目标一起编，于是这个函数在它眼里「被读过」）。
 #[cfg(test)]
 pub fn view_columns() -> Vec<String> {
-    crate::tx_rollup::DIMENSION
-        .iter()
-        .map(|(c, _)| view_column(c).to_string())
+    std::iter::once(IDENTITY.to_string())
+        .chain(
+            crate::tx_rollup::DIMENSION
+                .iter()
+                .map(|(c, _)| view_column(c).to_string()),
+        )
         .chain(
             crate::tx_rollup::ADDITIVE
                 .iter()
@@ -144,18 +180,24 @@ pub fn view_columns() -> Vec<String> {
 
 /// `CREATE VIEW` 语句 —— **从 `tx_rollup` 的声明渲染**，不另立列名清单。
 pub fn view_sql() -> String {
-    let rollup: Vec<String> = crate::tx_rollup::DIMENSION
-        .iter()
-        .map(|(c, e)| format!("{} AS {}", rollup_value(c, e), view_column(c)))
+    let rollup: Vec<String> = std::iter::once(IDENTITY.to_string())
+        .chain(
+            crate::tx_rollup::DIMENSION
+                .iter()
+                .map(|(c, e)| format!("{} AS {}", rollup_value(c, e), view_column(c))),
+        )
         .chain(
             crate::tx_rollup::ADDITIVE
                 .iter()
                 .map(|(c, _)| (*c).to_string()),
         )
         .collect();
-    let detail: Vec<String> = crate::tx_rollup::DIMENSION
-        .iter()
-        .map(|(c, _)| format!("{} AS {}", detail_value(c), view_column(c)))
+    let detail: Vec<String> = std::iter::once(format!("{} AS {IDENTITY}", detail_value(IDENTITY)))
+        .chain(
+            crate::tx_rollup::DIMENSION
+                .iter()
+                .map(|(c, _)| format!("{} AS {}", detail_value(c), view_column(c))),
+        )
         .chain(
             crate::tx_rollup::ADDITIVE
                 .iter()
@@ -438,8 +480,9 @@ mod tests {
         );
         assert_eq!(
             cols.len(),
-            crate::tx_rollup::DIMENSION.len() + crate::tx_rollup::ADDITIVE.len(),
-            "维度 + 可加量的条数变了"
+            // 行身份 1 列（`id`）+ 维度 + 可加量。
+            1 + crate::tx_rollup::DIMENSION.len() + crate::tx_rollup::ADDITIVE.len(),
+            "行身份 + 维度 + 可加量的条数变了"
         );
         assert!(
             cols.contains(&"time".to_string()) && cols.contains(&"row_count".to_string()),
@@ -486,6 +529,76 @@ mod tests {
             watermark(&conn).unwrap() > 0,
             "一行都没折 ⇒ 上面那条「一致」是空的"
         );
+    }
+
+    /// **轴**：某一分钟被**折到一半**时，视图里那一分钟同时住着汇总行与尾巴行 ——
+    /// 两行合一仍然是那一分钟的全部分量（不丢行、不重复计数）。
+    ///
+    /// 这是 rant §3.2「分钟桶的交界不许沉默」的夹具：交界**本来就是两行**（汇总一截 + 尾巴
+    /// 一截），所以判据不是「只有一行」，而是「那两行加起来仍等于真实明细」，且**行数 > 1**
+    /// 这件事本身可见（每行自己的 `row_count` / `×N` 就是那个说明）。
+    #[test]
+    fn a_minute_folded_in_half_still_adds_up() {
+        let conn = migrated_db();
+        seed(&conn);
+        let minute = "2026-10-08 13:56";
+        let details_in_minute = |c: &Connection| -> i64 {
+            c.query_row(
+                "SELECT COUNT(*) FROM transactions WHERE substr(time, 1, 16) = ?1",
+                params![minute],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        // 只折**一批**（2 条，恰好都落在同一分钟）⇒ 那一分钟被折到一半。
+        assert_eq!(
+            fold_pending(&conn, i64::MAX, 2).unwrap(),
+            2,
+            "夹具：本批应当恰好折掉落在这分钟的 2 条"
+        );
+        let before = details_in_minute(&conn);
+        assert!(
+            before > 2,
+            "夹具：这一分钟里必须还有没被折掉的尾巴，否则踩不到交界（实得 {before}）"
+        );
+
+        // 交界：这一分钟在视图里**不止一行**（汇总一截 + 尾巴一截）。
+        let rows: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {VIEW} WHERE substr(time, 1, 16) = ?1"),
+                params![minute],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            rows > 1 && rows < before,
+            "交界应当让这一分钟多出一行汇总（行数应介于 1 与真实条数之间）：{rows} 行 / {before} 条"
+        );
+
+        // 不丢、不重：这一分钟的 `SUM(row_count)` 仍等于真实明细条数。
+        let counted: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COALESCE(SUM(row_count), 0) FROM {VIEW} WHERE substr(time, 1, 16) = ?1"
+                ),
+                params![minute],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(counted, before, "交界处的条数必须仍等于真实明细条数");
+
+        // 全库同理（交界不会让任何一行被算两次或漏掉）。
+        let all: i64 = conn
+            .query_row(
+                &format!("SELECT COALESCE(SUM(row_count), 0) FROM {VIEW}"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let all_details: i64 = conn
+            .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(all, all_details, "折叠不可见：视图的条数恒等于明细行数");
     }
 
     /// **事实**：视图的**行数**不是调用数 —— 数调用只能 `SUM(row_count)`。
