@@ -98,8 +98,8 @@ ui/
 
 ## 时间显示约定（v1.17，rant 2026-08-17T16:57:17 B 相对时间）
 
-- **相对时间**：`timeAgo(s)` 支持 `MM-DD HH:mm`（默认今年）与 `YYYY-MM-DD[ HH:mm]`，输出 `刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD`，非标准格式原样返回；`timeCell(s)` 输出带 `title`（完整绝对时间）的 `.timeago` 单元格，hover 显示；
-- **统一使用**：交易列表（时间列）、加额申请列表、API Key 最近使用时间。这些时间戳**一律来自后端**（`MM-DD HH:mm` 形态直接吃进 `timeAgo`）；本仓**没有**、也不需要前端本地的「现在时刻」生产者——#94「零 mock 数据」删掉的正是那颗（见 `src/js_gate.rs` 的「声明了就有人读」约定）。
+- **相对时间**：`timeAgo(s)` 按形态分支解析 —— 线上格式 `YYYY-MM-DDTHH:MM:SSZ` 与旧后端格式 `YYYY-MM-DD[ HH:mm[:ss]]`（两者按 UTC 解析）、以及 `MM-DD HH:mm`（默认今年、按本地解析；本仓已无该形态的生产者，见 `ui/js/app.js` 的 R131 注）；非标准格式原样返回，输出 `刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD`。`timeCell(s, precise)` 输出 `.timeago` 单元格：默认主文本＝相对时间、`title`（hover）＝本地化的绝对时间；`precise` 两支相反 —— 主文本＝`fmtPrecise` 的本地精确时间、`title`＝相对时间。
+- **统一使用**：交易列表（时间列）、加额申请列表、API Key 最近使用时间。这些时间戳**一律来自后端**（`dao::utc_iso()` 的 UTC ISO，契约见「时间戳：一律整串交给时间 helper」一节）；本仓**没有**、也不需要前端本地的「现在时刻」生产者——#94「零 mock 数据」删掉的正是那颗（见 `src/js_gate.rs` 的「声明了就有人读」约定）。
   ⚠️ **不含共享列表**：本行原写「共享列表（上架时间列）」，但该列**从未存在**（原型 `docs/prototype/aitokenpool-console.html:574` 与实现 `ui/index.html:338` 的 thead 均无时间列，`timeCell` 也只有交易/API Key/加额申请三个调用点）。后端 `GET /api/sharings` 自 C2015 起才返回 `created_at`，前端把它收进视图行的 `time` 字段（备用），但**未加列**——若要加列，需同时补 `share.col.time` 键与 8 列表头的 `colspan` 对齐。
 
 ## 表格数字列约定（v1.17，rant 2026-08-17T16:57:17 C 数字列对齐）
