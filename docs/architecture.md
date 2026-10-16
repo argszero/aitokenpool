@@ -54,7 +54,7 @@
 | `users` | 用户（email / password_hash / name / role / verified） |
 | `keys` | 上游 key（provider / plan / model / 加密密文 / 额度 / 可用时间段 / note） |
 | `api_keys` | 分发 key（`atk_live_` 前缀，绑定用户，可撤销） |
-| `models` | 模型价格（input / output / cache_hit，可选高峰价；config `[[models]]` 为唯一真源） |
+| `models` | 模型价格（input / output / cache_hit，可选高峰价与按单次请求输入长度分档的价目 `tiers_json`；config `[[models]]` 为唯一真源） |
 | `quotas` | 点数账户（balance 永久 + gift_balance 有效赠送） |
 | `gift_grants` | 赠送明细（amount / expires_at / status: active\|used\|expired） |
 | `transactions` | 交易流水（type 取值以 `src/routes/wallet.rs` 的 `TX_FILTER_TYPES` 为准；含 token 明细列） |

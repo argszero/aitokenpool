@@ -6,7 +6,7 @@
 //!
 //! P0-A（rant 2026-08-17T22:21:52）：服务骨架 + 配置加载
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 fn default_addr() -> String {
     "0.0.0.0:8080".to_string()
@@ -422,13 +422,19 @@ pub struct Endpoint {
     pub base_url: String,
 }
 
-/// 单次请求输入长度分档价（rant 2026-10-16T14:08:14 第 1 步）。
+/// 单次请求输入长度分档价（rant 2026-10-16T14:08:14；第 1 步落表达能力，第 2 步接进 settle）。
 ///
 /// 档位按**该次请求的输入 token 数**选择（不是用户累计用量）：`Model` 自身的
 /// `input_per_m` / `cache_hit_input_per_m` / `output_per_m` 是**第一档**，
 /// `Model::tiers` 里每一条是 `from_tokens` 起（**含**）生效的档；`from_tokens` 是各档的
 /// **下界**（官方写法 `[from_tokens, 下一档)`）。
-#[derive(Debug, Clone, Deserialize)]
+///
+/// 「该次请求的输入 token 数」= 该次请求的**全部输入**，即缓存未命中输入 ＋ 缓存命中输入
+/// （`billing::select_tier` 的入参）。官方文档里的长上下文档说的就是这一整段 prompt 的长度。
+///
+/// 官方写法若不是左闭区间（MiniMax 的「输入 >512k」是开区间），由**数据**补 1 表达
+/// （`from_tokens = 512001`），机制本身始终是 `[from_tokens, 下一档)`。
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelTier {
     /// 本档起效的输入 token 下界（含）。必须 > 0，且各档严格递增。
     pub from_tokens: i64,
@@ -465,11 +471,14 @@ pub struct Model {
     #[serde(default)]
     pub peak_output_per_m: f64,
     /// 缓存写入价（每百万 tokens；缺省 0 = 缓存写入不收费，与今天一致）。
-    /// rant 2026-10-16T14:08:14 第 1 步只落字段与校验，第 2 步才接进 settle 计费。
+    /// ⚠️ rant 2026-10-16T14:08:14 第 2 步只把**分档价**接进了 settle；这一个字段仍是
+    /// 「只表达能力」—— 上游响应里没有取缓存写入 token 数的通路（`gateway::parse_usage` /
+    /// `sse::extract_*` 都不产出它），故今天不参与计费。接它需要另加一次用量解析，属后续改动。
     #[serde(default)]
     pub cache_write_input_per_m: f64,
     /// 按**单次请求输入长度**分档的价目（缺省空 = 不启用分档，一律沿用上面的单一价）。
-    /// 语义与校验见 [`ModelTier`]；rant 2026-10-16T14:08:14 第 1 步只落表达能力与校验。
+    /// 语义与校验见 [`ModelTier`]；由 `billing::select_tier` 在 settle 时按该次请求的输入
+    /// token 数选档（rant 2026-10-16T14:08:14 第 2 步）。
     #[serde(default)]
     pub tiers: Vec<ModelTier>,
     #[serde(default)]
@@ -525,9 +534,9 @@ impl Config {
                 }
             }
         }
-        // 分档价与缓存写入价的校验（rant 2026-10-16T14:08:14 第 1 步）。档位按
+        // 分档价与缓存写入价的校验（rant 2026-10-16T14:08:14）。档位按
         // from_tokens 递增选择，顺序错或重复会让某档永远选不到／选错档；这些数据填错
-        // 就是真金白银错账，故在装载时拒收（第 2 步接进 settle 前先钉死形状）。
+        // 就是真金白银错账，故在装载时拒收。
         for m in &self.models {
             if m.cache_write_input_per_m < 0.0 {
                 return Err(anyhow!(
@@ -876,23 +885,52 @@ mod tests {
     }
 
     #[test]
-    fn model_defaults_to_no_tiers_and_zero_cache_write() {
-        // 向后兼容（验收 1）：example 目录的模型都没写这两项 ⇒ 空 / 0，
-        // 计价路径读到的仍是原来的单一价，结果与改动前逐字节相同。
+    fn model_without_a_tiers_section_defaults_to_no_tiers_and_zero_cache_write() {
+        // 向后兼容：没写 [[models.tiers]] 的模型 ⇒ tiers 为空、缓存写入价 0，
+        // 计价路径读到的仍是模型自身的单一价，结果与改动前逐字节相同。
         let cfg = Config::load("config/config.example.toml").unwrap();
-        assert!(!cfg.models.is_empty());
-        for m in &cfg.models {
-            assert!(
-                m.tiers.is_empty(),
-                "{}/{} 未配置分档 ⇒ tiers 应为空",
-                m.provider,
-                m.model
-            );
-            assert_eq!(
-                m.cache_write_input_per_m, 0.0,
-                "{}/{} 未配置缓存写入价 ⇒ 缺省 0",
-                m.provider, m.model
-            );
+        let m = cfg
+            .models
+            .iter()
+            .find(|m| m.provider == "deepseek" && m.model == "deepseek-flash")
+            .expect("example 配置应有 deepseek-flash（不写分档）");
+        assert!(m.tiers.is_empty(), "未配置分档 ⇒ tiers 应为空");
+        assert_eq!(m.cache_write_input_per_m, 0.0, "未配置缓存写入价 ⇒ 缺省 0");
+    }
+
+    #[test]
+    fn example_config_declares_the_verified_long_context_tiers() {
+        // 第 2 步的数据面：官网给了长档的模型带 [[models.tiers]]，边界按官方「>N」
+        // （开区间）写法 +1 表达。这四行是核价记录里**确有数**的全部；其余模型没写
+        // 是因为官网没给这个数（见 §4 头注释），不是漏了。
+        let cfg = Config::load("config/config.example.toml").unwrap();
+        let tier_of = |model: &str| {
+            cfg.models
+                .iter()
+                .find(|m| m.model == model)
+                .unwrap_or_else(|| panic!("example 配置应有 {model}"))
+                .tiers
+                .clone()
+        };
+        // MiniMax-M3：官网「输入 >512k」4.20 / 0.84 / 16.80 元
+        let m3 = tier_of("minimax-m3");
+        assert_eq!(m3.len(), 1);
+        assert_eq!(m3[0].from_tokens, 512_001);
+        assert_eq!(m3[0].input_per_m, 4.20);
+        assert_eq!(m3[0].cache_hit_input_per_m, 0.84);
+        assert_eq!(m3[0].output_per_m, 16.80);
+        // Gemini 3.1 Pro / Grok 4.6 / Grok 4.7：>200k 长档
+        for (model, input, hit, output) in [
+            ("gemini-3.1-pro", 4.00, 0.40, 18.00),
+            ("grok-4.6", 4.00, 1.00, 12.00),
+            ("grok-4.7", 4.00, 1.00, 12.00),
+        ] {
+            let t = tier_of(model);
+            assert_eq!(t.len(), 1, "{model} 应恰有一条长档");
+            assert_eq!(t[0].from_tokens, 200_001, "{model} 长档下界");
+            assert_eq!(t[0].input_per_m, input, "{model} 长档输入价");
+            assert_eq!(t[0].cache_hit_input_per_m, hit, "{model} 长档命中价");
+            assert_eq!(t[0].output_per_m, output, "{model} 长档输出价");
         }
     }
 

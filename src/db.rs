@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -359,6 +359,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_transactions_key_id_type_pts
              ON transactions(key_id, type, pts);",
     )?;
+    // v17（rant 2026-10-16T14:08:14 第 2 步）：分档价随模型行落库。档位是**变长**的一组
+    // 结构（config `[[models.tiers]]`），故存成模型行自己的一列 JSON 文本，而不是另立
+    // `model_tiers` 表：后者要多管一份生命周期（seed 的 stale 删除、admin 的 remove/patch
+    // 都得跟着级联，漏一处就留下指向已删模型的孤儿档），而列与行同生共死、读侧也只多取
+    // 一列（`dao::get_model_price` 在同一个查询里取回）。空数组 `[]` = 不启用分档。
+    ensure_column(
+        conn,
+        "models",
+        "tiers_json",
+        "tiers_json TEXT NOT NULL DEFAULT '[]'",
+    )?;
     // v16（rant 2026-10-09T12:28:58 验收项 1）：交易明细的**可加汇总表** —— 维度 = 类型 + 用户 +
     // 模型 + key（两个身份都进维度，见 `tx_rollup` 模块头）+ 状态 + 时间（分钟级）；可加量 =
     // `pts` 与各 token 的 `SUM` + 行数 `COUNT`。折叠逻辑在 `src/tx_rollup.rs`；本步只建表。
@@ -614,9 +625,13 @@ pub(crate) fn seed_test_users(conn: &Connection) -> Result<()> {
 pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()> {
     let mut n = 0u32;
     for m in &cfg.models {
+        // 分档价随行落库（v17，rant 2026-10-16T14:08:14 第 2 步）：序列化成 JSON 文本。
+        // `Config::validate` 已保证各档 from_tokens > 0 且严格递增 ⇒ 读侧不必再排序。
+        let tiers_json = serde_json::to_string(&m.tiers)
+            .with_context(|| format!("序列化 model[{}/{}] 的分档价失败", m.provider, m.model))?;
         conn.execute(
-            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, context_window, context_length, max_output, vision, cache_hit_input_per_m, peak_input_per_m, peak_cache_hit_input_per_m, peak_output_per_m, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now')) \
+            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, context_window, context_length, max_output, vision, cache_hit_input_per_m, peak_input_per_m, peak_cache_hit_input_per_m, peak_output_per_m, tiers_json, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now')) \
              ON CONFLICT(provider, model) DO UPDATE SET \
                currency = excluded.currency, \
                input_per_m = excluded.input_per_m, \
@@ -629,6 +644,7 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                peak_input_per_m = excluded.peak_input_per_m, \
                peak_cache_hit_input_per_m = excluded.peak_cache_hit_input_per_m, \
                peak_output_per_m = excluded.peak_output_per_m, \
+               tiers_json = excluded.tiers_json, \
                updated_at = datetime('now')",
             rusqlite::params![
                 m.provider,
@@ -644,6 +660,7 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                 m.peak_input_per_m,
                 m.peak_cache_hit_input_per_m,
                 m.peak_output_per_m,
+                tiers_json,
             ],
         )?;
         n += 1;

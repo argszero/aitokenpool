@@ -181,20 +181,27 @@ fn settle_usage(
     };
     let price = dao::get_model_price(&conn, &key.provider, model);
     let (pts, cost) = match price {
-        Some((i_per_m, o_per_m, cache_hit_per_m, p_in, p_out, p_cache, currency)) => {
+        Some(p) => {
             // rant 2026-08-20T11:58:40：DeepSeek 高峰时段（北京 9-12/14-18）价格翻倍——
             // 按当前北京时间选高峰/空闲价；未配置高峰价的模型不受影响。
             // rant 2026-10-16T14:08:13：高峰只落在**周一至周五**，且不含 [billing] holidays
             // 列出的法定节假日 —— 周末与节假日全天按空闲价。
+            // rant 2026-10-16T14:08:14 第 2 步：长输入先按**该次请求的输入 token 数**选档 ——
+            // 整段 prompt ＝ 缓存未命中输入 ＋ 缓存命中输入（不是用户累计用量，也不是输出）。
+            // 没有分档、或输入还没到第一档 `from_tokens` ⇒ 沿用模型自身的单一价（第一档）。
+            let input_total = input_tokens + cached_tokens;
+            let (i_per_m, cache_hit_per_m, o_per_m) = billing::select_tier(input_total, &p.tiers)
+                .unwrap_or((p.input_per_m, p.cache_hit_input_per_m, p.output_per_m));
             let peak = billing::is_peak_hour(&chrono::Utc::now(), &st.cfg.billing.holidays);
+            // 高分档与高峰正交：`peak_*` 是模型级的，在**所选档**的基价上回落
             let (i2, c2, o2) = billing::effective_prices(
                 peak,
                 i_per_m,
                 cache_hit_per_m,
                 o_per_m,
-                p_in,
-                p_cache,
-                p_out,
+                p.peak_input_per_m,
+                p.peak_cache_hit_input_per_m,
+                p.peak_output_per_m,
             );
             let pts = billing::calc_points(
                 input_tokens,
@@ -204,12 +211,12 @@ fn settle_usage(
                 c2,
                 o2,
                 st.cfg.points.points_per_unit,
-                &currency,
+                &p.currency,
                 &st.cfg.points.anchor_currency,
             );
             let cost = billing::to_anchor(
                 billing::raw_cost(input_tokens, cached_tokens, output_tokens, i2, c2, o2),
-                &currency,
+                &p.currency,
                 &st.cfg.points.anchor_currency,
             );
             (pts, cost)
@@ -1086,6 +1093,77 @@ mod tests {
     }
 
     /// 测试状态（P3-A）：可指定 plan 只暴露部分协议端点（验证协议转换路径）
+    /// rant 2026-10-16T14:08:14 第 2 步：settle 真的按**该次请求的输入 token 数**选档。
+    ///
+    /// 走**完整**入账路径（`seed_models` 落库 → `dao` 取价 → `select_tier` 选档 → 入账），
+    /// 读回 `transactions.pts` 断言钱数在边界两侧翻档。用 example 里 grok-4.6 的真实档位：
+    /// 第一档 $2 / 长档 $4（>200k）；该行无高峰价 ⇒ 与运行时刻无关（高峰那半由 billing 测试管）。
+    #[test]
+    fn settle_picks_the_tier_by_this_requests_input_tokens() {
+        let st = test_state_eps(
+            "tier_settle",
+            "xai-paygo",
+            &["openai_chat"],
+            "http://127.0.0.1:1",
+        );
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO keys (id, provider, plan, model, status, owner_id, encrypted_key, quota, used) \
+                 VALUES (900, 'xai', 'xai-paygo', 'grok-4.6', 'on', 1, 'v1:x', 1000, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let key = dao::KeyRow {
+            id: 900,
+            provider: "xai".to_string(),
+            plan: "xai-paygo".to_string(),
+            owner_id: 1,
+            encrypted_key: String::new(),
+        };
+        let auth = || AuthUser {
+            user_id: 1,
+            api_key_id: 1,
+            role: "user".to_string(),
+        };
+
+        // ① 200000（边界−1）⇒ 第一档 $2/M；② 200001（边界）⇒ 长档 $4/M（恰 2 倍）
+        settle_usage(&st, auth(), &key, "grok-4.6", 200_000.0, 0.0, 0.0);
+        settle_usage(&st, auth(), &key, "grok-4.6", 200_001.0, 0.0, 0.0);
+        // ③ 选档用的是**整段 prompt**：未命中 100000 ＋ 命中 100001 = 200001 ⇒ 仍走长档
+        //    （若错看未命中那一段，就会落回第一档）
+        settle_usage(&st, auth(), &key, "grok-4.6", 100_000.0, 100_001.0, 0.0);
+
+        let pts: Vec<f64> = {
+            let conn = st.db.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT pts FROM transactions WHERE type = 'consume' ORDER BY id ASC")
+                .unwrap();
+            let v: Vec<f64> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|x| x.unwrap())
+                .collect();
+            v
+        };
+        assert_eq!(pts.len(), 3, "三笔调用各一条 consume");
+        // 200000 × $2/M = 0.4 USD × 7.2 = 2.88 点
+        assert!((pts[0] - 2.88).abs() < 1e-6, "边界前应走第一档: {}", pts[0]);
+        // 200001 × $4/M = 0.800004 USD × 7.2 = 5.76003 点
+        assert!(
+            (pts[1] - 5.76003).abs() < 1e-6,
+            "跨过 200k 应走长档（$4/M）: {}",
+            pts[1]
+        );
+        // 100000 × $4/M + 100001 × $1/M = 0.500001 USD × 7.2 = 3.60001 点
+        assert!(
+            (pts[2] - 3.60001).abs() < 1e-6,
+            "选档口径 = 未命中 ＋ 命中（整段 prompt）: {}",
+            pts[2]
+        );
+    }
+
     fn test_state_eps(tag: &str, plan_id: &str, protocols: &[&str], base_url: &str) -> AppState {
         let p = std::env::temp_dir().join(format!("atp_gw_{}_{}.db", std::process::id(), tag));
         let _ = std::fs::remove_file(&p);
