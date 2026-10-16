@@ -338,10 +338,13 @@ vision = false
 [[models]]
 provider = "openai"
 model = "gpt-5.6-sol"
+# 官方价（2026-10-16 核实，https://platform.openai.com/docs/pricing）：短上下文促销价 $4.00 /
+# 缓存命中 $0.40 / 输出 $20.00；该促销价至少有效到 2026-11-21，到期后按官网重新核对。长上下文档
+# 另有 $8.00 / $0.80 / $30.00 —— 本仓价格字段只有一组、不区分档位（见 rant 2026-10-16T14:08:14.003832）
 currency = "USD"
-input_per_m = 5.0
-cache_hit_input_per_m = 0.5
-output_per_m = 30.0
+input_per_m = 4.0
+cache_hit_input_per_m = 0.4
+output_per_m = 20.0
 context_length = 1050000
 max_output = 0
 vision = false
@@ -368,9 +371,25 @@ vision = false
 [[models]]
 provider = "xai"
 model = "grok-4.6"
+# 官方价（2026-10-16 核实，https://docs.x.ai/developers/pricing）：$2.00 / 缓存命中 $0.50 / $6.00
+# （500k 上下文）。缓存命中价原记 0（＝命中一分钱不收、持续少收），本次更正为官网值
+# —— rant 2026-10-16T14:08:13.993557
 currency = "USD"
 input_per_m = 2.0
-cache_hit_input_per_m = 0.0
+cache_hit_input_per_m = 0.5
+output_per_m = 6.0
+context_length = 500000
+max_output = 0
+vision = false
+
+[[models]]
+provider = "xai"
+model = "grok-4.7"
+# 官网现役旗舰（2026-10-16 核实，https://docs.x.ai/developers/pricing）：$2.00 / 缓存命中 $0.50 /
+# $6.00，500k 上下文；≥200k 长档为 $4.00 / $1.00 / $12.00（本仓价格字段不分档）
+currency = "USD"
+input_per_m = 2.0
+cache_hit_input_per_m = 0.5
 output_per_m = 6.0
 context_length = 500000
 max_output = 0
@@ -437,6 +456,22 @@ currency = "CNY"
 input_per_m = 0.2
 cache_hit_input_per_m = 0.02
 output_per_m = 0.8
+context_length = 1048576
+max_output = 0
+vision = false
+
+[[models]]
+provider = "aliyun-bailian"
+model = "qwen3.8-flash"
+# 官网现役轻量档（2026-10-16 核实，https://help.aliyun.com/zh/model-studio/model-pricing）：
+# 0<Token≤1M 输入 0.8 元 / 输出 2.7 元。⚠️ 缓存命中价官网价格表未给数（该行只写「上下文缓存
+# 享有折扣」），而缓存计费页明说 qwen3.8 系列不适用通用折扣比例、要查百炼控制台
+# （https://help.aliyun.com/zh/model-studio/context-cache）⇒ 暂记 0（＝命中免费、会少收），待补
+# —— rant 2026-10-16T14:08:13.993557
+currency = "CNY"
+input_per_m = 0.8
+cache_hit_input_per_m = 0.0
+output_per_m = 2.7
 context_length = 1048576
 max_output = 0
 vision = false
