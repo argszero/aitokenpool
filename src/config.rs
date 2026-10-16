@@ -320,6 +320,19 @@ impl Default for Rollup {
     }
 }
 
+/// 计费规则（rant 2026-10-16T14:08:13：高峰时段判定要看星期与法定节假日）
+///
+/// 只影响 `billing::is_peak_hour` 选高峰价还是空闲价：**周末**由代码判定，
+/// **法定节假日**靠这张表（口径见 config.example.toml 的 `[billing]`）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Billing {
+    /// 法定节假日（**北京时间**日期，`YYYY-MM-DD`）：这些日子全天按空闲价计费。
+    /// 空表 = 只豁免周末。按官方年度放假安排维护（国务院办公厅每年发布）；
+    /// 跨年忘记更新只是不豁免，不会算错价。写错格式（非日期）在启动解析时就报错。
+    #[serde(default)]
+    pub holidays: Vec<chrono::NaiveDate>,
+}
+
 /// 顶层配置
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -340,6 +353,9 @@ pub struct Config {
     /// 用量明细保留（rant 2026-10-09T12:28:58 的独立余项：第二张只增不减的明细表）
     #[serde(default)]
     pub usage_retention: UsageRetention,
+    /// 计费规则（rant 2026-10-16T14:08:13：高峰时段判定要看星期与法定节假日）
+    #[serde(default)]
+    pub billing: Billing,
     pub points: Points,
     pub providers: Vec<Provider>,
     pub plans: Vec<Plan>,
@@ -680,6 +696,29 @@ mod tests {
         assert!(cfg.usage_retention.enabled);
         assert_eq!(cfg.usage_retention.batch, 2_000);
         assert_eq!(cfg.usage_retention.interval_secs, 60);
+    }
+
+    #[test]
+    fn billing_holidays_default_to_empty_and_parse_dates() {
+        // rant 2026-10-16T14:08:13：法定节假日表按**北京时间日期**（YYYY-MM-DD）填写。
+        let b: Billing = toml::from_str("holidays = [\"2026-10-01\"]").unwrap();
+        assert_eq!(
+            b.holidays,
+            vec![chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap()]
+        );
+        // 未配置 [billing] 段（或段内不写 holidays）⇒ 空表 = 只豁免周末
+        let none: Billing = toml::from_str("").unwrap();
+        assert!(none.holidays.is_empty(), "缺省即空表");
+        // 写错格式（不是日期）⇒ 启动解析即失败，不静默判成「不过节」
+        assert!(toml::from_str::<Billing>("holidays = [\"2026-13-99\"]").is_err());
+    }
+
+    #[test]
+    fn billing_example_section_matches_defaults() {
+        // config.example.toml 的 [billing] 段样例值 = 缺省值（节假日表由运维按官方年度安排填）
+        let cfg = Config::load("config/config.example.toml").unwrap();
+        assert_eq!(cfg.billing.holidays, Billing::default().holidays);
+        assert!(cfg.billing.holidays.is_empty());
     }
 
     #[test]

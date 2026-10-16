@@ -78,11 +78,22 @@ pub fn calc_points(
     round5(to_anchor(cost, model_currency, anchor) * points_per_unit as f64)
 }
 
-/// 北京时间高峰时段判定（rant 2026-08-20T11:58:40：DeepSeek 高峰 9:00-12:00、14:00-18:00，
-/// 周一至周日，其余为空闲时段）。固定 Asia/Shanghai（UTC+8，无夏令时），不依赖服务器时区。
-pub fn is_peak_hour(utc: &chrono::DateTime<chrono::Utc>) -> bool {
-    use chrono::Timelike;
+/// 北京时间高峰时段判定（rant 2026-08-20T11:58:40 的高峰窗 ＋ rant 2026-10-16T14:08:13 的
+/// 星期与节假日豁免）：高峰 = **周一至周五（不含 `holidays` 列出的法定节假日）**
+/// 的 9:00-12:00、14:00-18:00；其余时段（含周末与法定节假日**全天**）一律空闲。
+/// 固定 Asia/Shanghai（UTC+8，无夏令时），不依赖服务器时区。
+/// `holidays` 是**北京时间**日期（config `[billing]` holidays；空表 = 只豁免周末）。
+pub fn is_peak_hour(utc: &chrono::DateTime<chrono::Utc>, holidays: &[chrono::NaiveDate]) -> bool {
+    use chrono::{Datelike, Timelike};
     let sh = utc.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).expect("+08:00 合法"));
+    let date = sh.date_naive();
+    // 周末全天空闲：官方口径把「周末」整类列为空闲，故调休上班的周六周日也不按高峰计。
+    if matches!(date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun) {
+        return false;
+    }
+    if holidays.contains(&date) {
+        return false;
+    }
     let h = sh.hour();
     (9..12).contains(&h) || (14..18).contains(&h)
 }
@@ -295,39 +306,64 @@ mod tests {
 
     #[test]
     fn is_peak_hour_beijing_boundaries() {
-        // rant 2026-08-20T11:58:40：高峰 = 北京时 9:00-12:00、14:00-18:00（周一至周日）。
-        // 边界测试：8:59 vs 9:00、11:59 vs 12:00、13:59 vs 14:00、17:59 vs 18:00（北京时 = UTC+8）
-        fn beijing(h: u32, mi: u32) -> chrono::DateTime<chrono::Utc> {
+        // rant 2026-08-20T11:58:40：高峰 = 北京时 9:00-12:00、14:00-18:00。
+        // rant 2026-10-16T14:08:13：只有**周一至周五（不含法定节假日）**才可能是高峰 ——
+        // 周末与法定节假日全天空闲。
+        // 边界：8:59 vs 9:00、11:59 vs 12:00、13:59 vs 14:00、17:59 vs 18:00（北京时 = UTC+8）。
+        // 基准日 2026-08-17 是周一（2026-08-21 周五、08-22 周六、08-23 周日）。
+        fn beijing(y: i32, m: u32, d: u32, h: u32, mi: u32) -> chrono::DateTime<chrono::Utc> {
             use chrono::TimeZone;
-            let dt = chrono::FixedOffset::east_opt(8 * 3600)
+            chrono::FixedOffset::east_opt(8 * 3600)
                 .unwrap()
-                .with_ymd_and_hms(2026, 8, 20, h, mi, 0)
-                .unwrap();
-            dt.with_timezone(&chrono::Utc)
+                .with_ymd_and_hms(y, m, d, h, mi, 0)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
         }
-        // 9:00 高峰开始
-        assert!(is_peak_hour(&beijing(9, 0)), "北京 9:00 应高峰");
-        assert!(!is_peak_hour(&beijing(8, 59)), "北京 8:59 应空闲");
-        // 12:00 高峰结束
-        assert!(!is_peak_hour(&beijing(12, 0)), "北京 12:00 应空闲");
-        assert!(is_peak_hour(&beijing(11, 59)), "北京 11:59 应高峰");
-        // 14:00 第二段高峰开始
-        assert!(is_peak_hour(&beijing(14, 0)), "北京 14:00 应高峰");
-        assert!(!is_peak_hour(&beijing(13, 59)), "北京 13:59 应空闲");
-        // 18:00 第二段高峰结束
-        assert!(!is_peak_hour(&beijing(18, 0)), "北京 18:00 应空闲");
-        assert!(is_peak_hour(&beijing(17, 59)), "北京 17:59 应高峰");
-        // 周日同样高峰（周一至周日全覆盖）
-        use chrono::TimeZone;
-        let sun = chrono::FixedOffset::east_opt(8 * 3600)
-            .unwrap()
-            .with_ymd_and_hms(2026, 8, 23, 10, 0, 0)
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        assert!(is_peak_hour(&sun), "周日 10:00 应高峰（含周末）");
-        // 夜间空闲
-        assert!(!is_peak_hour(&beijing(0, 0)), "北京 0:00 应空闲");
-        assert!(!is_peak_hour(&beijing(23, 0)), "北京 23:00 应空闲");
+        let mon = |h: u32, mi: u32| beijing(2026, 8, 17, h, mi);
+        // 周一：9:00 高峰开始 / 8:59 空闲
+        assert!(is_peak_hour(&mon(9, 0), &[]), "周一 9:00 应高峰");
+        assert!(!is_peak_hour(&mon(8, 59), &[]), "周一 8:59 应空闲");
+        // 周一：12:00 第一段高峰结束 / 11:59 仍是高峰
+        assert!(!is_peak_hour(&mon(12, 0), &[]), "周一 12:00 应空闲");
+        assert!(is_peak_hour(&mon(11, 59), &[]), "周一 11:59 应高峰");
+        // 周一：14:00 第二段高峰开始 / 13:59 空闲
+        assert!(is_peak_hour(&mon(14, 0), &[]), "周一 14:00 应高峰");
+        assert!(!is_peak_hour(&mon(13, 59), &[]), "周一 13:59 应空闲");
+        // 周一：18:00 第二段高峰结束 / 17:59 仍是高峰
+        assert!(!is_peak_hour(&mon(18, 0), &[]), "周一 18:00 应空闲");
+        assert!(is_peak_hour(&mon(17, 59), &[]), "周一 17:59 应高峰");
+        // 「周一至周五」的右边界：周五同样是高峰日
+        assert!(
+            is_peak_hour(&beijing(2026, 8, 21, 10, 0), &[]),
+            "周五 10:00 应高峰"
+        );
+        // 夜间空闲（高峰窗之外）
+        assert!(!is_peak_hour(&mon(0, 0), &[]), "周一 0:00 应空闲");
+        assert!(!is_peak_hour(&mon(23, 0), &[]), "周一 23:00 应空闲");
+        // 周末全天空闲（rant 2026-10-16T14:08:13）：周六 / 周日即便落在 9-12 也不是高峰
+        assert!(
+            !is_peak_hour(&beijing(2026, 8, 22, 10, 0), &[]),
+            "周六 10:00 应空闲"
+        );
+        assert!(
+            !is_peak_hour(&beijing(2026, 8, 23, 10, 0), &[]),
+            "周日 10:00 应空闲"
+        );
+        // 法定节假日：豁免的是**列出来**的那一天，表外的邻居不受影响
+        let holidays = [chrono::NaiveDate::from_ymd_opt(2026, 8, 18).unwrap()];
+        assert!(
+            !is_peak_hour(&beijing(2026, 8, 18, 10, 0), &holidays),
+            "节假日 10:00 应空闲"
+        );
+        assert!(
+            is_peak_hour(&beijing(2026, 8, 19, 10, 0), &holidays),
+            "表外的工作日 10:00 应高峰"
+        );
+        // 空表 = 只豁免周末（运维没填 [billing] holidays 时的行为）
+        assert!(
+            is_peak_hour(&beijing(2026, 8, 18, 10, 0), &[]),
+            "空表下工作日 10:00 应高峰"
+        );
     }
 
     #[test]

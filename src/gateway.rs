@@ -183,8 +183,10 @@ fn settle_usage(
     let (pts, cost) = match price {
         Some((i_per_m, o_per_m, cache_hit_per_m, p_in, p_out, p_cache, currency)) => {
             // rant 2026-08-20T11:58:40：DeepSeek 高峰时段（北京 9-12/14-18）价格翻倍——
-            // 按当前北京时间选高峰/空闲价；未配置高峰价的模型不受影响
-            let peak = billing::is_peak_hour(&chrono::Utc::now());
+            // 按当前北京时间选高峰/空闲价；未配置高峰价的模型不受影响。
+            // rant 2026-10-16T14:08:13：高峰只落在**周一至周五**，且不含 [billing] holidays
+            // 列出的法定节假日 —— 周末与节假日全天按空闲价。
+            let peak = billing::is_peak_hour(&chrono::Utc::now(), &st.cfg.billing.holidays);
             let (i2, c2, o2) = billing::effective_prices(
                 peak,
                 i_per_m,
