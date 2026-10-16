@@ -347,6 +347,17 @@ endpoints = [
 #    模型（厂商/名称/价格/上下文/读图等）全部在此定义；启动时 upsert 进 DB。
 #    单位：每百万 tokens（currency 对应币种）；input_per_m = 缓存未命中输入价，
 #    cache_hit_input_per_m = 缓存命中输入价（缺省 0 = 命中免费）。
+#    缓存写入价（rant 2026-10-16T14:08:14）：可选 cache_write_input_per_m（每百万 tokens），
+#    缺省 0 = 缓存写入不收费（与今天一致）。
+#    分档价（rant 2026-10-16T14:08:14 第 1 步：表达能力 + 校验，尚未接进 settle）：
+#    可选 [[models.tiers]] 数组按**单次请求输入 token 数**分档，from_tokens 是本档下界（含）、
+#    各档 from_tokens 必须 > 0 且严格递增；模型自身的 input_per_m 等是 from_tokens 之前的第一档。例：
+#      [[models.tiers]]
+#      from_tokens = 512001
+#      input_per_m = 4.20
+#      cache_hit_input_per_m = 0.84
+#      output_per_m = 16.80
+#    ⛔ 档位数据只填官网确实给了的：本仓 config 是唯一真源（src/db.rs::seed_models），填错即错账。
 #    高峰时段价（rant 2026-08-20T11:58:40）：peak_input_per_m / peak_output_per_m /
 #    peak_cache_hit_input_per_m 三个可选字段，缺省 0 = 不启用高峰计费（沿用空闲价）。
 #    命中高峰时段（北京时间 9-12、14-18，**周一至周五**且不在 [billing] holidays 内）

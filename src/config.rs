@@ -422,6 +422,25 @@ pub struct Endpoint {
     pub base_url: String,
 }
 
+/// 单次请求输入长度分档价（rant 2026-10-16T14:08:14 第 1 步）。
+///
+/// 档位按**该次请求的输入 token 数**选择（不是用户累计用量）：`Model` 自身的
+/// `input_per_m` / `cache_hit_input_per_m` / `output_per_m` 是**第一档**，
+/// `Model::tiers` 里每一条是 `from_tokens` 起（**含**）生效的档；`from_tokens` 是各档的
+/// **下界**（官方写法 `[from_tokens, 下一档)`）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelTier {
+    /// 本档起效的输入 token 下界（含）。必须 > 0，且各档严格递增。
+    pub from_tokens: i64,
+    /// 本档缓存未命中输入价（每百万 tokens）
+    pub input_per_m: f64,
+    /// 本档缓存命中输入价（每百万 tokens；缺省 0 = 命中免费）
+    #[serde(default)]
+    pub cache_hit_input_per_m: f64,
+    /// 本档输出价（每百万 tokens）
+    pub output_per_m: f64,
+}
+
 /// 模型定义（rant 2026-08-20T10:27:13：config.toml 唯一真源，替代 models.json + price_overrides）
 #[derive(Debug, Clone, Deserialize)]
 pub struct Model {
@@ -445,6 +464,14 @@ pub struct Model {
     /// 高峰时段输出价（缺省 0）
     #[serde(default)]
     pub peak_output_per_m: f64,
+    /// 缓存写入价（每百万 tokens；缺省 0 = 缓存写入不收费，与今天一致）。
+    /// rant 2026-10-16T14:08:14 第 1 步只落字段与校验，第 2 步才接进 settle 计费。
+    #[serde(default)]
+    pub cache_write_input_per_m: f64,
+    /// 按**单次请求输入长度**分档的价目（缺省空 = 不启用分档，一律沿用上面的单一价）。
+    /// 语义与校验见 [`ModelTier`]；rant 2026-10-16T14:08:14 第 1 步只落表达能力与校验。
+    #[serde(default)]
+    pub tiers: Vec<ModelTier>,
     #[serde(default)]
     pub context_length: i64,
     #[serde(default)]
@@ -495,6 +522,50 @@ impl Config {
                             plan.id, other
                         ));
                     }
+                }
+            }
+        }
+        // 分档价与缓存写入价的校验（rant 2026-10-16T14:08:14 第 1 步）。档位按
+        // from_tokens 递增选择，顺序错或重复会让某档永远选不到／选错档；这些数据填错
+        // 就是真金白银错账，故在装载时拒收（第 2 步接进 settle 前先钉死形状）。
+        for m in &self.models {
+            if m.cache_write_input_per_m < 0.0 {
+                return Err(anyhow!(
+                    "model[{}/{}] 的 cache_write_input_per_m 不能为负（当前 {}）",
+                    m.provider,
+                    m.model,
+                    m.cache_write_input_per_m
+                ));
+            }
+            let mut prev: Option<i64> = None;
+            for t in &m.tiers {
+                if t.from_tokens <= 0 {
+                    return Err(anyhow!(
+                        "model[{}/{}] 的分档 from_tokens 必须 > 0（当前 {}）",
+                        m.provider,
+                        m.model,
+                        t.from_tokens
+                    ));
+                }
+                if let Some(p) = prev {
+                    if t.from_tokens <= p {
+                        return Err(anyhow!(
+                            "model[{}/{}] 的分档 from_tokens 必须严格递增（{} 未大于前一档 {}）",
+                            m.provider,
+                            m.model,
+                            t.from_tokens,
+                            p
+                        ));
+                    }
+                }
+                prev = Some(t.from_tokens);
+                if t.input_per_m < 0.0 || t.cache_hit_input_per_m < 0.0 || t.output_per_m < 0.0 {
+                    return Err(anyhow!(
+                        "model[{}/{}] 的分档价不能为负（from_tokens={}）",
+                        m.provider,
+                        m.model,
+                        t.from_tokens
+                    ));
                 }
             }
         }
@@ -586,6 +657,15 @@ mod tests {
         // 未配置高峰价的模型 → 缺省 0（不启用高峰计费）
         let zhipu = cfg.models.iter().find(|m| m.provider == "zhipu").unwrap();
         assert_eq!(zhipu.peak_input_per_m, 0.0, "无高峰价字段 → 缺省 0");
+        // 分档价 / 缓存写入价缺省（rant 2026-10-16T14:08:14 第 1 步：两字段均可缺省）
+        assert_eq!(
+            zhipu.cache_write_input_per_m, 0.0,
+            "无 cache_write_input_per_m 字段 → 缺省 0（不收费）"
+        );
+        assert!(
+            zhipu.tiers.is_empty(),
+            "无 [[models.tiers]] 段 → tiers 为空（一律沿用单一价）"
+        );
         // server 默认值
         assert_eq!(cfg.server.addr, "0.0.0.0:8080");
         assert_eq!(cfg.server.db_path, "data/aitokenpool.db");
@@ -757,5 +837,113 @@ mod tests {
         cfg.plans[0].endpoints[0].protocol = "grpc".to_string();
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("非法 protocol"), "err: {err}");
+    }
+
+    // ---- 分档价 / 缓存写入价（rant 2026-10-16T14:08:14 第 1 步：表达能力 + 校验）----
+
+    fn tier(from_tokens: i64, input: f64, hit: f64, output: f64) -> ModelTier {
+        ModelTier {
+            from_tokens,
+            input_per_m: input,
+            cache_hit_input_per_m: hit,
+            output_per_m: output,
+        }
+    }
+
+    /// 把一个分档清单与缓存写入价装到 example 目录的第 0 个模型上，供校验测试用。
+    fn cfg_with_prices(tiers: Vec<ModelTier>, cache_write: f64) -> Config {
+        let mut cfg = Config::load("config/config.example.toml").unwrap();
+        cfg.models[0].tiers = tiers;
+        cfg.models[0].cache_write_input_per_m = cache_write;
+        cfg
+    }
+
+    #[test]
+    fn parse_model_tier_from_toml() {
+        // 表达能力：[[models.tiers]] 的每条按字段进 ModelTier
+        let t: ModelTier = toml::from_str(
+            "from_tokens = 512001\ninput_per_m = 4.20\ncache_hit_input_per_m = 0.84\noutput_per_m = 16.80",
+        )
+        .unwrap();
+        assert_eq!(t.from_tokens, 512001);
+        assert_eq!(t.input_per_m, 4.20);
+        assert_eq!(t.cache_hit_input_per_m, 0.84);
+        assert_eq!(t.output_per_m, 16.80);
+        // cache_hit_input_per_m 可缺省（0 = 命中免费）
+        let no_hit: ModelTier =
+            toml::from_str("from_tokens = 200000\ninput_per_m = 4.0\noutput_per_m = 12.0").unwrap();
+        assert_eq!(no_hit.cache_hit_input_per_m, 0.0);
+    }
+
+    #[test]
+    fn model_defaults_to_no_tiers_and_zero_cache_write() {
+        // 向后兼容（验收 1）：example 目录的模型都没写这两项 ⇒ 空 / 0，
+        // 计价路径读到的仍是原来的单一价，结果与改动前逐字节相同。
+        let cfg = Config::load("config/config.example.toml").unwrap();
+        assert!(!cfg.models.is_empty());
+        for m in &cfg.models {
+            assert!(
+                m.tiers.is_empty(),
+                "{}/{} 未配置分档 ⇒ tiers 应为空",
+                m.provider,
+                m.model
+            );
+            assert_eq!(
+                m.cache_write_input_per_m, 0.0,
+                "{}/{} 未配置缓存写入价 ⇒ 缺省 0",
+                m.provider, m.model
+            );
+        }
+    }
+
+    #[test]
+    fn validate_accepts_strictly_increasing_tiers() {
+        let cfg = cfg_with_prices(
+            vec![
+                tier(512001, 4.2, 0.84, 16.8),
+                tier(1_000_001, 8.0, 1.6, 30.0),
+            ],
+            0.5,
+        );
+        cfg.validate().expect("递增且非负的分档价应通过校验");
+    }
+
+    #[test]
+    fn validate_rejects_non_increasing_tier_boundary() {
+        // 重复边界：同一条 from_tokens 出现两次 ⇒ 后者永远选不到
+        let cfg = cfg_with_prices(
+            vec![tier(512001, 4.2, 0.0, 16.8), tier(512001, 5.0, 0.0, 20.0)],
+            0.0,
+        );
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("严格递增"), "err: {err}");
+        // 递减边界
+        let cfg = cfg_with_prices(
+            vec![tier(300000, 1.0, 0.0, 4.0), tier(200000, 2.0, 0.0, 8.0)],
+            0.0,
+        );
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("严格递增"), "err: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_zero_tier_boundary() {
+        let cfg = cfg_with_prices(vec![tier(0, 4.2, 0.0, 16.8)], 0.0);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("from_tokens 必须 > 0"), "err: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_negative_tier_price() {
+        let cfg = cfg_with_prices(vec![tier(512001, -4.2, 0.0, 16.8)], 0.0);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("分档价不能为负"), "err: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_negative_cache_write_price() {
+        let cfg = cfg_with_prices(vec![], -0.1);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("cache_write_input_per_m"), "err: {err}");
     }
 }
