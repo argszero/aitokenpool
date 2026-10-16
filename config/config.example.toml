@@ -163,6 +163,29 @@ id = "minimax"
 name = "MiniMax"
 country = "CN"
 
+# —— 国际厂商（rant 2026-10-16T14:08:13.998860）——
+#   此前这四家只有 [[models]] 行、没有 provider 行也没有 plan 行 ⇒ 模型目录里看得见，
+#   而上架表单的厂商下拉由「有 plan 的 provider」派生 ⇒ 根本选不到它们。
+[[providers]]
+id = "openai"
+name = "OpenAI"
+country = "US"
+
+[[providers]]
+id = "anthropic"
+name = "Anthropic"
+country = "US"
+
+[[providers]]
+id = "google"
+name = "Google Gemini"
+country = "US"
+
+[[providers]]
+id = "xai"
+name = "xAI"
+country = "US"
+
 # ============================================================
 # 3. Plan 端点（plans）
 #    每个 plan = 一个可被路由到的上游端点（协议 + base_url）。
@@ -277,6 +300,46 @@ provider = "minimax"
 type = "paygo"
 endpoints = [
   { protocol = "openai_chat", base_url = "https://api.minimaxi.com/v1" },
+]
+
+# —— 国际厂商按量 Plan（同上：每家一个「API（按量）」项）——
+#   端点取各家官方地址，路径按协议派生（src/gateway.rs::resolve_endpoint）：
+#   openai_chat → {base}/chat/completions；anthropic → {base}/v1/messages；responses → {base}/responses。
+#   2026-10-16 逐家探测：OpenAI /v1 的 chat 与 responses 均存在（401 未带 key）、xAI /v1 同款、
+#   Anthropic 原生 Messages 在 /v1/messages、Gemini 的 OpenAI 兼容层在 /v1beta/openai。
+
+[[plans]]
+id = "openai-paygo"
+provider = "openai"
+type = "paygo"
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://api.openai.com/v1" },
+  { protocol = "responses",   base_url = "https://api.openai.com/v1" },
+]
+
+[[plans]]
+id = "anthropic-paygo"
+provider = "anthropic"
+type = "paygo"
+endpoints = [
+  { protocol = "anthropic", base_url = "https://api.anthropic.com" },
+]
+
+[[plans]]
+id = "google-paygo"
+provider = "google"
+type = "paygo"
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://generativelanguage.googleapis.com/v1beta/openai" },
+]
+
+[[plans]]
+id = "xai-paygo"
+provider = "xai"
+type = "paygo"
+endpoints = [
+  { protocol = "openai_chat", base_url = "https://api.x.ai/v1" },
+  { protocol = "responses",   base_url = "https://api.x.ai/v1" },
 ]
 
 # ============================================================

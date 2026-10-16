@@ -635,7 +635,7 @@ mod tests {
         // 保证独立二进制分发首次启动即开箱即用（rant 2026-08-20）
         let cfg: crate::config::Config =
             toml::from_str(DEFAULT_CONFIG).expect("内嵌默认配置应能解析");
-        assert!(cfg.providers.len() >= 6, "providers 模板");
+        assert!(cfg.providers.len() >= 10, "providers 模板");
         assert!(cfg.plans.len() >= 7, "plans 模板");
         assert!(cfg.models.len() >= 10, "models 模板");
     }

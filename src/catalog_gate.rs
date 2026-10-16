@@ -40,7 +40,7 @@ const APP_JS: &str = include_str!("../ui/js/app.js");
 /// 集合断言会**在空集上"通过"**（C2005 坑 68），这些计数会先把运行中止。
 const MODEL_COUNT: usize = 15;
 const MARKET_COUNT: usize = 7;
-const PLAN_COUNT: usize = 12;
+const PLAN_COUNT: usize = 16;
 
 /// 已知真值（从配置里读出的官方价，CNY 计价）——用于确认解析器真的读到了正确字段。
 const KNOWN_MODEL: &str = "deepseek-flash";
