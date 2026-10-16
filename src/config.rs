@@ -518,7 +518,7 @@ mod tests {
         assert_eq!(cfg.points.display_name, "点数");
         assert_eq!(cfg.points.symbol, "P");
         // providers
-        assert_eq!(cfg.providers.len(), 6);
+        assert_eq!(cfg.providers.len(), 10);
         assert!(cfg.providers.iter().any(|p| p.id == "deepseek"));
         assert!(cfg
             .providers

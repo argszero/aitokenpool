@@ -61,6 +61,10 @@
       { id: "moonshot-paygo",      provider: "moonshot",       name: "API（按量）",     type: "paygo",    note: "api.moonshot.cn 按量" },
       { id: "minimax-coding",      provider: "minimax",        name: "Coding Plan",     type: "coding", note: "专属 key sk-cp-，/anthropic、/v1" },
       { id: "minimax-paygo",       provider: "minimax",        name: "API（按量）",     type: "paygo",    note: "按量计价" },
+      { id: "openai-paygo",        provider: "openai",         name: "API（按量）",     type: "paygo",    note: "api.openai.com/v1、/responses" },
+      { id: "anthropic-paygo",     provider: "anthropic",      name: "API（按量）",     type: "paygo",    note: "原生 Messages 端点 /v1/messages" },
+      { id: "google-paygo",        provider: "google",         name: "API（按量）",     type: "paygo",    note: "Gemini 的 OpenAI 兼容层 /v1beta/openai" },
+      { id: "xai-paygo",           provider: "xai",            name: "API（按量）",     type: "paygo",    note: "api.x.ai/v1、/responses" },
     ],
 
     // 厂商显示名（上架表单 / 共享列表）——安全兜底，登录态可用（rant 15:54:06 豁免）
@@ -71,6 +75,10 @@
       moonshot: "Kimi 月之暗面",
       minimax: "MiniMax",
       deepseek: "DeepSeek",
+      openai: "OpenAI",
+      anthropic: "Anthropic",
+      google: "Google Gemini",
+      xai: "xAI",
     },
 
     // 当前用户会话存储：登录后由 /api/me 覆盖 name/email/role、/api/wallet 覆盖 balance
