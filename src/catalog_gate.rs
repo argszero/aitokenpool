@@ -38,7 +38,7 @@ const APP_JS: &str = include_str!("../ui/js/app.js");
 ///
 /// 它们的作用是把「提取器静默失真」与「数据真的变了」区分开：若扫描器写错而返回空集，
 /// 集合断言会**在空集上"通过"**（C2005 坑 68），这些计数会先把运行中止。
-const MODEL_COUNT: usize = 13;
+const MODEL_COUNT: usize = 15;
 const MARKET_COUNT: usize = 7;
 const PLAN_COUNT: usize = 12;
 
