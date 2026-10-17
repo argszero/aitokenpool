@@ -131,6 +131,34 @@ pub fn effective_prices(
     )
 }
 
+/// 按**该次请求的输入 token 数**选生效档（rant 2026-10-16T14:08:14 第 2 步）。
+///
+/// `tiers` 来自 config `[[models.tiers]]`（`Config::validate` 已保证各档 `from_tokens > 0`
+/// 且**严格递增**），每个 `from_tokens` 是**含**下界 —— 官方写法 `[from_tokens, 下一档)`；
+/// 官方写法若是开区间（MiniMax 的「输入 >512k」），由数据补 1 表达。
+///
+/// 返回命中档的 `(缓存未命中输入价, 缓存命中输入价, 输出价)`。`input_tokens` 传该次请求的
+/// **全部输入**（未命中 ＋ 命中）—— 官方长上下文档说的就是整段 prompt 的长度。
+///
+/// 返回 `None` 的两种情形都表示「沿用 `Model` 自身的单一价」：`tiers` 为空（不启用分档），
+/// 或输入还没到第一档的 `from_tokens`（`Model` 自身那三个价就是第一档）。这正是
+/// 「没有 tiers 的模型计价逐字节不变」所走的那条路。
+pub fn select_tier(
+    input_tokens: f64,
+    tiers: &[crate::config::ModelTier],
+) -> Option<(f64, f64, f64)> {
+    let mut hit = None;
+    for t in tiers {
+        if (t.from_tokens as f64) <= input_tokens {
+            hit = Some((t.input_per_m, t.cache_hit_input_per_m, t.output_per_m));
+        } else {
+            // 严格递增 ⇒ 后面的档只会更大，不必再看
+            break;
+        }
+    }
+    hit
+}
+
 /// 入账参数
 pub struct SettleParams {
     /// 消费者（调用者）user_id
@@ -849,5 +877,55 @@ mod tests {
 
         drop(conn);
         let _ = std::fs::remove_file(p);
+    }
+
+    // ── select_tier：按**该次请求的输入 token 数**选档（rant 2026-10-16T14:08:14 第 2 步）──
+
+    fn t(from: i64, input: f64, hit: f64, output: f64) -> crate::config::ModelTier {
+        crate::config::ModelTier {
+            from_tokens: from,
+            input_per_m: input,
+            cache_hit_input_per_m: hit,
+            output_per_m: output,
+        }
+    }
+
+    #[test]
+    fn select_tier_is_none_without_tiers() {
+        // 没有 [[models.tiers]] 的模型（今天 24 行里 20 行）走这条路 ⇒ 沿用单一价
+        assert!(select_tier(1_000_000.0, &[]).is_none());
+    }
+
+    #[test]
+    fn select_tier_below_the_first_boundary_keeps_the_single_price() {
+        let tiers = vec![t(200_001, 4.0, 1.0, 12.0)];
+        assert!(
+            select_tier(200_000.0, &tiers).is_none(),
+            "未到第一档下界 ⇒ None（＝沿用模型自身的第一档价）"
+        );
+        assert!(select_tier(0.0, &tiers).is_none(), "零输入 ⇒ 第一档");
+    }
+
+    #[test]
+    fn select_tier_boundary_is_an_inclusive_lower_bound() {
+        let tiers = vec![t(200_001, 4.0, 1.0, 12.0), t(512_001, 8.0, 2.0, 24.0)];
+        // 每条边界的 from_tokens−1 / from_tokens / from_tokens+1 三腿
+        assert!(select_tier(200_000.0, &tiers).is_none());
+        assert_eq!(select_tier(200_001.0, &tiers), Some((4.0, 1.0, 12.0)));
+        assert_eq!(select_tier(200_002.0, &tiers), Some((4.0, 1.0, 12.0)));
+        assert_eq!(select_tier(512_000.0, &tiers), Some((4.0, 1.0, 12.0)));
+        assert_eq!(select_tier(512_001.0, &tiers), Some((8.0, 2.0, 24.0)));
+        assert_eq!(
+            select_tier(9_999_999.0, &tiers),
+            Some((8.0, 2.0, 24.0)),
+            "超过末档 ⇒ 末档（不是 None）"
+        );
+    }
+
+    #[test]
+    fn select_tier_reads_all_three_prices_from_the_hit_tier() {
+        // 命中价也随档走：第二档命中价 1.0（不是第一档的 0.5）
+        let tiers = vec![t(200_001, 4.0, 1.0, 12.0)];
+        assert_eq!(select_tier(300_000.0, &tiers), Some((4.0, 1.0, 12.0)));
     }
 }

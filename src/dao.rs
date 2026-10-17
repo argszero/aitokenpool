@@ -179,32 +179,70 @@ pub fn get_available_balance(conn: &Connection, user_id: i64) -> f64 {
     permanent + gift
 }
 
-/// 模型单价（按 provider+model）→ (input_per_m, output_per_m, cache_hit_input_per_m,
-/// peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, currency)
+/// 一个模型的价目（`get_model_price` 的返回值）。
+///
+/// `tiers` 是 config `[[models.tiers]]` 的落库副本（`models.tiers_json`，rant
+/// 2026-10-16T14:08:14 第 2 步）；`Config::validate` 保证 `from_tokens` 严格递增，故这里
+/// 不再排序。空 = 不启用分档，settle 沿用 `input_per_m` / `cache_hit_input_per_m` /
+/// `output_per_m` 这一组第一档价。高峰价与分档价正交：`peak_*` 是**模型级**的，
+/// 命中高峰时在**所选档**的基价上回落（见 `billing::effective_prices`）。
+pub struct ModelPrice {
+    pub input_per_m: f64,
+    pub output_per_m: f64,
+    pub cache_hit_input_per_m: f64,
+    pub peak_input_per_m: f64,
+    pub peak_output_per_m: f64,
+    pub peak_cache_hit_input_per_m: f64,
+    pub currency: String,
+    pub tiers: Vec<crate::config::ModelTier>,
+}
+
+/// 模型单价（按 provider+model）→ [`ModelPrice`]（含分档价，rant 2026-10-16T14:08:14 第 2 步）
 /// 高峰价缺省 0 = 不启用高峰计费（billing::effective_prices 处理回落）
-pub fn get_model_price(
-    conn: &Connection,
-    provider: &str,
-    model: &str,
-) -> Option<(f64, f64, f64, f64, f64, f64, String)> {
+pub fn get_model_price(conn: &Connection, provider: &str, model: &str) -> Option<ModelPrice> {
     conn.query_row(
         "SELECT input_per_m, output_per_m, cache_hit_input_per_m, \
-                peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, currency \
+                peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, currency, \
+                tiers_json \
          FROM models WHERE provider = ?1 AND model = ?2",
         rusqlite::params![provider, model],
         |r| {
             Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
+                r.get::<_, f64>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, f64>(2)?,
+                r.get::<_, f64>(3)?,
+                r.get::<_, f64>(4)?,
+                r.get::<_, f64>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
             ))
         },
     )
     .ok()
+    .map(|(i, o, c, pin, pout, pcache, currency, tiers_json)| {
+        // 解析失败不能装成「无分档」静默少收：留痕后按空档回落（＝沿用单一价，与今天一致）。
+        // 落库的 JSON 由本进程写（db::seed_models），正常路径不会走到这里。
+        let tiers: Vec<crate::config::ModelTier> = match serde_json::from_str(&tiers_json) {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!(
+                    "models.tiers_json 解析失败（provider={provider} model={model}）⇒ 本次按单一价计费: {e}"
+                );
+                Vec::new()
+            }
+        };
+        ModelPrice {
+            input_per_m: i,
+            output_per_m: o,
+            cache_hit_input_per_m: c,
+            peak_input_per_m: pin,
+            peak_output_per_m: pout,
+            peak_cache_hit_input_per_m: pcache,
+            currency,
+            tiers,
+        }
+    })
 }
 
 /// 市场页：models 表 + key 可用性（可用 key 数）
@@ -549,6 +587,65 @@ mod tests {
 
         // ④ 不存在的 key → 本来就不该产生写入
         assert_eq!(touch_rows(&conn, "atk_live_missing"), 0);
+
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    // ── models.tiers_json（rant 2026-10-16T14:08:14 第 2 步）──
+
+    fn insert_model(conn: &Connection, model: &str, tiers_json: &str) {
+        conn.execute(
+            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, \
+                                 cache_hit_input_per_m, tiers_json) \
+             VALUES ('xai', ?1, 'USD', 2.0, 6.0, 0.5, ?2)",
+            rusqlite::params![model, tiers_json],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn get_model_price_round_trips_tiers_json() {
+        let (conn, p) = tmp_conn("tiers");
+        insert_model(
+            &conn,
+            "grok-4.6",
+            r#"[{"from_tokens":200001,"input_per_m":4.0,"cache_hit_input_per_m":1.0,"output_per_m":12.0}]"#,
+        );
+        let price = get_model_price(&conn, "xai", "grok-4.6").expect("取到价");
+        assert_eq!(price.tiers.len(), 1);
+        assert_eq!(price.tiers[0].from_tokens, 200_001);
+        assert_eq!(price.tiers[0].input_per_m, 4.0);
+        assert_eq!(price.tiers[0].cache_hit_input_per_m, 1.0);
+        assert_eq!(price.tiers[0].output_per_m, 12.0);
+
+        // `cache_hit_input_per_m` 可缺省（`#[serde(default)]` ⇒ 0 = 命中免费）
+        insert_model(
+            &conn,
+            "no-hit",
+            r#"[{"from_tokens":512001,"input_per_m":4.2,"output_per_m":16.8}]"#,
+        );
+        let price = get_model_price(&conn, "xai", "no-hit").unwrap();
+        assert_eq!(price.tiers[0].cache_hit_input_per_m, 0.0);
+
+        // 无档位 ⇒ 空（＝沿用单一价），不是「查不到」
+        insert_model(&conn, "none", "[]");
+        let price = get_model_price(&conn, "xai", "none").expect("无分档也取得到价");
+        assert!(price.tiers.is_empty());
+
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn get_model_price_falls_back_to_the_single_price_on_malformed_tiers_json() {
+        // 坏 JSON 不能装成「无分档」静默少收：回落单一价（并有一条 error 日志，见函数体）。
+        // 落库的 JSON 由本进程写，正常路径到不了这里 —— 这条腿钉住的是兜底形态本身。
+        let (conn, p) = tmp_conn("tiers_bad");
+        insert_model(&conn, "broken", "not json");
+        let price = get_model_price(&conn, "xai", "broken").expect("坏 JSON 仍取得到基价");
+        assert!(price.tiers.is_empty(), "坏 JSON ⇒ 空档");
+        assert_eq!(price.input_per_m, 2.0, "基价不受影响");
 
         drop(conn);
         let _ = std::fs::remove_file(p);

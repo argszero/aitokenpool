@@ -322,11 +322,15 @@ pub async fn patch(
             Json(serde_json::json!({ "error": "模型已存在（provider+model 唯一）" })),
         ));
     }
+    // 分档价（`tiers_json`）是 **config 专有**字段：管理接口不表达它，且改价后旧档位价
+    // 与新基价不再自洽（长输入会按旧档位收）⇒ 手工编辑一律清空，宁可退回单一价。
+    // 模型表是 config 权威表（`db::seed_models` 每次启动全量 upsert），下次启动即恢复。
     conn.execute(
         "UPDATE models SET provider = ?1, model = ?2, currency = ?3, input_per_m = ?4, \
                 output_per_m = ?5, context_length = ?6, max_output = ?7, vision = ?8, \
                 cache_hit_input_per_m = ?9, peak_input_per_m = ?10, peak_output_per_m = ?11, \
-                peak_cache_hit_input_per_m = ?12, context_window = ?6, updated_at = datetime('now') \
+                peak_cache_hit_input_per_m = ?12, context_window = ?6, tiers_json = '[]', \
+                updated_at = datetime('now') \
          WHERE id = ?13",
         params![
             provider,
