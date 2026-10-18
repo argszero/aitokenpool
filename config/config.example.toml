@@ -365,9 +365,15 @@ endpoints = [
 #      output_per_m = 16.80
 #    ⛔ 档位数据只填官网确实给了的：本仓 config 是唯一真源（src/db.rs::seed_models），填错即错账。
 #    ⚠️ 已填长档的（官网核实，见各行注释）：minimax-m3（>512k）、gemini-3.1-pro、grok-4.6、
-#    grok-4.7（后三家都是 >200k）。未填的一律是「官网**没给这个数**」，不是漏了：
-#    qwen3.7-flash（分档只公布输入/输出两列、缓存命中价未公布 ⇒ 补档会把命中价打成 0 少收）、
-#    OpenAI 各家（分了短/长两段，但**没公布分界 token 数**）、Claude（价格页无长档一段）—— 待补。
+#    grok-4.7（后三家都是 >200k）。未填的**原因各不相同**，⛔ 不要一律当成「待补」：
+#    · qwen3.7-flash：分档表只公布输入/输出两列、缓存命中价未公布 ⇒ 补档会把命中价打成 0 少收；
+#    · OpenAI 各家：分了短/长两段，但**分界 token 数未钉死** ⇒ 不填；
+#    · Claude：**不是**「官网没给数」，而是官网明说**没有长档溢价** —— pricing 页 Long context
+#      pricing 一节（2026-10-18 核实，https://platform.claude.com/docs/en/about-claude/pricing）：
+#      4.6 及以后（Haiku 5.5 除外）全长 1M 上下文按标准价计，900k 的请求与 9k 同价 ⇒
+#      claude-opus-5 / claude-sonnet-5.5 **本来就不该有档**；将来若上 Haiku 5.5，它的档界是
+#      prompt > 100,000 tokens（含缓存读/写），届时按 from_tokens = 100001 填；
+#    · 其余未填行：现核实的官网页只有一组价（没有长档表）⇒ 无档可填，不是漏填。
 #    高峰时段价（rant 2026-08-20T11:58:40）：peak_input_per_m / peak_output_per_m /
 #    peak_cache_hit_input_per_m 三个可选字段，缺省 0 = 不启用高峰计费（沿用空闲价）。
 #    命中高峰时段（北京时间 9-12、14-18，**周一至周五**且不在 [billing] holidays 内）
