@@ -81,12 +81,12 @@
 - `GET /healthz` — 健康检查（返回版本号）
 - `POST /api/auth/register` / `login` / `verify` / `resend-code` / `forgot-password` / `reset-password` / `change-password`
 - `GET /api/me` — 当前用户
-- `POST/GET/DELETE /api/api-keys` — 分发 key 生成 / 列表 / 撤销
+- `POST/GET /api/api-keys` + `PATCH/DELETE /api/api-keys/:id` — 分发 key 生成 / 列表 / 改名 / 撤销
 - `GET /api/models` — 模型列表（含可用 key 与价格）
 - `POST /v1/chat/completions` / `/v1/responses` / `/anthropic/v1/messages` — 网关（非流式 + SSE）
 - `GET /api/wallet` / `/api/transactions` / `/api/dashboard` — 钱包 / 交易（summary + 明细）/ 仪表盘
-- `POST/GET/PATCH /api/sharings` — key 上架 / 列表 / 编辑（PATCH 部分更新：暂停 · 恢复 · 下线，以及上架时的全部设置）
-- `POST /api/admin/credits` / `GET /api/admin/users` / `usage` / `models` CRUD — 管理（role=admin）
+- `POST/GET /api/sharings` + `PATCH /api/sharings/:id` — key 上架 / 列表 / 编辑（PATCH 部分更新：暂停 · 恢复 · 下线，以及上架时的全部设置）
+- `POST /api/admin/credits` / `GET /api/admin/users` + `PATCH /api/admin/users/:id`（仅改部门） / `usage` / `models` CRUD — 管理（role=admin）
 - `GET/POST /api/admin/departments` + `PATCH/DELETE /api/admin/departments/:id` — 部门管理（role=admin）
 - `POST/GET /api/raise-requests` + `POST /api/admin/raise-requests/:id/{approve,reject}` — 加额申请 / 审批
 - `GET /api/ops/runtime` / `users`，`POST /api/ops/credits` — 运营者视图（role=ops）
