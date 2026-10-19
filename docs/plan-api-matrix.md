@@ -27,9 +27,9 @@ Base URL 统一由 AITokenPool 提供（`[server].public_url` 配置），设置
 
 - 上游 key 在「共享管理」页上架（provider + plan + model + key + 额度 + 可用时段）
 - 模型价格由 `config/config.example.toml` 的 `[[models]]` 定义（唯一真源，启动 seed 入 `models` 表）
-- 各厂商价目已随 `config/config.example.toml` 预置（含高峰时段价）；新增厂商只需按同格式补 `[[models]]`，无需改代码
+- 各厂商价目已随 `config/config.example.toml` 预置（含高峰时段价与分档价）；新增厂商只需按同格式补 `[[models]]`，无需改代码
 - 预置 provider：`deepseek`、`zhipu`、`aliyun-bailian`、`bytedance-ark`、`moonshot`、`minimax`、`openai`、`anthropic`、`google`、`xai`（随 `[[models]]` 配置扩展，无需改代码）
 
 ## 4. 模型目录
 
-内置 DeepSeek / GLM / GPT / Claude / Gemini / 豆包 / Kimi / MiniMax / 通义 / grok 等模型，含 context window、vision 支持、缓存价与高峰价字段。**数量与明细以 `config/config.example.toml` 的 `[[models]]` 为唯一真源**（由 `src/catalog_gate.rs` 的 `MODEL_COUNT` 守卫，此处不抄写数字以免随之陈旧）。模型列表可经管理端「模型管理」页 CRUD（需 admin 角色）。
+内置 DeepSeek / GLM / GPT / Claude / Gemini / 豆包 / Kimi / MiniMax / 通义 / grok 等模型，含 context window、vision 支持、缓存价、高峰价与分档价字段。**数量与明细以 `config/config.example.toml` 的 `[[models]]` 为唯一真源**（由 `src/catalog_gate.rs` 的 `MODEL_COUNT` 守卫，此处不抄写数字以免随之陈旧）。模型列表可经管理端「模型管理」页 CRUD（需 admin 角色）。
