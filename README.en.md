@@ -13,7 +13,7 @@ AITokenPool is an open-source **AI token sharing platform / multi-model gateway*
 
 - **Multi-protocol gateway** — bidirectional conversion between OpenAI Chat / OpenAI Responses / Anthropic Messages, for both non-streaming and SSE streaming requests; clients only need one OpenAI-compatible endpoint
 - **Transparent billing** — every call shows an input / cache-hit / output token breakdown; vendor price lists ship with the release, each recorded in its own currency (CNY / USD), with peak-hour pricing and per-request input-length tiered pricing
-- **Point system** — daily gift, 90/10 sharing split, admin top-up, self-registration with email verification
+- **Point system** — daily gift, 90/10 sharing split, admin top-up, self-registration with email verification, password reset
 - **Enterprise controls** — departments, member credits, usage reports, and a dedicated operator view
 - **Security** — upstream keys encrypted with AES-256-GCM, argon2 password hashing, email verification, admin role isolation
 - **Lightweight** — a single Rust binary + SQLite + one-command Docker deploy, no external services
