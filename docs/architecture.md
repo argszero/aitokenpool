@@ -34,6 +34,7 @@
 | `auth.rs` / `mail.rs` | Bearer 认证（API Key）+ argon2；SMTP 验证码（重试 2 次，共 3 次尝试） |
 | `db.rs` | SQLite 建表 + 幂等迁移 + seed（models 表启动时同步 config `[[models]]`；测试用户 seed 仅测试） |
 | `dao.rs` | 数据访问层 |
+| `gateway.rs` | 网关三条端点（`/v1/chat/completions`、`/v1/responses`、`/anthropic/v1/messages`）：取 model → 路由选 key → 按 plan 端点定出站协议（跨协议转换交 `protocol.rs` / `sse.rs`）→ 转发上游 → 解析 usage 交 `billing.rs` 计费；模型 / 套餐列表端点亦在此 |
 | `routes/` | 认证 / 钱包 / 交易 / 仪表盘 / 共享 / 管理 / 运营者 API |
 
 ## 4. 数据流（一次调用）
