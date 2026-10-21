@@ -17,7 +17,7 @@ AITokenPool is an open-source **AI token sharing platform / multi-model gateway*
 - **Enterprise controls** — departments, member credits, usage reports, and a dedicated operator view
 - **Security** — upstream keys encrypted with AES-256-GCM, argon2 password hashing, email verification, admin role isolation
 - **Lightweight** — a single Rust binary + SQLite + one-command Docker deploy, no external services
-- **Bilingual web UI included** — full dashboard (market / wallet / transactions / sharing / admin), no separate frontend deployment
+- **Bilingual web UI included** — full interface (dashboard / marketplace / sharing / wallet / transactions / admin / operator / settings), no separate frontend deployment
 
 ## Use Cases
 
