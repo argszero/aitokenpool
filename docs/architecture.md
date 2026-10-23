@@ -43,7 +43,7 @@
 客户端 → POST /v1/chat/completions（或 /v1/responses、/anthropic/v1/messages）
   → auth 校验（Bearer atk_* key → 用户）
   → 余额预检（可用 = gift + permanent，≤0 → 402）
-  → 路由选 key（健康优先 → 随机 → 粘性复用）
+  → 路由选 key（健康优先 → 粘性复用 → 否则随机）
   → 上游请求（解密 key，非流式或 SSE 转发）
   → 成功后 settle：扣消费者 → 加分享者 90% → 写 transactions + usage_records + keys.used
 ```
