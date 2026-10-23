@@ -2861,6 +2861,7 @@ mod tests {
                 tokens: 1000.0,
                 cached_tokens: 0.0,
                 output_tokens: 0.0,
+                cache_write_tokens: 0.0,
                 pts,
                 cost: 0.0,
             };

@@ -370,6 +370,35 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "tiers_json",
         "tiers_json TEXT NOT NULL DEFAULT '[]'",
     )?;
+    // v18（#432）：缓存写入（cache creation）token 计量。三列全是加性补列，不动
+    // `SCHEMA_VERSION` —— 版本号留给**加列表达不了**的形态（与 `cache_hit_input_per_m` /
+    // `peak_*` / `tiers_json` 的先例一致）。
+    //
+    // 缺省 0 = 不收费 ⇒ **老库升级后没有任何一笔已发生的账发生变化**：`cache_write_tokens`
+    // 补 0、`cache_write_input_per_m` 补 0，而 0 价的收费额恒为 0。
+    //
+    // `tokens` 列的语义**不变**：仍是 input + cached + output。读侧有 5 处按
+    // `tokens - cached_tokens - output_tokens` 反推「输入 token」（`routes/wallet.rs` 的排序键
+    // 与两条聚合、`db.rs` 的月用量聚合），把缓存写并进 `tokens` 会让每个上报了缓存写的
+    // Anthropic 请求在界面上凭空多出一段「输入」—— 故缓存写单独记一列，不进总数。
+    ensure_column(
+        conn,
+        "models",
+        "cache_write_input_per_m",
+        "cache_write_input_per_m REAL NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "usage_records",
+        "cache_write_tokens",
+        "cache_write_tokens REAL NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "transactions",
+        "cache_write_tokens",
+        "cache_write_tokens REAL NOT NULL DEFAULT 0",
+    )?;
     // v16（rant 2026-10-09T12:28:58 验收项 1）：交易明细的**可加汇总表** —— 维度 = 类型 + 用户 +
     // 模型 + key（两个身份都进维度，见 `tx_rollup` 模块头）+ 状态 + 时间（分钟级）；可加量 =
     // `pts` 与各 token 的 `SUM` + 行数 `COUNT`。折叠逻辑在 `src/tx_rollup.rs`；本步只建表。
@@ -630,8 +659,8 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
         let tiers_json = serde_json::to_string(&m.tiers)
             .with_context(|| format!("序列化 model[{}/{}] 的分档价失败", m.provider, m.model))?;
         conn.execute(
-            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, context_window, context_length, max_output, vision, cache_hit_input_per_m, peak_input_per_m, peak_cache_hit_input_per_m, peak_output_per_m, tiers_json, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now')) \
+            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, context_window, context_length, max_output, vision, cache_hit_input_per_m, cache_write_input_per_m, peak_input_per_m, peak_cache_hit_input_per_m, peak_output_per_m, tiers_json, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now')) \
              ON CONFLICT(provider, model) DO UPDATE SET \
                currency = excluded.currency, \
                input_per_m = excluded.input_per_m, \
@@ -641,6 +670,7 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                max_output = excluded.max_output, \
                vision = excluded.vision, \
                cache_hit_input_per_m = excluded.cache_hit_input_per_m, \
+               cache_write_input_per_m = excluded.cache_write_input_per_m, \
                peak_input_per_m = excluded.peak_input_per_m, \
                peak_cache_hit_input_per_m = excluded.peak_cache_hit_input_per_m, \
                peak_output_per_m = excluded.peak_output_per_m, \
@@ -657,6 +687,7 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                 m.max_output,
                 m.vision as i64,
                 m.cache_hit_input_per_m,
+                m.cache_write_input_per_m,
                 m.peak_input_per_m,
                 m.peak_cache_hit_input_per_m,
                 m.peak_output_per_m,

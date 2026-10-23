@@ -78,6 +78,7 @@ pub const TRANSACTIONS: Spec = Spec {
         "tokens",
         "cached_tokens",
         "output_tokens",
+        "cache_write_tokens",
         "pts",
         "type",
         "status",
@@ -103,6 +104,7 @@ pub const USAGE_RECORDS: Spec = Spec {
         "tokens",
         "cached_tokens",
         "output_tokens",
+        "cache_write_tokens",
         "cost",
         "time",
     ],
@@ -267,10 +269,11 @@ fn tx_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<String> {
         "tokens": row.get::<_, f64>(6)?,
         "cached_tokens": row.get::<_, f64>(7)?,
         "output_tokens": row.get::<_, f64>(8)?,
-        "pts": row.get::<_, f64>(9)?,
-        "type": row.get::<_, String>(10)?,
-        "status": row.get::<_, String>(11)?,
-        "time": row.get::<_, String>(12)?,
+        "cache_write_tokens": row.get::<_, f64>(9)?,
+        "pts": row.get::<_, f64>(10)?,
+        "type": row.get::<_, String>(11)?,
+        "status": row.get::<_, String>(12)?,
+        "time": row.get::<_, String>(13)?,
     });
     Ok(v.to_string())
 }
@@ -286,8 +289,9 @@ fn usage_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<String> {
         "tokens": row.get::<_, f64>(5)?,
         "cached_tokens": row.get::<_, f64>(6)?,
         "output_tokens": row.get::<_, f64>(7)?,
-        "cost": row.get::<_, f64>(8)?,
-        "time": row.get::<_, String>(9)?,
+        "cache_write_tokens": row.get::<_, f64>(8)?,
+        "cost": row.get::<_, f64>(9)?,
+        "time": row.get::<_, String>(10)?,
     });
     Ok(v.to_string())
 }

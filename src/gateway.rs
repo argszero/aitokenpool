@@ -48,16 +48,23 @@ fn extract_model(body: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// 解析上游响应中的 usage → (uncached_input_tokens, cached_tokens, output_tokens)
+/// 解析上游响应中的 usage → (uncached_input_tokens, cached_tokens, output_tokens,
+/// cache_write_tokens)
 ///（rant 2026-08-20T10:17:27：输入区分「缓存命中/未命中」——
 ///  openai_chat → usage.prompt_cache_hit_tokens（DeepSeek 原生顶层拼写）
 ///                或 usage.prompt_tokens_details.cached_tokens（OpenAI 拼写）
 ///                （prompt_tokens 含命中，需减除；优先级同 `UsageCapture::finish` / `sse.rs`）；
 ///  anthropic  → usage.cache_read_input_tokens（input_tokens 已不含命中，不减）；
 ///  responses  → usage.input_tokens_details.cached_tokens（input_tokens 含命中，需减除））
-fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64, f64) {
+///
+/// 第四个分量是**缓存写入**（cache creation）token 数（#432）。只有 anthropic 的上游响应
+/// 带 `usage.cache_creation_input_tokens`，且它的 `input_tokens` 本来就**不含**这一段
+/// （Anthropic 把 input / cache_read / cache_creation 三段分开报）⇒ 原样取出、不做加减。
+/// 其它协议没有这个字段 ⇒ 0，不是估算：拿不到就不收，与「缺数据 ≠ 数据为 0」同一判据
+/// （见 `UsageCapture::usage_seen`）。
+fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64, f64, f64) {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return (0.0, 0.0, 0.0);
+        return (0.0, 0.0, 0.0, 0.0);
     };
     let usage = v.get("usage");
     match protocol {
@@ -74,7 +81,11 @@ fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64, f64) {
                 .and_then(|u| u.get("output_tokens"))
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0);
-            (input, cached, output)
+            let cache_write = usage
+                .and_then(|u| u.get("cache_creation_input_tokens"))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
+            (input, cached, output, cache_write)
         }
         "responses" => {
             let total_input = usage
@@ -89,7 +100,7 @@ fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64, f64) {
                 .and_then(|u| u.get("output_tokens"))
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0);
-            (total_input - cached, cached, output)
+            (total_input - cached, cached, output, 0.0)
         }
         _ => {
             let total_input = usage
@@ -111,7 +122,7 @@ fn parse_usage(body: &[u8], protocol: &str) -> (f64, f64, f64) {
                 .and_then(|u| u.get("completion_tokens"))
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0);
-            (total_input - cached, cached, output)
+            (total_input - cached, cached, output, 0.0)
         }
     }
 }
@@ -157,7 +168,9 @@ fn decrypt_key(st: &AppState, key: &dao::KeyRow) -> Option<String> {
     }
 }
 
-/// 计量入账（非流式/流式共用）：tokens>0 才入账；失败仅记日志不影响透传
+/// 计量入账（非流式/流式共用）：四段 token（输入/命中/输出/缓存写入）全为 0 才不入账；
+/// 失败仅记日志不影响透传
+#[allow(clippy::too_many_arguments)] // 四段 token（输入/命中/输出/缓存写入）平铺，同 billing::calc_points
 fn settle_usage(
     st: &AppState,
     auth: AuthUser,
@@ -166,10 +179,14 @@ fn settle_usage(
     input_tokens: f64,
     cached_tokens: f64,
     output_tokens: f64,
+    cache_write_tokens: f64,
 ) {
     // 锁作用域严格限定在同步区内（绝不在 await 期间持有 MutexGuard）
+    // `tokens` 的语义**不变**（input + cached + output）：读侧有 5 处按它反推「输入」，
+    // 缓存写单独进自己的列（#432）。而「有没有计量依据」的判据必须把四段都算上 ——
+    // 一个只上报缓存写入的响应，今天会被这条早退当成「无数据」白送。
     let tokens = input_tokens + cached_tokens + output_tokens;
-    if tokens <= 0.0 {
+    if tokens + cache_write_tokens <= 0.0 {
         return;
     }
     let mut conn = match st.db.lock() {
@@ -207,15 +224,26 @@ fn settle_usage(
                 input_tokens,
                 cached_tokens,
                 output_tokens,
+                cache_write_tokens,
                 i2,
                 c2,
                 o2,
+                p.cache_write_input_per_m,
                 st.cfg.points.points_per_unit,
                 &p.currency,
                 &st.cfg.points.anchor_currency,
             );
             let cost = billing::to_anchor(
-                billing::raw_cost(input_tokens, cached_tokens, output_tokens, i2, c2, o2),
+                billing::raw_cost(
+                    input_tokens,
+                    cached_tokens,
+                    output_tokens,
+                    cache_write_tokens,
+                    i2,
+                    c2,
+                    o2,
+                    p.cache_write_input_per_m,
+                ),
                 &p.currency,
                 &st.cfg.points.anchor_currency,
             );
@@ -245,6 +273,7 @@ fn settle_usage(
         tokens,
         cached_tokens,
         output_tokens,
+        cache_write_tokens,
         pts,
         cost,
     };
@@ -408,7 +437,8 @@ async fn forward(
 
         if status.is_success() {
             // 成功：解析 usage（按上游出站协议）→ 计量入账 → 粘性
-            let (input_tokens, cached_tokens, output_tokens) = parse_usage(&bytes, outbound);
+            let (input_tokens, cached_tokens, output_tokens, cache_write_tokens) =
+                parse_usage(&bytes, outbound);
             settle_usage(
                 st,
                 auth,
@@ -417,6 +447,7 @@ async fn forward(
                 input_tokens,
                 cached_tokens,
                 output_tokens,
+                cache_write_tokens,
             );
             // 跨协议 → 转换响应体回入站协议
             if needs_transform {
@@ -679,7 +710,9 @@ async fn forward_stream(
                     );
                 }
                 let (input, cached, output) = slot.unwrap_or((0.0, 0.0, 0.0));
-                settle_usage(&st, auth, &key, &model, input, cached, output);
+                // 跨协议转换的 usage 由 `sse` 的转换器记录，它只带 (input, cached, output)
+                // 三元组 ⇒ 缓存写入按 0 计（#432 的范围只到同协议 anthropic 路径）。
+                settle_usage(&st, auth, &key, &model, input, cached, output, 0.0);
                 Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::new())
             });
             (converted, Box::pin(finalize))
@@ -696,10 +729,10 @@ async fn forward_stream(
                 item.map_err(|e| -> std::io::Error { std::io::Error::other(e) })
             });
             let finalize = futures_util::stream::once(async move {
-                let (input, cached, output, seen) = {
+                let (input, cached, output, cache_write, seen) = {
                     let mut cap = capture.lock().expect("usage capture lock");
-                    let (i, c, o) = cap.finish();
-                    (i, c, o, cap.usage_seen)
+                    let (i, c, o, cw) = cap.finish();
+                    (i, c, o, cw, cap.usage_seen)
                 };
                 if !seen {
                     // 未入账且**非**「上游报了 0」——本次调用没有任何计量依据。
@@ -711,7 +744,7 @@ async fn forward_stream(
                         protocol
                     );
                 }
-                settle_usage(&st, auth, &key, &model, input, cached, output);
+                settle_usage(&st, auth, &key, &model, input, cached, output, cache_write);
                 Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::new())
             });
             (Box::pin(fwd), Box::pin(finalize))
@@ -738,6 +771,9 @@ struct UsageCapture {
     tail: Vec<u8>,
     input_tokens: f64,
     cached_tokens: f64,
+    /// 缓存写入（cache creation）token 数（#432）。只有 anthropic 在 `message_start` /
+    /// `message_delta` 的 usage 里带它（`cache_creation_input_tokens`）；其它协议恒 0。
+    cache_write_tokens: f64,
     /// 是否**见到过** usage 对象
     ///
     /// 用于区分「上游报了 0」与「上游什么都没报」——两者在
@@ -755,6 +791,7 @@ impl UsageCapture {
             tail: Vec::new(),
             input_tokens: 0.0,
             cached_tokens: 0.0,
+            cache_write_tokens: 0.0,
             usage_seen: false,
         }
     }
@@ -763,9 +800,10 @@ impl UsageCapture {
         // anthropic：message_start 事件携带 input_tokens / cache_read_input_tokens
         //（在流头部，尾部缓冲会丢）
         if self.protocol == "anthropic" && self.input_tokens == 0.0 {
-            if let Some((input, cached)) = parse_anthropic_usage(chunk) {
+            if let Some((input, cached, cache_write)) = parse_anthropic_usage(chunk) {
                 self.input_tokens = input;
                 self.cached_tokens = cached;
+                self.cache_write_tokens = cache_write;
                 self.usage_seen = true;
             }
         }
@@ -775,12 +813,13 @@ impl UsageCapture {
         }
     }
 
-    /// 流尾解析 usage → (input_tokens, cached_tokens, output_tokens)
-    fn finish(&mut self) -> (f64, f64, f64) {
+    /// 流尾解析 usage → (input_tokens, cached_tokens, output_tokens, cache_write_tokens)
+    fn finish(&mut self) -> (f64, f64, f64, f64) {
         let text = String::from_utf8_lossy(&self.tail);
         let mut input = self.input_tokens;
         let mut cached = self.cached_tokens;
         let mut output = 0.0;
+        let mut cache_write = self.cache_write_tokens;
         for line in text.lines() {
             let Some(data) = line.trim_start().strip_prefix("data:") else {
                 continue;
@@ -807,6 +846,10 @@ impl UsageCapture {
                         .get("output_tokens")
                         .and_then(|x| x.as_f64())
                         .unwrap_or(output);
+                    cache_write = u
+                        .get("cache_creation_input_tokens")
+                        .and_then(|x| x.as_f64())
+                        .unwrap_or(cache_write);
                 }
             } else if let Some(u) = v.get("usage") {
                 // openai：最后 chunk 的 usage（stream_options.include_usage 时）
@@ -831,12 +874,14 @@ impl UsageCapture {
         }
         // input disjoint：input_tokens/prompt_tokens 含缓存命中部分，扣除后避免重复计费
         //（同 sse.rs 已修复逻辑，rant 2026-08-23T14:05:02；max 防下溢）
-        ((input - cached).max(0.0), cached, output)
+        // 缓存写入**不参与**这里的减法：它是与「未命中」「命中」并列的第三段，不是其中一部分。
+        ((input - cached).max(0.0), cached, output, cache_write)
     }
 }
 
-/// 从 anthropic 流式 chunk 提取 message_start 的 usage → (input_tokens, cache_read_input_tokens)
-fn parse_anthropic_usage(chunk: &[u8]) -> Option<(f64, f64)> {
+/// 从 anthropic 流式 chunk 提取 message_start 的 usage →
+/// (input_tokens, cache_read_input_tokens, cache_creation_input_tokens)
+fn parse_anthropic_usage(chunk: &[u8]) -> Option<(f64, f64, f64)> {
     let text = String::from_utf8_lossy(chunk);
     for line in text.lines() {
         let Some(data) = line.trim_start().strip_prefix("data:") else {
@@ -852,7 +897,11 @@ fn parse_anthropic_usage(chunk: &[u8]) -> Option<(f64, f64)> {
                 .pointer("/message/usage/cache_read_input_tokens")
                 .and_then(|t| t.as_f64())
                 .unwrap_or(0.0);
-            return Some((input, cached));
+            let cache_write = v
+                .pointer("/message/usage/cache_creation_input_tokens")
+                .and_then(|t| t.as_f64())
+                .unwrap_or(0.0);
+            return Some((input, cached, cache_write));
         }
     }
     None
@@ -989,10 +1038,14 @@ mod tests {
     #[test]
     fn parse_usage_openai_splits_cached_tokens() {
         let body = br#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":900}}}"#;
-        let (input, cached, output) = parse_usage(body, "openai_chat");
+        let (input, cached, output, cache_write) = parse_usage(body, "openai_chat");
         assert_eq!(input, 100.0, "未命中 = prompt - cached");
         assert_eq!(cached, 900.0);
         assert_eq!(output, 50.0);
+        assert_eq!(
+            cache_write, 0.0,
+            "openai 协议没有缓存写入字段 ⇒ 0，不是估算"
+        );
     }
 
     #[test]
@@ -1000,28 +1053,31 @@ mod tests {
         // anthropic input_tokens 已不含命中，原样返回
         let body =
             br#"{"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":900}}"#;
-        let (input, cached, output) = parse_usage(body, "anthropic");
+        let (input, cached, output, cache_write) = parse_usage(body, "anthropic");
         assert_eq!(input, 100.0);
         assert_eq!(cached, 900.0);
         assert_eq!(output, 50.0);
+        assert_eq!(cache_write, 0.0, "上游没报缓存写入 ⇒ 0");
     }
 
     #[test]
     fn parse_usage_responses_input_tokens_details() {
         let body = br#"{"usage":{"input_tokens":1000,"output_tokens":50,"input_tokens_details":{"cached_tokens":700}}}"#;
-        let (input, cached, output) = parse_usage(body, "responses");
+        let (input, cached, output, cache_write) = parse_usage(body, "responses");
         assert_eq!(input, 300.0, "未命中 = input_tokens - cached");
         assert_eq!(cached, 700.0);
         assert_eq!(output, 50.0);
+        assert_eq!(cache_write, 0.0);
     }
 
     #[test]
     fn parse_usage_missing_cache_defaults_zero() {
         let body = br#"{"usage":{"prompt_tokens":100,"completion_tokens":10}}"#;
-        let (input, cached, output) = parse_usage(body, "openai_chat");
+        let (input, cached, output, cache_write) = parse_usage(body, "openai_chat");
         assert_eq!(input, 100.0);
         assert_eq!(cached, 0.0);
         assert_eq!(output, 10.0);
+        assert_eq!(cache_write, 0.0);
     }
 
     /// rant 2026-08-23T08:20:38 / 2026-08-23T14:05:02：DeepSeek 原生顶层缓存拼写
@@ -1031,21 +1087,21 @@ mod tests {
     fn parse_usage_openai_deepseek_native_cache_spelling() {
         // DeepSeek 原生顶层拼写：prompt_tokens 含命中，仍需减除
         let body = br#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_cache_hit_tokens":900}}"#;
-        let (input, cached, output) = parse_usage(body, "openai_chat");
+        let (input, cached, output, _) = parse_usage(body, "openai_chat");
         assert_eq!(input, 100.0, "未命中 = prompt_tokens - 命中");
         assert_eq!(cached, 900.0, "DeepSeek 原生拼写必须被识别");
         assert_eq!(output, 50.0);
 
         // 阳性对照：OpenAI 拼写（`prompt_tokens_details.cached_tokens`）不受影响
         let body = br#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":900}}}"#;
-        let (input, cached, output) = parse_usage(body, "openai_chat");
+        let (input, cached, output, _) = parse_usage(body, "openai_chat");
         assert_eq!(input, 100.0);
         assert_eq!(cached, 900.0);
         assert_eq!(output, 50.0);
 
         // 两拼写并存 → 与流式同优先级：DeepSeek 原生优先
         let body = br#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_cache_hit_tokens":900,"prompt_tokens_details":{"cached_tokens":800}}}"#;
-        let (input, cached, output) = parse_usage(body, "openai_chat");
+        let (input, cached, output, _) = parse_usage(body, "openai_chat");
         assert_eq!(input, 100.0, "未命中 = 1000 - 900");
         assert_eq!(
             cached, 900.0,
@@ -1059,21 +1115,23 @@ mod tests {
     /// C2039 修的是非流式的缓存拼写分支 —— 这条断言把两者钉在一起，防止再次分叉。
     #[test]
     fn usage_parsers_agree_on_cache_spelling() {
-        let cases: [(&str, (f64, f64, f64)); 3] = [
+        // 四元组（输入/命中/输出/缓存写入）写在类型里读起来比再立一个结构体清楚
+        #[allow(clippy::type_complexity)]
+        let cases: [(&str, (f64, f64, f64, f64)); 3] = [
             // DeepSeek 原生顶层拼写（此前非流式漏认）
             (
                 r#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_cache_hit_tokens":900}}"#,
-                (100.0, 900.0, 50.0),
+                (100.0, 900.0, 50.0, 0.0),
             ),
             // OpenAI 拼写
             (
                 r#"{"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":900}}}"#,
-                (100.0, 900.0, 50.0),
+                (100.0, 900.0, 50.0, 0.0),
             ),
             // 无任何缓存字段 → 全部按未命中（缺数据即 0，并非 C2037 的「无 usage」）
             (
                 r#"{"usage":{"prompt_tokens":1000,"completion_tokens":50}}"#,
-                (1000.0, 0.0, 50.0),
+                (1000.0, 0.0, 50.0, 0.0),
             ),
         ];
         for (body, expected) in cases {
@@ -1129,11 +1187,20 @@ mod tests {
         };
 
         // ① 200000（边界−1）⇒ 第一档 $2/M；② 200001（边界）⇒ 长档 $4/M（恰 2 倍）
-        settle_usage(&st, auth(), &key, "grok-4.6", 200_000.0, 0.0, 0.0);
-        settle_usage(&st, auth(), &key, "grok-4.6", 200_001.0, 0.0, 0.0);
+        settle_usage(&st, auth(), &key, "grok-4.6", 200_000.0, 0.0, 0.0, 0.0);
+        settle_usage(&st, auth(), &key, "grok-4.6", 200_001.0, 0.0, 0.0, 0.0);
         // ③ 选档用的是**整段 prompt**：未命中 100000 ＋ 命中 100001 = 200001 ⇒ 仍走长档
         //    （若错看未命中那一段，就会落回第一档）
-        settle_usage(&st, auth(), &key, "grok-4.6", 100_000.0, 100_001.0, 0.0);
+        settle_usage(
+            &st,
+            auth(),
+            &key,
+            "grok-4.6",
+            100_000.0,
+            100_001.0,
+            0.0,
+            0.0,
+        );
 
         let pts: Vec<f64> = {
             let conn = st.db.lock().unwrap();
@@ -1161,6 +1228,141 @@ mod tests {
             (pts[2] - 3.60001).abs() < 1e-6,
             "选档口径 = 未命中 ＋ 命中（整段 prompt）: {}",
             pts[2]
+        );
+    }
+
+    /// #432：缓存写入（cache creation）token 数在**两条解析路径**上都要取到，
+    /// 且只从 anthropic 的 usage 里取（其它协议没有这个字段 ⇒ 0）。
+    #[test]
+    fn both_usage_parsers_read_anthropic_cache_creation_tokens() {
+        let usage = r#"{"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":900,"cache_creation_input_tokens":400}}"#;
+
+        // 非流式：`input_tokens` 不含缓存写入（Anthropic 三段分开报）⇒ 原样取出，不做加减
+        let (input, cached, output, cache_write) = parse_usage(usage.as_bytes(), "anthropic");
+        assert_eq!((input, cached, output), (100.0, 900.0, 50.0));
+        assert_eq!(cache_write, 400.0, "缓存写入必须原样取出");
+
+        // 流式：同一条 usage 走 `UsageCapture`（message_delta 形状）
+        let mut cap = UsageCapture::new("anthropic");
+        cap.push(format!("data: {usage}\n\n").as_bytes());
+        let (s_input, s_cached, s_output, s_cache_write) = cap.finish();
+        assert_eq!(
+            (s_cached, s_output),
+            (900.0, 50.0),
+            "流式与非流式看同一段 usage"
+        );
+        assert_eq!(s_cache_write, 400.0, "流式路径同样要取到缓存写入");
+        // ⚠️ 预存不对称（**独立问题，本 PR 不改**）：流式对 anthropic 也套用了
+        // `(input - cached)` 这条「openai 的 prompt_tokens 含命中」修正，而 anthropic 的
+        // `input_tokens` 本就不含命中 ⇒ 流式把它减成 0、非流式保留 100。修它会抬高存量
+        // 账单，需要单独授权，故这里只钉住**当前**行为，不假装两条路径一致。
+        assert_eq!((s_input, input), (0.0, 100.0), "当前行为：流式少算这一段");
+
+        // 其它协议：字段不存在 ⇒ 0（不是估算）
+        let openai = r#"{"usage":{"prompt_tokens":1000,"completion_tokens":50}}"#;
+        assert_eq!(parse_usage(openai.as_bytes(), "openai_chat").3, 0.0);
+        assert_eq!(parse_usage(openai.as_bytes(), "responses").3, 0.0);
+    }
+
+    /// #432：缓存写入价接进结算。两件承重的事：
+    /// ① 缺省 0 价 ⇒ 带写入 token 的调用与不带写入的**同一调用**点数逐位相同（存量账不动）；
+    /// ② 配了价 ⇒ 收费额 = 配置价 × 写入 token 数，且两个账本列都记下写入的 token 数。
+    #[test]
+    fn settle_bills_cache_write_tokens_at_the_configured_price() {
+        let st = test_state_eps(
+            "cache_write_settle",
+            "xai-paygo",
+            &["openai_chat"],
+            "http://127.0.0.1:1",
+        );
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO keys (id, provider, plan, model, status, owner_id, encrypted_key, quota, used) \
+                 VALUES (901, 'xai', 'xai-paygo', 'grok-4.6', 'on', 1, 'v1:x', 1000, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let key = dao::KeyRow {
+            id: 901,
+            provider: "xai".to_string(),
+            plan: "xai-paygo".to_string(),
+            owner_id: 1,
+            encrypted_key: String::new(),
+        };
+        let auth = || AuthUser {
+            user_id: 1,
+            api_key_id: 1,
+            role: "user".to_string(),
+        };
+
+        // ① 缺省价 0：同一笔输入，带 1000 缓存写入 vs 不带 ⇒ 点数必须逐位相同
+        settle_usage(&st, auth(), &key, "grok-4.6", 1000.0, 0.0, 0.0, 0.0);
+        settle_usage(&st, auth(), &key, "grok-4.6", 1000.0, 0.0, 0.0, 1000.0);
+
+        // ② 配置缓存写入价 $2/M（grok-4.6 是 USD 计价、CNY 锚定 1 点/元）
+        {
+            let conn = st.db.lock().unwrap();
+            conn.execute(
+                "UPDATE models SET cache_write_input_per_m = 2.0 WHERE provider = 'xai' AND model = 'grok-4.6'",
+                [],
+            )
+            .unwrap();
+        }
+        // 只有缓存写入的响应（输入/命中/输出全 0）：不该被「无计量依据」的早退吞掉
+        settle_usage(&st, auth(), &key, "grok-4.6", 0.0, 0.0, 0.0, 1_000_000.0);
+
+        let rows: Vec<(f64, f64, f64)> = {
+            let conn = st.db.lock().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pts, cache_write_tokens, tokens FROM transactions \
+                     WHERE type = 'consume' ORDER BY id ASC",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .map(|x| x.unwrap())
+                .collect()
+        };
+        assert_eq!(rows.len(), 3, "三笔调用各一条 consume");
+        assert_eq!(
+            rows[0].0, rows[1].0,
+            "缺省 0 价 ⇒ 带不带缓存写入，点数完全相同（存量账不动）: {} vs {}",
+            rows[0].0, rows[1].0
+        );
+        assert_eq!(
+            rows[1].1, 1000.0,
+            "缓存写入 token 数要落进 transactions 列（未配置价时也照记，供对账）"
+        );
+        // 1M × $2/M = 2.0 USD × 7.2 = 14.4 点
+        assert!(
+            (rows[2].0 - 14.4).abs() < 1e-6,
+            "配价后按配置价收费: {}",
+            rows[2].0
+        );
+        assert_eq!(rows[2].1, 1_000_000.0, "写入 token 数落库");
+        assert_eq!(
+            rows[2].2, 0.0,
+            "`tokens` 语义不变：仍是 input + cached + output，缓存写入单列"
+        );
+
+        // usage_records 同口径
+        let usage_cols: (f64, f64) = {
+            let conn = st.db.lock().unwrap();
+            conn.query_row(
+                "SELECT cache_write_tokens, cost FROM usage_records ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(usage_cols.0, 1_000_000.0, "usage_records 也记写入 token 数");
+        assert!(
+            (usage_cols.1 - 14.4).abs() < 1e-9,
+            "usage_records.cost 是**锚定货币**金额：2.0 USD × 7.2 = 14.4 CNY: {}",
+            usage_cols.1
         );
     }
 
@@ -2705,7 +2907,7 @@ mod tests {
         cap.push(br#"data: {"usage":{"prompt_tokens":10,"completion_tokens":5},"choices":[]}"#);
         cap.push(b"\n\n");
         cap.push(br#"data: [DONE]"#);
-        let (i, _c, o) = cap.finish();
+        let (i, _c, o, _cw) = cap.finish();
         assert_eq!(i, 10.0);
         assert_eq!(o, 5.0);
 
@@ -2714,7 +2916,7 @@ mod tests {
         cap.push(
             br#"data: {"usage":{"prompt_tokens":100,"prompt_cache_hit_tokens":90,"completion_tokens":50},"choices":[]}"#,
         );
-        let (i, c, o) = cap.finish();
+        let (i, c, o, _cw) = cap.finish();
         assert_eq!(i, 10.0, "DeepSeek cached 应从 prompt 扣除（disjoint）");
         assert_eq!(c, 90.0);
         assert_eq!(o, 50.0);
@@ -2724,7 +2926,7 @@ mod tests {
         cap.push(
             br#"data: {"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":90},"completion_tokens":50},"choices":[]}"#,
         );
-        let (i, c, o) = cap.finish();
+        let (i, c, o, _cw) = cap.finish();
         assert_eq!(i, 10.0);
         assert_eq!(c, 90.0);
         assert_eq!(o, 50.0);
@@ -2740,7 +2942,7 @@ data: {"type":"message_start","message":{"usage":{"input_tokens":80,"output_toke
             br#"event: message_delta
 data: {"type":"message_delta","usage":{"output_tokens":30}}"#,
         );
-        let (i, _c, o) = cap.finish();
+        let (i, _c, o, _cw) = cap.finish();
         assert_eq!(i, 80.0, "message_start 的 input_tokens 提前捕获");
         assert_eq!(o, 30.0, "message_delta 的 output_tokens 流尾解析");
 
@@ -2755,7 +2957,7 @@ data: {"type":"message_start","message":{"usage":{"input_tokens":80,"cache_read_
             br#"event: message_delta
 data: {"type":"message_delta","usage":{"output_tokens":30}}"#,
         );
-        let (i, c, o) = cap.finish();
+        let (i, c, o, _cw) = cap.finish();
         assert_eq!(i, 10.0, "cache_read 应从 input 扣除（disjoint）");
         assert_eq!(c, 70.0);
         assert_eq!(o, 30.0);
