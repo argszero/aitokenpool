@@ -1297,9 +1297,89 @@ mod tests {
             role: "user".to_string(),
         };
 
-        // ① 缺省价 0：同一笔输入，带 1000 缓存写入 vs 不带 ⇒ 点数必须逐位相同
+        // ① 缺省价 0：同一笔输入，带 1000 缓存写入 vs 不带 ⇒ 账本上的点数与成本逐位相同。
+        //    这不是「函数没 panic」，而是**结算真的发生了**：两笔都必须落账，且金额等于
+        //    #432 之前的算式（1000 × $2/M = 0.002 USD × 7.2 = 0.0144 点）。
         settle_usage(&st, auth(), &key, "grok-4.6", 1000.0, 0.0, 0.0, 0.0);
         settle_usage(&st, auth(), &key, "grok-4.6", 1000.0, 0.0, 0.0, 1000.0);
+
+        // 两张表分开取：一次结算写 2 条 transactions（consume + earn）但只写 1 条
+        // usage_records，按 id 对齐会错位 —— 各自按写入顺序排。
+        let (consume_pts, usage_costs): (Vec<f64>, Vec<f64>) = {
+            let conn = st.db.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT pts FROM transactions WHERE type = 'consume' ORDER BY id ASC")
+                .unwrap();
+            let pts: Vec<f64> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|x| x.unwrap())
+                .collect();
+            let mut stmt2 = conn
+                .prepare("SELECT cost FROM usage_records ORDER BY id ASC")
+                .unwrap();
+            let costs: Vec<f64> = stmt2
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|x| x.unwrap())
+                .collect();
+            (pts, costs)
+        };
+        let ledger_after_two: Vec<(f64, f64)> = consume_pts
+            .iter()
+            .copied()
+            .zip(usage_costs.iter().copied())
+            .collect();
+        assert_eq!(
+            (consume_pts.len(), usage_costs.len()),
+            (2, 2),
+            "两笔都必须落账（不是被早退吞掉）"
+        );
+        assert!(
+            (ledger_after_two[0].0 - 0.0144).abs() < 1e-9,
+            "不带缓存写入的点数 = 接入前的算式: {}",
+            ledger_after_two[0].0
+        );
+        assert_eq!(
+            ledger_after_two[0].0, ledger_after_two[1].0,
+            "缺省 0 价 ⇒ 带不带缓存写入，点数逐位相同（存量账不动）: {} vs {}",
+            ledger_after_two[0].0, ledger_after_two[1].0
+        );
+        assert_eq!(
+            ledger_after_two[0].1, ledger_after_two[1].1,
+            "缺省 0 价 ⇒ usage_records.cost 也逐位相同: {} vs {}",
+            ledger_after_two[0].1, ledger_after_two[1].1
+        );
+
+        // ①-b 早退的**反面**：四段全 0（上游什么都没报）仍走老路 —— 不入账。
+        // 否则「无法计量」会被悄悄变成「记 0 元」，把 R156 那条「缺数据 ≠ 数据为 0」
+        // 的区分抹平。判据看账本行数与余额，不看函数是否返回。
+        let before_blank = {
+            let conn = st.db.lock().unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+                .unwrap();
+            let bal: f64 = conn
+                .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            (n, bal)
+        };
+        settle_usage(&st, auth(), &key, "grok-4.6", 0.0, 0.0, 0.0, 0.0);
+        {
+            let conn = st.db.lock().unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+                .unwrap();
+            let bal: f64 = conn
+                .query_row("SELECT balance FROM quotas WHERE user_id = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(n, before_blank.0, "四段全 0 ⇒ 不写任何账本行");
+            assert_eq!(bal, before_blank.1, "四段全 0 ⇒ 余额分毫不动");
+        }
 
         // ② 配置缓存写入价 $2/M（grok-4.6 是 USD 计价、CNY 锚定 1 点/元）
         {
@@ -1326,11 +1406,10 @@ mod tests {
                 .map(|x| x.unwrap())
                 .collect()
         };
-        assert_eq!(rows.len(), 3, "三笔调用各一条 consume");
         assert_eq!(
-            rows[0].0, rows[1].0,
-            "缺省 0 价 ⇒ 带不带缓存写入，点数完全相同（存量账不动）: {} vs {}",
-            rows[0].0, rows[1].0
+            rows.len(),
+            3,
+            "三笔落账（两笔缺省价 ＋ 一笔配价），全 0 那笔不入账"
         );
         assert_eq!(
             rows[1].1, 1000.0,
