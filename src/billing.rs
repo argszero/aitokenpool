@@ -40,18 +40,29 @@ pub fn to_anchor(amount: f64, model_currency: &str, anchor: &str) -> f64 {
 
 /// 原始成本（模型自身货币）：USD/CNY 每百万 token 单价 × token 数。
 /// 输入分「缓存未命中」与「缓存命中」两档价（rant 2026-08-20T10:17:27）：
-/// 未命中 × input_per_m + 命中 × cache_hit_input_per_m（缺省 0 → 命中部分免费）
+/// 未命中 × input_per_m + 命中 × cache_hit_input_per_m（缺省 0 → 命中部分免费）。
+///
+/// 缓存写入（cache creation）是**第三档**输入价（#432）：`cache_write_tokens` ×
+/// `cache_write_input_per_m`。它是把 prompt 写进上游缓存的那一次收费，与「命中」互斥，
+/// 也不与未命中重叠 —— 上游上报的三段本来就互斥。缺省 0 ⇒ 收 0 元，与 #432 之前的账完全一致。
+///
+/// 缓存写入价**不随选档变化**：`ModelTier` 只带输入/命中/输出三档价，故档位切换不影响它，
+/// 也没有高峰时段变体（config 只有 `peak_*` 三个字段）。要放开这两条得先有配置字段。
+#[allow(clippy::too_many_arguments)] // 与 calc_points 同：token 段与单价平铺，保持可读
 pub fn raw_cost(
     input_tokens: f64,
     cached_tokens: f64,
     output_tokens: f64,
+    cache_write_tokens: f64,
     input_per_m: f64,
     cache_hit_input_per_m: f64,
     output_per_m: f64,
+    cache_write_input_per_m: f64,
 ) -> f64 {
     input_tokens * input_per_m / 1_000_000.0
         + cached_tokens * cache_hit_input_per_m / 1_000_000.0
         + output_tokens * output_per_m / 1_000_000.0
+        + cache_write_tokens * cache_write_input_per_m / 1_000_000.0
 }
 
 /// 计算点数：锚定货币成本 × points_per_unit
@@ -60,9 +71,11 @@ pub fn calc_points(
     input_tokens: f64,
     cached_tokens: f64,
     output_tokens: f64,
+    cache_write_tokens: f64,
     input_per_m: f64,
     cache_hit_input_per_m: f64,
     output_per_m: f64,
+    cache_write_input_per_m: f64,
     points_per_unit: u32,
     model_currency: &str,
     anchor: &str,
@@ -71,9 +84,11 @@ pub fn calc_points(
         input_tokens,
         cached_tokens,
         output_tokens,
+        cache_write_tokens,
         input_per_m,
         cache_hit_input_per_m,
         output_per_m,
+        cache_write_input_per_m,
     );
     round5(to_anchor(cost, model_currency, anchor) * points_per_unit as f64)
 }
@@ -176,6 +191,9 @@ pub struct SettleParams {
     pub cached_tokens: f64,
     /// 输出 token 数（v0.7.4，rant 2026-08-21T14:53:20：单次调用明细 输入/缓存/输出）
     pub output_tokens: f64,
+    /// 缓存写入（cache creation）token 数（#432）。**不进 `tokens`**：`tokens` 仍是
+    /// input + cached + output，读侧有 5 处按那个和反推「输入」（见 `db::migrate` 的 v18 注）。
+    pub cache_write_tokens: f64,
     /// 消费者应扣点数
     pub pts: f64,
     /// 锚定货币成本（usage_records.cost）
@@ -210,8 +228,8 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
     // transactions：consume（消费者）+ earn（分享者），counterpart 记对方；
     // api_key_id 记录分发 key（v11，rant 2026-08-22T17:21:39 需求 2：Key 列显示 api_keys.name）
     tx.execute(
-        "INSERT INTO transactions (user_id, counterpart, key_id, api_key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'consume', '成功')",
+        "INSERT INTO transactions (user_id, counterpart, key_id, api_key_id, model, tokens, cached_tokens, output_tokens, cache_write_tokens, pts, type, status) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'consume', '成功')",
         rusqlite::params![
             p.consumer_id,
             p.owner_id.to_string(),
@@ -221,12 +239,13 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
             p.tokens,
             p.cached_tokens,
             p.output_tokens,
+            p.cache_write_tokens,
             p.pts
         ],
     )?;
     tx.execute(
-        "INSERT INTO transactions (user_id, counterpart, key_id, api_key_id, model, tokens, cached_tokens, output_tokens, pts, type, status) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'earn', '成功')",
+        "INSERT INTO transactions (user_id, counterpart, key_id, api_key_id, model, tokens, cached_tokens, output_tokens, cache_write_tokens, pts, type, status) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'earn', '成功')",
         rusqlite::params![
             p.owner_id,
             p.consumer_id.to_string(),
@@ -236,14 +255,15 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
             p.tokens,
             p.cached_tokens,
             p.output_tokens,
+            p.cache_write_tokens,
             earn
         ],
     )?;
 
     // usage_records
     tx.execute(
-        "INSERT INTO usage_records (user_id, api_key_id, key_id, model, tokens, cached_tokens, output_tokens, cost) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO usage_records (user_id, api_key_id, key_id, model, tokens, cached_tokens, output_tokens, cache_write_tokens, cost) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             p.consumer_id,
             p.api_key_id,
@@ -252,6 +272,7 @@ pub fn settle(conn: &mut Connection, p: &SettleParams) -> Result<()> {
             p.tokens,
             p.cached_tokens,
             p.output_tokens,
+            p.cache_write_tokens,
             p.cost
         ],
     )?;
@@ -305,17 +326,17 @@ mod tests {
     fn calc_points_basic() {
         // 100 prompt × 10 USD/M + 50 completion × 20 USD/M = 0.002 USD
         // → CNY 锚定 ×7.2 = 0.0144 CNY → 1 点/CNY = 0.0144 点（保留 5 位小数）
-        let pts = calc_points(100.0, 0.0, 50.0, 10.0, 0.0, 20.0, 1, "USD", "CNY");
+        let pts = calc_points(100.0, 0.0, 50.0, 0.0, 10.0, 0.0, 20.0, 0.0, 1, "USD", "CNY");
         assert!((pts - 0.0144).abs() < 1e-9, "pts={pts}");
     }
 
     #[test]
     fn calc_points_currency_conversion() {
         // 1000 prompt × 10 CNY/M = 0.01 CNY → 1 点/CNY = 0.01 点
-        let pts = calc_points(1000.0, 0.0, 0.0, 10.0, 0.0, 0.0, 1, "CNY", "CNY");
+        let pts = calc_points(1000.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 1, "CNY", "CNY");
         assert!((pts - 0.01).abs() < 1e-9, "pts={pts}");
         // USD 价 → CNY 锚定 ×7.2：1000 prompt × 10 USD/M = 0.01 USD = 0.072 CNY
-        let pts_usd = calc_points(1000.0, 0.0, 0.0, 10.0, 0.0, 0.0, 1, "USD", "CNY");
+        let pts_usd = calc_points(1000.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 1, "USD", "CNY");
         assert!((pts_usd - 0.072).abs() < 1e-9, "pts_usd={pts_usd}");
     }
 
@@ -324,12 +345,34 @@ mod tests {
         // rant 2026-08-20T10:17:27：输入分「缓存未命中 / 命中」两档价。
         // 1000 未命中 × 1.5 CNY/M + 1000 命中 × 0.05 CNY/M + 1000 输出 × 4.5 CNY/M
         // = (1500 + 50 + 4500)/1e6 CNY = 0.00605 CNY → 1 点/CNY = 0.00605 点
-        let pts = calc_points(1000.0, 1000.0, 1000.0, 1.5, 0.05, 4.5, 1, "CNY", "CNY");
+        let pts = calc_points(
+            1000.0, 1000.0, 1000.0, 0.0, 1.5, 0.05, 4.5, 0.0, 1, "CNY", "CNY",
+        );
         assert!((pts - 0.00605).abs() < 1e-9, "pts={pts}");
         // 命中价缺省 0 → 命中部分不计费（只按未命中 + 输出）
-        let pts_zero = calc_points(1000.0, 1000.0, 1000.0, 1.5, 0.0, 4.5, 1, "CNY", "CNY");
+        let pts_zero = calc_points(
+            1000.0, 1000.0, 1000.0, 0.0, 1.5, 0.0, 4.5, 0.0, 1, "CNY", "CNY",
+        );
         let expect_zero = (1500.0 + 4500.0) / 1e6;
         assert!((pts_zero - expect_zero).abs() < 1e-9, "pts_zero={pts_zero}");
+    }
+
+    /// #432：缓存写入是第三档输入价 —— 只有配置了 `cache_write_input_per_m` 才收，
+    /// 且只按缓存写入的 token 数收，不与未命中/命中重叠。
+    #[test]
+    fn calc_points_cache_write_is_a_third_input_price() {
+        // 1000 写入 × 2.0 CNY/M = 2000/1e6 CNY = 0.002 点（1 点/元）；未命中与输出都为 0
+        let pts = calc_points(0.0, 0.0, 0.0, 1000.0, 1.5, 0.05, 4.5, 2.0, 1, "CNY", "CNY");
+        assert!((pts - 0.002).abs() < 1e-9, "写入单独计价: {pts}");
+        // 缺省 0 = 不收费：同样的调用，缓存写入那一段**一分不收**
+        let pts_free = calc_points(0.0, 0.0, 0.0, 1000.0, 1.5, 0.05, 4.5, 0.0, 1, "CNY", "CNY");
+        assert_eq!(pts_free, 0.0, "未配置缓存写入价 ⇒ 收 0: {pts_free}");
+        // 三段互不重叠：未命中 1000 × 1.5 + 命中 1000 × 0.05 + 输出 1000 × 4.5 + 写入 1000 × 2.0
+        // = (1500 + 50 + 4500 + 2000)/1e6 = 0.00805 CNY
+        let mixed = calc_points(
+            1000.0, 1000.0, 1000.0, 1000.0, 1.5, 0.05, 4.5, 2.0, 1, "CNY", "CNY",
+        );
+        assert!((mixed - 0.00805).abs() < 1e-9, "四段相加: {mixed}");
     }
 
     #[test]
@@ -427,14 +470,28 @@ mod tests {
             1_000_000.0,
             0.0,
             0.0,
+            0.0,
             peak.0,
             peak.1,
             peak.2,
+            0.0,
             1,
             "CNY",
             "CNY",
         );
-        let pts_off = calc_points(1_000_000.0, 0.0, 0.0, off.0, off.1, off.2, 1, "CNY", "CNY");
+        let pts_off = calc_points(
+            1_000_000.0,
+            0.0,
+            0.0,
+            0.0,
+            off.0,
+            off.1,
+            off.2,
+            0.0,
+            1,
+            "CNY",
+            "CNY",
+        );
         assert!(
             (pts_peak - 3.0).abs() < 1e-9,
             "高峰 1M 输入 = 3.0 点: {pts_peak}"
@@ -449,9 +506,11 @@ mod tests {
             1_000_000.0,
             0.0,
             0.0,
+            0.0,
             no_peak.0,
             no_peak.1,
             no_peak.2,
+            0.0,
             1,
             "CNY",
             "CNY",
@@ -506,6 +565,7 @@ mod tests {
 
             cached_tokens: 30.0,
             output_tokens: 20.0,
+            cache_write_tokens: 0.0,
             pts: 2.0,
             cost: 0.002,
         };
@@ -639,6 +699,7 @@ mod tests {
             tokens: 1_000_000.0,
             cached_tokens: 0.0,
             output_tokens: 0.0,
+            cache_write_tokens: 0.0,
             pts: 4.5,
             cost: 0.0045,
         };
@@ -715,6 +776,7 @@ mod tests {
 
             cached_tokens: 0.0,
             output_tokens: 0.0,
+            cache_write_tokens: 0.0,
             pts: 1.0,
             cost: 0.001,
         };
@@ -774,6 +836,7 @@ mod tests {
 
             cached_tokens: 0.0,
             output_tokens: 0.0,
+            cache_write_tokens: 0.0,
             pts: 3.0,
             cost: 0.003,
         };
@@ -844,6 +907,7 @@ mod tests {
 
             cached_tokens: 0.0,
             output_tokens: 0.0,
+            cache_write_tokens: 0.0,
             pts: 2.0,
             cost: 0.002,
         };

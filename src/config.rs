@@ -470,10 +470,16 @@ pub struct Model {
     /// 高峰时段输出价（缺省 0）
     #[serde(default)]
     pub peak_output_per_m: f64,
-    /// 缓存写入价（每百万 tokens；缺省 0 = 缓存写入不收费，与今天一致）。
-    /// ⚠️ rant 2026-10-16T14:08:14 第 2 步只把**分档价**接进了 settle；这一个字段仍是
-    /// 「只表达能力」—— 上游响应里没有取缓存写入 token 数的通路（`gateway::parse_usage` /
-    /// `sse::extract_*` 都不产出它），故今天不参与计费。接它需要另加一次用量解析，属后续改动。
+    /// 缓存写入价（每百万 tokens；缺省 0 = 缓存写入不收费）。
+    ///
+    /// **参与计费**（#432）：`gateway::parse_usage` 与同协议流式的 `UsageCapture` 从
+    /// anthropic 的 `usage.cache_creation_input_tokens` 取到写入 token 数，
+    /// `billing::raw_cost` 按本字段计价，结算时落进 `usage_records` / `transactions` 的
+    /// `cache_write_tokens` 列。缺省 0 ⇒ 收 0 元，与接入前的账逐位一致。
+    ///
+    /// 三条边界：只有 anthropic 的上游响应带这个字段，其它协议按 0 处理（拿不到就不收，
+    /// 不估算）；`[[models.tiers]]` 不带这一档价，故它与选档无关；`peak_*` 也没有它的
+    /// 变体，故高峰时段同样不改变它。
     #[serde(default)]
     pub cache_write_input_per_m: f64,
     /// 按**单次请求输入长度**分档的价目（缺省空 = 不启用分档，一律沿用上面的单一价）。

@@ -190,6 +190,9 @@ pub struct ModelPrice {
     pub input_per_m: f64,
     pub output_per_m: f64,
     pub cache_hit_input_per_m: f64,
+    /// 缓存写入（cache creation）价，缺省 0 = 不收费（#432）。模型级，与分档正交：
+    /// `ModelTier` 不带这一档价，故选档不影响它。
+    pub cache_write_input_per_m: f64,
     pub peak_input_per_m: f64,
     pub peak_output_per_m: f64,
     pub peak_cache_hit_input_per_m: f64,
@@ -201,7 +204,7 @@ pub struct ModelPrice {
 /// 高峰价缺省 0 = 不启用高峰计费（billing::effective_prices 处理回落）
 pub fn get_model_price(conn: &Connection, provider: &str, model: &str) -> Option<ModelPrice> {
     conn.query_row(
-        "SELECT input_per_m, output_per_m, cache_hit_input_per_m, \
+        "SELECT input_per_m, output_per_m, cache_hit_input_per_m, cache_write_input_per_m, \
                 peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, currency, \
                 tiers_json \
          FROM models WHERE provider = ?1 AND model = ?2",
@@ -214,13 +217,14 @@ pub fn get_model_price(conn: &Connection, provider: &str, model: &str) -> Option
                 r.get::<_, f64>(3)?,
                 r.get::<_, f64>(4)?,
                 r.get::<_, f64>(5)?,
-                r.get::<_, String>(6)?,
+                r.get::<_, f64>(6)?,
                 r.get::<_, String>(7)?,
+                r.get::<_, String>(8)?,
             ))
         },
     )
     .ok()
-    .map(|(i, o, c, pin, pout, pcache, currency, tiers_json)| {
+    .map(|(i, o, c, cw, pin, pout, pcache, currency, tiers_json)| {
         // 解析失败不能装成「无分档」静默少收：留痕后按空档回落（＝沿用单一价，与今天一致）。
         // 落库的 JSON 由本进程写（db::seed_models），正常路径不会走到这里。
         let tiers: Vec<crate::config::ModelTier> = match serde_json::from_str(&tiers_json) {
@@ -236,6 +240,7 @@ pub fn get_model_price(conn: &Connection, provider: &str, model: &str) -> Option
             input_per_m: i,
             output_per_m: o,
             cache_hit_input_per_m: c,
+            cache_write_input_per_m: cw,
             peak_input_per_m: pin,
             peak_output_per_m: pout,
             peak_cache_hit_input_per_m: pcache,
