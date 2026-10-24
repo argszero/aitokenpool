@@ -33,6 +33,14 @@ fn record_usage(slot: &UsageSlot, input: f64, cached: f64, output: f64) {
     }
 }
 
+/// anthropic 上游的 `input_tokens` **已排除**缓存读（三段并列）⇒ 未命中输入就是它本身。
+///
+/// 判据与理由见 [`crate::gateway::uncached_input`]（#435）：同一条规则服务同协议流式
+/// （`UsageCapture::finish`）与这里的三处跨协议记录点，免得两处各自演化。
+fn anthropic_uncached_input(input_tokens: f64, cached_tokens: f64) -> f64 {
+    crate::gateway::uncached_input("anthropic", input_tokens, cached_tokens)
+}
+
 // ── SSE 解析工具（移植自 openlocalrouter/src/router/sse.rs）────────────────
 
 #[inline]
@@ -1161,7 +1169,7 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
                                         output_tokens = u.get("output_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
                                         cached_tokens = u.get("cache_read_input_tokens").and_then(|x| x.as_f64()).unwrap_or(cached_tokens);
                                     }
-                                    record_usage(&usage, (input_tokens - cached_tokens).max(0.0), cached_tokens, output_tokens);
+                                    record_usage(&usage, anthropic_uncached_input(input_tokens, cached_tokens), cached_tokens, output_tokens);
                                     let stop_reason = v.get("delta").and_then(|d| d.get("stop_reason")).and_then(|s| s.as_str());
                                     // 完成信号与整包翻译器同源（protocol 侧唯一真源）
                                     let finish =
@@ -1183,7 +1191,7 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
                                 }
                                 "message_stop" => {
                                     if !finished {
-                                        record_usage(&usage, (input_tokens - cached_tokens).max(0.0), cached_tokens, output_tokens);
+                                        record_usage(&usage, anthropic_uncached_input(input_tokens, cached_tokens), cached_tokens, output_tokens);
                                         let data = json!({
                                             "id": format!("chatcmpl-{msg_id}"),
                                             "object": "chat.completion.chunk",
@@ -1221,7 +1229,7 @@ pub fn anthropic_sse_to_openai<E: std::error::Error + Send + 'static>(
         }
         // 上游无 message_stop 直接断流 → 补 finish + [DONE]
         if !finished {
-            record_usage(&usage, (input_tokens - cached_tokens).max(0.0), cached_tokens, output_tokens);
+            record_usage(&usage, anthropic_uncached_input(input_tokens, cached_tokens), cached_tokens, output_tokens);
             let data = json!({
                 "id": format!("chatcmpl-{msg_id}"),
                 "object": "chat.completion.chunk",
@@ -1393,8 +1401,14 @@ pub fn responses_sse_to_openai_chat<E: std::error::Error + Send + 'static>(
                                             .and_then(|x| x.as_f64())
                                             .unwrap_or(0.0);
                                         let output = u.get("output_tokens").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                                        // input disjoint：input_tokens 含缓存命中部分（rant 2026-08-23T08:20:38）
-                                        record_usage(&usage, (input - cached).max(0.0), cached, output);
+                                        // input disjoint：responses 的 input_tokens 含缓存命中部分
+                                        //（rant 2026-08-23T08:20:38；判据见 `gateway::uncached_input`）
+                                        record_usage(
+                                            &usage,
+                                            crate::gateway::uncached_input("responses", input, cached),
+                                            cached,
+                                            output,
+                                        );
                                     }
                                     if !finished {
                                         let data = json!({
@@ -1791,6 +1805,8 @@ mod tests {
     #[test]
     fn anthropic_cache_read_spelling_disjoint() {
         // Anthropic 拼写 cache_read_input_tokens（message_start 计 input，message_delta 计 output）
+        // #435：anthropic 的 input_tokens 已排除命中 ⇒ 未命中输入原样 100，**不**扣成 10。
+        // 上一用例（openai 上游、同样的 100/90/50）仍断言 10 —— 两者成对，说明判据在协议上。
         let slot = usage_slot();
         let chunks = sse_chunks(vec![
             "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"claude-x\",\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":90,\"output_tokens\":0}}}\n\n".to_string(),
@@ -1805,7 +1821,11 @@ mod tests {
         let Some((i, c, o)) = *slot.lock().unwrap() else {
             panic!("usage missing");
         };
-        assert_eq!((i, c, o), (10.0, 90.0, 50.0), "anthropic disjoint usage");
+        assert_eq!(
+            (i, c, o),
+            (100.0, 90.0, 50.0),
+            "#435：anthropic 上游不得把 cache_read 从 input_tokens 里扣掉"
+        );
     }
 
     // ── 完成信号：流式与整包两条路径必须同值（同一协议对只有一个答案）──

@@ -48,6 +48,26 @@ fn extract_model(body: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// 上游报的输入 token 数是否**已含**缓存命中部分 ⇒ `cached` 该不该从 `input` 里减掉。
+///
+/// 这是**流式路径的唯一判据**：`UsageCapture::finish`（同协议流式）与
+/// `sse::anthropic_sse_to_openai` / `sse::responses_sse_to_openai_chat`（跨协议流式）都调它，
+/// 非流式则由 [`parse_usage`] 按协议 match 表达同一条规则。
+///
+/// - OpenAI 形状（`openai_chat` / `responses`）：`prompt_tokens` / `input_tokens` 是**全部**输入，
+///   命中在它里面 ⇒ 必须减，否则同一批 token 既按 `input_per_m` 又按 `cache_hit_input_per_m` 收。
+/// - `anthropic`：input / cache_read / cache_creation 是**并列的三段**，命中不在 `input_tokens`
+///   里 ⇒ 减它就是把从未计过的 token 减掉，按命中量少收（#435）。
+///
+/// `.max(0.0)` 只防 OpenAI 形状的下溢（上游报 cached > prompt），不是用来抹平协议差异的。
+pub(crate) fn uncached_input(protocol: &str, input: f64, cached: f64) -> f64 {
+    if protocol == "anthropic" {
+        input
+    } else {
+        (input - cached).max(0.0)
+    }
+}
+
 /// 解析上游响应中的 usage → (uncached_input_tokens, cached_tokens, output_tokens,
 /// cache_write_tokens)
 ///（rant 2026-08-20T10:17:27：输入区分「缓存命中/未命中」——
@@ -872,10 +892,15 @@ impl UsageCapture {
                     .unwrap_or(0.0);
             }
         }
-        // input disjoint：input_tokens/prompt_tokens 含缓存命中部分，扣除后避免重复计费
-        //（同 sse.rs 已修复逻辑，rant 2026-08-23T14:05:02；max 防下溢）
+        // 未命中输入按**协议**决定是否扣除命中部分 —— 判据与理由见 `uncached_input`
+        //（openai 形状必须减；anthropic 的 input_tokens 本就不含命中，再减就是少收，#435）。
         // 缓存写入**不参与**这里的减法：它是与「未命中」「命中」并列的第三段，不是其中一部分。
-        ((input - cached).max(0.0), cached, output, cache_write)
+        (
+            uncached_input(&self.protocol, input, cached),
+            cached,
+            output,
+            cache_write,
+        )
     }
 }
 
@@ -1252,11 +1277,15 @@ mod tests {
             "流式与非流式看同一段 usage"
         );
         assert_eq!(s_cache_write, 400.0, "流式路径同样要取到缓存写入");
-        // ⚠️ 预存不对称（**独立问题，本 PR 不改**）：流式对 anthropic 也套用了
-        // `(input - cached)` 这条「openai 的 prompt_tokens 含命中」修正，而 anthropic 的
-        // `input_tokens` 本就不含命中 ⇒ 流式把它减成 0、非流式保留 100。修它会抬高存量
-        // 账单，需要单独授权，故这里只钉住**当前**行为，不假装两条路径一致。
-        assert_eq!((s_input, input), (0.0, 100.0), "当前行为：流式少算这一段");
+        // #435：两条路径现在**同值**。此前流式对 anthropic 也套用了「openai 的
+        // prompt_tokens 含命中」这条修正，而 anthropic 的 `input_tokens` 本就不含命中 ⇒
+        // 流式减成 0、非流式保留 100，同一份 usage 按客户端要不要流式给出两种未命中输入。
+        // 现在两条路径共用 `uncached_input` 的同一判据，本断言是那条判据的承重测试。
+        assert_eq!(
+            (s_input, input),
+            (100.0, 100.0),
+            "同一份 usage：流式与非流式必须给出同一个未命中输入"
+        );
 
         // 其它协议：字段不存在 ⇒ 0（不是估算）
         let openai = r#"{"usage":{"prompt_tokens":1000,"completion_tokens":50}}"#;
@@ -3025,7 +3054,9 @@ data: {"type":"message_delta","usage":{"output_tokens":30}}"#,
         assert_eq!(i, 80.0, "message_start 的 input_tokens 提前捕获");
         assert_eq!(o, 30.0, "message_delta 的 output_tokens 流尾解析");
 
-        // anthropic + cache_read_input_tokens：input 同样 disjoint（与 sse.rs anthropic 路径一致）
+        // anthropic + cache_read_input_tokens：#435 之后**不**扣 —— input_tokens 本就不含命中，
+        // 与 sse.rs 的 anthropic 转换器同一条判据（`uncached_input`）。
+        // 修复前这里断言的是 10.0，即把缺陷钉成了期望值。
         let mut cap = UsageCapture::new("anthropic");
         cap.push(
             br#"event: message_start
@@ -3037,9 +3068,61 @@ data: {"type":"message_start","message":{"usage":{"input_tokens":80,"cache_read_
 data: {"type":"message_delta","usage":{"output_tokens":30}}"#,
         );
         let (i, c, o, _cw) = cap.finish();
-        assert_eq!(i, 10.0, "cache_read 应从 input 扣除（disjoint）");
+        assert_eq!(
+            i, 80.0,
+            "#435：anthropic 的 input_tokens 已不含命中，不得再减"
+        );
         assert_eq!(c, 70.0);
         assert_eq!(o, 30.0);
+    }
+
+    /// #435：流式的「未命中输入」由**协议**决定，不是由「减不减」这个操作决定。
+    ///
+    /// 同一份数字（输入 100、命中 90、输出 50）走两条协议：openai 形状的 `prompt_tokens`
+    /// 含命中 ⇒ 未命中 10；anthropic 的 `input_tokens` 本就不含命中 ⇒ 未命中 100。
+    /// 两条都必须有牙 —— 只钉 anthropic 的话，日后把两条路径「统一」回减法时这里不会红，
+    /// 而这正是本缺陷当初长出来的方式。
+    #[test]
+    fn streaming_uncached_input_follows_the_protocol_not_the_operation() {
+        let mut cap = UsageCapture::new("openai_chat");
+        cap.push(
+            br#"data: {"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":90},"completion_tokens":50}}"#,
+        );
+        let (oai_input, oai_cached, oai_output, _cw) = cap.finish();
+        assert_eq!(
+            (oai_input, oai_cached, oai_output),
+            (10.0, 90.0, 50.0),
+            "openai 形状：prompt_tokens 含命中，必须扣掉才不重复计费"
+        );
+
+        let mut cap = UsageCapture::new("anthropic");
+        cap.push(
+            br#"event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":90,"output_tokens":1}}}"#,
+        );
+        cap.push(b"\n\n");
+        cap.push(
+            br#"event: message_delta
+data: {"type":"message_delta","usage":{"output_tokens":50}}"#,
+        );
+        let (ant_input, ant_cached, ant_output, _cw) = cap.finish();
+        assert_eq!(
+            (ant_input, ant_cached, ant_output),
+            (100.0, 90.0, 50.0),
+            "#435：anthropic 的 input_tokens 已排除命中，再减就是按命中量少收"
+        );
+
+        // 判据本身：一条规则、两种答案
+        assert_eq!(super::uncached_input("openai_chat", 100.0, 90.0), 10.0);
+        assert_eq!(super::uncached_input("responses", 100.0, 90.0), 10.0);
+        assert_eq!(super::uncached_input("anthropic", 100.0, 90.0), 100.0);
+        // 钳制只为「含命中」的形状防下溢，不是用来抹平协议差异的
+        assert_eq!(super::uncached_input("openai_chat", 10.0, 90.0), 0.0);
+        assert_eq!(
+            super::uncached_input("anthropic", 10.0, 90.0),
+            10.0,
+            "anthropic 不存在下溢：命中不在输入里"
+        );
     }
 
     // ── 出站超时策略（C2084）：流式**不能**用「总时限」─────────────────────────
