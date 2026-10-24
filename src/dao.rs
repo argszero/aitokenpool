@@ -289,11 +289,12 @@ pub fn list_all_models(conn: &Connection) -> Result<Vec<serde_json::Value>> {
     let mut stmt = conn.prepare(
         "SELECT id, provider, model, currency, input_per_m, output_per_m, \
                 context_length, max_output, vision, cache_hit_input_per_m, \
-                peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, updated_at \
+                cache_write_input_per_m, peak_input_per_m, peak_output_per_m, \
+                peak_cache_hit_input_per_m, updated_at \
          FROM models ORDER BY provider, model",
     )?;
     let rows = stmt.query_map([], |r| {
-        let updated_at: String = r.get(13)?;
+        let updated_at: String = r.get(14)?;
         Ok(serde_json::json!({
             "id": r.get::<_, i64>(0)?,
             "provider": r.get::<_, String>(1)?,
@@ -305,9 +306,10 @@ pub fn list_all_models(conn: &Connection) -> Result<Vec<serde_json::Value>> {
             "max_output": r.get::<_, i64>(7)?,
             "vision": r.get::<_, i64>(8)?,
             "cache_hit_input_per_m": r.get::<_, f64>(9)?,
-            "peak_input_per_m": r.get::<_, f64>(10)?,
-            "peak_output_per_m": r.get::<_, f64>(11)?,
-            "peak_cache_hit_input_per_m": r.get::<_, f64>(12)?,
+            "cache_write_input_per_m": r.get::<_, f64>(10)?,
+            "peak_input_per_m": r.get::<_, f64>(11)?,
+            "peak_output_per_m": r.get::<_, f64>(12)?,
+            "peak_cache_hit_input_per_m": r.get::<_, f64>(13)?,
             "updated_at": utc_iso(&updated_at),
         }))
     })?;
