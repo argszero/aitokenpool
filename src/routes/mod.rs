@@ -1307,6 +1307,124 @@ mod tests {
         assert_eq!(s, StatusCode::BAD_REQUEST, "高峰缓存命中价负数仍应 400");
     }
 
+    /// #433 的 `cache_write_input_per_m` 必须与其余价格字段同权：管理接口能写、`GET` 能读回。
+    /// 七个价各取**互不相同**的值 —— 任何一处列序错位（SELECT 与 `r.get(i)` 不同步）都会让
+    /// 某个断言读到别人的价而立刻变红，这是本用例要挡的那类回归。
+    #[tokio::test]
+    async fn admin_models_cache_write_price_round_trip() {
+        let st = test_state("admcachewrite");
+        let admin_bearer = login_bearer(&st, "admin@aitokenpool.local", "admin1234").await;
+
+        // 带值创建 → POST 响应回读
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"cw","model":"cw-billed","currency":"USD","input_per_m":1.0,"output_per_m":2.0,"cache_hit_input_per_m":0.5,"cache_write_input_per_m":0.25,"peak_input_per_m":1.5,"peak_output_per_m":3.0,"peak_cache_hit_input_per_m":0.75}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "带缓存写入价创建应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let id = v["id"].as_i64().unwrap();
+        assert_eq!(v["cache_write_input_per_m"], 0.25, "POST 回读: {body}");
+        assert_eq!(v["input_per_m"], 1.0, "兄弟价原位: {body}");
+        assert_eq!(v["output_per_m"], 2.0, "兄弟价原位: {body}");
+        assert_eq!(v["cache_hit_input_per_m"], 0.5, "兄弟价原位: {body}");
+        assert_eq!(v["peak_input_per_m"], 1.5, "兄弟价原位: {body}");
+        assert_eq!(v["peak_output_per_m"], 3.0, "兄弟价原位: {body}");
+        assert_eq!(v["peak_cache_hit_input_per_m"], 0.75, "兄弟价原位: {body}");
+
+        // → GET 列表回读（列表走 dao::list_all_models，与单行 SELECT 是两条必须同步的读取路径）
+        let (_, body) = get(st.clone(), "/api/admin/models", Some(&admin_bearer)).await;
+        let arr: serde_json::Value = serde_json::from_str(&body).unwrap();
+        {
+            let row = arr
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["id"] == id)
+                .expect("模型仍在");
+            assert_eq!(row["cache_write_input_per_m"], 0.25, "GET 回读: {body}");
+            assert_eq!(row["input_per_m"], 1.0, "GET 兄弟价原位: {body}");
+            assert_eq!(row["cache_hit_input_per_m"], 0.5, "GET 兄弟价原位: {body}");
+            assert_eq!(
+                row["peak_cache_hit_input_per_m"], 0.75,
+                "GET 兄弟价原位: {body}"
+            );
+        }
+
+        // 不带该字段创建 → 0（缺省＝不收费；刻意**不**回落 input_per_m，否则未选入的部署会被重算价）
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"cw","model":"cw-default","currency":"USD","input_per_m":8.0,"output_per_m":9.0}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "缺该字段创建应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["cache_write_input_per_m"], 0.0, "缺省 0 而非 8.0: {body}");
+
+        // PATCH 只改该价 → 生效，且其余价一律不动
+        let (s, body) = patch(
+            st.clone(),
+            &format!("/api/admin/models/{id}"),
+            r#"{"cache_write_input_per_m":3.5}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "PATCH 缓存写入价应 200: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["cache_write_input_per_m"], 3.5, "PATCH 回读: {body}");
+        assert_eq!(v["input_per_m"], 1.0, "PATCH 不得动兄弟价: {body}");
+        assert_eq!(
+            v["cache_hit_input_per_m"], 0.5,
+            "PATCH 不得动命中价: {body}"
+        );
+        assert_eq!(
+            v["peak_cache_hit_input_per_m"], 0.75,
+            "PATCH 不得动高峰命中价: {body}"
+        );
+
+        // PATCH 负数 → 400，且库中该值不被写入
+        let (s, body) = patch(
+            st.clone(),
+            &format!("/api/admin/models/{id}"),
+            r#"{"cache_write_input_per_m":-2.0}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "负数缓存写入价应 400: {body}");
+        let (_, body) = get(st.clone(), "/api/admin/models", Some(&admin_bearer)).await;
+        let arr: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let row = arr
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id)
+            .expect("模型仍在");
+        assert_eq!(
+            row["cache_write_input_per_m"], 3.5,
+            "被拒的 PATCH 不得改库: {body}"
+        );
+
+        // 创建时负数同样被拒（同一校验函数，两条入口都要有牙）
+        let (s, body) = post(
+            st.clone(),
+            "/api/admin/models",
+            r#"{"provider":"cw","model":"cw-negative","currency":"USD","cache_write_input_per_m":-0.5}"#,
+            Some(&admin_bearer),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::BAD_REQUEST,
+            "创建负数缓存写入价应 400: {body}"
+        );
+        let (_, body) = get(st.clone(), "/api/admin/models", Some(&admin_bearer)).await;
+        assert!(!body.contains("cw-negative"), "被拒的创建不得落库: {body}");
+    }
+
     #[tokio::test]
     async fn market_models_include_new_fields() {
         // GET /api/models 响应补 context_length/max_output/vision/cache_hit_input_per_m

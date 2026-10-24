@@ -2,8 +2,8 @@
 //!
 //! - GET    /api/admin/models：全部模型列表（含 id / 所有字段，供管理表格）
 //! - POST   /api/admin/models：新增 {provider, model, currency, input_per_m, output_per_m,
-//!   context_length?, max_output?, vision?, cache_hit_input_per_m?, peak_input_per_m?,
-//!   peak_output_per_m?, peak_cache_hit_input_per_m?}
+//!   context_length?, max_output?, vision?, cache_hit_input_per_m?, cache_write_input_per_m?,
+//!   peak_input_per_m?, peak_output_per_m?, peak_cache_hit_input_per_m?}
 //!   校验：provider/model 非空、价格 ≥ 0、currency ∈ {USD, CNY}、(provider, model) 唯一冲突 409
 //! - PATCH  /api/admin/models/:id：部分更新（任意字段）
 //! - DELETE /api/admin/models/:id：直接删除（只删目录行、**不改写 keys**；删除的后果由路由入口的
@@ -40,6 +40,9 @@ pub struct ModelCreate {
     pub vision: i64,
     #[serde(default)]
     pub cache_hit_input_per_m: f64,
+    /// 缓存写入（cache-creation）输入价（#433；缺省 0 = 缓存写入不收费）
+    #[serde(default)]
+    pub cache_write_input_per_m: f64,
     /// 高峰时段价（rant 2026-08-20T11:58:40；缺省 0 = 不启用高峰计费）
     #[serde(default)]
     pub peak_input_per_m: f64,
@@ -65,19 +68,21 @@ pub struct ModelPatch {
     pub max_output: Option<i64>,
     pub vision: Option<i64>,
     pub cache_hit_input_per_m: Option<f64>,
+    pub cache_write_input_per_m: Option<f64>,
     pub peak_input_per_m: Option<f64>,
     pub peak_output_per_m: Option<f64>,
     pub peak_cache_hit_input_per_m: Option<f64>,
 }
 
 /// 校验通用字段：价格 ≥ 0、vision ∈ {0,1}、currency 枚举
-#[allow(clippy::too_many_arguments)] // 价格字段平铺（6 个价格 + currency + vision），保持与请求结构体同序
+#[allow(clippy::too_many_arguments)] // 价格字段平铺（7 个价格 + currency + vision），保持与请求结构体同序
 fn validate_common(
     currency: &str,
     input_per_m: f64,
     output_per_m: f64,
     vision: i64,
     cache_hit_input_per_m: f64,
+    cache_write_input_per_m: f64,
     peak_input_per_m: f64,
     peak_output_per_m: f64,
     peak_cache_hit_input_per_m: f64,
@@ -91,6 +96,7 @@ fn validate_common(
     if input_per_m < 0.0
         || output_per_m < 0.0
         || cache_hit_input_per_m < 0.0
+        || cache_write_input_per_m < 0.0
         || peak_input_per_m < 0.0
         || peak_output_per_m < 0.0
         || peak_cache_hit_input_per_m < 0.0
@@ -122,18 +128,19 @@ fn row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
         "max_output": r.get::<_, i64>(7)?,
         "vision": r.get::<_, i64>(8)?,
         "cache_hit_input_per_m": r.get::<_, f64>(9)?,
-        "peak_input_per_m": r.get::<_, f64>(10)?,
-        "peak_output_per_m": r.get::<_, f64>(11)?,
-        "peak_cache_hit_input_per_m": r.get::<_, f64>(12)?,
-        "updated_at": crate::dao::utc_iso(&r.get::<_, String>(13)?),
-        "context_window": r.get::<_, i64>(14)?,
+        "cache_write_input_per_m": r.get::<_, f64>(10)?,
+        "peak_input_per_m": r.get::<_, f64>(11)?,
+        "peak_output_per_m": r.get::<_, f64>(12)?,
+        "peak_cache_hit_input_per_m": r.get::<_, f64>(13)?,
+        "updated_at": crate::dao::utc_iso(&r.get::<_, String>(14)?),
+        "context_window": r.get::<_, i64>(15)?,
     }))
 }
 
 const ROW_SELECT: &str = "SELECT id, provider, model, currency, input_per_m, output_per_m, \
                 context_length, max_output, vision, cache_hit_input_per_m, \
-                peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, \
-                updated_at, context_window \
+                cache_write_input_per_m, peak_input_per_m, peak_output_per_m, \
+                peak_cache_hit_input_per_m, updated_at, context_window \
          FROM models ";
 
 /// GET /api/admin/models：全部模型（管理表格数据源）
@@ -168,6 +175,7 @@ pub async fn create(
         req.output_per_m,
         req.vision,
         req.cache_hit_input_per_m,
+        req.cache_write_input_per_m,
         req.peak_input_per_m,
         req.peak_output_per_m,
         req.peak_cache_hit_input_per_m,
@@ -190,9 +198,9 @@ pub async fn create(
         .query_row(
             "INSERT INTO models (provider, model, currency, input_per_m, output_per_m, \
                     context_length, max_output, vision, cache_hit_input_per_m, \
-                    peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m, \
-                    context_window, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now')) \
+                    cache_write_input_per_m, peak_input_per_m, peak_output_per_m, \
+                    peak_cache_hit_input_per_m, context_window, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now')) \
              RETURNING id",
             params![
                 provider,
@@ -204,6 +212,7 @@ pub async fn create(
                 req.max_output,
                 req.vision,
                 req.cache_hit_input_per_m,
+                req.cache_write_input_per_m,
                 req.peak_input_per_m,
                 req.peak_output_per_m,
                 req.peak_cache_hit_input_per_m,
@@ -242,6 +251,7 @@ pub async fn patch(
         ));
     }
     // 部分更新：先取当前值，合并后校验 + 写回（简单且避免逐列拼接 SQL）
+    #[allow(clippy::type_complexity)] // 价格平铺（13 元组），同 validate_common
     let cur: (
         String,
         String,
@@ -255,11 +265,13 @@ pub async fn patch(
         f64,
         f64,
         f64,
+        f64,
     ) = conn
         .query_row(
             "SELECT provider, model, currency, input_per_m, output_per_m, \
                     context_length, max_output, vision, cache_hit_input_per_m, \
-                    peak_input_per_m, peak_output_per_m, peak_cache_hit_input_per_m \
+                    cache_write_input_per_m, peak_input_per_m, peak_output_per_m, \
+                    peak_cache_hit_input_per_m \
              FROM models WHERE id = ?1",
             [id],
             |r| {
@@ -276,6 +288,7 @@ pub async fn patch(
                     r.get(9)?,
                     r.get(10)?,
                     r.get(11)?,
+                    r.get(12)?,
                 ))
             },
         )
@@ -289,9 +302,10 @@ pub async fn patch(
     let max_output = req.max_output.unwrap_or(cur.6);
     let vision = req.vision.unwrap_or(cur.7);
     let cache_hit_input_per_m = req.cache_hit_input_per_m.unwrap_or(cur.8);
-    let peak_input_per_m = req.peak_input_per_m.unwrap_or(cur.9);
-    let peak_output_per_m = req.peak_output_per_m.unwrap_or(cur.10);
-    let peak_cache_hit_input_per_m = req.peak_cache_hit_input_per_m.unwrap_or(cur.11);
+    let cache_write_input_per_m = req.cache_write_input_per_m.unwrap_or(cur.9);
+    let peak_input_per_m = req.peak_input_per_m.unwrap_or(cur.10);
+    let peak_output_per_m = req.peak_output_per_m.unwrap_or(cur.11);
+    let peak_cache_hit_input_per_m = req.peak_cache_hit_input_per_m.unwrap_or(cur.12);
     if provider.is_empty() || model.is_empty() {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
@@ -304,6 +318,7 @@ pub async fn patch(
         output_per_m,
         vision,
         cache_hit_input_per_m,
+        cache_write_input_per_m,
         peak_input_per_m,
         peak_output_per_m,
         peak_cache_hit_input_per_m,
@@ -328,10 +343,11 @@ pub async fn patch(
     conn.execute(
         "UPDATE models SET provider = ?1, model = ?2, currency = ?3, input_per_m = ?4, \
                 output_per_m = ?5, context_length = ?6, max_output = ?7, vision = ?8, \
-                cache_hit_input_per_m = ?9, peak_input_per_m = ?10, peak_output_per_m = ?11, \
-                peak_cache_hit_input_per_m = ?12, context_window = ?6, tiers_json = '[]', \
+                cache_hit_input_per_m = ?9, cache_write_input_per_m = ?10, \
+                peak_input_per_m = ?11, peak_output_per_m = ?12, \
+                peak_cache_hit_input_per_m = ?13, context_window = ?6, tiers_json = '[]', \
                 updated_at = datetime('now') \
-         WHERE id = ?13",
+         WHERE id = ?14",
         params![
             provider,
             model,
@@ -342,6 +358,7 @@ pub async fn patch(
             max_output,
             vision,
             cache_hit_input_per_m,
+            cache_write_input_per_m,
             peak_input_per_m,
             peak_output_per_m,
             peak_cache_hit_input_per_m,
