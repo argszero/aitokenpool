@@ -21,6 +21,7 @@ fn default_public_url() -> String {
 
 /// 服务（监听 / 数据库路径 / 主密钥 / 对外地址）——config.example.toml 可缺省，走默认值
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Server {
     #[serde(default = "default_addr")]
     pub addr: String,
@@ -50,6 +51,7 @@ impl Default for Server {
 /// 未配置（smtp_host 为空）时进入 dev 模式：验证码打印到日志/响应，便于本地测试；
 /// 生产部署必须配置 SMTP，否则注册验证码不真正送达（安全风险由部署方承担）。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Mail {
     #[serde(default)]
     pub smtp_host: String,
@@ -103,6 +105,7 @@ fn default_log_max_backups() -> u32 {
 
 /// 日志配置（[log] 段，随统一数据目录；文件在 <data-dir>/<dir>/，stdout 双写）
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Log {
     /// 相对数据目录的日志目录（默认 "logs"）
     #[serde(default = "default_log_dir")]
@@ -160,6 +163,7 @@ fn default_archive_interval_secs() -> u64 {
 /// 明细落到 `archive::Archive` 管理的可滚动 JSONL（保留期 = `max_files` × `max_file_size`），
 /// SQLite 侧只留保留窗口内的明细与汇总（见 [`Rollup`]）—— 归档的价值在于明细被折叠、删除后仍有原件。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Archive {
     /// 是否启用（默认 true）
     #[serde(default = "default_archive_enabled")]
@@ -218,6 +222,7 @@ fn default_usage_retention_interval_secs() -> u64 {
 /// 日历谓词，`usage_retention_gate` 守着「门槛 ≤ 每个读者的下界」。把它做成天数配置
 /// 反而会引入「30 天够不够 31 天」的论证负担。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UsageRetention {
     /// 是否启用（默认 true）
     #[serde(default = "default_usage_retention_enabled")]
@@ -276,6 +281,7 @@ fn default_rollup_retain_minutes() -> i64 {
 /// 分钟是它天然的分辨率。旧键 `retain_days` 仍然**认**（见 [`Rollup::window_minutes`]），
 /// 不静默忽略。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rollup {
     /// 是否启用（默认 true；折叠是「明细只留汇总」的前置，回填 97 万行需要很长时间）
     #[serde(default = "default_rollup_enabled")]
@@ -325,6 +331,7 @@ impl Default for Rollup {
 /// 只影响 `billing::is_peak_hour` 选高峰价还是空闲价：**周末**由代码判定，
 /// **法定节假日**靠这张表（口径见 config.example.toml 的 `[billing]`）。
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Billing {
     /// 法定节假日（**北京时间**日期，`YYYY-MM-DD`）：这些日子全天按空闲价计费。
     /// 空表 = 只豁免周末。按官方年度放假安排维护（国务院办公厅每年发布）；
@@ -335,6 +342,7 @@ pub struct Billing {
 
 /// 顶层配置
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub server: Server,
@@ -371,6 +379,7 @@ pub struct Config {
 /// **尚未裁定** ⇒ 先按**字段**静音，而不是整个结构体：结构体级抑制会把**将来**
 /// 新增的字段一并静默，这正是本文件此前那六个属性的问题。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Points {
     /// 货币锚：USD | CNY
     pub anchor_currency: String,
@@ -389,6 +398,7 @@ pub struct Points {
 /// 生产代码只读 `id`（`validate()` 用它校验 plan 的 provider 引用）；`name` / `country`
 /// 只有 config.toml 与下面的 parse 测试在读 —— 与 `Points` 那两枚同理，按**字段**静音。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Provider {
     pub id: String,
     #[allow(dead_code)]
@@ -399,6 +409,7 @@ pub struct Provider {
 
 /// Plan 端点（一个可被路由到的上游端点）
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Plan {
     pub id: String,
     pub provider: String,
@@ -416,6 +427,7 @@ pub struct Plan {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Endpoint {
     /// openai_chat | anthropic | responses
     pub protocol: String,
@@ -435,6 +447,7 @@ pub struct Endpoint {
 /// 官方写法若不是左闭区间（MiniMax 的「输入 >512k」是开区间），由**数据**补 1 表达
 /// （`from_tokens = 512001`），机制本身始终是 `[from_tokens, 下一档)`。
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelTier {
     /// 本档起效的输入 token 下界（含）。必须 > 0，且各档严格递增。
     pub from_tokens: i64,
@@ -449,6 +462,7 @@ pub struct ModelTier {
 
 /// 模型定义（rant 2026-08-20T10:27:13：config.toml 唯一真源，替代 models.json + price_overrides）
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Model {
     pub provider: String,
     pub model: String,
@@ -588,9 +602,119 @@ impl Config {
     }
 }
 
+/// 测试夹具：一份最小但**完全合法**的配置（`#438` 的三条用例都从它派生）。
+/// 只留下 `validate()` 真正要求的骨架：[points] 的锚、非空 providers、含 ≥1 endpoint 的 plan。
+#[cfg(test)]
+const CONFIG_HEAD: &str = r#"
+[points]
+anchor_currency = "CNY"
+points_per_unit = 1
+display_name = "P"
+symbol = "P"
+
+[[providers]]
+id = "deepseek"
+name = "DeepSeek"
+country = "CN"
+
+[[plans]]
+id = "deepseek-paygo"
+provider = "deepseek"
+type = "paygo"
+[[plans.endpoints]]
+protocol = "openai_chat"
+base_url = "https://api.deepseek.com"
+"#;
+
+#[cfg(test)]
+const CONFIG_MODEL: &str = r#"
+[[models]]
+provider = "deepseek"
+model = "deepseek-flash"
+currency = "CNY"
+input_per_m = 1.0
+cache_hit_input_per_m = 0.02
+output_per_m = 4.0
+context_length = 1048576
+max_output = 384000
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #438：`config.toml` 是价格的唯一真源，而拼错的键过去会被 toml 静默丢弃 ⇒
+    /// 字段停在 `#[serde(default)]` 的 0（＝「免费」，与「运维选了 0」不可区分），
+    /// 加载、校验、启动全都不报错，账单按一个从未声明的价结算。
+    ///
+    /// 现在每个结构体都带 `deny_unknown_fields`：多余的键在**加载**这一步就拒绝。
+    /// 三条用例各自对应一个实测过的缺陷类别，且都要求错误信息**点出键名** ——
+    /// 只说「有多余字段」而不说哪个，比缺陷本身更难排查。
+    #[test]
+    fn unknown_config_keys_are_rejected_and_named() {
+        // 基线：这份最小配置本身是合法的 —— 否则下面的失败可能来自别的毛病
+        let valid = format!("{CONFIG_HEAD}\n{CONFIG_MODEL}");
+        assert!(
+            toml::from_str::<Config>(&valid).is_ok(),
+            "基线配置必须合法，否则本用例证明不了什么"
+        );
+
+        let cases: [(&str, &str, &str); 3] = [
+            (
+                "拼错的价格键（cache_write_input_per_m → _mm）",
+                "cache_write_input_per_mm = 3.5",
+                "cache_write_input_per_mm",
+            ),
+            (
+                "分档键写在 [[models]] 下而不是 [[models.tiers]] 下",
+                "from_tokens = 512001",
+                "from_tokens",
+            ),
+            (
+                "context_length 拼成 context_window",
+                "context_window = 1048576",
+                "context_window",
+            ),
+        ];
+        for (why, injected, key) in cases {
+            let text = format!("{CONFIG_HEAD}\n{CONFIG_MODEL}\n{injected}\n");
+            let err = match toml::from_str::<Config>(&text) {
+                Ok(_) => panic!("{why}：必须加载失败，现在却接受了"),
+                Err(e) => e,
+            };
+            let msg = err.to_string();
+            assert!(
+                msg.contains(key),
+                "{why}：拒绝是对的，但错误信息必须点出 `{key}`，实际是：{msg}"
+            );
+        }
+    }
+
+    /// 同一个缺陷走**真正的入口** `Config::load`（文件 → `toml::from_str` → `validate`），
+    /// 而不是只测 `from_str`：`billing::raw_cost` 乘的就是解析出来的那个值，
+    /// 所以「加载这一步拒绝」才是启动时部署者能看见的那一道闸（#438）。
+    #[test]
+    fn config_load_rejects_the_typo_and_the_shipped_example_still_loads() {
+        // 随附示例继续加载 —— 加严不能把正常配置挡在门外
+        Config::load("config/config.example.toml").expect("config.example.toml 必须仍能加载");
+
+        let path = std::env::temp_dir().join(format!(
+            "atp_cfg_typo_{}_{}.toml",
+            std::process::id(),
+            "unknown_key"
+        ));
+        let text = format!("{CONFIG_HEAD}\n{CONFIG_MODEL}\ncache_write_input_per_mm = 3.5\n");
+        std::fs::write(&path, text).expect("写临时配置");
+        let err = match Config::load(path.to_str().expect("utf-8 path")) {
+            Ok(_) => panic!("拼错的价键必须让 Config::load 失败，现在却加载成功"),
+            Err(e) => e,
+        };
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            err.to_string().contains("cache_write_input_per_mm"),
+            "加载失败的信息必须点出键名，实际是：{err}"
+        );
+    }
 
     #[test]
     fn parse_config_example_ok() {
