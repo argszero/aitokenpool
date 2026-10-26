@@ -8,6 +8,7 @@
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
+use std::collections::HashMap;
 
 pub const SCHEMA_VERSION: i64 = 17;
 
@@ -651,7 +652,34 @@ pub(crate) fn seed_test_users(conn: &Connection) -> Result<()> {
 ///（rant 2026-08-20T10:27:13：移除 models.json + price_overrides 双层机制）
 ///（rant 2026-08-20T11:58:33：upsert 之外同步删除 config 已移除的模型，避免市场幽灵模型）
 /// 语义：config 全量权威——启动后 models 表 = config [[models]]（admin 运行时增改在下次启动被 config 覆盖/清掉）
+///
+/// **覆盖与删除都必须留痕**（issue #440）：此前两者都是静默的，操作者在管理界面改的价格
+/// 会在下次启动被还原而没有任何痕迹。判定在 [`seed_models_report`]，本函数只负责逐行打日志：
+/// 每个被覆盖的行一条 `warn`（带列名与「数据库里的旧值 → config 值」），每个被删除的行一条 `warn`。
 pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()> {
+    let report = seed_models_report(conn, cfg)?;
+    for o in &report.overridden {
+        log::warn!("{}", o.message());
+    }
+    for (p, m) in &report.removed {
+        log::warn!("{}", removal_message(p, m));
+    }
+    log::info!(
+        "models seed：{} 行 upsert（来源 config.toml [[models]]），覆盖 {} 行价格，删除 {} 行 config 已移除模型",
+        report.upserted,
+        report.overridden.len(),
+        report.removed.len()
+    );
+    Ok(())
+}
+
+/// [`seed_models`] 的判定部分：同步 `models` 表，并报告「被 config 覆盖的行」与「被删除的行」。
+///
+/// 不打印任何日志，因此可测：issue #440 的验收要求有一半正是「没有改动的库再 seed 不产生任何覆盖」
+/// （否则每次启动都刷一遍警告，真正的覆盖就被埋了）。
+fn seed_models_report(conn: &Connection, cfg: &crate::config::Config) -> Result<SeedReport> {
+    let before = stored_prices(conn)?;
+    let mut overridden: Vec<PriceOverride> = Vec::new();
     let mut n = 0u32;
     for m in &cfg.models {
         // 分档价随行落库（v17，rant 2026-10-16T14:08:14 第 2 步）：序列化成 JSON 文本。
@@ -694,6 +722,17 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
                 tiers_json,
             ],
         )?;
+        // issue #440：这一行的价格在库里是什么、config 要把它改成什么 —— 只有真的变了才报告。
+        if let Some(stored) = before.get(&(m.provider.clone(), m.model.clone())) {
+            let columns = price_columns_changed(stored, m);
+            if !columns.is_empty() {
+                overridden.push(PriceOverride {
+                    provider: m.provider.clone(),
+                    model: m.model.clone(),
+                    columns,
+                });
+            }
+        }
         n += 1;
     }
     // 同步删除 config 中已移除的模型。⚠️ **不变量**：`models` 行是路由键 `keys.model` 的**计价依赖** ——
@@ -703,7 +742,7 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
     // 写入者，都受此约束。权威执行点是路由入口（`gateway::forward{,_stream}` 在发往上游前要求该
     // (provider, model) 可取价）与创建入口（`sharing::create`）；此处只记约束、**不做数据清理** ——
     // `keys` 是用户数据，绝不因目录变动被改写。
-    let mut removed = 0u32;
+    let mut removed: Vec<(String, String)> = Vec::new();
     let stale: Vec<(String, String)> = {
         let mut stmt = conn
             .prepare("SELECT provider, model FROM models")
@@ -727,10 +766,160 @@ pub fn seed_models(conn: &Connection, cfg: &crate::config::Config) -> Result<()>
             "DELETE FROM models WHERE provider = ?1 AND model = ?2",
             rusqlite::params![p, m],
         )?;
-        removed += 1;
+        removed.push((p.clone(), m.clone()));
     }
-    log::info!("models seed：{n} 行 upsert（来源 config.toml [[models]]），删除 {removed} 行 config 已移除模型");
-    Ok(())
+    Ok(SeedReport {
+        upserted: n,
+        overridden,
+        removed,
+    })
+}
+
+/// `models` 表里一行参与计费的标量价格 + 币种 —— [`seed_models`] 的比对对象（issue #440）。
+///
+/// 刻意**不含** `tiers_json`：分档价是 config 专有字段（管理接口不表达它，`admin_models::patch`
+/// 一律清成 `[]`），而本函数要报的是「操作者在面板里改的那个数字被换回去了」，把整段 JSON
+/// 塞进启动日志既不读也不像价目。档位价的覆盖仍会发生，只是不在这条日志里。
+struct StoredPrices {
+    currency: String,
+    input_per_m: f64,
+    output_per_m: f64,
+    cache_hit_input_per_m: f64,
+    cache_write_input_per_m: f64,
+    peak_input_per_m: f64,
+    peak_cache_hit_input_per_m: f64,
+    peak_output_per_m: f64,
+}
+
+/// 一次 seed 把某行的价格从库里的值改成了 config 的值。
+#[derive(Debug, Clone, PartialEq)]
+struct PriceOverride {
+    provider: String,
+    model: String,
+    /// `(列名, 数据库里的旧值, config.toml 的新值)`；只列真正改变了的列
+    columns: Vec<(&'static str, String, String)>,
+}
+
+impl PriceOverride {
+    /// 启动日志里的那一行：点名模型，逐列写「旧值 → 新值」。
+    fn message(&self) -> String {
+        let cols: Vec<String> = self
+            .columns
+            .iter()
+            .map(|(name, old, new)| format!("{name}: {old} → {new}"))
+            .collect();
+        format!(
+            "models seed：覆盖 {}/{} 的价格 —— {}（config.toml [[models]] 为准）",
+            self.provider,
+            self.model,
+            cols.join("，")
+        )
+    }
+}
+
+/// 删除一个 config 已不存在的行时留下的日志：点名 provider/model。
+fn removal_message(provider: &str, model: &str) -> String {
+    format!(
+        "models seed：删除 models 行 {provider}/{model} —— config.toml [[models]] 中没有它（在管理界面新增的模型行就是在这一步消失的）"
+    )
+}
+
+/// 一次 seed 对 `models` 表的可见影响。
+#[derive(Debug, Default, Clone)]
+struct SeedReport {
+    upserted: u32,
+    /// 库里的价格与 config 不同、本次被 config 覆盖的行
+    overridden: Vec<PriceOverride>,
+    /// 库里存在而 config 已无、本次被删除的行 `(provider, model)`
+    removed: Vec<(String, String)>,
+}
+
+/// 读出 `models` 表当前存的全部价格，按 `(provider, model)` 索引。
+fn stored_prices(conn: &Connection) -> Result<HashMap<(String, String), StoredPrices>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT provider, model, currency, input_per_m, output_per_m, cache_hit_input_per_m, \
+                    cache_write_input_per_m, peak_input_per_m, peak_cache_hit_input_per_m, peak_output_per_m \
+             FROM models",
+        )
+        .context("prepare models price scan")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+            StoredPrices {
+                currency: r.get(2)?,
+                input_per_m: r.get(3)?,
+                output_per_m: r.get(4)?,
+                cache_hit_input_per_m: r.get(5)?,
+                cache_write_input_per_m: r.get(6)?,
+                peak_input_per_m: r.get(7)?,
+                peak_cache_hit_input_per_m: r.get(8)?,
+                peak_output_per_m: r.get(9)?,
+            },
+        ))
+    })?;
+    let mut map = HashMap::new();
+    for row in rows {
+        let (k, v) = row?;
+        map.insert(k, v);
+    }
+    Ok(map)
+}
+
+/// 逐列比对「库里存的价格」与 config，只收真正改变了的列。
+///
+/// 浮点用 `1e-9` 容差：SQLite 的 REAL 是 f64，读写往返无损，容差只为不把表示误差报成改价。
+fn price_columns_changed(
+    before: &StoredPrices,
+    m: &crate::config::Model,
+) -> Vec<(&'static str, String, String)> {
+    fn push(out: &mut Vec<(&'static str, String, String)>, name: &'static str, old: f64, new: f64) {
+        if (old - new).abs() > 1e-9 {
+            out.push((name, format!("{old:?}"), format!("{new:?}")));
+        }
+    }
+    let mut out = Vec::new();
+    if before.currency != m.currency {
+        out.push(("currency", before.currency.clone(), m.currency.clone()));
+    }
+    push(&mut out, "input_per_m", before.input_per_m, m.input_per_m);
+    push(
+        &mut out,
+        "output_per_m",
+        before.output_per_m,
+        m.output_per_m,
+    );
+    push(
+        &mut out,
+        "cache_hit_input_per_m",
+        before.cache_hit_input_per_m,
+        m.cache_hit_input_per_m,
+    );
+    push(
+        &mut out,
+        "cache_write_input_per_m",
+        before.cache_write_input_per_m,
+        m.cache_write_input_per_m,
+    );
+    push(
+        &mut out,
+        "peak_input_per_m",
+        before.peak_input_per_m,
+        m.peak_input_per_m,
+    );
+    push(
+        &mut out,
+        "peak_cache_hit_input_per_m",
+        before.peak_cache_hit_input_per_m,
+        m.peak_cache_hit_input_per_m,
+    );
+    push(
+        &mut out,
+        "peak_output_per_m",
+        before.peak_output_per_m,
+        m.peak_output_per_m,
+    );
+    out
 }
 
 #[cfg(test)]
@@ -1406,6 +1595,117 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ghost, 0, "ghost 模型行已删除");
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn seed_models_reports_the_prices_the_config_overwrites() {
+        // issue #440：管理界面改的价在下次启动被 config 还原，且此前连一行日志都没有。
+        // 这里钉住两件事：改过的行必须被报出来（带旧值与新值），没改动的行必须一声不响。
+        let (conn, p) = tmp_db("models_override");
+        let cfg = crate::config::Config::load("config/config.example.toml").unwrap();
+        seed_models(&conn, &cfg).expect("seed models");
+
+        // 未改动的库再 seed：不得产生任何覆盖（否则每次启动都刷警告，真正的覆盖被埋掉）
+        let quiet = seed_models_report(&conn, &cfg).expect("二次 seed");
+        assert!(
+            quiet.overridden.is_empty(),
+            "没有改动的行不应被报告：{:?}",
+            quiet.overridden
+        );
+        assert!(quiet.removed.is_empty(), "没有多余行，不应报告删除");
+        assert_eq!(
+            quiet.upserted as usize,
+            cfg.models.len(),
+            "报告的行数=config 条目数"
+        );
+
+        // 模拟管理界面改价（issue #440 实测的同一个动作：PATCH → UPDATE models SET input_per_m）
+        conn.execute(
+            "UPDATE models SET input_per_m = 1.23 \
+             WHERE provider = 'deepseek' AND model = 'deepseek-v4-pro'",
+            [],
+        )
+        .unwrap();
+        let loud = seed_models_report(&conn, &cfg).expect("三次 seed");
+        let o = loud
+            .overridden
+            .iter()
+            .find(|o| o.provider == "deepseek" && o.model == "deepseek-v4-pro")
+            .expect("被改过的行必须出现在覆盖报告里");
+        assert_eq!(o.columns.len(), 1, "只报真正变化的列：{:?}", o.columns);
+        let (col, old, new) = &o.columns[0];
+        assert_eq!(*col, "input_per_m");
+        assert_eq!(old, "1.23", "报告必须带操作者设的那个值");
+        assert_eq!(new, "4.5", "报告必须带 config.toml 里的值");
+        let msg = o.message();
+        assert!(
+            msg.contains("1.23") && msg.contains("4.5"),
+            "日志行必须同时写出旧值与新值：{msg}"
+        );
+        assert!(
+            msg.contains("deepseek-v4-pro") && msg.contains("config.toml"),
+            "日志行必须点名模型与权威来源：{msg}"
+        );
+        // 覆盖确实发生（既有行为，此处钉住，避免报告与事实脱节）
+        let v: f64 = conn
+            .query_row(
+                "SELECT input_per_m FROM models \
+                 WHERE provider = 'deepseek' AND model = 'deepseek-v4-pro'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((v - 4.5).abs() < 1e-9, "seed 后应回到 config 价，实得 {v}");
+
+        // 再 seed 一次：覆盖已经落地，库与 config 一致 ⇒ 报告清空（警告不常驻）
+        let again = seed_models_report(&conn, &cfg).expect("四次 seed");
+        assert!(
+            again.overridden.is_empty(),
+            "覆盖一次之后不应继续报告：{:?}",
+            again.overridden
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn seed_models_reports_the_rows_it_deletes() {
+        // issue #440：管理界面新增的模型在下次启动被 DELETE 抹掉，此前同样没有日志。
+        let (conn, p) = tmp_db("models_removed_report");
+        let cfg = crate::config::Config::load("config/config.example.toml").unwrap();
+        seed_models(&conn, &cfg).expect("seed models");
+        conn.execute(
+            "INSERT INTO models (provider, model, currency, input_per_m, output_per_m) \
+             VALUES ('probe', 'probe-model-x', 'USD', 1.23, 4.56)",
+            [],
+        )
+        .unwrap();
+        let report = seed_models_report(&conn, &cfg).expect("二次 seed");
+        assert_eq!(
+            report.removed,
+            vec![("probe".to_string(), "probe-model-x".to_string())],
+            "被删除的行必须出现在报告里"
+        );
+        assert!(
+            report.overridden.is_empty(),
+            "删除不是覆盖，两者不得混报：{:?}",
+            report.overridden
+        );
+        let msg = removal_message("probe", "probe-model-x");
+        assert!(
+            msg.contains("probe/probe-model-x") && msg.contains("config.toml"),
+            "删除日志必须点名模型与原因：{msg}"
+        );
+        let ghost: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM models WHERE provider = 'probe'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ghost, 0, "报告说删了，就真的删了");
         drop(conn);
         let _ = std::fs::remove_file(p);
     }

@@ -697,7 +697,7 @@
         </div>
         <div class="card">
           <h3 data-i18n="admin.models.list">模型列表</h3>
-          <p class="card-sub" data-i18n="admin.models.sub">厂商 / 模型 / 价格 / 上下文 / 读图——增删改查即时生效；删除模型后，仍指向它的 key 无法计价，调用会在发往上游前被拒。</p>
+          <p class="card-sub" data-i18n="admin.models.sub">厂商 / 模型 / 价格 / 上下文 / 读图——改动立即生效，但只在本次运行内有效：config.toml 的 [[models]] 是权威来源，这里改的价格与这里新增的模型会在下次启动时被 config 覆盖，新增的模型行会被删除。删除模型后，仍指向它的 key 无法计价，调用会在发往上游前被拒。</p>
           <div class="table-wrap compact">
             <table class="table">
               <thead><tr><th data-i18n="admin.models.col.provider">厂商</th><th data-i18n="admin.models.col.model">模型</th><th class="num" data-i18n="admin.models.col.in">输入价</th><th class="num" data-i18n="admin.models.col.out">输出价</th><th class="num" data-i18n="admin.models.col.ctx">上下文</th><th class="num" data-i18n="admin.models.col.outmax">最大输出</th><th data-i18n="admin.models.col.vision">读图</th><th></th></tr></thead>
@@ -864,7 +864,7 @@
 
 <script src="js/api.js?v=20261012-1"></script>
 <script src="js/data.js?v=20261017-2"></script>
-<script src="js/i18n.js?v=20261015-2"></script>
+<script src="js/i18n.js?v=20261026-1"></script>
 <script src="js/app.js?v=20261015-3"></script>
 </body>
 </html>
