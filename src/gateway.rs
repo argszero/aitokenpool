@@ -1474,6 +1474,232 @@ mod tests {
         );
     }
 
+    /// #432 端到端（非流式）：缓存写入 token 从**上游响应**一路走到账本两表。
+    ///
+    /// `both_usage_parsers_read_anthropic_cache_creation_tokens` 只管解析侧，
+    /// `settle_bills_cache_write_tokens_at_the_configured_price` 只管结算侧（直接喂
+    /// `settle_usage`）—— 两者之间那条**传递**（`parse_usage` 的四元组 → `settle_usage`
+    /// 的第四参）此前没有任何测试跨过：把它写死成 0.0，整套测试仍然全绿。
+    /// 本测试走完整 HTTP 路径（假上游 → 网关 → 结算），token 数与钱数都断言。
+    #[tokio::test]
+    async fn e2e_anthropic_cache_creation_reaches_the_ledger() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let up = tokio::spawn(fake_anthropic_upstream_cache_write(listener));
+        let base = format!("http://127.0.0.1:{port}");
+
+        let st = test_state_eps("cwledger", "test-cw", &["anthropic"], &base);
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+            // 第三档输入价：写入 1M 收 3 USD。缺省 0 ⇒ 这条腿无论 token 有没有传到
+            // 账本都收 0 元，测不出任何东西 —— 故必须在本测试自己的行上配价。
+            conn.execute(
+                "UPDATE models SET cache_write_input_per_m = 3.0 \
+                 WHERE provider = 'test' AND model = 'test-model'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, email, password_hash, name, role) \
+                 VALUES (2, 'owner_cw@t.local', 'x', '分享者', 'user')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (2, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        insert_key(&st, 401, 2, "test-model", "test-cw");
+        let key = login_key(st.clone()).await;
+
+        let (s, body) = post_raw(
+            st.clone(),
+            "/anthropic/v1/messages",
+            r#"{"model":"test-model","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::OK,
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
+
+        // (input 100, cached 0, output 50, cache_write 400)
+        // 100×10/1e6 + 50×20/1e6 + 400×3/1e6 = 0.0032 USD × 7.2 = 0.02304 点
+        let (cw, tokens, cached, output, pts): (f64, f64, f64, f64, f64) = {
+            let conn = st.db.lock().unwrap();
+            conn.query_row(
+                "SELECT cache_write_tokens, tokens, cached_tokens, output_tokens, pts \
+                 FROM transactions WHERE type = 'consume' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            cw, 400.0,
+            "上游 usage.cache_creation_input_tokens 要原样落进 transactions.cache_write_tokens"
+        );
+        assert_eq!(
+            tokens, 150.0,
+            "`tokens` 语义不变：仍只有 input + cached + output（100+0+50），写入单列"
+        );
+        assert_eq!((cached, output), (0.0, 50.0), "另两段不受影响");
+        assert!(
+            (pts - 0.02304).abs() < 1e-9,
+            "按配置的写入价收费: pts={pts}"
+        );
+
+        // usage_records 与 transactions 同口径
+        let (u_cw, u_cost): (f64, f64) = {
+            let conn = st.db.lock().unwrap();
+            conn.query_row(
+                "SELECT cache_write_tokens, cost FROM usage_records ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(u_cw, 400.0, "usage_records 也记写入 token 数");
+        assert!(
+            (u_cost - 0.02304).abs() < 1e-9,
+            "usage_records.cost 是锚定货币金额: cost={u_cost}"
+        );
+
+        up.abort();
+    }
+
+    /// #432 端到端（流式同协议）：同一条 usage 走 `UsageCapture::finish` → 流尾 `settle_usage`。
+    ///
+    /// 与上一条是**两个不同的传递点**：非流式在 `parse_usage` 之后，流式在
+    /// `UsageCapture::finish` 的第四元组 ⇒ 两条各自需要自己的承重断言。
+    #[tokio::test]
+    async fn e2e_anthropic_stream_cache_creation_reaches_the_ledger() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let up = tokio::spawn(fake_anthropic_sse_upstream_cache_write(listener));
+        let base = format!("http://127.0.0.1:{port}");
+
+        let st = test_state_eps("cwssel", "test-cwse", &["anthropic"], &base);
+        {
+            let conn = st.db.lock().unwrap();
+            models_row(&conn, "test", "test-model", 10.0, 20.0);
+            conn.execute(
+                "UPDATE models SET cache_write_input_per_m = 1.5 \
+                 WHERE provider = 'test' AND model = 'test-model'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, email, password_hash, name, role) \
+                 VALUES (2, 'owner_cw2@t.local', 'x', '分享者', 'user')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO quotas (user_id, balance) VALUES (2, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        insert_key(&st, 402, 2, "test-model", "test-cwse");
+        let key = login_key(st.clone()).await;
+
+        let (s, body) = post_raw(
+            st.clone(),
+            "/anthropic/v1/messages",
+            r#"{"model":"test-model","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+            Some(&key),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::OK,
+            "body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert!(
+            String::from_utf8_lossy(&body).contains("event: message_stop"),
+            "anthropic 事件原样透传"
+        );
+
+        // (input 80, cached 0, output 30, cache_write 400)
+        // 80×10/1e6 + 30×20/1e6 + 400×1.5/1e6 = 0.002 USD × 7.2 = 0.0144 点
+        let (cw, tokens, pts): (f64, f64, f64) = {
+            let conn = st.db.lock().unwrap();
+            conn.query_row(
+                "SELECT cache_write_tokens, tokens, pts FROM transactions \
+                 WHERE type = 'consume' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            cw, 400.0,
+            "流尾解析出的写入 token 数要落进账本（`UsageCapture::finish` 的第四元组）"
+        );
+        assert_eq!(tokens, 110.0, "input + cached + output = 80+0+30");
+        assert!(
+            (pts - 0.0144).abs() < 1e-9,
+            "流式路径同样按配置的写入价收费: pts={pts}"
+        );
+
+        up.abort();
+    }
+
+    /// 假上游：anthropic 非流式，usage 带 `cache_creation_input_tokens`（#432 的第三段）
+    async fn fake_anthropic_upstream_cache_write(listener: tokio::net::TcpListener) {
+        let app = axum::Router::new().route(
+            "/v1/messages",
+            axum::routing::post(|_body: String| async {
+                Json(serde_json::json!({
+                    "id": "msg-cw",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "test-model",
+                    "content": [{"type": "text", "text": "ok-anthropic"}],
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 50,
+                        "cache_creation_input_tokens": 400
+                    }
+                }))
+            }),
+        );
+        axum::serve(listener, app).await.unwrap();
+    }
+
+    /// 假上游：anthropic 流式，`message_start` 的 usage 带 `cache_creation_input_tokens`
+    async fn fake_anthropic_sse_upstream_cache_write(listener: tokio::net::TcpListener) {
+        let app = axum::Router::new().route(
+            "/v1/messages",
+            axum::routing::post(|_body: String| async {
+                let body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_cw\",\"model\":\"test-model\",\"usage\":{\"input_tokens\":80,\"output_tokens\":1,\"cache_creation_input_tokens\":400}}}\n\n\
+                            event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+                            event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n\
+                            event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+                            event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":30}}\n\n\
+                            event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+                (
+                    [("content-type", "text/event-stream")],
+                    axum::body::Body::from(body),
+                )
+            }),
+        );
+        axum::serve(listener, app).await.unwrap();
+    }
+
     fn test_state_eps(tag: &str, plan_id: &str, protocols: &[&str], base_url: &str) -> AppState {
         let p = std::env::temp_dir().join(format!("atp_gw_{}_{}.db", std::process::id(), tag));
         let _ = std::fs::remove_file(&p);
