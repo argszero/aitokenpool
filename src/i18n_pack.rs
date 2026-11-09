@@ -51,6 +51,13 @@ const BACKEND_ERROR_SOURCES: &[(&str, &str)] = &[
         include_str!("routes/admin_models.rs"),
     ),
     ("src/routes/api_keys.rs", include_str!("routes/api_keys.rs")),
+    // GitHub 登录（rant 2026-11-09T14:43:55）：错误体是**机器码 + 英文 detail**
+    //（消费方是自带本地化的桌面客户端），故不新增中文文案键；名册在此登记是因为
+    // 本文件**确实**发出 `"error"` 站点，漏登记就等于那几条不受任何门禁覆盖。
+    (
+        "src/routes/github_oauth.rs",
+        include_str!("routes/github_oauth.rs"),
+    ),
     ("src/routes/ops.rs", include_str!("routes/ops.rs")),
     ("src/routes/org.rs", include_str!("routes/org.rs")),
     ("src/routes/raise.rs", include_str!("routes/raise.rs")),
@@ -2684,7 +2691,7 @@ mod tests {
     /// 两者都数**站点**（不是去重后的文案）：`READABLE` 是提取器读得到的值，
     /// `STRUCTURED` 是按设计不进语料的结构化信封。新增一条错误文案就是在改这两个数 ——
     /// 这正是它们的作用：它们证明扫描器没有变瞎，而不是证明语料静止。
-    const READABLE_ERROR_WRITE_SITES: usize = 81;
+    const READABLE_ERROR_WRITE_SITES: usize = 92;
     const STRUCTURED_ERROR_WRITE_SITES: usize = 2;
 
     /// **每一处**错误文案站点的值都必须是提取器读得到的写法。

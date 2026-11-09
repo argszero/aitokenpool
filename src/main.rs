@@ -101,6 +101,11 @@ mod tx_retention_gate;
 // 读者名册从 src/routes/*.rs、门槛从 src/usage_retention.rs 在编译期读入。
 #[cfg(test)]
 mod usage_retention_gate;
+// GitHub 登录门禁（rant 2026-11-09T14:43:55 验收 1）：同样是仅测试期编译 ——
+// src/routes/mod.rs、src/routes/github_oauth.rs 与 config/config.example.toml
+// 都在编译期读入，加 #[cfg(test)] 后不会进入发布产物。
+#[cfg(test)]
+mod github_oauth_gate;
 
 use std::sync::Arc;
 

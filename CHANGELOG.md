@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. Versions follow [SemVer](https://semver.org/).
 
+## Unreleased
+
+**schema 17 → 18**；新增可选 `[github]` 段（`client_id` / `client_secret`，留空 = 未启用，端点答 503「未启用」而非 500）；**GitHub 登录**（设备码流程 + 身份即账号，rant 2026-11-09T14:43:55）；`cargo test` 590 → 598。
+
 ## v0.7.33 (2026-10-15)
 
 自 v0.7.32 起累计 1 个提交（#409）。**无 schema 变更（仍 16）**；**无行为变更** —— 唯一的改动是两条保留门禁的模块注释（`tx_retention_gate.rs` 与 `usage_retention_gate.rs`）。

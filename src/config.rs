@@ -340,12 +340,41 @@ pub struct Billing {
     pub holidays: Vec<chrono::NaiveDate>,
 }
 
+/// GitHub 登录（rant 2026-11-09T14:43:55）：OAuth App 的两个凭据，**仅此两项**。
+///
+/// 留空 = 未启用：`/api/auth/github/*` 两个端点返回 **503 ＋ 明确说「未启用」**，而不是
+/// 500 —— 「没配」是部署状态，不是内部故障。
+///
+/// ⚠️ 该 OAuth App **必须开启 Device Flow**（GitHub → Settings → Developer settings →
+/// OAuth Apps → 该应用 → 勾选 "Enable Device Flow"）。未开启时 GitHub 对
+/// `POST /login/device/code` 一律答 `device_flow_disabled`，没有浏览器回调的客户端
+///（桌面端 / CLI / agent）就走不通；网页授权码流程不受此开关影响。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Github {
+    #[serde(default)]
+    pub client_id: String,
+    /// 设备码流程同样要 secret：GitHub 换取 access_token 时要求 client_secret 一并提交
+    #[serde(default)]
+    pub client_secret: String,
+}
+
+impl Github {
+    /// 两个凭据都在才算启用。只配一半按**未启用**处理：半份配置换不到 token，
+    /// 报「未启用」比让用户对着 github.com 的 400 猜要好。
+    pub fn enabled(&self) -> bool {
+        !self.client_id.trim().is_empty() && !self.client_secret.trim().is_empty()
+    }
+}
+
 /// 顶层配置
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub server: Server,
+    /// GitHub 登录（可选；客户端凭据留空 = 未启用）
+    #[serde(default)]
+    pub github: Github,
     /// 邮件服务（可选；未配置时注册验证码走 dev 日志模式）
     #[serde(default)]
     pub mail: Mail,

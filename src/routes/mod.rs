@@ -96,6 +96,9 @@ pub(crate) fn upstream_stream_client(timeout: std::time::Duration) -> reqwest::C
         .expect("reqwest client 构建失败")
 }
 
+/// GitHub 登录的端点实现（rant 2026-11-09T14:43:55）
+pub mod github_oauth;
+
 /// 共享状态：数据库连接 + 配置 + 路由状态 + HTTP 客户端 + 密钥加密器 + 进程启动时刻
 #[derive(Clone)]
 pub struct AppState {
@@ -110,6 +113,10 @@ pub struct AppState {
     /// 进程启动时刻（单调时钟）：`/api/ops/runtime` 用它算运行时长。
     /// 取 `Instant` 而非墙上时间——运行时长不怕系统时钟被调整。
     pub started_at: std::time::Instant,
+    /// GitHub OAuth 上游地址：默认 github.com / api.github.com，测试改成假上游。
+    /// 不是配置键 —— 「配置项只有两个」（rant 2026-11-09T14:43:55 验收 6），
+    /// 而验收 2 又要求测试与外网解耦，故注入点是这个字段。
+    pub github_api: github_oauth::GithubEndpoints,
 }
 
 impl AppState {
@@ -122,6 +129,7 @@ impl AppState {
             http_stream: upstream_stream_client(UPSTREAM_TIMEOUT),
             crypto,
             started_at: std::time::Instant::now(),
+            github_api: github_oauth::GithubEndpoints::default(),
         }
     }
 }
@@ -652,6 +660,15 @@ pub fn router() -> Router<AppState> {
         .route("/api/auth/resend-code", post(resend_code))
         .route("/api/auth/forgot-password", post(forgot_password))
         .route("/api/auth/reset-password", post(reset_password))
+        // GitHub 登录（rant 2026-11-09T14:43:55）：设备码流程，供没有浏览器回调的客户端用
+        .route(
+            "/api/auth/github/device/code",
+            post(github_oauth::device_code),
+        )
+        .route(
+            "/api/auth/github/device/token",
+            post(github_oauth::device_token),
+        )
         .route("/api/me", get(me))
         .route("/api/config", get(config))
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))

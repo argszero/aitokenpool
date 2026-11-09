@@ -91,6 +91,22 @@ batch = 2_000                       # 每轮最多删多少行（越小 → 单�
 interval_secs = 60                  # 扫描间隔（秒）
 
 # ============================================================
+# 0.6 GitHub 登录（rant 2026-11-09T14:43:55）：设备码流程（桌面端 / CLI / agent）
+#     与网页「使用 GitHub 登录」共用同一套身份 —— 首次登录即注册，之后同一 GitHub
+#     账号永远回到同一账号。
+#     配置项**只有两个**：OAuth App 的 client id / secret。**留空 = 未启用**，
+#     此时 /api/auth/github/* 返回 503「未启用」而不是 500。
+#     ⚠️ 该 OAuth App **必须开启 Device Flow**：GitHub → Settings → Developer settings
+#     → OAuth Apps → 该应用 → 勾选 "Enable Device Flow"。未开启时设备码端点答
+#     device_flow_disabled（网页授权码流程不受影响）。
+#     scope 不请求 user:email —— 邮箱一律用 GitHub 公布的 noreply 地址
+#     <id>+<login>@users.noreply.github.com，故拿不到公开邮箱也能注册成功。
+# ============================================================
+[github]
+client_id = ""                      # OAuth App 的 Client ID；留空 = GitHub 登录未启用
+client_secret = ""                  # OAuth App 的 Client Secret；与 client_id 成对出现
+
+# ============================================================
 # 1. 点数规则（账本层的锚）
 # ============================================================
 [points]

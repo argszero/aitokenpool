@@ -421,6 +421,57 @@ pub fn activate_user(conn: &Connection, email: &str) -> Result<()> {
     Ok(())
 }
 
+/// GitHub 的 noreply 邮箱：`<id>+<login>@users.noreply.github.com`
+///
+/// 这是 GitHub **公布**的地址形式（寄到它会进该账号的收件箱），不是随手造的占位串；
+/// 用它让 GitHub 账号照样满足 `users.email NOT NULL UNIQUE`，而**不必**向 GitHub 索取
+/// `user:email` 权限 —— 验收 3 要求「拿不到公开邮箱也必须注册成功」。
+pub fn github_noreply_email(github_id: &str, login: &str) -> String {
+    format!("{github_id}+{login}@users.noreply.github.com")
+}
+
+/// GitHub 身份 → 本平台账号（rant 2026-11-09T14:43:55 验收 2）：首次登录即注册。
+///
+/// 身份键是 `github_id`（GitHub 的稳定数字 id），**不是** login —— login 可以改名，
+/// 拿它当键会在改名那天建出第二个账号。返回 `(user_id, 是否本次新建)`。
+///
+/// 新行的 `email` 取 [`github_noreply_email`]（理由与「为什么加列而不重建表」见
+/// `db::migrate` 的 v18 段），`password_hash` 留空 ⇒ 这类账号不能用邮箱 + 口令登录。
+/// 新行 `verified = 1`：GitHub 身份本身就是已验证身份，不走邮箱验证码。
+///
+/// 登录改名时**只更新 `github_login`**，不重写 `email`：那个地址只是占位（没有读者依赖
+/// 它），而 `users.email` 有 UNIQUE 约束 ⇒ 跟着改名去 UPDATE 只是给自己加一条可能撞唯一键
+/// 的写入。
+pub fn upsert_github_user(conn: &Connection, github_id: &str, login: &str) -> Result<(i64, bool)> {
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM users WHERE github_id = ?1",
+            [github_id],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(id) = existing {
+        conn.execute(
+            "UPDATE users SET github_login = ?1 WHERE id = ?2 AND github_login <> ?1",
+            rusqlite::params![login, id],
+        )?;
+        return Ok((id, false));
+    }
+    let email = github_noreply_email(github_id, login);
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, role, verified, github_id, github_login) \
+         VALUES (?1, '', ?2, 'user', 1, ?3, ?4)",
+        rusqlite::params![email, login, github_id, login],
+    )?;
+    let id = conn.last_insert_rowid();
+    // 可用余额账户随建号创建（验收 4）——与邮箱注册在 verify 里做的是同一件事
+    conn.execute(
+        "INSERT OR IGNORE INTO quotas (user_id, balance, gift_balance) VALUES (?1, 0, 0)",
+        [id],
+    )?;
+    Ok((id, true))
+}
+
 /// 存储验证码（6 位数字的 sha256 hex）；同一邮箱重复注册/重发 → 覆盖旧码。
 /// 过期时间由 SQL 自身计算（`datetime('now', '+10 minutes')`）：`find_valid_verification` 的谓词是
 /// `expires_at > datetime('now')`，写入方必须写入**该谓词能解释**的值——把字面量 `'+10 minutes'`
