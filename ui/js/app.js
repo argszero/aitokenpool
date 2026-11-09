@@ -4076,6 +4076,24 @@
     // 游客浏览（US-1：登录页入口 → 免登录进入市场）
     $("#guest-browse-btn").addEventListener("click", enterGuest);
 
+    // 「使用 GitHub 登录」（rant 2026-11-09T14:43:55 验收 5）：普通授权码流程。
+    // 前端不自己造 state、也不拼授权 URL：服务端下发 state 并同时写一张 HttpOnly cookie，
+    // 回头用它校验 —— 否则把别人的 code 塞进本浏览器就能把本浏览器登进别人的账号。
+    const ghBtn = $("#github-login-btn");
+    if (ghBtn) ghBtn.addEventListener("click", async () => {
+      ghBtn.disabled = true;
+      try {
+        const r = await api.get("/api/auth/github/authorize");
+        // 整页跳走（GitHub 认完再把 code / state 送回 public_url）
+        if (r && r.authorize_url) { location.href = r.authorize_url; return; }
+        toast(T("login.err.fail"), "error");
+      } catch (err) {
+        toast((err && err.message) ? I18n.mapErr(err.message) : T("login.err.fail"), "error");
+      } finally {
+        ghBtn.disabled = false;
+      }
+    });
+
     // 登录（P2-A：对接 POST /api/auth/login；失败行内报错；成功存 token + 拉会话）
     $("#login-form").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -4808,11 +4826,33 @@
     // 把 loader 交给容器，这里不再逐个 id 登记。
     $("#side-balance").textContent = D.fmt(D.USER.balance);
 
+    // GitHub 授权码回跳（rant 2026-11-09T14:43:55 验收 5）：GitHub 把 code / state
+    // 送回 public_url（登录页）。先换平台凭据，再走**同一个** restoreSession 入口 ——
+    // 与邮箱登录成功后完全一致，不另开一条进场路径。
+    let ghReturn = false;
+    (async () => {
+      const q = new URLSearchParams(location.search);
+      const code = q.get("code");
+      const state = q.get("state");
+      if (!code || !state) return;
+      ghReturn = true;
+      // 立刻抹掉查询串：code 只能用一次，也不该留在历史记录 / 分享出去的链接里
+      history.replaceState(null, "", location.pathname + location.hash);
+      try {
+        const r = await api.post("/api/auth/github/exchange", { code, state });
+        api.saveToken(r.api_key);
+        if (await restoreSession()) toast(T("login.welcome", { name: D.USER.name || r.login }), "success");
+      } catch (err) {
+        toast((err && err.message) ? I18n.mapErr(err.message) : T("login.err.fail"), "error");
+      }
+    })();
+
     // P2-A 会话恢复：已有 token → 拉 /api/me + /api/wallet 直接进 app。
     // 失败处置集中在 restoreSession()：401 回登录页（唯一「未登录」信号），
     // 其余失败重试一次后照常进 app 并提示 —— 不把「加载失败」演成「已登出」。
     (async () => {
-      if (!api.getToken()) return;
+      // 刚回跳换码时 ghReturn 已接管（它在同步前缀里就置位），别让两条路各拉一遍会话
+      if (ghReturn || !api.getToken()) return;
       await restoreSession();
     })();
 

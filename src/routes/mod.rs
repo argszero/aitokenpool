@@ -669,6 +669,10 @@ pub fn router() -> Router<AppState> {
             "/api/auth/github/device/token",
             post(github_oauth::device_token),
         )
+        // 网页登录页的「使用 GitHub 登录」（同 rant 验收 5）：普通授权码流程，
+        // 与设备码共用同一个身份落库函数 land_identity
+        .route("/api/auth/github/authorize", get(github_oauth::authorize))
+        .route("/api/auth/github/exchange", post(github_oauth::exchange))
         .route("/api/me", get(me))
         .route("/api/config", get(config))
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))

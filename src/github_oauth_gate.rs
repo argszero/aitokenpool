@@ -50,6 +50,9 @@ mod gate {
         for path in [
             "/api/auth/github/device/code",
             "/api/auth/github/device/token",
+            // 网页登录页的那一半（验收 5）
+            "/api/auth/github/authorize",
+            "/api/auth/github/exchange",
         ] {
             // 只认路径字面量本身：路由写成一行还是折行不是契约，挂了没有才是
             assert!(
@@ -58,7 +61,7 @@ mod gate {
             );
         }
         // 处理函数也必须接在路由上（路径在、函数没接 = 路由表与实现脱节）
-        for handler in ["device_code", "device_token"] {
+        for handler in ["device_code", "device_token", "authorize", "exchange"] {
             assert!(
                 ROUTES_SRC.contains(&format!("github_oauth::{handler}")),
                 "处理函数 {handler} 未接到路由上"
@@ -466,5 +469,273 @@ mod gate {
             )
             .unwrap();
         assert_eq!(gift_balance, 1.0, "每日赠送 1 点");
+    }
+
+    // ============================================================
+    // 网页授权码流程（验收 5）：登录页的「使用 GitHub 登录」
+    // ============================================================
+
+    /// 带 cookie 发请求：网页流程的 state 就活在这张 cookie 里
+    async fn req_with(
+        st: AppState,
+        method: &str,
+        uri: &str,
+        body: Option<&str>,
+        cookie: Option<&str>,
+    ) -> (StatusCode, axum::http::HeaderMap, Value) {
+        let mut b = axum::http::Request::builder().method(method).uri(uri);
+        if let Some(c) = cookie {
+            b = b.header("cookie", c);
+        }
+        let req = match body {
+            Some(j) => b
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(j.to_string()))
+                .unwrap(),
+            None => b.body(axum::body::Body::empty()).unwrap(),
+        };
+        let resp = crate::routes::router()
+            .with_state(st)
+            .oneshot(req)
+            .await
+            .unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, headers, v)
+    }
+
+    fn set_cookie(headers: &axum::http::HeaderMap) -> String {
+        headers
+            .get(axum::http::header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// 授权地址由 `public_url` 派生（**不**新增第三个配置键），state 落一张 HttpOnly cookie；
+    /// 未启用时同样是 503
+    #[tokio::test]
+    async fn the_authorize_endpoint_derives_its_redirect_from_public_url() {
+        let (base, _m) = start_mock(
+            vec![json!({"access_token": "gho_x"})],
+            json!({"id": 1, "login": "a"}),
+        )
+        .await;
+        let st = state_with("authorize", Some(&base));
+        let public_url = st.cfg.server.public_url.trim_end_matches('/').to_string();
+        let (status, headers, body) =
+            req_with(st.clone(), "GET", "/api/auth/github/authorize", None, None).await;
+        assert_eq!(status, StatusCode::OK, "配好凭据后必须给出授权地址：{body}");
+        let url = body["authorize_url"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        // 阳性对照：地址确实指向（可注入的）假上游，而不是一个常量串
+        assert!(
+            url.starts_with(&format!("{base}/login/oauth/authorize")),
+            "必须打可注入的上游：{url}"
+        );
+        assert!(url.contains("client_id=test-client"), "缺 client_id：{url}");
+        let encoded = public_url.replace(':', "%3A").replace('/', "%2F");
+        assert!(
+            url.contains(&format!("redirect_uri={encoded}")),
+            "redirect_uri 必须由 public_url 派生（期望 {encoded}）：{url}"
+        );
+        assert!(url.contains("state="), "缺 state：{url}");
+
+        let cookie = set_cookie(&headers);
+        assert!(
+            cookie.starts_with("atp_gh_state=") && !cookie.starts_with("atp_gh_state=;"),
+            "state 必须落一张非空 cookie：{cookie:?}"
+        );
+        assert!(
+            cookie.contains("HttpOnly"),
+            "state cookie 不能被 JS 读到：{cookie:?}"
+        );
+        assert!(
+            cookie.contains("SameSite=Lax"),
+            "state cookie 必须限制跨站：{cookie:?}"
+        );
+
+        // 未启用 → 503「未启用」而不是 500
+        let off = state_with("authorize_off", None);
+        let (s2, _h2, b2) = req_with(off, "GET", "/api/auth/github/authorize", None, None).await;
+        assert_eq!(
+            s2,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "未启用必须是 503：{b2}"
+        );
+    }
+
+    /// state 对不上 → 400，**不换码、不落库、不打上游**
+    #[tokio::test]
+    async fn a_state_that_does_not_match_its_cookie_buys_no_credentials() {
+        let (base, mock) = start_mock(
+            vec![json!({"access_token": "gho_x"})],
+            json!({"id": 5, "login": "octo"}),
+        )
+        .await;
+        let st = state_with("state_mismatch", Some(&base));
+        let (status, _h, body) = req_with(
+            st.clone(),
+            "POST",
+            "/api/auth/github/exchange",
+            Some(r#"{"code":"c1","state":"forged"}"#),
+            Some("atp_gh_state=real-nonce"),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "state 不匹配必须 400：{body}"
+        );
+        assert_eq!(body["error"], "github_state_mismatch", "{body}");
+        assert!(body.get("api_key").is_none(), "不许发 key：{body}");
+        assert_eq!(count(&st, "SELECT COUNT(*) FROM users"), 0, "不许建用户行");
+        assert_eq!(
+            count(&st, "SELECT COUNT(*) FROM api_keys"),
+            0,
+            "不许落 key 行"
+        );
+        assert!(
+            mock.seen.lock().unwrap().is_empty(),
+            "伪造的 state 不该消耗上游：{:?}",
+            mock.seen.lock().unwrap()
+        );
+
+        // 阳性对照：同一端点、只把 cookie 换成对得上的值，就必须拿到凭据
+        let (s2, _h2, b2) = req_with(
+            st.clone(),
+            "POST",
+            "/api/auth/github/exchange",
+            Some(r#"{"code":"c1","state":"nonce-ok"}"#),
+            Some("atp_gh_state=nonce-ok"),
+        )
+        .await;
+        assert_eq!(s2, StatusCode::OK, "阳性对照：对得上的 state 必须通：{b2}");
+        assert!(
+            !b2["api_key"].as_str().unwrap_or_default().is_empty(),
+            "{b2}"
+        );
+    }
+
+    /// 网页流程与设备码流程落到**同一行用户、同一把 key**（验收 5 + 2）
+    #[tokio::test]
+    async fn the_web_flow_lands_the_same_account_and_key_as_the_device_flow() {
+        let (base, _m) = start_mock(
+            vec![json!({"access_token": "gho_x"})],
+            json!({"id": 42, "login": "octo"}),
+        )
+        .await;
+        let st = state_with("web_flow", Some(&base));
+        // 前端就是这么拿 state 的：先要授权地址，服务端同时把 state 写进 cookie
+        let (_s, headers, _b) =
+            req_with(st.clone(), "GET", "/api/auth/github/authorize", None, None).await;
+        let cookie = set_cookie(&headers);
+        let pair = cookie
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let state = pair
+            .strip_prefix("atp_gh_state=")
+            .expect("cookie 里必须有 state")
+            .to_string();
+        assert!(!state.is_empty(), "state 不能是空串");
+
+        let (status, h2, body) = req_with(
+            st.clone(),
+            "POST",
+            "/api/auth/github/exchange",
+            Some(&format!(r#"{{"code":"c1","state":"{state}"}}"#)),
+            Some(&pair),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "网页流程必须换到平台凭据：{body}");
+        let web_key = body["api_key"].as_str().unwrap_or_default().to_string();
+        let web_uid = body["user_id"].as_i64().unwrap_or_default();
+        assert!(
+            !web_key.is_empty() && web_uid > 0,
+            "字段与邮箱登录同形：{body}"
+        );
+        assert_eq!(body["login"], "octo", "登录名一并返回：{body}");
+        // 用过的 state 立刻作废
+        assert!(
+            set_cookie(&h2).contains("Max-Age=0"),
+            "用过的 state 必须作废：{:?}",
+            set_cookie(&h2)
+        );
+
+        // 同一 GitHub 身份再从设备码进来：同一账号、同一把 key，两张表各只增一行
+        let (s3, b3) = post_json(
+            st.clone(),
+            "/api/auth/github/device/token",
+            r#"{"device_code":"dc-abc"}"#,
+        )
+        .await;
+        assert_eq!(s3, StatusCode::OK, "{b3}");
+        assert_eq!(
+            b3["api_key"].as_str().unwrap_or_default(),
+            web_key,
+            "同一 GitHub 身份两次登录必须拿到同一把 key：{b3}"
+        );
+        assert_eq!(b3["user_id"].as_i64().unwrap_or_default(), web_uid);
+        assert_eq!(
+            count(&st, "SELECT COUNT(*) FROM users"),
+            1,
+            "用户行只增一次"
+        );
+        assert_eq!(
+            count(&st, "SELECT COUNT(*) FROM api_keys"),
+            1,
+            "key 行只增一次"
+        );
+    }
+
+    /// 登录页真的有这个入口，且中英双语都在：按钮、词表键、前端接线
+    #[test]
+    fn the_login_page_carries_a_github_sign_in_button() {
+        const INDEX: &str = include_str!("../ui/index.html");
+        const I18N: &str = include_str!("../ui/js/i18n.js");
+        const APP: &str = include_str!("../ui/js/app.js");
+        // 阳性对照：同一份语料里已知在场的登录页按钮
+        assert!(
+            INDEX.contains(r#"id="guest-browse-btn""#),
+            "阳性对照失效：语料里连游客入口都没有"
+        );
+        assert!(
+            INDEX.contains(r#"id="github-login-btn""#),
+            "登录页缺「使用 GitHub 登录」按钮"
+        );
+        assert!(
+            INDEX.contains(r#"data-i18n="login.github""#),
+            "按钮文案必须走词表，不写死中文"
+        );
+        assert_eq!(
+            I18N.matches("\"login.github\":").count(),
+            2,
+            "词表里 login.github 必须中英各一条（缺一个就是英文模式显示中文）"
+        );
+        assert!(
+            I18N.contains("\"login.github\": \"使用 GitHub 登录\""),
+            "缺中文值"
+        );
+        assert!(
+            I18N.contains("\"login.github\": \"Sign in with GitHub\""),
+            "缺英文值"
+        );
+        assert!(
+            APP.contains("/api/auth/github/authorize"),
+            "前端未取 authorize_url"
+        );
+        assert!(
+            APP.contains("/api/auth/github/exchange"),
+            "前端未接回跳换码"
+        );
     }
 }

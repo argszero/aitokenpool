@@ -74,6 +74,9 @@
     </form>
     <!-- 仅登录 tab 显示的附加项（分隔线 / 游客入口 / 底部提示）：切到注册等表单时整体隐藏，避免串在注册字段上方 -->
     <div id="auth-login-extras">
+      <!-- 「使用 GitHub 登录」（rant 2026-11-09T14:43:55 验收 5）：普通授权码流程，
+           与设备码流程共用同一个身份落库；未配置 client_id 时服务端答 503「未启用」 -->
+      <button type="button" class="btn btn-ghost btn-block" id="github-login-btn" data-i18n="login.github">使用 GitHub 登录</button>
       <div class="divider"><span data-i18n="login.or">或</span></div>
       <button type="button" class="btn btn-ghost btn-block" id="guest-browse-btn" data-i18n="login.guest">先逛逛市场</button>
       <p class="login-foot" data-i18n="login.foot">还没有账号？<a href="#" id="reg-link">注册</a> · <a href="#" id="forgot-link">找回密码</a></p>
@@ -864,7 +867,7 @@
 
 <script src="js/api.js?v=20261012-1"></script>
 <script src="js/data.js?v=20261017-2"></script>
-<script src="js/i18n.js?v=20261026-1"></script>
-<script src="js/app.js?v=20261015-3"></script>
+<script src="js/i18n.js?v=20261109-1"></script>
+<script src="js/app.js?v=20261109-1"></script>
 </body>
 </html>

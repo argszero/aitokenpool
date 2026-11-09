@@ -108,11 +108,11 @@ const EN_END: &str = "\n  };";
 ///
 /// ⚠️ `T_LITERAL_COUNT` 是 `T("…")` **调用点**总数，不是键数，也不是去重后的键数 ——
 /// 三个集合各不相同（坑 99）；说「这个数不该变」之前先确认它在数哪个集合。
-const ZH_KEY_COUNT: usize = 801;
-const EN_KEY_COUNT: usize = 801;
-const STATIC_ATTR_COUNT: usize = 335;
-const STATIC_ATTR_DISTINCT: usize = 309;
-const T_LITERAL_COUNT: usize = 548;
+const ZH_KEY_COUNT: usize = 802;
+const EN_KEY_COUNT: usize = 802;
+const STATIC_ATTR_COUNT: usize = 336;
+const STATIC_ATTR_DISTINCT: usize = 310;
+const T_LITERAL_COUNT: usize = 552;
 const T_LITERAL_DISTINCT: usize = 435;
 
 /// 切出语言包区段（起点标记 → 终点标记，含起点）。
@@ -2691,7 +2691,7 @@ mod tests {
     /// 两者都数**站点**（不是去重后的文案）：`READABLE` 是提取器读得到的值，
     /// `STRUCTURED` 是按设计不进语料的结构化信封。新增一条错误文案就是在改这两个数 ——
     /// 这正是它们的作用：它们证明扫描器没有变瞎，而不是证明语料静止。
-    const READABLE_ERROR_WRITE_SITES: usize = 92;
+    const READABLE_ERROR_WRITE_SITES: usize = 95;
     const STRUCTURED_ERROR_WRITE_SITES: usize = 2;
 
     /// **每一处**错误文案站点的值都必须是提取器读得到的写法。

@@ -4,7 +4,7 @@ All notable changes are recorded here. Versions follow [SemVer](https://semver.o
 
 ## Unreleased
 
-**schema 17 → 18**；新增可选 `[github]` 段（`client_id` / `client_secret`，留空 = 未启用，端点答 503「未启用」而非 500）；**GitHub 登录**（设备码流程 + 身份即账号，rant 2026-11-09T14:43:55）；`cargo test` 590 → 598。
+**schema 17 → 18**；新增可选 `[github]` 段（`client_id` / `client_secret`，留空 = 未启用，端点答 503「未启用」而非 500）；**GitHub 登录**（设备码流程 + 网页登录页「使用 GitHub 登录」+ 身份即账号，rant 2026-11-09T14:43:55）；`cargo test` 590 → 605。
 
 ## v0.7.33 (2026-10-15)
 

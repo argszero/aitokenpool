@@ -103,6 +103,11 @@ interval_secs = 60                  # 扫描间隔（秒）
 #     <id>+<login>@users.noreply.github.com，故拿不到公开邮箱也能注册成功。
 # ============================================================
 [github]
+# 配置项只有这两个；留空 = GitHub 登录未启用（端点答 503「未启用」，不是 500）。
+# OAuth App 里要开两样东西，否则两条流程各有一半走不通：
+#   · 勾上 "Enable Device Flow" —— 否则设备码端点（桌面端 / CLI / agent）拿不到码；
+#   · Authorization callback URL 填 server.public_url 本身（本行下面的 8080 就是默认值），
+#     网页登录页的「使用 GitHub 登录」按它回跳。
 client_id = ""                      # OAuth App 的 Client ID；留空 = GitHub 登录未启用
 client_secret = ""                  # OAuth App 的 Client Secret；与 client_id 成对出现
 

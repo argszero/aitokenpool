@@ -181,14 +181,7 @@ pub async fn device_token(
         })?
         .to_string();
     let (github_id, login) = fetch_identity(&st, &token).await?;
-    let (user_id, api_key) = {
-        let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
-        let (user_id, _created) =
-            crate::dao::upsert_github_user(&conn, &github_id, &login).map_err(internal)?;
-        // 已有 key 就复用（验收 2）：与邮箱登录同一条签发路径
-        let api_key = crate::dao::get_or_create_api_key(&conn, user_id).map_err(internal)?;
-        (user_id, api_key)
-    };
+    let (user_id, api_key) = land_identity(&st, &github_id, &login)?;
     log::info!("GitHub 登录成功：github_id={github_id} user_id={user_id}");
     Ok((
         StatusCode::OK,
@@ -238,4 +231,169 @@ async fn fetch_identity(st: &AppState, token: &str) -> Result<(String, String), 
         })?
         .to_string();
     Ok((id.to_string(), login))
+}
+
+// ---------------------------------------------------------------------------
+// 网页授权码流程（验收 5）：登录页的「使用 GitHub 登录」
+//
+// 与设备码流程**共用** [`land_identity`] —— 两条流程只差「怎么拿到 access_token」，
+// 拿到之后同一条落库路径，故同一 GitHub 账号从任一入口进来都回到同一行、同一把 key。
+// ---------------------------------------------------------------------------
+
+/// state 的 cookie 名。授权码流程的 CSRF 绑定：本仓库没有会话层，故用一张短命
+/// HttpOnly cookie 记住「这次授权是本浏览器发起的」。
+const STATE_COOKIE: &str = "atp_gh_state";
+/// state 有效期（秒）：与 GitHub 授权码的有效期同量级
+const STATE_TTL_SECS: u32 = 600;
+
+/// 对外可达地址（去掉尾斜杠）：`redirect_uri` 由它派生。
+///
+/// 刻意**不**设成第三个配置键（验收 6 只允许 client id / secret）：OAuth App 里登记的
+/// 回调地址就写成 `public_url` 本身（登录页），回头把 `code` / `state` 带回前端。
+fn redirect_uri(st: &AppState) -> String {
+    st.cfg.server.public_url.trim_end_matches('/').to_string()
+}
+
+/// state cookie 的属性串：`http` 的 public_url 上不加 `Secure`，否则浏览器直接不存
+fn state_cookie(st: &AppState, value: &str, max_age: u32) -> String {
+    let secure = if redirect_uri(st).starts_with("https://") {
+        "; Secure"
+    } else {
+        ""
+    };
+    format!("{STATE_COOKIE}={value}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}")
+}
+
+/// GET /api/auth/github/authorize → 200 `{authorize_url}` + `Set-Cookie: atp_gh_state=…`
+///
+/// 前端拿到 `authorize_url` 就整页跳过去；GitHub 认完再把 `code` / `state` 送回
+/// `public_url`，由前端调 [`exchange`] 换平台凭据。
+pub async fn authorize(
+    State(st): State<AppState>,
+) -> Result<impl axum::response::IntoResponse, ApiErr> {
+    let (client_id, _secret) = creds(&st)?;
+    let state = uuid::Uuid::new_v4().simple().to_string();
+    let mut url = reqwest::Url::parse(&format!(
+        "{}/login/oauth/authorize",
+        st.github_api.oauth_base
+    ))
+    .map_err(|e| internal(format!("GitHub 授权地址无法构造: {e}")))?;
+    url.query_pairs_mut()
+        .append_pair("client_id", &client_id)
+        // 由 public_url 派生（见 redirect_uri）：OAuth App 里登记的就是它
+        .append_pair("redirect_uri", &redirect_uri(&st))
+        // 与设备码同一取舍：不请求 user:email —— 身份只靠 /user 的 id + login（验收 3）
+        .append_pair("scope", "")
+        .append_pair("state", &state);
+    Ok((
+        StatusCode::OK,
+        [(
+            axum::http::header::SET_COOKIE,
+            state_cookie(&st, &state, STATE_TTL_SECS),
+        )],
+        Json(json!({ "authorize_url": url.to_string() })),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ExchangeReq {
+    pub code: String,
+    pub state: String,
+}
+
+/// POST /api/auth/github/exchange `{code, state}` → 200 `{api_key, user_id, login}`
+///
+/// 字段与设备码成功响应、邮箱登录**逐字同形**（验收 2）。`state` 必须与
+/// [`authorize`] 那张 cookie 逐字相同，否则 400 且**不访问上游、不碰数据库**。
+pub async fn exchange(
+    State(st): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<ExchangeReq>,
+) -> Result<
+    (
+        StatusCode,
+        [(axum::http::HeaderName, String); 1],
+        Json<Value>,
+    ),
+    ApiErr,
+> {
+    let (client_id, client_secret) = creds(&st)?;
+    // 先验 state 再换码：伪造的 state 不该消耗 GitHub 的授权码，也不该产生任何落库
+    let cookie_state = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| {
+            raw.split(';')
+                .map(str::trim)
+                .find_map(|kv| kv.strip_prefix(STATE_COOKIE)?.strip_prefix('='))
+        })
+        .unwrap_or_default()
+        .to_string();
+    if cookie_state.is_empty() || cookie_state != req.state {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "github_state_mismatch",
+                "detail": "Restart sign-in from the login page: the state cookie did not match.",
+            })),
+        ));
+    }
+    let ru = redirect_uri(&st);
+    let url = format!("{}/login/oauth/access_token", st.github_api.oauth_base);
+    let resp = st
+        .http
+        .post(&url)
+        .header(UA.0, UA.1)
+        .header("accept", "application/json")
+        .form(&[
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("code", req.code.as_str()),
+            // 换码时的 redirect_uri 必须与授权时那一份逐字相同，否则 GitHub 回 400
+            ("redirect_uri", ru.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|e| internal(format!("GitHub 授权码换取失败: {e}")))?;
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| internal(format!("GitHub 授权码响应无法解析: {e}")))?;
+    if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("github_exchange_failed: {err}") })),
+        ));
+    }
+    let token = body
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "github_exchange_missing_access_token" })),
+            )
+        })?
+        .to_string();
+    let (github_id, login) = fetch_identity(&st, &token).await?;
+    let (user_id, api_key) = land_identity(&st, &github_id, &login)?;
+    log::info!("GitHub 网页登录成功：github_id={github_id} user_id={user_id}");
+    Ok((
+        StatusCode::OK,
+        // 用过的 state 立刻作废：重放同一个 code/state 组合没有第二次机会
+        [(axum::http::header::SET_COOKIE, state_cookie(&st, "", 0))],
+        Json(json!({ "api_key": api_key, "user_id": user_id, "login": login })),
+    ))
+}
+
+/// 身份落库 —— 设备码与网页授权码**共用这一条路径**（验收 5）。
+///
+/// 身份只认 `github_id`（`login` 可改名）；key 已有就复用，不新开第二条签发路径。
+fn land_identity(st: &AppState, github_id: &str, login: &str) -> Result<(i64, String), ApiErr> {
+    let conn = st.db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let (user_id, _created) =
+        crate::dao::upsert_github_user(&conn, github_id, login).map_err(internal)?;
+    // 已有 key 就复用（验收 2）：与邮箱登录同一条签发路径
+    let api_key = crate::dao::get_or_create_api_key(&conn, user_id).map_err(internal)?;
+    Ok((user_id, api_key))
 }
