@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
 
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// 打开（或创建）数据库并执行幂等迁移（生产标准：空库只建表，不种任何假数据）
 pub fn open(path: &str) -> Result<Connection> {
@@ -445,6 +445,33 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             ON transactions_rollup(user_id, bucket);
         CREATE INDEX IF NOT EXISTS idx_transactions_rollup_type_bucket
             ON transactions_rollup(type, bucket);",
+    )?;
+    // v18（rant 2026-11-09T14:43:55）：GitHub 身份即账号 —— `users` 补两列 + 一个部分唯一索引。
+    //
+    // 为什么是「加列」而不是重建表：`email` / `password_hash` 是 NOT NULL，重建能让它们可空，
+    // 但那样全仓**每一个** `SELECT ... email FROM users` 的读取点都得改成容忍 NULL（管理端
+    // 用户列表、运营报表…），一处迁移会扩散成跨模块重写。GitHub 账号因此仍然写一个 `email`，
+    // 取值是 GitHub **公布**的 noreply 地址 `<id>+<login>@users.noreply.github.com`（寄到它会进
+    // 该账号收件箱，不是编造的占位串），口令列写 '' —— `auth::verify_password` 对空 PHC 串恒
+    // 返回 false，故这类账号不可能用邮箱 + 口令登录。
+    //
+    // 身份认 `github_id`（GitHub 的稳定数字 id），**不认 login**：login 可以改名，拿它当键会在
+    // 改名那天建出第二个账号。部分唯一索引把「非 GitHub 账号」排除在外（它们的值是 ''）。
+    ensure_column(
+        conn,
+        "users",
+        "github_id",
+        "github_id TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "users",
+        "github_login",
+        "github_login TEXT NOT NULL DEFAULT ''",
+    )?;
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github_id
+            ON users(github_id) WHERE github_id <> '';",
     )?;
     // schema_version 记录**最高的**已迁移版本。⚠️ 必须用 MAX 读：该表没有唯一约束，
     // 而 `INSERT OR REPLACE` 在无冲突时就是普通 INSERT —— 只读第一行的话
