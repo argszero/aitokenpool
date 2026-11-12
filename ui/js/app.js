@@ -1686,6 +1686,42 @@
       stat(T("tx.summary.count"), D.fmt(count), T("tx.summary.count.sub"));
   }
 
+  // 按 API Key 用量对比（rant 2026-11-12T14:13:23 验收项 ②）：载荷是 `/api/transactions` 的
+  // `by_key` —— 服务端用**同一个** `where_sql` 与同一份绑定算出它与 `summary`，所以「各组之和
+  // == 上方汇总卡」不是前端把两份请求对齐出来的，结构上只有一份口径。
+  // 分组键是服务端的 `api_key_id`：`null` 是**显式的一组**（供应商侧 earn / topup / expire /
+  // withdraw 等没有 api-key 的交易），不是缺失数据 —— 静默丢掉它，各组之和就对不上汇总卡。
+  function renderTxByKey() {
+    const el = $("#tx-by-key");
+    if (!el) return;
+    const rows = (Live.transactions && Array.isArray(Live.transactions.by_key))
+      ? Live.transactions.by_key
+      : [];
+    if (!rows.length) {
+      el.innerHTML = emptyState(T("tx.bykey.empty"), T("tx.bykey.empty.sub"));
+      return;
+    }
+    // 列头复用汇总卡与明细表的键：这一块说的是同一件事的另一个粒度，换一套词反而让两处
+    // 看起来像两条不同的序列（`ui/README.md` 的「一条序列一个词」）。
+    const cKey = T("tx.col.apiKeyName"), cPts = T("tx.summary.expense"), cInc = T("tx.summary.income"),
+      cTok = T("tx.summary.tokens"), cCnt = T("tx.summary.count");
+    el.innerHTML = '<table class="table"><thead><tr>' +
+      "<th>" + esc(cKey) + "</th>" +
+      '<th class="num">' + esc(cPts) + "</th>" +
+      '<th class="num">' + esc(cInc) + "</th>" +
+      '<th class="num">' + esc(cTok) + "</th>" +
+      '<th class="num">' + esc(cCnt) + "</th></tr></thead><tbody>" +
+      rows.map((r) => {
+        const label = r.api_key_id == null ? T("tx.bykey.none") : (r.key_name || T("tx.bykey.unnamed"));
+        return "<tr><td data-label='" + cKey + "'>" + esc(label) + "</td>" +
+          '<td class="num" data-label="' + cPts + '">' + D.fmt(Math.abs(r.expense_pts || 0)) + "</td>" +
+          '<td class="num" data-label="' + cInc + '">' + D.fmt(r.income_pts || 0) + "</td>" +
+          '<td class="num" data-label="' + cTok + '">' + fmtTokens(r.tokens || 0) + "</td>" +
+          '<td class="num" data-label="' + cCnt + '">' + D.fmt(r.entries || 0) + "</td></tr>";
+      }).join("") +
+      "</tbody></table>";
+  }
+
   // 每日消费/收益趋势（rant 2026-09-11T16:23:43 第 7 节 + PR4 的 renderDashTrend 先例）：
   // 改用原型 .trend 双色柱状图（消费 = accent、收益 = ok），柱高按当日 max 归一、最小 2%；
   // 数据源仍是 /api/transactions/trend（与列表同 type/时间段/列筛选口径）。
@@ -1910,6 +1946,7 @@
     // 加载失败 → 空态 + 重试；游客不可达（导航拦截）
     if (loggedIn() && !Live.transactions) {
       renderTxSummary([]);
+      renderTxByKey();
       renderTxTrend();
       const c = $("#tx-count");
       if (c) c.textContent = "";
@@ -1927,6 +1964,8 @@
     let list = Live.transactions ? txsToView(Live.transactions.items || []) : [];
     // 交易汇总卡：与 tab + 列筛选联动，与表格可见行一致（rant 20:39:30 B；记录数走后端 total）
     renderTxSummary(filterRows(list, TX_COLUMNS, txTable.filters));
+    // 同筛选、按 api-key 的另一个粒度（载荷与 `summary` 同源，不发额外请求）
+    renderTxByKey();
     // 记录数（原型 #tx-count）：后端 total（真分页下即筛选后的全量条数）
     const cntEl = $("#tx-count");
     if (cntEl) {

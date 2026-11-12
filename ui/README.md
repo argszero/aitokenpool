@@ -198,6 +198,7 @@ ui/
 - 工具栏右侧 `#tx-count` 同步显示 `tx.pager.count`（共 N 条），与汇总卡的记录数同源；
 - 图表：`#tx-trend` 改用原型 `.trend` 双色柱状（消费 / 收益两柱 + `.legend`），数据源仍是 `/api/transactions/trend`；**x 轴按请求窗口补零，保证左→右时间递增且柱距恒定**（后端 GROUP BY 只返回有交易的桶，缺行会导致柱子左移——原型同款 bug 的根因）；
 - 窄屏（≤560px）`.stat-grid` 两列、`.trend` 高度收紧。
+- **按 API Key 用量**（rant 2026-11-12T14:13:23 验收项 ②）：汇总卡下方第二块是 `#tx-by-key`（一张小表：api-key 名 / 消费 / 收益 / Token 合计 / 条数），数据来自 `/api/transactions` 响应的 **`by_key`** 数组 —— 它由服务端用**与 `summary` 同一个 `where_sql`、同一份绑定**算出，所以「各行之和 == 汇总卡」不是靠前端把两份数据对齐出来的，结构上只有一份口径。分组键是**读模型视图的** `api_key_id`（不是汇总表的 —— 汇总表用 `0` 当 NULL 哨兵），条数是 `SUM(row_count)` 而不是 `COUNT(*)`；`api_key_id` 为 `null` 的那行是「没有 api-key 的交易」（供应商侧 earn / topup / expire / withdraw），**显式成组并排在末行**，丢掉它各组之和就对不上汇总卡。默认按消费点数降序，筛选与上方汇总卡完全共享（同一份载荷，不发额外请求）。
 - **趋势卡四档**（rant 2026-09-23T21:03:32）：`#tx-trend-modes`（`.tabs > .tab`，形状复用 `#tx-tabs`）提供 **总点数（默认）/ 消费 / 收入 / 消费＋收入** 四档，四档**共用同一份载荷**（`/api/transactions/trend` 已同时返回 `net`/`income`/`expense`）⇒ 切档只重绘本卡，**档位不进 `txQuerySig()`、不接 `reloadTransactions()`**（否则每次点档多发一次请求、且四档不再同源）。
   - `net` 档＝**窗口内累计净变化**（自最早桶起逐桶累加 `net`，窗口起点为 0，可为负），故卡片标题/副标题换 `tx.trend.card.net` / `tx.trend.net.sub` **如实写明口径**——加了列筛选后绝对余额不可定义，不得暗示为余额水位；形态用 `sparkline()` **折线**、y 轴按 `|值|` 定标且**包含零基线**；
   - 其余三档保持柱状；归一化的 `max` **只按当前显示的系列**取（`txTrendValues()`），`title` tooltip 与 `#tx-trend-legend` **只陈述显示的系列**；

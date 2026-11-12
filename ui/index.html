@@ -454,6 +454,15 @@
       <div class="card">
         <div class="stat-grid" id="tx-summary"></div>
       </div>
+      <!-- 按 API Key 用量对比（rant 2026-11-12T14:13:23 验收项 ②）：与上方汇总卡是**同一套筛选**，
+           只是把粒度换成 api-key —— 汇总卡答「一共多少」，本卡答「哪把 key 花了多少」。
+           没有 api-key 的交易（供应商侧 earn / topup / expire / withdraw）显式成组、排在末行：
+           静默丢掉它们，各组之和就与上方的汇总卡对不上。 -->
+      <div class="card mt16">
+        <h3 data-i18n="tx.bykey.title">按 API Key 用量</h3>
+        <p class="card-sub" data-i18n="tx.bykey.sub">单位：点数 · 与上方汇总卡同一筛选，按 api-key 分组</p>
+        <div class="table-wrap compact" id="tx-by-key"></div>
+      </div>
       <!-- 每日消费 / 收益 / 总点数（.trend：折线或双色柱状，x 轴左→右时间递增） -->
       <div class="card mt16">
         <h3 id="tx-trend-title" data-i18n="tx.trend.card">每日消费 / 收益</h3>
@@ -867,7 +876,7 @@
 
 <script src="js/api.js?v=20261012-1"></script>
 <script src="js/data.js?v=20261017-2"></script>
-<script src="js/i18n.js?v=20261112-1"></script>
-<script src="js/app.js?v=20261112-1"></script>
+<script src="js/i18n.js?v=20261112-2"></script>
+<script src="js/app.js?v=20261112-2"></script>
 </body>
 </html>

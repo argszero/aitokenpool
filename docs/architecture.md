@@ -85,7 +85,7 @@
 - `POST/GET /api/api-keys` + `PATCH/DELETE /api/api-keys/:id` — 分发 key 生成 / 列表 / 改名与启停（PATCH 的 `status: active|paused`）/ 撤销（软删，不可逆）
 - `GET /api/models` — 模型列表（含可用 key 与价格）
 - `POST /v1/chat/completions` / `/v1/responses` / `/anthropic/v1/messages` — 网关（非流式 + SSE）
-- `GET /api/wallet` / `/api/transactions` / `/api/dashboard` — 钱包 / 交易（summary + 明细）/ 仪表盘
+- `GET /api/wallet` / `/api/transactions` / `/api/dashboard` — 钱包 / 交易（summary + 按 api-key 的 by_key + 明细）/ 仪表盘
 - `POST/GET /api/sharings` + `PATCH /api/sharings/:id` — key 上架 / 列表 / 编辑（PATCH 部分更新：暂停 · 恢复 · 下线，以及上架时的全部设置）
 - `POST /api/admin/credits` / `GET /api/admin/users` + `PATCH /api/admin/users/:id`（仅改部门） / `usage` / `models` CRUD — 管理（role=admin）
 - `GET/POST /api/admin/departments` + `PATCH/DELETE /api/admin/departments/:id` — 部门管理（role=admin）

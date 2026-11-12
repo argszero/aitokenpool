@@ -406,9 +406,12 @@ fn tx_joins() -> &'static str {
 /// 退回 `idx_transactions_user_id_id` 逐行回表 —— dev 库（18.6 万行、NAS/NFS）实测同一条
 /// 聚合查询：**不带 JOIN 0.21s，带 JOIN 22.6s（约 100×）**。
 ///
-/// 因此 summary / COUNT / trend 这三处**只碰 `t.*`** 的查询按需 JOIN：无上述筛选时不 JOIN。
+/// 因此 summary / COUNT / trend / by-key 这四处的聚合按需 JOIN：无上述筛选时不 JOIN。
 /// 列表查询仍需 JOIN（要渲染 `user_name` / `key_label` / `key_name`），但它有
 /// `ORDER BY t.id DESC LIMIT n`，代价可控。
+///
+/// ⚠️ by-key 的「api-key 名字」走**标量子查询**（`by_key_sql`），不额外引入 JOIN：它的外
+/// 查询必须保持「只碰 `t.*`」的形状，否则同一条 100× 退化会在这一处重新出现。
 fn needs_joins(f: &TxColFilters) -> bool {
     let set = |v: &Option<String>| v.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false);
     set(&f.user_name) || set(&f.key_name)
@@ -510,6 +513,10 @@ pub async fn transactions(
             }))
         })
         .map_err(internal)?;
+    // 按 API Key 汇总（rant 2026-11-12T14:13:23 验收项 ②）：与上面 `summary` **同一个**
+    // `where_sql`、**同一份** `where_binds` ⇒ 「各组之和 == summary」在结构上只有一份口径，
+    // 不靠两处参数对齐。`join_needed` 也复用同一个判定（`tx_where` 的引用与 JOIN 同源）。
+    let by_key = by_key_rows(&conn, &where_sql, &where_binds, join_needed)?;
     // ⚠️ 分页列表与 `total` **同源，都读读模型 `tx_facts`**（rant 2026-10-15T16:25:04.530850+08:00
     // 验收项 2/3）。一行的含义是「一个分钟桶 × 一组维度值」或「一条尚未折叠的明细」——
     // 前者自带 `row_count`（它代表多少条真实明细），后者恒 1。于是「明细只留一小段」不再让
@@ -603,6 +610,9 @@ pub async fn transactions(
         "page": page,
         "page_size": page_size,
         "summary": summary,
+        // 同筛选下按 api-key 的用量对比（rant 2026-11-12T14:13:23 验收项 ②）。与 `summary`
+        // 同源同口径；`api_key_id: null` 的那组是「没有 api-key 的交易」，**显式成组**。
+        "by_key": by_key,
     });
     body[crate::tx_rollup::DETAIL_SINCE_FIELD] = serde_json::json!(detail_since);
     Ok(Json(body))
@@ -725,6 +735,95 @@ pub async fn transactions_trend(
         "bucket": bucket,
         "buckets": buckets,
     })))
+}
+
+// ---------------------------------------------------------------------------------------------
+// 按 API Key 汇总（rant 2026-11-12T14:13:23 验收项 ②）
+//
+// 交易页顶部五张汇总卡只给**一个总数**：怎么筛选都看不出「哪把 key 花了多少」。明细表每行
+// 都带 api-key 名，但那是**逐行**的；唯一的按 key 聚合在共享页（`sharing.rs::row_select()`），
+// 算的是上架收益，不是消费者的用量。本段补上「同筛选、按 api-key 分粒度」这一个读数。
+// ---------------------------------------------------------------------------------------------
+
+/// by-key 聚合的 SQL（`SELECT` 九列，见 [`by_key_rows`] 的下标说明）。
+///
+/// ## 为什么并在 `/api/transactions` 的响应里，而不是另开 `/api/transactions/by-key`
+///
+/// 分组必须**与明细表同一套筛选**（时间档 / 自定义起止 / 类型 tab / 六个列筛选）。并进同一个
+/// 响应 ⇒ 两件事共用**同一个** `where_sql` 与**同一份** `where_binds`，中间没有任何可漂移的
+/// 环节，「各组之和 == `summary` 的对应标量」于是不是对齐出来的，而是结构上只有一份口径。
+/// 另开端点则要把同一组参数发两遍，而本仓已经为「同一筛选值在两个端点各解析一遍」付过一次账
+/// （C2052：`expire` 只加进列表端点 ⇒ 同一筛选值在列表 200、在趋势端 400）。
+///
+/// ## 三个口径坑（每一项都有测试盯着，改之前先读 `src/tx_facts.rs`）
+///
+/// 1. **读视图 `tx_facts`，不读裸 `transactions`**：明细只留 `[rollup] retain_minutes`，
+///    更早的历史只剩分钟汇总行 —— 读原表会少算一段历史。
+/// 2. **分组键必须是视图的 `t.api_key_id`，不是汇总表的**：汇总表用 `0` 当 NULL 哨兵，
+///    视图用 `NULLIF(…, 0)` 还原。直接在汇总表上分组会把「没有 api-key」的行并进 `id = 0`
+///    那一组（`tx_facts.rs:26` 记着实测：`(None, 6.0)` 变 `(0, 6.0)`）。
+/// 3. **条数是 `SUM(t.row_count)`，不是 `COUNT(*)`**：后者数的是「视图有几行」，即分钟桶数。
+///
+/// 名字取 `api_keys.name`（用户的**分发** key —— 分组键就是它），空串归 `NULL` 交给前端兜底。
+/// 它写在标量子查询里而不是 `LEFT JOIN`：三个 LEFT JOIN 中任何一个出现，优化器就弃用覆盖索引
+/// （dev 实测 0.21s → 22.6s，见 [`needs_joins`]）。子查询按**组**求值（一组一次，组数不超过该
+/// 用户的 key 数），不改变外层的扫描形状。
+///
+/// 排序：消费点数降序；`api_key_id DESC` 让 SQLite 把 NULL 排在**末位**（DESC 时 NULL 最大），
+/// 于是「没有 api-key」那组显式落在最后一行，而不是被静默丢掉或混进别的组。
+fn by_key_sql(where_sql: &str, join_needed: bool) -> String {
+    let income = sql_in_list(&TX_INCOME_TYPES);
+    let expense = sql_in_list(&TX_EXPENSE_TYPES);
+    format!(
+        "SELECT t.api_key_id, \
+            NULLIF((SELECT a.name FROM api_keys a WHERE a.id = t.api_key_id), ''), \
+            COALESCE(SUM(CASE WHEN t.type IN ({income}) THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN t.type IN ({expense}) THEN t.pts ELSE 0 END), 0), \
+            COALESCE(SUM(t.tokens), 0), \
+            COALESCE(SUM(t.tokens - t.cached_tokens - t.output_tokens), 0), \
+            COALESCE(SUM(t.cached_tokens), 0), \
+            COALESCE(SUM(t.output_tokens), 0), \
+            COALESCE(SUM(t.row_count), 0) \
+         FROM {} {} WHERE {where_sql} \
+         GROUP BY t.api_key_id \
+         ORDER BY 4 DESC, t.api_key_id DESC",
+        tx_facts::source("t"),
+        tx_joins_if(join_needed)
+    )
+}
+
+/// 跑 by-key 聚合，逐组产出一行；列序与 [`by_key_sql`] 的 `SELECT` 逐列对应。
+///
+/// 每组一个对象：`api_key_id`（`null` = 该组交易没有 api-key）、`key_name`、`income_pts` /
+/// `expense_pts`（方向由 `type` 决定，与 `summary` 同口径）、三档 token 与 `entries`
+/// （**条数** = `SUM(row_count)`，折叠对它不可见）。
+fn by_key_rows(
+    conn: &rusqlite::Connection,
+    where_sql: &str,
+    where_binds: &[rusqlite::types::Value],
+    join_needed: bool,
+) -> Result<Vec<serde_json::Value>, ApiErr> {
+    let mut stmt = conn
+        .prepare(&by_key_sql(where_sql, join_needed))
+        .map_err(internal)?;
+    let rows = stmt
+        .query_map(params_from_iter(where_binds.iter()), |r| {
+            Ok(serde_json::json!({
+                "api_key_id": r.get::<_, Option<i64>>(0)?,
+                "key_name": r.get::<_, Option<String>>(1)?,
+                "income_pts": r.get::<_, f64>(2)?,
+                "expense_pts": r.get::<_, f64>(3)?,
+                "tokens": r.get::<_, f64>(4)?,
+                "input_tokens": r.get::<_, f64>(5)?,
+                "cached_tokens": r.get::<_, f64>(6)?,
+                "output_tokens": r.get::<_, f64>(7)?,
+                "entries": r.get::<_, i64>(8)?,
+            }))
+        })
+        .map_err(internal)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(internal)?;
+    Ok(rows)
 }
 
 /// GET /api/dashboard：本月按类型聚合 + 本月净变化 + 近 7 天净额序列。
@@ -2608,5 +2707,337 @@ mod tests {
             let (s, body) = get(st.clone(), uri, &key).await;
             assert_eq!(s, axum::http::StatusCode::OK, "`{uri}` 应 200: {body}");
         }
+    }
+
+    // =========================================================================================
+    // 按 API Key 汇总（rant 2026-11-12T14:13:23 验收项 ②）
+    //
+    // 夹具的三组刻意各不相同，每一组都是某条判据的分母：
+    // - `alpha`：**同一分钟两条** consume（5.0 + 1.0）⇒ 折叠后只剩**一个**视图行、
+    //   `row_count = 2`，于是 `COUNT(*)` 与 `SUM(row_count)` 在这一组上必然分道扬镳；
+    // - `beta`：单条 consume 2.0 ⇒ 组间排序的第二个值；
+    // - **无 api-key**：`expire`（支出 1.0）＋ `topup`（收入 10.0）⇒「显式成组、不静默丢掉」的分母。
+    // =========================================================================================
+
+    /// 给用户插一把分发 key，返回它的 id。
+    fn insert_api_key(conn: &rusqlite::Connection, user_id: i64, value: &str, name: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO api_keys (user_id, key_value, name, status) VALUES (?1, ?2, ?3, 'active')",
+            rusqlite::params![user_id, value, name],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// 一条明细。`time` 显式给 —— 分钟桶与折叠都靠它，不能取 `datetime('now')`。
+    fn insert_tx(
+        conn: &rusqlite::Connection,
+        user_id: i64,
+        api_key_id: Option<i64>,
+        ty: &str,
+        pts: f64,
+        tokens: f64,
+        time: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO transactions (user_id, counterpart, key_id, api_key_id, model, \
+             tokens, cached_tokens, output_tokens, pts, type, status, time) \
+             VALUES (?1, '', 1, ?2, 'm-a', ?3, 10.0, 20.0, ?4, ?5, '成功', ?6)",
+            rusqlite::params![user_id, api_key_id, tokens, pts, ty, time],
+        )
+        .unwrap();
+    }
+
+    /// 三组的夹具（见本节开头）。返回 `(alpha, beta)` 的 api_keys.id。
+    fn seed_by_key(conn: &rusqlite::Connection) -> (i64, i64) {
+        let alpha = insert_api_key(conn, 1, "sk-alpha", "alpha");
+        let beta = insert_api_key(conn, 1, "sk-beta", "beta");
+        insert_tx(
+            conn,
+            1,
+            Some(alpha),
+            "consume",
+            5.0,
+            100.0,
+            "2026-01-01 10:00:00",
+        );
+        insert_tx(
+            conn,
+            1,
+            Some(alpha),
+            "consume",
+            1.0,
+            50.0,
+            "2026-01-01 10:00:20",
+        );
+        insert_tx(
+            conn,
+            1,
+            Some(beta),
+            "consume",
+            2.0,
+            30.0,
+            "2026-01-01 10:00:40",
+        );
+        insert_tx(conn, 1, None, "expire", 1.0, 0.0, "2026-01-01 10:00:50");
+        insert_tx(conn, 1, None, "topup", 10.0, 0.0, "2026-01-01 10:01:10");
+        (alpha, beta)
+    }
+
+    /// 折叠到追平，然后把明细**整表删掉** —— 模拟「这一段已经过了明细保留窗」。
+    fn fold_and_drop_details(conn: &rusqlite::Connection) {
+        while crate::tx_rollup::fold_pending(conn, i64::MAX, 100).unwrap() > 0 {}
+        assert!(
+            crate::tx_rollup::watermark(conn).unwrap() > 0,
+            "一行都没折 ⇒ 后面的判据没有分母"
+        );
+        let n = conn.execute("DELETE FROM transactions", []).unwrap();
+        assert_eq!(n, 5, "夹具应当有 5 条明细");
+    }
+
+    /// 直接跑**生产函数**，把每组压成 `(api_key_id, 消费, 收入, 条数)`（顺序由 SQL 定）。
+    fn read_by_key(conn: &rusqlite::Connection) -> Vec<(Option<i64>, f64, f64, i64)> {
+        let binds = vec![rusqlite::types::Value::Integer(1)];
+        by_key_rows(conn, "t.user_id = ?1", &binds, false)
+            .unwrap()
+            .into_iter()
+            .map(|g| {
+                (
+                    g["api_key_id"].as_i64(),
+                    g["expense_pts"].as_f64().unwrap(),
+                    g["income_pts"].as_f64().unwrap(),
+                    g["entries"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// 用**给定** SQL 跑一遍，压成 `(api_key_id, 条数)`（变异体用）。
+    fn read_entries(conn: &rusqlite::Connection, sql: &str) -> Vec<(Option<i64>, i64)> {
+        let binds = [rusqlite::types::Value::Integer(1)];
+        let mut stmt = conn.prepare(sql).unwrap();
+        stmt.query_map(params_from_iter(binds.iter()), |r| {
+            Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(8)?))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    }
+
+    /// 在 `groups` 里按 `api_key_id` 取一组（取不到即失败并打印全部组）。
+    fn group_of(groups: &[serde_json::Value], id: Option<i64>) -> serde_json::Value {
+        groups
+            .iter()
+            .find(|g| g["api_key_id"].as_i64() == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("缺少 api_key_id={id:?} 的那一组：{groups:?}"))
+    }
+
+    /// **轴**：交易页的「按 API Key 用量」＝ 与 `summary` **同一套筛选**下的按 key 分组。
+    ///
+    /// 判据（rant 2026-11-12T14:13:23 验收项 ② 的验收 ③）：
+    /// 1. 各组 `expense_pts` / `income_pts` / `entries` 之和**等于**同一个响应里 `summary` 的
+    ///    对应标量 —— 两件读数共用同一个 `where_sql`，所以这不是「对齐出来的巧合」；
+    /// 2. 「没有 api-key」的那一组**显式存在**，且带着 topup 那 10 点收入；
+    /// 3. 组按消费点数降序，无 api-key 组落在末位；
+    /// 4. 换成 `type=consume` 时同一份读数跟着变 —— 筛选是**共享**的，不是两套。
+    #[tokio::test]
+    async fn by_key_splits_the_summary_by_api_key_and_keeps_the_keyless_group() {
+        let st = test_state("bykey");
+        let key = login(st.clone()).await;
+        let (alpha, beta) = {
+            let conn = st.db.lock().unwrap();
+            seed_by_key(&conn)
+        };
+
+        let (s, body) = get(st.clone(), "/api/transactions?type=all", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let groups = v["by_key"].as_array().expect("`by_key` 必须是数组");
+        let summary = &v["summary"];
+
+        // 1. 各组之和 == summary（读模型口径：entries 是**条数**）
+        let sum_f = |field: &str| -> f64 {
+            groups
+                .iter()
+                .map(|g| g[field].as_f64().unwrap_or(0.0))
+                .sum()
+        };
+        let sum_i =
+            |field: &str| -> i64 { groups.iter().map(|g| g[field].as_i64().unwrap_or(0)).sum() };
+        for (field, want) in [
+            ("expense_pts", summary["expense_pts"].as_f64().unwrap()),
+            ("income_pts", summary["income_pts"].as_f64().unwrap()),
+            ("tokens", summary["tokens"].as_f64().unwrap()),
+        ] {
+            assert!(
+                (sum_f(field) - want).abs() < 1e-9,
+                "各组 {field} 之和 {} ≠ summary {want}：{body}",
+                sum_f(field)
+            );
+        }
+        assert_eq!(
+            sum_i("entries"),
+            summary["entries"].as_i64().unwrap(),
+            "各组条数之和必须等于 summary.entries：{body}"
+        );
+
+        // 2. 三组各自的值
+        let a = group_of(groups, Some(alpha));
+        assert_eq!(a["key_name"], "alpha", "组名应取 api_keys.name：{body}");
+        assert!(
+            (a["expense_pts"].as_f64().unwrap() - 6.0).abs() < 1e-9,
+            "{body}"
+        );
+        assert_eq!(
+            a["entries"].as_i64().unwrap(),
+            2,
+            "alpha 有两条明细：{body}"
+        );
+        let b = group_of(groups, Some(beta));
+        assert!(
+            (b["expense_pts"].as_f64().unwrap() - 2.0).abs() < 1e-9,
+            "{body}"
+        );
+        let none = group_of(groups, None);
+        assert!(
+            none["key_name"].is_null(),
+            "无 api-key 组不该有别处的名字：{body}"
+        );
+        assert!(
+            (none["expense_pts"].as_f64().unwrap() - 1.0).abs() < 1e-9,
+            "{body}"
+        );
+        assert!(
+            (none["income_pts"].as_f64().unwrap() - 10.0).abs() < 1e-9,
+            "无 api-key 组必须带着 topup 那 10 点：{body}"
+        );
+
+        // 3. 排序：消费降序，无 api-key 组末位
+        let order: Vec<Option<i64>> = groups.iter().map(|g| g["api_key_id"].as_i64()).collect();
+        assert_eq!(
+            order,
+            vec![Some(alpha), Some(beta), None],
+            "组序应为「消费降序、无 api-key 末位」：{body}"
+        );
+
+        // 4. 同一份读数跟着筛选走（type=consume：只剩两把 key、收入归零）
+        let (s, body) = get(st.clone(), "/api/transactions?type=consume", &key).await;
+        assert_eq!(s, axum::http::StatusCode::OK, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let groups = v["by_key"].as_array().unwrap();
+        assert_eq!(groups.len(), 2, "consume 只落在两把 key 上：{body}");
+        let want = v["summary"]["expense_pts"].as_f64().unwrap();
+        let got: f64 = groups
+            .iter()
+            .map(|g| g["expense_pts"].as_f64().unwrap())
+            .sum();
+        assert!(
+            (got - want).abs() < 1e-9,
+            "筛选后的各组之和 {got} 仍须等于同一个 summary {want}：{body}"
+        );
+        assert!(
+            groups
+                .iter()
+                .all(|g| g["income_pts"].as_f64().unwrap() == 0.0),
+            "consume 没有收入：{body}"
+        );
+    }
+
+    /// **轴**：按 key 汇总读的是**读模型** `tx_facts` —— 折叠并把明细删掉之后，读数一个字不变。
+    ///
+    /// 判据（rant 验收项 ② 的验收 ④）：明细只留 `[rollup] retain_minutes`，更早的历史只剩分钟
+    /// 汇总行。读裸 `transactions` 的实现会在删除之后丢掉这一段（见下一条牙），而本实现不动。
+    #[test]
+    fn by_key_survives_folding_and_deletion_of_the_details() {
+        let st = test_state("bykeyfold");
+        let before = {
+            let conn = st.db.lock().unwrap();
+            seed_by_key(&conn);
+            read_by_key(&conn)
+        };
+        let after = {
+            let conn = st.db.lock().unwrap();
+            fold_and_drop_details(&conn);
+            read_by_key(&conn)
+        };
+        assert_eq!(
+            before, after,
+            "折叠并删除明细后，按 key 汇总必须**同答**（视图的两条臂对它不可见）"
+        );
+        // 阳性对照：这份读数不是空的、也不是全零
+        assert_eq!(after.len(), 3, "三组都该在：{after:?}");
+        assert!(
+            after.iter().any(|(_, e, _, _)| *e > 0.0),
+            "读数全零 ⇒ 上面的相等没有分母：{after:?}"
+        );
+    }
+
+    /// **牙**：条数必须是 `SUM(row_count)` —— 换成 `COUNT(*)` 就在折叠之后少数。
+    ///
+    /// `alpha` 的两条明细落在**同一分钟**：折叠后视图里只剩一个桶（`row_count = 2`），
+    /// 于是 `COUNT(*)` 答 1、`SUM(row_count)` 答 2。少了这条，`SUM` 与 `COUNT` 的分野
+    /// 就只写在模块文档里、没有任何东西守着。
+    #[test]
+    fn counting_view_rows_would_undercount_the_per_key_entries() {
+        let st = test_state("bykeycount");
+        let (alpha, _beta) = {
+            let conn = st.db.lock().unwrap();
+            let ids = seed_by_key(&conn);
+            fold_and_drop_details(&conn);
+            ids
+        };
+        let conn = st.db.lock().unwrap();
+        let sql = by_key_sql("t.user_id = ?1", false);
+        let mutated = sql.replace("SUM(t.row_count)", "COUNT(*)");
+        assert_ne!(mutated, sql, "变异没落到 SQL 上 —— 夹具跟不上实现了？");
+
+        let entries = |rows: &Vec<(Option<i64>, i64)>, id: Option<i64>| -> i64 {
+            rows.iter()
+                .find(|(k, _)| *k == id)
+                .map(|(_, n)| *n)
+                .unwrap_or_else(|| panic!("缺少 api_key_id={id:?} 的那一组：{rows:?}"))
+        };
+        let real = read_entries(&conn, &sql);
+        let bad = read_entries(&conn, &mutated);
+        assert_eq!(
+            entries(&real, Some(alpha)),
+            2,
+            "alpha 的两条明细折叠成一个桶，但**条数**仍是 2：{real:?}"
+        );
+        assert_eq!(
+            entries(&bad, Some(alpha)),
+            1,
+            "变异体数的是视图行数（一个分钟桶）⇒ 必须少数：{bad:?}"
+        );
+        assert_ne!(real, bad, "`COUNT(*)` 与 `SUM(row_count)` 在折叠后必须不同");
+    }
+
+    /// **牙**：读裸 `transactions` 会在明细被删掉之后**整段丢失**历史 —— 这正是必须读视图的理由。
+    ///
+    /// 没有这条，「读视图」与「读原表」在未过保留窗的夹具上读数相同，判据就没有分母。
+    #[test]
+    fn reading_the_raw_table_would_lose_the_folded_history() {
+        let st = test_state("bykeyraw");
+        let conn_fixture = st.db.lock().unwrap();
+        seed_by_key(&conn_fixture);
+        fold_and_drop_details(&conn_fixture);
+
+        let sql = by_key_sql("t.user_id = ?1", false);
+        // 一个「读裸明细表」的实现长什么样：`FROM transactions`，且**没有** `row_count` 列可读
+        // ⇒ 条数只能数行（`SUM(1)`）。两处替换合起来才是那个实现 —— 只换 FROM 会撞上
+        // 「no such column: t.row_count」而 panic，那是夹具错，不是判据红。
+        let raw = sql
+            .replace(&format!("{} t", crate::tx_facts::VIEW), "transactions t")
+            .replace("SUM(t.row_count)", "SUM(1)");
+        assert_ne!(raw, sql, "变异没落到 SQL 上 —— 夹具跟不上实现了？");
+        assert!(
+            !read_entries(&conn_fixture, &sql).is_empty(),
+            "阳性对照：视图里必须仍有三组"
+        );
+        assert!(
+            read_entries(&conn_fixture, &raw).is_empty(),
+            "裸表里已无明细 ⇒ 变异体必须整段丢失（否则这个夹具证明不了任何事）"
+        );
     }
 }
