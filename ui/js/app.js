@@ -2573,6 +2573,8 @@
         created: fmtPrecise(k.created_at).slice(0, 10),
         last: k.last_used || null, // rant 2026-08-24T12:41:25：真实最近使用时间（NULL=从未使用）
         status: k.status || "active",
+        // 后端 `GET /api/api-keys` 的 `current`：这行就是当前会话用的 key（暂停它 = 踢自己下线）
+        current: !!k.current,
       }));
     } else {
       list = [];
@@ -2583,8 +2585,9 @@
       "<td data-label='" + T('settings.ak.col.key') + "'><code>" + esc(Live.apiKeys ? k.key : "") + "</code></td>" +
       "<td data-label='" + T('settings.ak.col.created') + "'>" + esc(k.created) + "</td>" +
       "<td data-label='" + T('settings.ak.col.last') + "'>" + (k.last ? timeCell(k.last) : esc(T("settings.ak.last.never"))) + "</td>" +
-      "<td data-label='" + T('settings.ak.col.status') + "'>" + (k.status === "active" ? '<span class="pill pill-ok">' + T("settings.ak.status.active") + "</span>" : '<span class="pill pill-muted">' + esc(k.status || "—") + "</span>") + "</td>" +
+      "<td data-label='" + T('settings.ak.col.status') + "'>" + badge(k.status, AK_STATUS) + "</td>" +
       "<td data-label='" + T('settings.ak.col.action') + "'><button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-copy='" + k.idx + "'>" + T("settings.ak.copy") + "</button> " +
+      keyToggleButton(k) +
       "<button class='btn btn-ghost' style='padding:4px 10px;font-size:12px' data-key-rename='" + k.idx + "'>" + T("settings.ak.rename") + "</button> " +
       "<button class='btn btn-danger' style='padding:4px 10px;font-size:12px' data-key-del='" + k.idx + "'>" + T("settings.ak.del") + "</button></td></tr>"
     ).join("") : emptyRow(6, T("settings.ak.empty"), T("settings.ak.empty.sub"),
@@ -2745,6 +2748,52 @@
       }).catch((err) => {
         toast((err && err.message) ? I18n.mapErr(err.message) : T("settings.ak.gen.fail"), "error");
       });
+    });
+  }
+
+  /* --- API Key 启停（rant 2026-11-12T14:13:23） --- */
+
+  // 两个状态的徽标与「下一个动作」逐状态列全（C2153 的同一课，见 SHARE_TOGGLE 的注释）：
+  // 动作标签按**当前状态**取，而结局文案是**下一状态**的函数 —— 写成两值判别式
+  //（`status === "active" ? "paused" : "active"`）的那一天，就会有一个状态被报成另一个状态的
+  // 结局。后端只返回这两个值（`dao::LIVE_KEY_STATUSES`），`revoked` 不出现在列表里 ⇒ 没有
+  // 第三条路径；未知状态由 `akToggle()` 返回 null，**不给按钮**而不是猜一个动作。
+  const AK_STATUS = {
+    active: { text: () => T("settings.ak.status.active"), cls: "ok" },
+    paused: { text: () => T("settings.ak.status.paused"), cls: "warn" },
+  };
+  const AK_TOGGLE = {
+    active: { label: "settings.ak.pause", next: "paused", outcome: "settings.ak.paused" },
+    paused: { label: "settings.ak.resume", next: "active", outcome: "settings.ak.resumed" },
+  };
+  const akToggle = (status) => AK_TOGGLE[status] || null;
+
+  // 行内启停按钮。当前会话那把 key（后端 `current` 标记）渲染成 disabled + 理由气泡：暂停它
+  // 等于把自己踢下线，而重新登录会另发一把新 key ⇒ 那次暂停什么也没停住。服务端同样拒绝
+  //（`routes::api_keys::patch`），前端先拦住只是不让人点出一个必然失败的请求。
+  function keyToggleButton(k) {
+    const entry = akToggle(k.status);
+    if (!entry) return "";
+    const style = "padding:4px 10px;font-size:12px";
+    return k.current
+      ? "<button class='btn btn-ghost' style='" + style + "' disabled title='" + esc(T("settings.ak.current.hint")) + "'>" + T(entry.label) + "</button> "
+      : "<button class='btn btn-ghost' style='" + style + "' data-key-toggle='" + k.idx + "'>" + T(entry.label) + "</button> ";
+  }
+
+  // 启停：动作 / 下一状态 / 结局取自**同一条目**，不做两值判别。
+  function toggleKey(i) {
+    if (!Live.apiKeys) return;
+    const k = Live.apiKeys[i];
+    if (!k) return;
+    const entry = akToggle(k.status || "active");
+    if (!entry) return;
+    api.patch("/api/api-keys/" + k.id, { status: entry.next }).then(async () => {
+      await liveLoad("apiKeys", "/api/api-keys");
+      renderSettings();
+      toast(T(entry.outcome, { name: k.name || T("common.unnamed") }), "success");
+    }).catch((err) => {
+      renderSettings(); // 失败重渲染：按钮与徽标回到服务端的真实状态
+      toast((err && err.message) ? I18n.mapErr(err.message) : T("settings.ak.status.fail"), "error");
     });
   }
 
@@ -4703,6 +4752,8 @@
       if (cp) { copyKey(Number(cp.dataset.keyCopy)); return; }
       const rn = e.target.closest("[data-key-rename]");
       if (rn) { renameKey(Number(rn.dataset.keyRename)); return; }
+      const tg = e.target.closest("[data-key-toggle]");
+      if (tg) { toggleKey(Number(tg.dataset.keyToggle)); return; }
       const dl = e.target.closest("[data-key-del]");
       if (dl) { confirmInline(dl, () => deleteKey(Number(dl.dataset.keyDel)), T("settings.ak.del.confirm")); return; }
       if (e.target.closest("[data-new-key]")) openNewKeyInline();

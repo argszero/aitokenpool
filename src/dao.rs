@@ -43,7 +43,33 @@ pub fn find_user_by_email(conn: &Connection, email: &str) -> Option<(i64, String
     .ok()
 }
 
+/// API Key 的两个「仍在用户手里」的状态（rant 2026-11-12T14:13:23）。
+///
+/// 取值只有这三个，全仓的写入点也只有三个：两处 INSERT 写 [`KEY_STATUS_ACTIVE`]、
+/// [`revoke_api_key`] 写 `revoked`、[`set_api_key_status`] 在 active ↔ paused 之间切。
+/// `revoked` 刻意**不在** [`LIVE_KEY_STATUSES`] 里：软删是终态，没有任何路径把它写回来。
+pub const KEY_STATUS_ACTIVE: &str = "active";
+pub const KEY_STATUS_PAUSED: &str = "paused";
+pub const LIVE_KEY_STATUSES: [&str; 2] = [KEY_STATUS_ACTIVE, KEY_STATUS_PAUSED];
+
+/// `status IN ('active','paused')` —— 由 [`LIVE_KEY_STATUSES`] 渲染，不手抄第二份。
+///
+/// 三条守卫（列表 / 改名 / 启停 / 软删）全部取自这里：状态集若有第四种值要进来，
+/// 改一处就够；分散写死的后果是某个入口悄悄落后于其余入口（`revoked` 的可见性就是例子）。
+fn live_status_sql() -> String {
+    let list = LIVE_KEY_STATUSES
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("status IN ({list})")
+}
+
 /// 取该用户的「有效」API Key；没有则生成一个（登录即返回可用的 key）
+///
+/// ⚠️ 只认 [`KEY_STATUS_ACTIVE`]：暂停的 key 不接管「登录即返回可用 key」这条路。
+/// 这也正是暂停必须**拒绝作用于当前会话那把 key** 的原因（见 `routes::api_keys::patch`）——
+/// 若真的把用户最后一把 active key 暂停掉，这里会另发一把新 key，那次暂停就只是换了个 key。
 pub fn get_or_create_api_key(conn: &Connection, user_id: i64) -> Result<String> {
     let existing: Option<String> = conn
         .query_row(
@@ -73,13 +99,15 @@ pub fn create_api_key(conn: &Connection, user_id: i64, name: &str) -> Result<Str
     Ok(key)
 }
 
-/// 列出用户的 API Key（key 值脱敏；P2-B 起只列 active，revoked 不再显示）
+/// 列出用户的 API Key（key 值脱敏；P2-B 起 revoked 不再显示，rant 2026-11-12T14:13:23 起
+/// paused 要显示 —— 「已暂停」那一行是恢复它唯一的入口，藏起来等于只能靠撤销重来）
 /// rant 2026-08-24T12:41:25：返回 last_used（网关 Bearer 鉴权时 touch_api_key 维护，NULL=从未使用）
 pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::Value>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, key_value, name, status, created_at, last_used FROM api_keys \
-         WHERE user_id = ?1 AND status = 'active' ORDER BY id DESC",
-    )?;
+         WHERE user_id = ?1 AND {} ORDER BY id DESC",
+        live_status_sql()
+    ))?;
     let rows = stmt.query_map([user_id], |r| {
         let raw: String = r.get(1)?;
         let created_at: String = r.get(4)?;
@@ -101,19 +129,54 @@ pub fn list_api_keys(conn: &Connection, user_id: i64) -> Result<Vec<serde_json::
     Ok(out)
 }
 
-/// 改名 API Key（rant 2026-08-22T17:21:39：改名须持久化）；仅属主、仅 active 可改；返回是否成功
+/// 改名 API Key（rant 2026-08-22T17:21:39：改名须持久化）；仅属主、未撤销的行可改
+/// （rant 2026-11-12T14:13:23：暂停中的 key 也该能改名 —— 它还在列表里，也还会回来）；返回是否成功
 pub fn rename_api_key(conn: &Connection, user_id: i64, key_id: i64, name: &str) -> Result<bool> {
     let n = conn.execute(
-        "UPDATE api_keys SET name = ?1 WHERE id = ?2 AND user_id = ?3 AND status = 'active'",
+        &format!(
+            "UPDATE api_keys SET name = ?1 WHERE id = ?2 AND user_id = ?3 AND {}",
+            live_status_sql()
+        ),
         rusqlite::params![name, key_id, user_id],
     )?;
     Ok(n == 1)
 }
 
+/// 启停 API Key（rant 2026-11-12T14:13:23）：active ↔ paused，仅属主、仅未撤销的行。
+///
+/// 取值本身由调用方按 [`LIVE_KEY_STATUSES`] 校验（路由层），这里再断言一次：
+/// 这个函数是 `status` 的第二个写入点，写进第三种值就等于绕过整条可见性口径。
+pub fn set_api_key_status(
+    conn: &Connection,
+    user_id: i64,
+    key_id: i64,
+    status: &str,
+) -> Result<bool> {
+    debug_assert!(
+        LIVE_KEY_STATUSES.contains(&status),
+        "set_api_key_status 只接受 {LIVE_KEY_STATUSES:?}，收到 {status:?}"
+    );
+    let n = conn.execute(
+        &format!(
+            "UPDATE api_keys SET status = ?1 WHERE id = ?2 AND user_id = ?3 AND {}",
+            live_status_sql()
+        ),
+        rusqlite::params![status, key_id, user_id],
+    )?;
+    Ok(n == 1)
+}
+
 /// 软删 API Key（P2-B：status → 'revoked'）；仅属主可删；返回是否删除成功
+///
+/// 守卫从 `status = 'active'` 放宽到 `live_status_sql()`（rant 2026-11-12T14:13:23）：
+/// 暂停中的行也在列表里，列表里就带着「删除」按钮 —— 删不掉才是缺陷。
+/// `revoked` 仍然是终态：本函数是唯一写它的地方，而它自己不再接受已撤销的行。
 pub fn revoke_api_key(conn: &Connection, user_id: i64, key_id: i64) -> Result<bool> {
     let n = conn.execute(
-        "UPDATE api_keys SET status = 'revoked' WHERE id = ?1 AND user_id = ?2 AND status = 'active'",
+        &format!(
+            "UPDATE api_keys SET status = 'revoked' WHERE id = ?1 AND user_id = ?2 AND {}",
+            live_status_sql()
+        ),
         rusqlite::params![key_id, user_id],
     )?;
     Ok(n == 1)
