@@ -80,7 +80,8 @@ fn violations(src: &str) -> Vec<(usize, String)> {
 // ---------------------------------------------------------------------------
 // 第二条不变量（rant 2026-09-14T21:15:02 第 3 条）：**聚合语句按需 JOIN**。
 //
-// `wallet.rs` 的 summary / COUNT / trend 三条语句只碰 `t.*`。而只要 SQL 里出现
+// `wallet.rs` 的 summary / COUNT / trend / by-key 四条语句只碰 `t.*`（by-key 的 key 名走
+// 标量子查询，不是 JOIN）。而只要 SQL 里出现
 // `tx_joins()` 那三个 LEFT JOIN，SQLite 就**不再选用覆盖索引**
 // `idx_transactions_user_id_time_type_pts_tokens`，退回 `idx_transactions_user_id_id`
 // 逐行回表：dev 库（18.6 万行 / NFS）同一条查询 **0.21s → 22.6s（≈100×）**，
@@ -190,12 +191,12 @@ fn the_transaction_aggregates_never_join_unconditionally() {
         body.iter().any(|(_, l)| l.contains("tx_joins(")),
         "`tx_joins_if` 需要 JOIN 时仍应复用 `tx_joins`（唯一一份 JOIN 文案）"
     );
-    // ③ 阳性对照：按需拼接确实还在用 —— summary / COUNT / trend 三处。
+    // ③ 阳性对照：按需拼接确实还在用 —— summary / COUNT / trend / by-key 四处。
     // （新增聚合语句时请一并更新此计数：这是有意的摩擦，不是噪音。）
     assert_eq!(
         calls_of(src, "tx_joins_if("),
-        3,
-        "wallet 的三条聚合语句都应经 `tx_joins_if` 拼接 JOIN"
+        4,
+        "wallet 的四条聚合语句都应经 `tx_joins_if` 拼接 JOIN"
     );
     // ④ 阳性对照：判定与拼接共用同一谓词。
     assert_eq!(
