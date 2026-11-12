@@ -82,7 +82,7 @@
 - `GET /healthz` — 健康检查（返回版本号）
 - `POST /api/auth/register` / `login` / `verify` / `resend-code` / `forgot-password` / `reset-password` / `change-password`
 - `GET /api/me` — 当前用户
-- `POST/GET /api/api-keys` + `PATCH/DELETE /api/api-keys/:id` — 分发 key 生成 / 列表 / 改名 / 撤销
+- `POST/GET /api/api-keys` + `PATCH/DELETE /api/api-keys/:id` — 分发 key 生成 / 列表 / 改名与启停（PATCH 的 `status: active|paused`）/ 撤销（软删，不可逆）
 - `GET /api/models` — 模型列表（含可用 key 与价格）
 - `POST /v1/chat/completions` / `/v1/responses` / `/anthropic/v1/messages` — 网关（非流式 + SSE）
 - `GET /api/wallet` / `/api/transactions` / `/api/dashboard` — 钱包 / 交易（summary + 明细）/ 仪表盘

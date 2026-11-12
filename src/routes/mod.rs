@@ -678,7 +678,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/api-keys", post(api_keys::create).get(api_keys::list))
         .route(
             "/api/api-keys/:id",
-            axum::routing::delete(api_keys::remove).patch(api_keys::rename),
+            axum::routing::delete(api_keys::remove).patch(api_keys::patch),
         )
         // 网关三条：请求体可能很大（长上下文 / 多模态），放宽到 GATEWAY_BODY_LIMIT。
         .route(
@@ -1071,6 +1071,221 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::NOT_FOUND, "已撤销 key 改名应 404");
+    }
+
+    /// rant 2026-11-12T14:13:23 验收①②：暂停 = 立即停服，但那一行**仍留在列表里**、可一键恢复。
+    ///
+    /// 没有这条修复时（`status` 只有 active/revoked、PATCH 只认 name）：`{"status":"paused"}`
+    /// 会被 serde 忽略 ⇒ 200 且 key 照旧通过鉴权 ⇒ 下面「暂停后 401」那一条先红。
+    #[tokio::test]
+    async fn api_key_pause_stops_the_key_and_resume_brings_it_back() {
+        let st = test_state("keypause");
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        // 第二把 key：登录凭据那把不能暂停自己（下一用例），所以拿它来暂停
+        let (s, body) = post(
+            st.clone(),
+            "/api/api-keys",
+            r#"{"name":"工具 key"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "生成 key 应 200: {body}");
+        let tool_key = serde_json::from_str::<serde_json::Value>(&body).unwrap()["api_key"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (_, body) = get(st.clone(), "/api/api-keys", Some(&demo_bearer)).await;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        let row = arr
+            .iter()
+            .find(|k| k["full_key"] == tool_key.as_str())
+            .expect("列表里应有刚生成的 key");
+        let tool_id = row["id"].as_i64().unwrap();
+        assert_eq!(row["status"], "active");
+        assert_eq!(row["current"], false, "只有会话那把 key 才标 current");
+        // 前置：这把 key 本来能认证
+        let (s, _) = get(st.clone(), "/api/api-keys", Some(&tool_key)).await;
+        assert_eq!(s, StatusCode::OK);
+        // 暂停
+        let (s, body) = patch(
+            st.clone(),
+            &format!("/api/api-keys/{tool_id}"),
+            r#"{"status":"paused"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "暂停应 200: {body}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["status"],
+            "paused"
+        );
+        // ① 暂停后该 key 的请求立即被拒（鉴权仍只认 active）
+        let (s, _) = get(st.clone(), "/api/api-keys", Some(&tool_key)).await;
+        assert_eq!(
+            s,
+            StatusCode::UNAUTHORIZED,
+            "暂停的 key 不该再通过 Bearer 鉴权"
+        );
+        // ② 该行不因暂停而从列表消失（否则没有恢复入口）
+        let (_, body) = get(st.clone(), "/api/api-keys", Some(&demo_bearer)).await;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        let row = arr
+            .iter()
+            .find(|k| k["id"] == tool_id)
+            .expect("暂停后该行仍应在列表里");
+        assert_eq!(row["status"], "paused");
+        // 暂停中的 key 仍可改名（它还在用户手里）
+        let (s, _) = patch(
+            st.clone(),
+            &format!("/api/api-keys/{tool_id}"),
+            r#"{"name":"改过名"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "暂停中的 key 应可改名");
+        // 恢复 → 同一把 key 立即可用
+        let (s, _) = patch(
+            st.clone(),
+            &format!("/api/api-keys/{tool_id}"),
+            r#"{"status":"active"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = get(st.clone(), "/api/api-keys", Some(&tool_key)).await;
+        assert_eq!(s, StatusCode::OK, "恢复后同一把 key 应立即重新可用");
+        // 列表里就带着「删除」按钮 ⇒ 暂停中的行也必须删得掉
+        let (s, _) = patch(
+            st.clone(),
+            &format!("/api/api-keys/{tool_id}"),
+            r#"{"status":"paused"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = del(
+            st.clone(),
+            &format!("/api/api-keys/{tool_id}"),
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "暂停中的 key 应可撤销");
+    }
+
+    /// rant 2026-11-12T14:13:23 里那个洞：**暂停自己那把 key 等于没暂停**。
+    ///
+    /// 没有守卫时：PATCH 暂停成功 → 这次会话立刻失效 → 重新登录时 `get_or_create_api_key`
+    /// 找不到 active 行 ⇒ 另发一把新 key，那次暂停什么也没停住。所以守卫在入口处拒绝，
+    /// 并且这里顺手钉住「登录不会因此冒出第二把 key」。
+    #[tokio::test]
+    async fn api_key_cannot_pause_the_key_it_is_signed_in_with() {
+        let st = test_state("keyselfpause");
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let (_, body) = get(st.clone(), "/api/api-keys", Some(&demo_bearer)).await;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        let row = arr
+            .iter()
+            .find(|k| k["current"] == true)
+            .expect("列表必须标出当前会话用的那把 key");
+        let id = row["id"].as_i64().unwrap();
+        let (s, body) = patch(
+            st.clone(),
+            &format!("/api/api-keys/{id}"),
+            r#"{"status":"paused"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "暂停自己应被拒绝: {body}");
+        // 被拒之后这把 key 依然可用、状态仍是 active
+        let (s, body) = get(st.clone(), "/api/api-keys", Some(&demo_bearer)).await;
+        assert_eq!(s, StatusCode::OK);
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            arr.iter().find(|k| k["id"] == id).unwrap()["status"],
+            "active"
+        );
+        // 洞本身：重新登录拿到的是**同一把** key，不会因为暂停尝试而多出一把
+        let (s, body) = post(
+            st.clone(),
+            "/api/auth/login",
+            r#"{"email":"demo@aitokenpool.local","password":"demo1234"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["api_key"]
+                .as_str()
+                .unwrap(),
+            demo_bearer,
+            "登录不应因为一次暂停尝试就另发一把 key"
+        );
+    }
+
+    /// 可接受的目标状态只有 `active` / `paused`；`revoked` 是终态，写不回来。
+    #[tokio::test]
+    async fn api_key_status_rejects_values_outside_the_live_pair() {
+        let st = test_state("keystatusbad");
+        let demo_bearer = login_bearer(&st, "demo@aitokenpool.local", "demo1234").await;
+        let (_, body) = post(
+            st.clone(),
+            "/api/api-keys",
+            r#"{"name":"x"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        let key = serde_json::from_str::<serde_json::Value>(&body).unwrap()["api_key"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (_, body) = get(st.clone(), "/api/api-keys", Some(&demo_bearer)).await;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        let id = arr.iter().find(|k| k["full_key"] == key.as_str()).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        for bad in ["revoked", "off", "on", "ACTIVE", ""] {
+            let (s, body) = patch(
+                st.clone(),
+                &format!("/api/api-keys/{id}"),
+                &format!(r#"{{"status":"{bad}"}}"#),
+                Some(&demo_bearer),
+            )
+            .await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "status={bad:?} 应 400: {body}");
+            // 文案必须点名两个可接受取值（由 `dao::LIVE_KEY_STATUSES` 渲染）
+            let msg = serde_json::from_str::<serde_json::Value>(&body).unwrap()["error"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            for ok in crate::dao::LIVE_KEY_STATUSES {
+                assert!(msg.contains(ok), "400 文案漏了 {ok:?}: {msg}");
+            }
+        }
+        // 两个字段都不给 → 400（不是「什么都不用改」）
+        let (s, _) = patch(
+            st.clone(),
+            &format!("/api/api-keys/{id}"),
+            "{}",
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        // 撤销是终态：撤销后任何 status 都写不回来
+        let (s, _) = del(
+            st.clone(),
+            &format!("/api/api-keys/{id}"),
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = patch(
+            st.clone(),
+            &format!("/api/api-keys/{id}"),
+            r#"{"status":"active"}"#,
+            Some(&demo_bearer),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "已撤销的 key 不能被恢复");
     }
 
     /// 登录并返回 Bearer
