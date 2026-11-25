@@ -12,10 +12,11 @@
 //! 两侧都**派生**，不写快照：
 //!
 //! * 读者名册从 `src/routes/*.rs` 现读 —— 每个 `FROM|JOIN usage_records` 是一条读者，它的
-//!   下界取同一句 SQL 里的 `time >= <表达式>`；
+//!   下界取同一句 SQL 里的 `time >= <表达式>`；**下界读不出来的站点不会被悄悄丢掉**，它进
+//!   `Reading.unpaired` 并让判决失败（R5）；
 //! * 门槛从 `src/usage_retention.rs` 的单一拼写点 `KEEP_SINCE` 读。
 //!
-//! # 三条规则
+//! # 五条规则
 //!
 //! * **R1（结构）**：门槛的日历修饰符列表是**每个读者**下界的**延长**（读者是它的前缀）。
 //!   即「门槛 = 读者自己的那个日历点再往前推」—— 这正是「同一套日历谓词」的形状，
@@ -28,6 +29,9 @@
 //!   锚定货币金额）删得只剩不存在。
 //! * **R4（唯一删除点）**：`DELETE FROM usage_records` 在生产代码里**只有一处** —— 删除是
 //!   一个决定，多一处就是多一个没人守的入口。
+//! * **R5（名册完整）**：一个命中读者形态、下界却读不出来的站点**不许被静默跳过** —— 它记进
+//!   `Reading.unpaired`，判决因此失败。R1/R2 只在名册上量化，名册少一条就少一条约束：跳过
+//!   等于把不变量偷偷读成「门槛 ≤ **我解析得出来**的每个读者」。
 //!
 //! # 射程（如实）
 //!
@@ -38,8 +42,8 @@
 //!   与删除门槛的**日历**口径不可比，静态门禁表达不了「几个月的数据装得进那几个文件吗」。
 //!   这条边界写在 `usage_retention.rs` 的模块文档里（默认值下 ~500MB ≫ 两个月的行）。
 //! * **不写快照**：两侧期望值都从制品推导（下界取自路由 SQL，门槛取自常量）。
-//! * **阳性对照**：`the_scanner_sees_both_sides` 断言扫描器真的读到了读者、门槛与那个 helper
-//!   —— 否则「零违规」与「扫描器是瞎的」在读数上无法区分（坑 #814）。
+//! * **阳性对照**：`the_scanner_sees_both_sides` 断言扫描器真的读到了读者、门槛与那个 helper，
+//!   且名册里**没有**被跳过的站点 —— 否则「零违规」与「扫描器是瞎的」在读数上无法区分（坑 #814）。
 
 use crate::body_limit_gate::source_files;
 use crate::deploy_gate::code_mask;
@@ -92,6 +96,10 @@ struct Reading {
     delete_sites: usize,
     /// 扫描器是否真的看见了那个 helper。
     helper_seen: bool,
+    /// 命中读者形态、但下界读不出来的站点（`文件@掩码字节偏移`）—— R5 的落点。
+    ///
+    /// 空 = 名册完整；非空 = 有读者被跳过了，而 R1/R2 只在名册上量化（#448）。
+    unpaired: Vec<String>,
 }
 
 impl Reading {
@@ -132,17 +140,23 @@ impl Reading {
         self.helper_seen && self.delete_sites == 1
     }
 
+    /// R5：名册完整 —— 没有站点因为「下界读不出来」而被静默跳过。
+    fn r5(&self) -> bool {
+        self.unpaired.is_empty()
+    }
+
     fn all(&self) -> bool {
-        self.r1() && self.r2() && self.r3() && self.r4()
+        self.r1() && self.r2() && self.r3() && self.r4() && self.r5()
     }
 
     fn blame(&self) -> String {
         format!(
-            "r1={} r2={} r3={} r4={} · 读者 {:?} · 门槛 {:?} 修饰符 {:?} · fail-closed {} · 删除点 {} · helper {}",
+            "r1={} r2={} r3={} r4={} r5={} · 读者 {:?} · 门槛 {:?} 修饰符 {:?} · fail-closed {} · 删除点 {} · helper {} · 被跳过的站点 {:?}",
             self.r1(),
             self.r2(),
             self.r3(),
             self.r4(),
+            self.r5(),
             self.readers
                 .iter()
                 .map(|r| format!("{}@{}", r.file, r.expr))
@@ -152,6 +166,7 @@ impl Reading {
             self.fail_closed,
             self.delete_sites,
             self.helper_seen,
+            self.unpaired,
         )
     }
 }
@@ -224,6 +239,7 @@ fn read() -> Reading {
     // 生产者语料（`*_gate.rs` 已被 `source_files` 跳过）；每个文件的**生产区**截止于
     // `#[cfg(test)]`（`routes/mod.rs` 的测试里有 `insert into usage_records`，不是读者）。
     let mut readers = Vec::new();
+    let mut unpaired = Vec::new();
     let mut threshold = None;
     let mut fail_closed = false;
     let mut delete_sites = 0usize;
@@ -271,6 +287,8 @@ fn read() -> Reading {
                 let at = base + i;
                 base = at + pat.len();
                 let Some(expr) = reader_bound(prod, at) else {
+                    // R5：**记下来**，不要静默跳过 —— 跳过会让名册少一条约束却仍然全绿（#448）。
+                    unpaired.push(format!("{file}@{at}"));
                     continue;
                 };
                 if readers
@@ -291,6 +309,7 @@ fn read() -> Reading {
     let threshold_mods = threshold.as_deref().and_then(mods_of);
     Reading {
         readers,
+        unpaired,
         threshold,
         threshold_mods,
         fail_closed,
@@ -344,7 +363,7 @@ fn the_usage_delete_statement_has_exactly_one_site() {
 
 #[test]
 fn every_usage_retention_rule_has_a_tooth() {
-    // 五条独立牙齿：每条只动一个读数，且被判官点名的**正是它针对的那条规则**。
+    // 六条独立牙齿：每条只动一个读数，且被判官点名的**正是它针对的那条规则**。
     let base = read();
     assert!(base.all(), "基线: {}", base.blame());
 
@@ -388,6 +407,12 @@ fn every_usage_retention_rule_has_a_tooth() {
     m.delete_sites += 1;
     assert!(!m.r4(), "多一处删除应打翻 R4: {}", m.blame());
     assert!(!m.all());
+
+    // ⑥ 名册里多一个被跳过的站点（命中了读者形态，下界读不出来）。
+    let mut m = base.clone();
+    m.unpaired = vec!["routes/ops.rs@3587".to_string()];
+    assert!(!m.r5(), "被跳过的站点应打翻 R5: {}", m.blame());
+    assert!(!m.all(), "{}", m.blame());
 }
 
 #[test]
@@ -397,6 +422,13 @@ fn the_scanner_sees_both_sides() {
     assert!(
         r.readers.len() >= 6,
         "生产读者一条都没读出来（提取器失真？）：{}",
+        r.blame()
+    );
+    assert!(
+        r.unpaired.is_empty(),
+        "有站点命中了读者形态、下界却读不出来 —— 它们被跳过、名册里没有它们，而 R1/R2 只在\
+         名册上量化（写法变了？见 #448）：{:?} · {}",
+        r.unpaired,
         r.blame()
     );
     assert!(
